@@ -287,7 +287,7 @@ namespace Cassandra.IntegrationTests.TestClusterManagement
             }
             else if (TestClusterManager.IsScylla)
             {
-               cmd += " --scylla";
+                cmd += " --scylla";
             }
 
             var output = ExecuteCcm(string.Format(cmd, n, IpPrefix, n, 7000 + 100 * n, dc != null ? "-d " + dc : null));

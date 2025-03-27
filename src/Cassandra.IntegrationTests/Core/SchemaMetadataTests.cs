@@ -148,7 +148,7 @@ namespace Cassandra.IntegrationTests.Core
             const string typeName2 = "org.apache.cassandra.db.marshal.CompositeType(" +
                                      "org.apache.cassandra.db.marshal.UTF8Type," +
                                      "org.apache.cassandra.db.marshal.Int32Type)";
-            
+
             const string typeName3 = "org.apache.cassandra.db.marshal.DynamicCompositeType(" +
                                      "i=>org.apache.cassandra.db.marshal.Int32Type," +
                                      "s=>org.apache.cassandra.db.marshal.UTF8Type)";
@@ -319,7 +319,7 @@ namespace Cassandra.IntegrationTests.Core
             Assert.NotNull(table);
             Assert.AreEqual(7, table.TableColumns.Length);
             CollectionAssert.AreEqual(new[] { "a", "b" }, table.PartitionKeys.Select(p => p.Name));
-            CollectionAssert.AreEqual(new [] { "a", "b"}, table.TableColumns
+            CollectionAssert.AreEqual(new[] { "a", "b" }, table.TableColumns
                 .Where(c => c.KeyType == KeyType.Partition)
                 .Select(c => c.Name));
             CollectionAssert.AreEqual(new[] { "c", "d" }, table.ClusteringKeys.Select(c => c.Item1.Name));
@@ -539,11 +539,11 @@ namespace Cassandra.IntegrationTests.Core
                 Assert.NotNull(cluster2.Metadata.GetKeyspace("ks_view_meta4")?.GetTableMetadata("scores").ColumnsByName[colName]);
                 alltimeView = cluster2.Metadata.GetMaterializedView("ks_view_meta4", "alltimehigh");
                 Assert.IsNotNull(alltimeView);
-                 foulMeta = alltimeView.ColumnsByName[colName];
+                foulMeta = alltimeView.ColumnsByName[colName];
                 Assert.NotNull(foulMeta);
 
             }, 200, 55);
-            
+
             Assert.AreEqual(ColumnTypeCode.Int, foulMeta.TypeCode);
             dailyView = cluster2.Metadata.GetMaterializedView("ks_view_meta4", "dailyhigh");
             Assert.IsFalse(dailyView.TableColumns.Contains(foulMeta));
@@ -768,7 +768,7 @@ namespace Cassandra.IntegrationTests.Core
         public void Virtual_Keyspaces_Are_Included(bool metadataSync)
         {
             var cluster = GetNewTemporaryCluster(builder => builder.WithMetadataSyncOptions(new MetadataSyncOptions().SetMetadataSyncEnabled(metadataSync)));
-            var defaultVirtualKeyspaces = new[] {"system_views", "system_virtual_schema"};
+            var defaultVirtualKeyspaces = new[] { "system_views", "system_virtual_schema" };
             CollectionAssert.IsSubsetOf(defaultVirtualKeyspaces, cluster.Metadata.GetKeyspaces());
 
             foreach (var keyspaceName in defaultVirtualKeyspaces)

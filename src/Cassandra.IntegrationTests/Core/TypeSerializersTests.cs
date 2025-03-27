@@ -43,7 +43,7 @@ namespace Cassandra.IntegrationTests.Core
         private const string CustomTypeName = "org.apache.cassandra.db.marshal.DynamicCompositeType(" +
                                               "s=>org.apache.cassandra.db.marshal.UTF8Type," +
                                               "i=>org.apache.cassandra.db.marshal.Int32Type)";
-        
+
         private const string CustomTypeName2 = "org.apache.cassandra.db.marshal.DynamicCompositeType(" +
                                                "i=>org.apache.cassandra.db.marshal.Int32Type," +
                                                "s=>org.apache.cassandra.db.marshal.UTF8Type)";
@@ -331,7 +331,7 @@ namespace Cassandra.IntegrationTests.Core
 
                     new TestCaseData("uuid", (Func<Guid>)(Guid.NewGuid), defaultAssert),
                     new TestCaseData("timeuuid", (Func<TimeUuid>)(TimeUuid.NewId), defaultAssert),
-                     
+
                     new TestCaseData("boolean", (Func<bool>)(()=>r.Next()%2==0), defaultAssert),
                     new TestCaseData("duration", (Func<Duration>)(()=>Duration.FromTimeSpan(new TimeSpan(DateTime.UtcNow.Ticks))), defaultAssert),
                     new TestCaseData("inet", (Func<IPAddress>)(()=> IPAddress.Parse($"{(r.Next()%255) + 1}.{r.Next()%255}.{r.Next()%255}.{(r.Next()%255) + 1}")), defaultAssert),
@@ -357,7 +357,7 @@ namespace Cassandra.IntegrationTests.Core
                     new TestCaseData("vector<int,2>", (Func<CqlVector<int>>)(()=>new CqlVector<int>(Enumerable.Range(0, 2).Select(i => r.Next()).ToArray())), listVectorAssert),
                     new TestCaseData("vector<int,2>", (Func<CqlVector<int>>)(()=>new CqlVector<int>(r.Next(), r.Next())), listVectorAssert),
                     new TestCaseData("vector<varint,2>", (Func<CqlVector<BigInteger>>)(()=>new CqlVector<BigInteger>(Enumerable.Range(0, 2).Select(i => new BigInteger((long)r.NextDouble())).ToArray())), listVectorAssert),
-                    
+
                     new TestCaseData("tuple<int,int>", (Func<Tuple<int,int>>)(()=>new Tuple<int, int>(r.Next(), r.Next())), defaultAssert),
                     new TestCaseData("tuple<int,varint>", (Func<Tuple<int,BigInteger>>)(()=>new Tuple<int, BigInteger>(r.Next(), new BigInteger((long)r.NextDouble()))), defaultAssert),
                     new TestCaseData("tuple<varint,int>", (Func<Tuple<BigInteger, int>>)(()=>new Tuple<BigInteger, int>(new BigInteger((long)r.NextDouble()), r.Next())), defaultAssert),
@@ -415,17 +415,17 @@ namespace Cassandra.IntegrationTests.Core
             };
 
             vectorSimpleStmtTestFn((i, v) => new SimpleStatement(
-                $"INSERT INTO {tableNameComplex} (i, k, l) VALUES (?, ?, ?)", 
-                i, 
-                new CqlVector<CqlVector<T>>(v[0], v[1], v[2]), 
+                $"INSERT INTO {tableNameComplex} (i, k, l) VALUES (?, ?, ?)",
+                i,
+                new CqlVector<CqlVector<T>>(v[0], v[1], v[2]),
                 new CqlVector<List<CqlVector<T>>>(new List<CqlVector<T>> { v[0] }, new List<CqlVector<T>> { v[1] }, new List<CqlVector<T>> { v[2] })));
             vectorSimpleStmtTestFn((i, v) => new SimpleStatement(
                 new Dictionary<string, object>
                 {
-                    { "idx", i }, 
-                    { "vec", new CqlVector<CqlVector<T>>(v[0], v[1], v[2]) }, 
+                    { "idx", i },
+                    { "vec", new CqlVector<CqlVector<T>>(v[0], v[1], v[2]) },
                     { "vecc", new CqlVector<List<CqlVector<T>>>(new List<CqlVector<T>> { v[0] }, new List<CqlVector<T>> { v[1] }, new List<CqlVector<T>> { v[2] }) }
-                }, 
+                },
                 $"INSERT INTO {tableNameComplex} (i, k, l) VALUES (:idx, :vec, :vecc)"));
         }
 
@@ -675,9 +675,9 @@ namespace Cassandra.IntegrationTests.Core
         }
 
         private void AssertComplexVectorEquals<T>(
-            List<CqlVector<T>> vectorList, 
-            IEnumerable<IEnumerable<T>> actual1, 
-            IEnumerable<IEnumerable<IEnumerable<T>>> actual2, 
+            List<CqlVector<T>> vectorList,
+            IEnumerable<IEnumerable<T>> actual1,
+            IEnumerable<IEnumerable<IEnumerable<T>>> actual2,
             Action<object, object> assertFn)
         {
             var retrievedVector1 = actual1.ToList();
