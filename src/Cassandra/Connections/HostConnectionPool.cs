@@ -1034,29 +1034,26 @@ namespace Cassandra.Connections
         /// </summary>
         public async Task Warmup()
         {
-            var length = _expectedConnectionLength;
-            // Open first connection
-            try
+            if (!_poolingOptions.GetDisableShardAwareness())
             {
-                var c = await CreateOpenConnection(false, false, false).ConfigureAwait(false);
-                var _shardingInfo = c.ShardingInfo();
-                if (_shardingInfo != null)
+                try
                 {
-                    shardingInfo = _shardingInfo;
-                    var nrShards = _shardingInfo.ScyllaNrShards;
-                    if (nrShards > length)
+                    var c = await CreateOpenConnection(false, false, false).ConfigureAwait(false);
+                    var _shardingInfo = c.ShardingInfo();
+                    if (_shardingInfo != null)
                     {
-                        length = nrShards;
-                        _expectedConnectionLength = nrShards;
+                        shardingInfo = _shardingInfo;
+                        _expectedConnectionLength = _shardingInfo.ScyllaNrShards;
                     }
+                    c.Dispose();
                 }
-                c.Dispose();
+                catch
+                {
+                    OnConnectionClosing();
+                    throw;
+                }
             }
-            catch
-            {
-                OnConnectionClosing();
-                throw;
-            }
+            var length = _expectedConnectionLength;
 
             // Console.WriteLine("Warmup host conn poool to: {0} with length: {1}", _host.Address, length);
             for (var i = 0; i < length; i++)

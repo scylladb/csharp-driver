@@ -144,7 +144,8 @@ namespace Cassandra.IntegrationTests.Core
                                         //using a keyspace
                                         .WithDefaultKeyspace("system")
                                         //lots of connections per host
-                                        .WithPoolingOptions(new PoolingOptions().SetCoreConnectionsPerHost(HostDistance.Local, 30))
+                                        .WithPoolingOptions(new PoolingOptions().SetCoreConnectionsPerHost(HostDistance.Local, 30)
+                                        .DisableShardAwareness())
                                         .Build())
             {
                 var session = await cluster.ConnectAsync().ConfigureAwait(false);
