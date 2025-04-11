@@ -34,6 +34,7 @@ namespace Cassandra.Connections
     internal class HostConnectionPool : IHostConnectionPool
     {
         private static readonly Logger Logger = new Logger(typeof(HostConnectionPool));
+        private Random rand = new Random();
         private const int ConnectionIndexOverflow = int.MaxValue - 1000000;
         private const long BetweenResizeDelay = 2000;
 
@@ -112,7 +113,9 @@ namespace Cassandra.Connections
 
         private int lastAttemptedShard = 0;
 
-        public HostConnectionPool(Host host, Configuration config, ISerializerManager serializerManager, IObserverFactory observerFactory)
+        private TokenFactory _tokenFactory;
+
+        public HostConnectionPool(Host host, Configuration config, ISerializerManager serializerManager, IObserverFactory observerFactory, TokenFactory tokenFactory)
         {
             _host = host;
             _host.Down += OnHostDown;
@@ -126,10 +129,11 @@ namespace Cassandra.Connections
             _timer = config.Timer;
             _reconnectionSchedule = config.Policies.ReconnectionPolicy.NewSchedule();
             _expectedConnectionLength = 1;
+            _tokenFactory = tokenFactory;
         }
 
         /// <inheritdoc />
-        public async Task<IConnection> BorrowConnectionAsync()
+        public async Task<IConnection> BorrowConnectionAsync(RoutingKey routingKey = null)
         {
             var connections = await EnsureCreate().ConfigureAwait(false);
             if (connections.Length == 0)
@@ -137,11 +141,11 @@ namespace Cassandra.Connections
                 throw new DriverInternalError("No connection could be borrowed");
             }
 
-            return BorrowLeastBusyConnection(connections);
+            return BorrowLeastBusyConnection(connections, routingKey);
         }
 
         /// <inheritdoc />
-        public IConnection BorrowExistingConnection()
+        public IConnection BorrowExistingConnection(RoutingKey routingKey)
         {
             var connections = GetExistingConnections();
             if (connections.Length == 0)
@@ -149,12 +153,52 @@ namespace Cassandra.Connections
                 return null;
             }
 
-            return BorrowLeastBusyConnection(connections);
+            return BorrowLeastBusyConnection(connections, routingKey);
         }
 
-        private IConnection BorrowLeastBusyConnection(IConnection[] connections)
+        private IConnection ConnectionForShard(IConnection[] connections, int shardID)
         {
-            var c = HostConnectionPool.MinInFlight(connections, ref _connectionIndex, _maxRequestsPerConnection, out var inFlight);
+            for (int i = 0; i < connections.Length; i++)
+            {
+                if (connections[i] != null && connections[i].ShardID == shardID)
+                {
+                    return connections[i];
+                }
+            }
+            return null;
+        }
+
+        private IConnection BorrowLeastBusyConnection(IConnection[] connections, RoutingKey routingKey = null)
+        {
+            int shardID = 0;
+            if (shardingInfo != null)
+            {
+                if (routingKey != null)
+                {
+                    IToken token = _tokenFactory.Hash(routingKey.RawRoutingKey);
+                    shardID = shardingInfo.ShardID(token);
+                }
+                else
+                {
+                    shardID = rand.Next(shardingInfo.ScyllaNrShards);
+                }
+            }
+
+            IConnection c = ConnectionForShard(connections, shardID);
+            var inFlight = 0;
+            if (c != null)
+            {
+                // if we have a connection for the shard, use it if it is not too busy
+                inFlight = c.InFlight;
+                if (inFlight >= _maxRequestsPerConnection)
+                {
+                    c = HostConnectionPool.MinInFlight(connections, ref _connectionIndex, _maxRequestsPerConnection, out inFlight);
+                }
+            }
+            else
+            {
+                c = HostConnectionPool.MinInFlight(connections, ref _connectionIndex, _maxRequestsPerConnection, out inFlight);
+            }
 
             if (inFlight >= _maxRequestsPerConnection)
             {
@@ -733,7 +777,7 @@ namespace Cassandra.Connections
                 var shardCount = 0;
                 if (shardingInfo != null)
                 {
-                    shardAwarePort = shardingInfo.ScyllaShardAwarePort;
+                    shardAwarePort = _config.ProtocolOptions.SslOptions != null ? shardingInfo.ScyllaShardAwarePortSSL : shardingInfo.ScyllaShardAwarePort;
                     shardCount = shardingInfo.ScyllaNrShards;
                     // Find the shard without a connection
                     // It's important to start counting from 1 here because we want
@@ -741,7 +785,7 @@ namespace Cassandra.Connections
                     for (var i = 1; i <= shardCount; i++)
                     {
                         var _shardID = (lastAttemptedShard + i) % shardCount;
-                        if (connectionsSnapshot.Length <= _shardID || connectionsSnapshot[_shardID] == null)
+                        if (ConnectionForShard(connectionsSnapshot, _shardID) == null)
                         {
                             lastAttemptedShard = _shardID;
                             shardID = _shardID;
@@ -904,31 +948,31 @@ namespace Cassandra.Connections
 
         /// <inheritdoc />
         public Task<IConnection> GetConnectionFromHostAsync(
-            IDictionary<IPEndPoint, Exception> triedHosts, Func<string> getKeyspaceFunc)
+            IDictionary<IPEndPoint, Exception> triedHosts, Func<string> getKeyspaceFunc, RoutingKey routingKey)
         {
-            return GetConnectionFromHostAsync(triedHosts, getKeyspaceFunc, true);
+            return GetConnectionFromHostAsync(triedHosts, getKeyspaceFunc, true, routingKey);
         }
 
         /// <inheritdoc />
         public Task<IConnection> GetExistingConnectionFromHostAsync(
-            IDictionary<IPEndPoint, Exception> triedHosts, Func<string> getKeyspaceFunc)
+            IDictionary<IPEndPoint, Exception> triedHosts, Func<string> getKeyspaceFunc, RoutingKey routingKey)
         {
-            return GetConnectionFromHostAsync(triedHosts, getKeyspaceFunc, false);
+            return GetConnectionFromHostAsync(triedHosts, getKeyspaceFunc, false, routingKey);
         }
 
         private async Task<IConnection> GetConnectionFromHostAsync(
-            IDictionary<IPEndPoint, Exception> triedHosts, Func<string> getKeyspaceFunc, bool createIfNeeded)
+            IDictionary<IPEndPoint, Exception> triedHosts, Func<string> getKeyspaceFunc, bool createIfNeeded, RoutingKey routingKey)
         {
             IConnection c = null;
             try
             {
                 if (createIfNeeded)
                 {
-                    c = await BorrowConnectionAsync().ConfigureAwait(false);
+                    c = await BorrowConnectionAsync(routingKey).ConfigureAwait(false);
                 }
                 else
                 {
-                    c = BorrowExistingConnection();
+                    c = BorrowExistingConnection(routingKey);
                 }
             }
             catch (UnsupportedProtocolVersionException ex)
@@ -1002,7 +1046,6 @@ namespace Cassandra.Connections
                     var nrShards = _shardingInfo.ScyllaNrShards;
                     if (nrShards > length)
                     {
-                        // Create the rest of the connections
                         length = nrShards;
                         _expectedConnectionLength = nrShards;
                     }

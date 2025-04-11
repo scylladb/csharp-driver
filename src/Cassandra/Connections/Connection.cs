@@ -166,7 +166,7 @@ namespace Cassandra.Connections
 
         private readonly ISupportedOptionsInitializer _supportedOptionsInitializer;
 
-        public int ShardId { get; }
+        public int ShardID { get; set; }
 
         internal Connection(
             ISerializer serializer,
@@ -473,6 +473,7 @@ namespace Cassandra.Connections
         /// <exception cref="UnsupportedProtocolVersionException"></exception>
         public async Task<Response> Open(int shardID = -1, int shardCount = 0)
         {
+            ShardID = shardID;
             try
             {
                 Connection.Logger.Verbose("Attempting to open Connection #{0} to {1}", GetHashCode(), EndPoint.EndpointFriendlyName);
