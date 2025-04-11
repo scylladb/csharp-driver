@@ -177,7 +177,8 @@ namespace Cassandra.IntegrationTests.Core
                 builder => builder
                     .WithPoolingOptions(
                         new PoolingOptions()
-                            .SetCoreConnectionsPerHost(HostDistance.Local, 3)));
+                            .SetCoreConnectionsPerHost(HostDistance.Local, 3)
+                            .DisableShardAwareness()));
 
             var localSession1 = (IInternalSession)localCluster1.Connect();
             var hosts1 = localCluster1.AllHosts().ToList();
@@ -196,7 +197,7 @@ namespace Cassandra.IntegrationTests.Core
 
             using (var localCluster2 = ClusterBuilder()
                                               .AddContactPoint(TestCluster.InitialContactPoint)
-                                              .WithPoolingOptions(new PoolingOptions().SetCoreConnectionsPerHost(HostDistance.Local, 1))
+                                              .WithPoolingOptions(new PoolingOptions().SetCoreConnectionsPerHost(HostDistance.Local, 1).DisableShardAwareness())
                                               .Build())
             {
                 var localSession2 = (IInternalSession)localCluster2.Connect();
@@ -232,7 +233,7 @@ namespace Cassandra.IntegrationTests.Core
             var builder = ClusterBuilder()
                 .AddContactPoint(TestCluster.InitialContactPoint)
                 .WithLoadBalancingPolicy(lbp)
-                .WithPoolingOptions(new PoolingOptions().SetCoreConnectionsPerHost(HostDistance.Local, 3))
+                .WithPoolingOptions(new PoolingOptions().SetCoreConnectionsPerHost(HostDistance.Local, 3).DisableShardAwareness())
                 .WithReconnectionPolicy(new ConstantReconnectionPolicy(1000));
             var counter = 0;
             using (var localCluster = builder.Build())
