@@ -87,6 +87,19 @@ namespace Cassandra.IntegrationTests.TestClusterManagement
             }
         }
 
+        public static Version ScyllaVersion
+        {
+            get
+            {
+                var scyllaVersion = ScyllaVersionString;
+                if (scyllaVersion == null)
+                {
+                    throw new TestInfrastructureException("SCYLLA_VERSION is not set");
+                }
+                return new Version(TestClusterManager.ScyllaVersionString.Split('-')[0]);
+            }
+        }
+
         /// <summary>
         /// Gets the IP prefix for the DSE instances
         /// </summary>
@@ -107,11 +120,12 @@ namespace Cassandra.IntegrationTests.TestClusterManagement
         {
             Hcd,
             Dse,
-            Cassandra
+            Cassandra,
+            Scylla
         }
 
         /// <summary>
-        /// "hcd", "dse", or "cassandra" (default), based on CCM_DISTRIBUTION
+        /// "hcd", "dse", or "cassandra" (default), or "scylla", based on CCM_DISTRIBUTION
         /// if there's env var DSE_VERSION, ignore CCM_DISTRIBUTION
         /// </summary>
         public static BackendType CurrentBackendType
@@ -131,6 +145,8 @@ namespace Cassandra.IntegrationTests.TestClusterManagement
                         return BackendType.Dse;
                     case "cassandra":
                         return BackendType.Cassandra;
+                    case "scylla":
+                        return BackendType.Scylla;
                     default:
                         throw new TestInfrastructureException("Unknown CCM_DISTRIBUTION value: " + distribution);
                 }
@@ -180,7 +196,7 @@ namespace Cassandra.IntegrationTests.TestClusterManagement
 
         public static bool IsScylla
         {
-            get { return !string.IsNullOrEmpty(ScyllaVersionString); }
+            get { return CurrentBackendType == BackendType.Scylla; }
         }
 
         public static bool IsDse

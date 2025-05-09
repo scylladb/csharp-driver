@@ -285,7 +285,7 @@ namespace Cassandra.IntegrationTests.TestClusterManagement
             {
                 cmd += " --hcd";
             }
-            else if (TestClusterManager.IsScylla)
+            else if (TestClusterManager.CurrentBackendType == TestClusterManager.BackendType.Scylla)
             {
                 cmd += " --scylla";
             }
