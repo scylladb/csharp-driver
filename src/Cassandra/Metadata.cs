@@ -81,6 +81,8 @@ namespace Cassandra
 
         internal IReadOnlyTokenMap TokenToReplicasMap => _tokenMap;
 
+        internal TabletMap tabletMap;
+
         internal Metadata(Configuration configuration)
         {
             _queryAbortTimeout = configuration.DefaultRequestOptions.QueryAbortTimeout;

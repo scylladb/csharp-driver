@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Generic;
 using Cassandra.Serialization;
+using Cassandra.Connections;
 
 namespace Cassandra.Responses
 {
@@ -71,6 +72,49 @@ namespace Cassandra.Responses
             if (frame.Header.Flags.HasFlag(HeaderFlags.CustomPayload))
             {
                 CustomPayload = Reader.ReadBytesMap();
+
+                if (CustomPayload.ContainsKey(TabletInfo.TABLETS_ROUTING_V1_CUSTOM_PAYLOAD_KEY))
+                {
+                    var tabletInfo = CustomPayload[TabletInfo.TABLETS_ROUTING_V1_CUSTOM_PAYLOAD_KEY];
+                    Console.WriteLine("Received tablets routing v1 custom payload: " + BitConverter.ToString(tabletInfo));
+                    var tabletTupleInfo = new TupleColumnInfo();
+
+                    tabletTupleInfo.Elements.Add(new ColumnDesc { TypeCode = ColumnTypeCode.Bigint });
+                    tabletTupleInfo.Elements.Add(new ColumnDesc { TypeCode = ColumnTypeCode.Bigint });
+
+                    var replicaTupleInfo = new TupleColumnInfo();
+                    replicaTupleInfo.Elements.Add(new ColumnDesc { TypeCode = ColumnTypeCode.Uuid });
+                    replicaTupleInfo.Elements.Add(new ColumnDesc { TypeCode = ColumnTypeCode.Int });
+
+                    var columnDesc = new ColumnDesc
+                    {
+                        TypeCode = ColumnTypeCode.List,
+                        TypeInfo = new ListColumnInfo
+                        {
+                            ValueTypeCode = ColumnTypeCode.Tuple,
+                            ValueTypeInfo = replicaTupleInfo
+                        }
+                    };
+                    tabletTupleInfo.Elements.Add(columnDesc);
+
+                    var des = frame.Serializer.Deserialize(tabletInfo, 0, tabletInfo.Length, ColumnTypeCode.Tuple, tabletTupleInfo);
+                    // print deserialized tablets routing v1 custom payload
+                    if (des is Tuple<long, long, IEnumerable<Tuple<Guid, int>>> tablet)
+                    {
+                        Console.WriteLine("Tablets routing v1 custom payload deserialized successfully");
+                        Console.WriteLine($"Tablet: {tablet.Item1}, Token: {tablet.Item2}, Replicas: {string.Join(", ", tablet.Item3)}");
+                        // Tablet newTablet = new Tablet()
+                        // {
+                        //     Token = tablet.Item1,
+                        //     TabletId = tablet.Item2,
+                        //     Replicas = new List<Replica>()
+                        // };
+                    }
+                    else
+                    {
+                        Console.WriteLine("Failed to deserialize tablets routing v1 custom payload" + des.GetType());
+                    }
+                }
             }
         }
 

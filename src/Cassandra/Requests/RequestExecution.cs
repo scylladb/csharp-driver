@@ -272,6 +272,27 @@ namespace Cassandra.Requests
                 }
                 rs = RowSet.Empty();
             }
+
+            Console.WriteLine("Custom payload2: " + resultResponse.CustomPayload);
+            if (response.CustomPayload != null)
+            {
+                Console.WriteLine("Custom payload is not null, printing contents:");
+                foreach (var kvp in response.CustomPayload)
+                {
+                    Console.WriteLine($"Custom payload key: {kvp.Key}, value: {BitConverter.ToString(kvp.Value)}");
+                }
+            }
+
+            if (resultResponse.CustomPayload != null && resultResponse.CustomPayload.ContainsKey(TabletInfo.TABLETS_ROUTING_V1_CUSTOM_PAYLOAD_KEY))
+            {
+                var tabletInfo = response.CustomPayload[TabletInfo.TABLETS_ROUTING_V1_CUSTOM_PAYLOAD_KEY];
+                Console.WriteLine("Request Execution: " + BitConverter.ToString(tabletInfo));
+                var metadata = _session.Cluster.Metadata;
+                var keyspace = _parent.Statement?.Keyspace ?? _session.Keyspace;
+                var table = ((BoundStatement)_parent.Statement)?.Table;
+                Console.WriteLine($"Keyspace: {keyspace}, Table: {table}");
+                // metadata.tabletMap.ProcessTabletsRoutingV1Payload(tabletInfo, _session.Keyspace);
+            }
             await _parent.SetCompletedAsync(null, FillRowSet(rs, resultResponse)).ConfigureAwait(false);
         }
 

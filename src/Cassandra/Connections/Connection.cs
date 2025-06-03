@@ -577,7 +577,7 @@ namespace Cassandra.Connections
             return _supportedOptionsInitializer.GetShardingInfo();
         }
 
-        public TabletInfo TabletInfo()
+        public TabletInfo GetTabletInfo()
         {
             return _supportedOptionsInitializer.GetTabletInfo();
         }
