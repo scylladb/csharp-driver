@@ -81,6 +81,8 @@ namespace Cassandra
 
         internal IReadOnlyTokenMap TokenToReplicasMap => _tokenMap;
 
+        internal TabletMap TabletMap { get; private set; }
+
         internal Metadata(Configuration configuration)
         {
             _queryAbortTimeout = configuration.DefaultRequestOptions.QueryAbortTimeout;
@@ -88,6 +90,9 @@ namespace Cassandra
             Hosts = new Hosts();
             Hosts.Down += OnHostDown;
             Hosts.Up += OnHostUp;
+            TabletMap = TabletMap.EmptyMap(this);
+            var updater = new TabletMapBackgroundUpdater(TabletMap);
+            TabletMap.OnTabletAddRequested = updater.EnqueueAddTablet;
         }
 
         internal Metadata(Configuration configuration, SchemaParser schemaParser) : this(configuration)
