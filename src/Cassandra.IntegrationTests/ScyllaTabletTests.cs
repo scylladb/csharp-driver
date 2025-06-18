@@ -1,15 +1,20 @@
 using System;
 using System.Diagnostics;
 using System.Linq;
-using Cassandra.IntegrationTests.TestBase;
 using Cassandra.IntegrationTests.TestClusterManagement;
+using Cassandra.Tests;
 using NUnit.Framework;
 
 namespace Cassandra.IntegrationTests
 {
-    [TestFixture]
-    public class ScyllaTabletTest : TestGlobals
+    [Category(TestCategory.Short), Category(TestCategory.RealCluster)]
+    public class ScyllaTabletTest : SharedClusterTest
     {
+
+        public ScyllaTabletTest() : base(3, false)
+        {
+        }
+
         private ITestCluster _realCluster;
 
         [TearDown]
@@ -20,8 +25,10 @@ namespace Cassandra.IntegrationTests
         }
 
         [Test]
-        public void CorrectTabletMapTest()
+        public void TabletMap_Check_That_Tablets_Get_Updated()
         {
+            const int rf = 3;
+
             _realCluster = TestClusterManager.CreateNew();
             var cluster = ClusterBuilder()
                           .WithSocketOptions(new SocketOptions().SetReadTimeoutMillis(22000).SetConnectTimeoutMillis(60000))
@@ -29,14 +36,13 @@ namespace Cassandra.IntegrationTests
                           .Build();
             var _session = cluster.Connect();
 
-            var rf = 1;
             _session.Execute("DROP KEYSPACE IF EXISTS tablettest");
             _session.Execute($"CREATE KEYSPACE tablettest WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor': '{rf}'}}");
             _session.Execute("CREATE TABLE tablettest.t (pk text, ck text, v text, PRIMARY KEY (pk, ck))");
 
             var populateStatement = _session.Prepare("INSERT INTO tablettest.t (pk, ck, v) VALUES (?, ?, ?)");
             //Insert 50 rows to ensure that the tablet map is populated correctly
-            for (int i = 0; i < 50; i++)
+            for (var i = 0; i < 50; i++)
             {
                 _session.Execute(populateStatement.Bind(i.ToString(), "ck" + i, "v" + i));
             }
@@ -46,24 +52,19 @@ namespace Cassandra.IntegrationTests
 
             // Wait for the tablet map to be populated (since updates are event-driven)
             var timeout = TimeSpan.FromSeconds(10);
+            TabletMap.TabletSet tabletSet;
             var sw = Stopwatch.StartNew();
-            while (tabletMap.GetMapping().Count == 0 && sw.Elapsed < timeout)
+            var key = new TabletMap.KeyspaceTableNamePair("tablettest", "t");
+            while (!tabletMap.GetMapping().TryGetValue(key, out tabletSet) && sw.Elapsed < timeout)
             {
                 System.Threading.Thread.Sleep(100);
             }
-            Assert.IsTrue(tabletMap.GetMapping().Count > 0, "Tablet map should contain tablets for the table");
-
-            // Find the mapping for the specific keyspace and table
-            var key = new TabletMap.KeyspaceTableNamePair("tablettest", "t");
-            if (tabletMap.GetMapping().TryGetValue(key, out var tabletSet))
+            Assert.IsNotNull(tabletSet, "Tablet map should contain tablets for the table");
+            Assert.IsTrue(tabletSet.Tablets.Count > 0, "Make sure tablets are present in the tablet set");
+            foreach (var tablet in tabletSet.Tablets)
             {
-                var tablets = tabletSet.Tablets;
-                foreach (var tablet in tablets)
-                {
-                    Trace.TraceInformation($"Tablet: First token: {tablet.FirstToken}, Last token: {tablet.LastToken}, Replicas: {string.Join(", ", tablet.Replicas.Select(h => h.HostID + " (Shard " + h.Shard + ")"))}");
-                    Assert.IsTrue(tablet.Replicas.Count == rf, "Make sure replicas count is equal RF");
-                }
-                Assert.IsTrue(tablets.Count > 0, "Make sure tablets are present in the tablet set");
+                Trace.TraceInformation($"Tablet: First token: {tablet.FirstToken}, Last token: {tablet.LastToken}, Replicas: {string.Join(", ", tablet.Replicas.Select(h => h.HostID + " (Shard " + h.Shard + ")"))}");
+                Assert.IsTrue(tablet.Replicas.Count == rf, "Make sure replicas count is equal RF");
             }
         }
     }
