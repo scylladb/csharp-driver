@@ -52,6 +52,8 @@ namespace Cassandra
         /// </summary>
         internal string Keyspace { get; private set; }
 
+        internal string TableName { get; private set; }
+
         /// <summary>
         /// Gets the the incoming payload, that is, the payload that the server
         /// sent back with its prepared response, or null if the server did not include any custom payload.
@@ -128,6 +130,7 @@ namespace Cassandra
             Id = id;
             Cql = cql;
             Keyspace = keyspace;
+            TableName = variablesRowsMetadata?.Table;
             _serializerManager = serializer;
         }
 

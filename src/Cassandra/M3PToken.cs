@@ -28,6 +28,11 @@ namespace Cassandra
             _value = value;
         }
 
+        internal long Value
+        {
+            get { return _value; }
+        }
+
         public int CompareTo(object obj)
         {
             var other = obj as M3PToken;

@@ -83,7 +83,7 @@ namespace Cassandra.Requests
         {
             try
             {
-                return await pool.GetExistingConnectionFromHostAsync(triedHosts, () => ps.Keyspace, ps.RoutingKey).ConfigureAwait(false);
+                return await pool.GetExistingConnectionFromHostAsync(triedHosts, () => ps.Keyspace, () => ps.TableName, ps.RoutingKey).ConfigureAwait(false);
             }
             catch (SocketException)
             {

@@ -688,5 +688,45 @@ namespace Cassandra
         {
             return _resolvedContactPoints.AddOrUpdate(contactPoint, _ => endpoints, (_, __) => endpoints);
         }
+
+        internal int GetShardForTabletToken(string keyspace, string table, IToken token, Host host)
+        {
+            if (TabletMap == null)
+            {
+                Logger.Info("Could not determine shard for token {} on host {} because tablets metadata is currently null. " + "Returning -1.", token, host);
+                return -1;
+            }
+
+            var key = new TabletMap.KeyspaceTableNamePair(keyspace, table);
+            if (!TabletMap.GetMapping().TryGetValue(key, out var tabletSet))
+            {
+                Logger.Info($"No tablets for {keyspace}.{table} in mapping.", keyspace, table);
+                return -1;
+            }
+
+            if (!(token is M3PToken m3pToken))
+            {
+                Logger.Info("Could not determine shard for token {} on host {} because the token is not of type M3PToken. " + "Returning -1.", token, host);
+                return -1;
+            }
+            long tokenValue = m3pToken.Value;
+            var row = tabletSet.Tablets.FirstOrDefault(t => token.CompareTo(new M3PToken(t.LastToken)) <= 0);
+            if (row == null || token.CompareTo(new M3PToken(row.FirstToken)) <= 0)
+            {
+                Logger.Info($"Could not find tablet for {keyspace}.{table} owning token {token}.", keyspace, table, token);
+                return -1;
+            }
+
+            var replicas = new List<Host>();
+            foreach (var hostShardPair in row.Replicas)
+            {
+                if (hostShardPair.HostID == host.HostId)
+                {
+                    return hostShardPair.Shard;
+                }
+            }
+
+            return -1;
+        }
     }
 }
