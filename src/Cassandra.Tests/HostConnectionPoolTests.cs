@@ -95,7 +95,7 @@ namespace Cassandra.Tests
                 config,
                 new SerializerManager(ProtocolVersion.MaxSupported),
                 new MetricsObserverFactory(new MetricsManager(new NullDriverMetricsProvider(), new DriverMetricsOptions(), false, "s1")),
-                M3PToken.Factory);
+                new Metadata(config));
         }
 
         private static Configuration GetConfig(int coreConnections = 3, int maxConnections = 8, IReconnectionPolicy rp = null)

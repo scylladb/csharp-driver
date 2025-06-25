@@ -402,7 +402,7 @@ namespace Cassandra.Requests
         /// <inheritdoc />
         public Task<IConnection> GetConnectionToValidHostAsync(ValidHost validHost, IDictionary<IPEndPoint, Exception> triedHosts)
         {
-            return RequestHandler.GetConnectionFromHostAsync(validHost.Host, validHost.Distance, _session, triedHosts, Statement != null ? Statement.RoutingKey : null);
+            return RequestHandler.GetConnectionFromHostAsync(validHost.Host, validHost.Distance, _session, triedHosts, Statement != null ? Statement.RoutingKey : null, Statement?.Keyspace, Statement?.TableName);
         }
 
         /// <summary>
@@ -414,21 +414,23 @@ namespace Cassandra.Requests
         /// <param name="session">Session from where a connection will be obtained (or created).</param>
         /// <param name="triedHosts">Hosts for which there were attempts to connect and send the request.</param>
         /// <param name="routingKey">Routing key to use for the next host.</param>
+        /// <param name="keyspace">Keyspace to use for the connection, or null to use the session's keyspace.</param>
+        /// <param name="table">Table to use for the connection, or null if not applicable.</param>
         /// <exception cref="InvalidQueryException">When the keyspace is not valid</exception>
         internal static Task<IConnection> GetConnectionFromHostAsync(
-            Host host, HostDistance distance, IInternalSession session, IDictionary<IPEndPoint, Exception> triedHosts, RoutingKey routingKey = null)
+            Host host, HostDistance distance, IInternalSession session, IDictionary<IPEndPoint, Exception> triedHosts, RoutingKey routingKey = null, string keyspace = null, string table = null)
         {
-            return GetConnectionFromHostInternalAsync(host, distance, session, triedHosts, true, routingKey);
+            return GetConnectionFromHostInternalAsync(host, distance, session, triedHosts, true, routingKey, keyspace, table);
         }
 
         private static async Task<IConnection> GetConnectionFromHostInternalAsync(
-            Host host, HostDistance distance, IInternalSession session, IDictionary<IPEndPoint, Exception> triedHosts, bool retry, RoutingKey routingKey)
+            Host host, HostDistance distance, IInternalSession session, IDictionary<IPEndPoint, Exception> triedHosts, bool retry, RoutingKey routingKey, string keyspace = null, string table = null)
         {
             var hostPool = session.GetOrCreateConnectionPool(host, distance);
 
             try
             {
-                return await hostPool.GetConnectionFromHostAsync(triedHosts, () => session.Keyspace, routingKey).ConfigureAwait(false);
+                return await hostPool.GetConnectionFromHostAsync(triedHosts, () => keyspace ?? session.Keyspace, () => table, routingKey).ConfigureAwait(false);
             }
             catch (SocketException)
             {

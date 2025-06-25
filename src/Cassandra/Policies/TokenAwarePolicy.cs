@@ -95,10 +95,20 @@ namespace Cassandra
             }
 
             var keyspace = query.Keyspace ?? loggedKeyspace;
-            var replicas = _cluster.GetReplicas(keyspace, routingKey.RawRoutingKey);
+            var table = query.TableName;
+            IEnumerable<Host> replicas;
+            if (table != null)
+            {
+                var token = _cluster.Metadata.GetTokenFactory().Hash(routingKey.RawRoutingKey);
+                replicas = _cluster.Metadata.TabletMap.GetReplicas(keyspace, table, token);
+            }
+            else
+            {
+                replicas = _cluster.GetReplicas(keyspace, routingKey.RawRoutingKey);
+            }
 
             var localReplicaSet = new HashSet<Host>();
-            var localReplicaList = new List<Host>(replicas.Count);
+            var localReplicaList = new List<Host>(replicas.Count());
             // We can't do it lazily as we need to balance the load between local replicas
             foreach (var localReplica in replicas.Where(h => ChildPolicy.Distance(h) == HostDistance.Local))
             {

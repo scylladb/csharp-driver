@@ -55,7 +55,7 @@ namespace Cassandra.Connections
         /// <exception cref="UnsupportedProtocolVersionException" />
         /// <exception cref="SocketException" />
         /// <exception cref="AuthenticationException" />
-        Task<IConnection> BorrowConnectionAsync(RoutingKey routingKey = null);
+        Task<IConnection> BorrowConnectionAsync(RoutingKey routingKey = null, string keyspace = null, string table = null);
 
         /// <summary>
         /// Gets an open connection from the host pool. It does NOT create one if necessary (for that use <see cref="BorrowConnectionAsync"/>.
@@ -63,7 +63,7 @@ namespace Cassandra.Connections
         /// </summary>
         /// <exception cref="BusyPoolException" />
         /// <exception cref="SocketException">Not connected.</exception>
-        IConnection BorrowExistingConnection(RoutingKey routingKey);
+        IConnection BorrowExistingConnection(RoutingKey routingKey, string keyspace = null, string table = null);
 
         void SetDistance(HostDistance distance);
 
@@ -92,9 +92,9 @@ namespace Cassandra.Connections
         void MarkAsDownAndScheduleReconnection();
 
         Task<IConnection> GetConnectionFromHostAsync(
-            IDictionary<IPEndPoint, Exception> triedHosts, Func<string> getKeyspaceFunc, RoutingKey routingKey);
+            IDictionary<IPEndPoint, Exception> triedHosts, Func<string> getKeyspaceFunc, Func<string> getTableFunc, RoutingKey routingKey);
 
         Task<IConnection> GetExistingConnectionFromHostAsync(
-            IDictionary<IPEndPoint, Exception> triedHosts, Func<string> getKeyspaceFunc, RoutingKey routingKey);
+            IDictionary<IPEndPoint, Exception> triedHosts, Func<string> getKeyspaceFunc, Func<string> getTableFunc, RoutingKey routingKey);
     }
 }

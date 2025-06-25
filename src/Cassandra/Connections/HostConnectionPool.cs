@@ -115,9 +115,9 @@ namespace Cassandra.Connections
 
         private int lastAttemptedShard = 0;
 
-        private TokenFactory _tokenFactory;
+        private Metadata _metadata;
 
-        public HostConnectionPool(Host host, Configuration config, ISerializerManager serializerManager, IObserverFactory observerFactory, TokenFactory tokenFactory)
+        public HostConnectionPool(Host host, Configuration config, ISerializerManager serializerManager, IObserverFactory observerFactory, Metadata metadata)
         {
             _host = host;
             _host.Down += OnHostDown;
@@ -131,11 +131,11 @@ namespace Cassandra.Connections
             _timer = config.Timer;
             _reconnectionSchedule = config.Policies.ReconnectionPolicy.NewSchedule();
             _expectedConnectionLength = 1;
-            _tokenFactory = tokenFactory;
+            _metadata = metadata;
         }
 
         /// <inheritdoc />
-        public async Task<IConnection> BorrowConnectionAsync(RoutingKey routingKey = null)
+        public async Task<IConnection> BorrowConnectionAsync(RoutingKey routingKey = null, string keyspace = null, string table = null)
         {
             var connections = await EnsureCreate().ConfigureAwait(false);
             if (connections.Length == 0)
@@ -143,11 +143,11 @@ namespace Cassandra.Connections
                 throw new DriverInternalError("No connection could be borrowed");
             }
 
-            return BorrowLeastBusyConnection(connections, routingKey);
+            return BorrowLeastBusyConnection(connections, routingKey, keyspace, table);
         }
 
         /// <inheritdoc />
-        public IConnection BorrowExistingConnection(RoutingKey routingKey)
+        public IConnection BorrowExistingConnection(RoutingKey routingKey, string keyspace = null, string table = null)
         {
             var connections = GetExistingConnections();
             if (connections.Length == 0)
@@ -155,18 +155,25 @@ namespace Cassandra.Connections
                 return null;
             }
 
-            return BorrowLeastBusyConnection(connections, routingKey);
+            return BorrowLeastBusyConnection(connections, routingKey, keyspace, table);
         }
 
-        private IConnection BorrowLeastBusyConnection(ShardedList<IConnection> connections, RoutingKey routingKey = null)
+        private IConnection BorrowLeastBusyConnection(ShardedList<IConnection> connections, RoutingKey routingKey, string keyspace, string table)
         {
             int shardID = -1;
             if (shardingInfo != null)
             {
                 if (routingKey != null)
                 {
-                    IToken token = _tokenFactory.Hash(routingKey.RawRoutingKey);
-                    shardID = shardingInfo.ShardID(token);
+                    IToken token = _metadata.GetTokenFactory().Hash(routingKey.RawRoutingKey);
+                    if (keyspace != null && table != null)
+                    {
+                        shardID = _metadata.GetShardForTabletToken(keyspace, table, token, _host);
+                    }
+                    else
+                    {
+                        shardID = shardingInfo.ShardID(token);
+                    }
                 }
                 else
                 {
@@ -178,10 +185,9 @@ namespace Cassandra.Connections
             if (shardID != -1)
             {
                 var minInFlight = int.MaxValue;
-                var localInFlight = 0;
                 foreach (var connection in _connections.GetItemsForShard(shardID))
                 {
-                    localInFlight = connection.InFlight;
+                    int localInFlight = connection.InFlight;
                     if (localInFlight < minInFlight)
                     {
                         minInFlight = localInFlight;
@@ -189,7 +195,7 @@ namespace Cassandra.Connections
                     }
                 }
             }
-            var inFlight = 0;
+            int inFlight;
             if (c != null)
             {
                 // if we have a connection for the shard, use it if it is not too busy
@@ -952,31 +958,31 @@ namespace Cassandra.Connections
 
         /// <inheritdoc />
         public Task<IConnection> GetConnectionFromHostAsync(
-            IDictionary<IPEndPoint, Exception> triedHosts, Func<string> getKeyspaceFunc, RoutingKey routingKey)
+            IDictionary<IPEndPoint, Exception> triedHosts, Func<string> getKeyspaceFunc, Func<string> getTableFunc, RoutingKey routingKey)
         {
-            return GetConnectionFromHostAsync(triedHosts, getKeyspaceFunc, true, routingKey);
+            return GetConnectionFromHostAsync(triedHosts, getKeyspaceFunc, getTableFunc, true, routingKey);
         }
 
         /// <inheritdoc />
         public Task<IConnection> GetExistingConnectionFromHostAsync(
-            IDictionary<IPEndPoint, Exception> triedHosts, Func<string> getKeyspaceFunc, RoutingKey routingKey)
+            IDictionary<IPEndPoint, Exception> triedHosts, Func<string> getKeyspaceFunc, Func<string> getTableFunc, RoutingKey routingKey)
         {
-            return GetConnectionFromHostAsync(triedHosts, getKeyspaceFunc, false, routingKey);
+            return GetConnectionFromHostAsync(triedHosts, getKeyspaceFunc, getTableFunc, false, routingKey);
         }
 
         private async Task<IConnection> GetConnectionFromHostAsync(
-            IDictionary<IPEndPoint, Exception> triedHosts, Func<string> getKeyspaceFunc, bool createIfNeeded, RoutingKey routingKey)
+            IDictionary<IPEndPoint, Exception> triedHosts, Func<string> getKeyspaceFunc, Func<string> getTableFunc, bool createIfNeeded, RoutingKey routingKey)
         {
             IConnection c = null;
             try
             {
                 if (createIfNeeded)
                 {
-                    c = await BorrowConnectionAsync(routingKey).ConfigureAwait(false);
+                    c = await BorrowConnectionAsync(routingKey, getKeyspaceFunc(), getTableFunc()).ConfigureAwait(false);
                 }
                 else
                 {
-                    c = BorrowExistingConnection(routingKey);
+                    c = BorrowExistingConnection(routingKey, getKeyspaceFunc(), getTableFunc());
                 }
             }
             catch (UnsupportedProtocolVersionException ex)
