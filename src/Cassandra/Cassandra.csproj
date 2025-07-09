@@ -7,7 +7,7 @@
     <FileVersion>3.22.0.0</FileVersion>
     <VersionPrefix>3.22.0</VersionPrefix>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
-    <Authors>DataStax</Authors>
+    <Authors>ScyllaDB</Authors>
     <TargetFrameworks Condition="'$(BuildCoreOnly)' != 'True'">net452;netstandard2.0</TargetFrameworks>
     <TargetFramework Condition="'$(BuildCoreOnly)' == 'True'">netstandard2.0</TargetFramework>
     <NoWarn>$(NoWarn);1591</NoWarn>
@@ -18,12 +18,13 @@
     <Product>DataStax C# Driver for Apache Cassandra</Product>
     <AssemblyOriginatorKeyFile>../../build/datastax.snk</AssemblyOriginatorKeyFile>
     <SignAssembly>true</SignAssembly>
-    <PackageId>CassandraCSharpDriver</PackageId>
+    <PackageId>ScyllaCSharpDriver</PackageId>
+    <Version>3.22.0</Version>
     <Title>DataStax C# Driver for Apache Cassandra</Title>
-    <PackageTags>cassandra;apache;dse;datastax;driver;client;database;nosql;dotnet;netcore;db</PackageTags>
+    <PackageTags>cassandra;apache;dse;datastax;driver;client;database;nosql;dotnet;netcore;db;scylladb</PackageTags>
     <PackageLicenseFile>LICENSE.md</PackageLicenseFile>
-    <RepositoryUrl>https://github.com/datastax/csharp-driver</RepositoryUrl>
-    <PackageProjectUrl>https://github.com/datastax/csharp-driver</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/scylladb/csharp-driver</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/scylladb/csharp-driver</PackageProjectUrl>
     <LangVersion>7.1</LangVersion>
 	<NuGetAudit>false</NuGetAudit>
   </PropertyGroup>
