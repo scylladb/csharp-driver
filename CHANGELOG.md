@@ -1,4 +1,4 @@
-# ChangeLog - DataStax C# Driver
+# ChangeLog - ScyllaDB C# Driver
 
 ## 3.22.0
 
@@ -506,7 +506,7 @@
 
 ### Notable Changes
 
-- Timestamp generation: client-side timestamps are generated and sent in the request by default when the server 
+- Timestamp generation: client-side timestamps are generated and sent in the request by default when the server
 supports it.
 - Enhanced retry policies: handle client timeouts, connection closed and other errors.
 

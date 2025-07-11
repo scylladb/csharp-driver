@@ -16,7 +16,7 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <AssemblyName>ScyllaDB</AssemblyName>
     <Product>ScyllaDB C# Driver for Scylla</Product>
-    <AssemblyOriginatorKeyFile>../../build/datastax.snk</AssemblyOriginatorKeyFile>
+    <AssemblyOriginatorKeyFile>../../scylladb.snk</AssemblyOriginatorKeyFile>
     <SignAssembly>true</SignAssembly>
     <PackageId>ScyllaDBCSharpDriver</PackageId>
     <Title>ScyllaDB C# Driver for Scylla</Title>
@@ -33,7 +33,7 @@
   <PropertyGroup Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('$(TargetFramework)', '^net\d$'))">
     <DefineConstants>$(DefineConstants);NETCOREAPP</DefineConstants>
   </PropertyGroup>
-  
+
   <ItemGroup>
     <None Include="..\..\LICENSE.md" Pack="true" PackagePath="LICENSE.md" />
   </ItemGroup>
