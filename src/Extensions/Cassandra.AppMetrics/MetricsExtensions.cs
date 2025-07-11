@@ -24,7 +24,7 @@ using Cassandra.Metrics.Abstractions;
 namespace Cassandra
 {
     /// <summary>
-    /// Extension methods to integrate App.Metrics with the DataStax C# Driver.
+    /// Extension methods to integrate App.Metrics with the ScyllaDB C# Driver.
     /// </summary>
     public static class MetricsExtensions
     {
@@ -35,7 +35,7 @@ namespace Cassandra
         {
             return new AppMetricsDriverMetricsProvider(appMetrics, new DriverAppMetricsOptions());
         }
-        
+
         /// <summary>
         /// Creates a <see cref="IDriverMetricsProvider"/> based on AppMetrics with the provided <see cref="IMetricsRoot"/>.
         /// </summary>
@@ -53,7 +53,7 @@ namespace Cassandra
             MetricsExtensions.ThrowIfNull(driverMetrics, host, nodeMetric);
             return driverMetrics.GetNodeMetric<IAppMetricsCounter>(host, nodeMetric);
         }
-        
+
         /// <summary>
         /// Utility method that wraps a call to <see cref="IDriverMetrics.GetNodeMetric{TMetricType}"/> with the appropriate AppMetrics based gauge type
         /// as the type parameter. For more information see the API docs of <see cref="IDriverMetrics.GetNodeMetric{TMetricType}"/>.
@@ -63,7 +63,7 @@ namespace Cassandra
             MetricsExtensions.ThrowIfNull(driverMetrics, host, nodeMetric);
             return driverMetrics.GetNodeMetric<IAppMetricsGauge>(host, nodeMetric);
         }
-        
+
         /// <summary>
         /// Utility method that wraps a call to <see cref="IDriverMetrics.GetNodeMetric{TMetricType}"/> with the appropriate AppMetrics based meter type
         /// as the type parameter. For more information see the API docs of <see cref="IDriverMetrics.GetNodeMetric{TMetricType}"/>.
@@ -73,7 +73,7 @@ namespace Cassandra
             MetricsExtensions.ThrowIfNull(driverMetrics, host, nodeMetric);
             return driverMetrics.GetNodeMetric<IAppMetricsMeter>(host, nodeMetric);
         }
-        
+
         /// <summary>
         /// Utility method that wraps a call to <see cref="IDriverMetrics.GetNodeMetric{TMetricType}"/> with the appropriate AppMetrics based timer type
         /// as the type parameter. For more information see the API docs of <see cref="IDriverMetrics.GetNodeMetric{TMetricType}"/>.
@@ -83,7 +83,7 @@ namespace Cassandra
             MetricsExtensions.ThrowIfNull(driverMetrics, host, nodeMetric);
             return driverMetrics.GetNodeMetric<IAppMetricsTimer>(host, nodeMetric);
         }
-        
+
         /// <summary>
         /// Utility method that wraps a call to <see cref="IDriverMetrics.GetSessionMetric{TMetricType}"/> with the appropriate AppMetrics based counter type
         /// as the type parameter. For more information see the API docs of <see cref="IDriverMetrics.GetSessionMetric{TMetricType}"/>.
@@ -93,7 +93,7 @@ namespace Cassandra
             MetricsExtensions.ThrowIfNull(driverMetrics, sessionMetric);
             return driverMetrics.GetSessionMetric<IAppMetricsCounter>(sessionMetric);
         }
-        
+
         /// <summary>
         /// Utility method that wraps a call to <see cref="IDriverMetrics.GetSessionMetric{TMetricType}"/> with the appropriate AppMetrics based gauge type
         /// as the type parameter. For more information see the API docs of <see cref="IDriverMetrics.GetSessionMetric{TMetricType}"/>.
@@ -103,7 +103,7 @@ namespace Cassandra
             MetricsExtensions.ThrowIfNull(driverMetrics, sessionMetric);
             return driverMetrics.GetSessionMetric<IAppMetricsGauge>(sessionMetric);
         }
-        
+
         /// <summary>
         /// Utility method that wraps a call to <see cref="IDriverMetrics.GetSessionMetric{TMetricType}"/> with the appropriate AppMetrics based meter type
         /// as the type parameter. For more information see the API docs of <see cref="IDriverMetrics.GetSessionMetric{TMetricType}"/>.
@@ -113,7 +113,7 @@ namespace Cassandra
             MetricsExtensions.ThrowIfNull(driverMetrics, sessionMetric);
             return driverMetrics.GetSessionMetric<IAppMetricsMeter>(sessionMetric);
         }
-        
+
         /// <summary>
         /// Utility method that wraps a call to <see cref="IDriverMetrics.GetSessionMetric{TMetricType}"/> with the appropriate AppMetrics based timer type
         /// as the type parameter. For more information see the API docs of <see cref="IDriverMetrics.GetSessionMetric{TMetricType}"/>.
@@ -141,7 +141,7 @@ namespace Cassandra
             throw new ArgumentException("Counter was not created by the AppMetricsDriverProvider, " +
                                         $"it's type is {counter.GetType().Name} and doesn't implement IAppMetricsCounter.");
         }
-        
+
         /// <summary>
         /// Casts the provided gauge to the gauge implementation of this provider.
         /// </summary>
@@ -159,7 +159,7 @@ namespace Cassandra
             throw new ArgumentException("Gauge was not created by the AppMetricsDriverProvider, " +
                                         $"it's type is {gauge.GetType().Name} and doesn't implement IAppMetricsGauge.");
         }
-        
+
         /// <summary>
         /// Casts the provided meter to the meter implementation of this provider.
         /// </summary>
@@ -209,7 +209,7 @@ namespace Cassandra
             MetricsExtensions.ThrowIfNull(driverMetrics, nameof(driverMetrics));
             MetricsExtensions.ThrowIfNull(sessionMetric, nameof(sessionMetric));
         }
-        
+
         private static void ThrowIfNull(IDriverMetrics driverMetrics, Host host, NodeMetric nodeMetric)
         {
             MetricsExtensions.ThrowIfNull(driverMetrics, nameof(driverMetrics));

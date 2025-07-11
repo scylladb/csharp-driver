@@ -30,14 +30,14 @@ namespace AppMetricsGraphite
 {
     /// <summary>
     /// Sample application that enables all metrics and exports them to Graphite.
-    /// 
+    ///
     /// To setup graphite and grafana, launch these containers:
     ///
     /// <code>
     /// docker run -d --name graphite -p 80:80 -p 2003-2004:2003-2004 -p 2023-2024:2023-2024 -p 8125:8125/udp -p 8126:8126 graphiteapp/graphite-statsd
     /// docker run -d --name grafana -p 3000:3000 grafana/grafana
     /// </code>
-    /// 
+    ///
     /// Then:
     /// 1 - Load up grafana http://127.0.0.1:3000
     /// 2 - Login with admin/admin
@@ -53,7 +53,7 @@ namespace AppMetricsGraphite
         private const string SessionName = "metrics-example";
         private const string GraphiteIp = "127.0.0.1";
         private const int GraphitePort = 2003;
-        
+
         private static readonly IPEndPoint GraphiteEndpoint = new IPEndPoint(IPAddress.Parse(Program.GraphiteIp), Program.GraphitePort);
 
         private static void Main(string[] args)
@@ -79,8 +79,8 @@ namespace AppMetricsGraphite
             scheduler.Start();
 
 
-            //// DataStax C# Driver configuration
-            
+            //// ScyllaDB C# Driver configuration
+
             Cassandra.Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Warning;
             Trace.Listeners.Add(new TextWriterTraceListener(Console.Out));
 
@@ -88,7 +88,7 @@ namespace AppMetricsGraphite
                 .AddContactPoint(Program.ContactPoint)
                 .WithSessionName(Program.SessionName)
                 .WithMetrics(
-                    metrics.CreateDriverMetricsProvider(), 
+                    metrics.CreateDriverMetricsProvider(),
                     new DriverMetricsOptions()
                         .SetEnabledNodeMetrics(NodeMetric.AllNodeMetrics)
                         .SetEnabledSessionMetrics(SessionMetric.AllSessionMetrics))
@@ -98,7 +98,7 @@ namespace AppMetricsGraphite
 
 
             //// Run some queries to have metrics data
-            
+
             var cts = new CancellationTokenSource();
             var task = Task.Run(async () =>
             {
