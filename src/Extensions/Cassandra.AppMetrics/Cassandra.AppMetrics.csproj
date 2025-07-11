@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Description>This package builds on the DataStax Enterprise C# driver and DataStax C# Driver for Apache Cassandra, adding a metrics provider implementation using App Metrics.</Description>
+    <Description>This package builds on the ScyllaDB C# Driver for Scylla, adding a metrics provider implementation using App Metrics.</Description>
     <Copyright>Copyright © by DataStax</Copyright>
     <AssemblyVersion>3.99.0.0</AssemblyVersion>
     <FileVersion>3.22.0.0</FileVersion>
@@ -13,15 +13,15 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <AssemblyName>Cassandra.AppMetrics</AssemblyName>
-    <Product>DataStax C# Drivers App Metrics Extension</Product>
-    <AssemblyOriginatorKeyFile>../../../build/datastax.snk</AssemblyOriginatorKeyFile>
+    <Product>ScyllaDB C# Drivers App Metrics Extension</Product>
+    <AssemblyOriginatorKeyFile>../../../build/scylladb.snk</AssemblyOriginatorKeyFile>
     <SignAssembly>true</SignAssembly>
-    <PackageId>CassandraCSharpDriver.AppMetrics</PackageId>
-    <Title>DataStax C# Drivers App Metrics Extension</Title>
-    <PackageTags>cassandra;apache;datastax;dse;driver;client;metrics;appmetricsdatabase;nosql;dotnet;netcore;db</PackageTags>
+    <PackageId>ScyllaDBCSharpDriver.AppMetrics</PackageId>
+    <Title>ScyllaDB C# Drivers App Metrics Extension</Title>
+    <PackageTags>scylladb;scylla;driver;client;metrics;appmetricsdatabase;nosql;dotnet;netcore;db</PackageTags>
     <PackageLicenseFile>LICENSE.md</PackageLicenseFile>
-    <RepositoryUrl>https://github.com/datastax/csharp-driver</RepositoryUrl>
-    <PackageProjectUrl>https://github.com/datastax/csharp-driver</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/scylladb/csharp-driver</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/scylladb/csharp-driver</PackageProjectUrl>
     <LangVersion>7.1</LangVersion>
   </PropertyGroup>
 
@@ -31,7 +31,7 @@
 
   <ItemGroup>
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
-      <_Parameter1>Cassandra.Tests, PublicKey=00240000048000009400000006020000002400005253413100040000010001002367a0d2a0b22d308ce0139f644baa0e17ea09bd0d951b5c85f9e6440302d3e0e45f59676a4f31c970ff534c65ff7746184a95d538933d10115bfaf2eaa89332f0ab72bb9d5d1828501c580a3ade6c91d258159701b7317ee5d57f914e8cd28df32f83ad190169c4427c62da85d173aa7ab5d1870e19140bb1275d7620bebab4</_Parameter1>
+      <_Parameter1>Cassandra.Tests, PublicKey=0024000004800000940000000602000000240000525341310004000001000100b3036b379d1358b5ead7ecef231b653546f89a4288b54bd02eb2301c49d5e772b27d6bf3c986831abdf279b2476e8afbeaab2b58357623f91db354fb369f62ae1cd44bee7b7adb2d1f3dcfc7d377003c108ca83f5a30bc577e138be77f6b11eeefa7fb8eddfd1167967291f5e55359c86a2f8b666c6e3d270728731ee0f3d0ec</_Parameter1>
     </AssemblyAttribute>
   </ItemGroup>
 
