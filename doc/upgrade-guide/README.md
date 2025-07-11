@@ -1,6 +1,6 @@
 # Upgrade Guide
 
-The purpose of this guide is to detail the changes made by the successive versions of the DataStax C# Driver that are relevant to for an upgrade from prior versions.
+The purpose of this guide is to detail the changes made by the successive versions of the ScyllaDB C# Driver that are relevant to for an upgrade from prior versions.
 
 If you have any question or comment, you can [post it on the mailing list][mailing-list].
 
@@ -152,7 +152,7 @@ A good write up on DC failover describing some of these considerations can be fo
 
 ## 3.6
 
-The `DowngradingConsistencyRetryPolicy` is now deprecated. It will be removed in the following major version of the 
+The `DowngradingConsistencyRetryPolicy` is now deprecated. It will be removed in the following major version of the
 driver.
 
 The main motivation is the agreement that this policy's behavior should be the application's concern, not the driver's.
@@ -200,7 +200,7 @@ Additionally, you can now share the same mapping configuration between the new M
 
 #### Case sensitivity
 
-Prior to version 2.5, Linq component used case-sensitive identifiers when generating CQL code. Now, the case 
+Prior to version 2.5, Linq component used case-sensitive identifiers when generating CQL code. Now, the case
 sensitivity can be specified on the mapping information.
 
 Using fluent configuration:
@@ -263,7 +263,7 @@ The main `Session.Execute` and `Session.ExecuteAsync` methods use `IStatement` a
 
     This behaviour enables to have a stable memory use when paging through a large result.
 
-    If you still want to consume the `RowSet` as a list, you can use [.NET Enumerable.ToList][enum-tolist] extension 
+    If you still want to consume the `RowSet` as a list, you can use [.NET Enumerable.ToList][enum-tolist] extension
     method, for example: `var rowList = rs.ToList();`.
 
 1. `Session` implements `ISession` interface, to make unit test and mocking easier. `Cluster.Connect` now returns a

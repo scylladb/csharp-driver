@@ -14,7 +14,7 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <AssemblyName>Cassandra.AppMetrics</AssemblyName>
     <Product>ScyllaDB C# Drivers App Metrics Extension</Product>
-    <AssemblyOriginatorKeyFile>../../../build/datastax.snk</AssemblyOriginatorKeyFile>
+    <AssemblyOriginatorKeyFile>../../../scylladb.snk</AssemblyOriginatorKeyFile>
     <SignAssembly>true</SignAssembly>
     <PackageId>ScyllaDBCSharpDriver.AppMetrics</PackageId>
     <Title>ScyllaDB C# Drivers App Metrics Extension</Title>
