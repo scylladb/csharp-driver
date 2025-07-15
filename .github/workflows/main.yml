@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - master
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened]
 
 jobs:
@@ -62,11 +62,13 @@ jobs:
 
       - name: Restore SNK_KEY
         run: |
-          echo "${{ secrets.SNK_KEY }}" | base64 --decode > build/datastax.snk
+          echo "$SNK_KEY" | base64 --decode > build/datastax.snk
           echo "Key restored to build/datastax.snk"
           sn -p build/datastax.snk build/datastax.pub
           echo "Public key extracted to build/datastax.pub"
           sn -tp build/datastax.pub
+        env: 
+            SNK_KEY: ${{ secrets.SNK_KEY }}
 
       - name: Run unit tests
         run: make test-unit
