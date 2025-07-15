@@ -58,7 +58,10 @@ jobs:
           fi
 
       - name: Restore SNK key file
-        run: echo "$SNK_KEY" | base64 --decode > scylladb.snk
+        run: |
+          echo "$SNK_KEY" | base64 --decode > scylladb.snk
+          sn -p scylladb.snk publickey.snk
+          sn -tp publickey.snk
         shell: bash
         env:
           SNK_KEY: ${{ secrets.SNK_KEY }}
