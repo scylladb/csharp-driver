@@ -24,6 +24,14 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      - name: Restore SNK_KEY
+        run: |
+          echo "${{ secrets.SNK_KEY }}" | base64 --decode > build/datastax.snk
+          echo "Key restored to build/datastax.snk"
+          sn -p build/datastax.snk build/datastax.pub
+          echo "Public key extracted to build/datastax.pub"
+          sn -tp build/datastax.pub
+
       - name: Set up JDK 8
         uses: actions/setup-java@v4
         with:
