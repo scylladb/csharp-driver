@@ -204,9 +204,7 @@ namespace Cassandra.IntegrationTests.Core
         [Test]
         public void Should_Use_Custom_TypeSerializers()
         {
-            var typeSerializerName = TestClusterManager.CheckDseVersion(new Version(6, 8), Comparison.GreaterThanOrEqualsTo)
-                ? TypeSerializersTests.CustomTypeName2
-                : TypeSerializersTests.CustomTypeName;
+            var typeSerializerName = TypeSerializersTests.CustomTypeName;
 
             var builder = ClusterBuilder()
                                  .AddContactPoint(TestCluster.InitialContactPoint)
@@ -235,7 +233,7 @@ namespace Cassandra.IntegrationTests.Core
             }
         }
 
-        [Test, TestBothServersVersion(4, 0, 5, 1, Comparison.LessThan)]
+        [Test, TestCassandraVersion(4, 0, Comparison.LessThan)]
         public void DynamicCompositeTypeTest()
         {
             string uniqueTableName = TestUtils.GetUniqueTableName();
@@ -594,34 +592,6 @@ namespace Cassandra.IntegrationTests.Core
                             vecc = new CqlVector<List<CqlVector<T>>>(new List<CqlVector<T>> { v[0] }, new List<CqlVector<T>> { v[1] }, new List<CqlVector<T>> { v[2] })
                         }
                 ));
-        }
-
-        [Test]
-        [TestDseVersion(6, 9)]
-        public void VectorFloatTest()
-        {
-            var tableName = TestUtils.GetUniqueTableName();
-            Session.Execute($"CREATE TABLE {tableName} (i int PRIMARY KEY, j vector<float, 3>)");
-
-            var vector = new CqlVector<float>(1.1f, 2.2f, 3.3f);
-
-            // Simple insert and select
-            Session.Execute(new SimpleStatement($"INSERT INTO {tableName} (i, j) VALUES (1, ?)", vector));
-            var rs = Session.Execute($"SELECT * FROM {tableName} WHERE i = 1");
-            AssertSimpleVectorTest(vector, rs, Assert.AreEqual);
-
-            // Prepared insert and select
-            var ps = Session.Prepare($"INSERT INTO {tableName} (i, j) VALUES (?, ?)");
-            Session.Execute(ps.Bind(2, vector));
-            rs = Session.Execute($"SELECT * FROM {tableName} WHERE i = 2");
-            AssertSimpleVectorTest(vector, rs, Assert.AreEqual);
-
-            // throw when length is not 3
-            Assert.Throws<InvalidQueryException>(() =>
-            {
-                var shortVector = new CqlVector<float>(1.1f, 2.2f);
-                Session.Execute(new SimpleStatement($"INSERT INTO {tableName} (i, j) VALUES (3, ?)", shortVector));
-            });
         }
 
         private void AssertSimpleVectorTest<T>(CqlVector<T> expected, RowSet rs, Action<object, object> assertFn)
