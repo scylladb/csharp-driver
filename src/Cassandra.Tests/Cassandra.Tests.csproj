@@ -4,8 +4,8 @@
     <TargetFrameworks Condition="'$(BuildAllTargets)' != 'True' And '$(BuildCoreOnly)' != 'True' And '$(BuildMonoOnly)' != 'True'">net481;net8</TargetFrameworks>
     <TargetFrameworks Condition="'$(BuildCoreOnly)' == 'True' And '$(CASSANDRA_NETCORE_RUNTIME)' == '6'">net6</TargetFrameworks>
     <TargetFrameworks Condition="'$(BuildCoreOnly)' == 'True' And '$(CASSANDRA_NETCORE_RUNTIME)' == '7'">net7</TargetFrameworks>
-    <TargetFramework Condition="'$(BuildCoreOnly)' == 'True' And '$(CASSANDRA_NETCORE_RUNTIME)' == '8'">net8</TargetFramework>
-    <TargetFramework Condition="'$(BuildMonoOnly)' == 'True'">net462</TargetFramework>
+    <TargetFrameworks Condition="'$(BuildCoreOnly)' == 'True' And '$(CASSANDRA_NETCORE_RUNTIME)' == '8'">net8</TargetFrameworks>
+    <TargetFrameworks Condition="'$(BuildMonoOnly)' == 'True'">net462</TargetFrameworks>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <WarningsNotAsErrors>NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
     <PublicSign>false</PublicSign>
