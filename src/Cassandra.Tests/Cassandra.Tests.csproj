@@ -4,7 +4,7 @@
     <TargetFrameworks Condition="'$(BuildAllTargets)' != 'True' And '$(BuildCoreOnly)' != 'True'">net8</TargetFrameworks>
     <TargetFrameworks Condition="'$(BuildCoreOnly)' == 'True' And '$(CASSANDRA_NETCORE_RUNTIME)' == '6'">net6</TargetFrameworks>
     <TargetFrameworks Condition="'$(BuildCoreOnly)' == 'True' And '$(CASSANDRA_NETCORE_RUNTIME)' == '7'">net7</TargetFrameworks>
-    <TargetFramework Condition="'$(BuildCoreOnly)' == 'True'">net8</TargetFramework>
+    <TargetFrameworks Condition="'$(TargetFramework)' != ''">$(TargetFramework)</TargetFrameworks>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <WarningsNotAsErrors>NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
     <PublicSign>false</PublicSign>
