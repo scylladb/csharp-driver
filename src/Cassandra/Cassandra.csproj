@@ -23,7 +23,7 @@
     <PackageLicenseFile>LICENSE.md</PackageLicenseFile>
     <RepositoryUrl>https://github.com/scylladb/csharp-driver</RepositoryUrl>
     <PackageProjectUrl>https://github.com/scylladb/csharp-driver</PackageProjectUrl>
-    <LangVersion>7.1</LangVersion>
+    <LangVersion>12.0</LangVersion>
     <NuGetAudit>false</NuGetAudit>
   </PropertyGroup>
   <PropertyGroup Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('$(TargetFramework)', '^net\d$'))">
