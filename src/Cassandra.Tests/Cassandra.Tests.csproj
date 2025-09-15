@@ -1,6 +1,6 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFrameworks Condition="'$(BuildTarget)' == 'all'">net9;net8;net7;net6</TargetFrameworks>
+    <TargetFrameworks Condition="'$(BuildTarget)' == 'all'">net9;net8</TargetFrameworks>
     <TargetFrameworks Condition="'$(BuildTarget)' == ''">net9</TargetFrameworks>
     <TargetFrameworks Condition="'$(BuildTarget)' != 'all' And '$(BuildTarget)' != ''">$(BuildTarget)</TargetFrameworks>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
@@ -18,10 +18,10 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Cassandra\Cassandra.csproj">
-      <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
+      <SetTargetFramework>TargetFramework=$(TargetFramework)</SetTargetFramework>
     </ProjectReference>
     <ProjectReference Include="..\Extensions\Cassandra.AppMetrics\Cassandra.AppMetrics.csproj">
-      <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
+      <SetTargetFramework>TargetFramework=$(TargetFramework)</SetTargetFramework>
     </ProjectReference>
     <PackageReference Include="Appveyor.TestLogger" Version="2.0.0" />
     <PackageReference Include="Microsoft.DotNet.InternalAbstractions" Version="1.0.0" />
@@ -34,10 +34,10 @@
     <PackageReference Include="XunitXml.TestLogger" Version="7.0.2" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     <ProjectReference Include="..\Extensions\Cassandra.OpenTelemetry\Cassandra.OpenTelemetry.csproj">
-      <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
+      <SetTargetFramework>TargetFramework=$(TargetFramework)</SetTargetFramework>
     </ProjectReference>
   </ItemGroup>
-  <ItemGroup Condition=" '$(TargetFramework)' == 'net6' Or '$(TargetFramework)' == 'net7' Or '$(TargetFramework)' == 'net8' Or '$(TargetFramework)' == 'net9'">
+  <ItemGroup Condition=" '$(TargetFramework)' == 'net8' Or '$(TargetFramework)' == 'net9'">
     <PackageReference Include="System.Threading.Thread" Version="4.3.0" />
     <PackageReference Include="System.Threading.Tasks.Parallel" Version="4.3.0" />
   </ItemGroup>

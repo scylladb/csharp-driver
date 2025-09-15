@@ -2,7 +2,7 @@
 
 ScyllaDB's fork of a modern, [feature-rich][features] and highly tunable C# client library for Scylla using Cassandra's binary protocol and Cassandra Query Language v3.
 
-The driver targets .NET Standard 2.0. For more detailed information about platform compatibility, check [this section](#compatibility).
+The driver targets .NET 8+. For more detailed information about platform compatibility, check [this section](#compatibility).
 
 ## Installation
 
@@ -237,7 +237,7 @@ ICluster cluster = Cluster.Builder()
 - Apache Cassandra versions 2.0 and above.
 - ScyllaDB 5.x and above.
 - ScyllaDB Enterprise 2021.x and above.
-- The driver targets .NET Standard 2.0
+- The driver targets .NET 8+
 
 Here is a list of platforms and .NET targets that Datastax uses when testing this driver:
 
