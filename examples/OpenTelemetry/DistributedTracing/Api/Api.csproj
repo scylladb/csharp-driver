@@ -15,8 +15,12 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\..\..\src\Cassandra\Cassandra.csproj" />
-    <ProjectReference Include="..\..\..\..\src\Extensions\Cassandra.OpenTelemetry\Cassandra.OpenTelemetry.csproj" />
+    <ProjectReference Include="..\..\..\..\src\Cassandra\Cassandra.csproj">
+      <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
+    </ProjectReference>
+    <ProjectReference Include="..\..\..\..\src\Extensions\Cassandra.OpenTelemetry\Cassandra.OpenTelemetry.csproj">
+      <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
+    </ProjectReference>
   </ItemGroup>
 
 </Project>
