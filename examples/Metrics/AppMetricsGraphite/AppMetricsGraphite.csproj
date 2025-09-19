@@ -12,8 +12,12 @@
 
   <!--This example uses project references. In your project use PackageReference (nuget)-->
   <ItemGroup>
-    <ProjectReference Include="..\..\..\src\Cassandra\Cassandra.csproj" />
-    <ProjectReference Include="..\..\..\src\Extensions\Cassandra.AppMetrics\Cassandra.AppMetrics.csproj" />
+    <ProjectReference Include="..\..\..\src\Cassandra\Cassandra.csproj">
+      <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
+    </ProjectReference>
+    <ProjectReference Include="..\..\..\src\Extensions\Cassandra.AppMetrics\Cassandra.AppMetrics.csproj">
+      <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
+    </ProjectReference>
   </ItemGroup>
 
 </Project>

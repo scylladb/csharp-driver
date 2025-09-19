@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFrameworks Condition="'$(BuildTarget)' == 'all'">net8;net7;net6</TargetFrameworks>
-    <TargetFrameworks Condition="'$(BuildTarget)' == ''">net8</TargetFrameworks>
+    <TargetFrameworks Condition="'$(BuildTarget)' == 'all'">net9;net8;net7;net6</TargetFrameworks>
+    <TargetFrameworks Condition="'$(BuildTarget)' == ''">net9</TargetFrameworks>
     <TargetFrameworks Condition="'$(BuildTarget)' != 'all' And '$(BuildTarget)' != ''">$(BuildTarget)</TargetFrameworks>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <WarningsNotAsErrors>NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
@@ -26,6 +26,9 @@
     <ProjectReference Include="..\Cassandra\Cassandra.csproj">
       <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
     </ProjectReference>
+    <ProjectReference Include="..\Extensions\Cassandra.OpenTelemetry\Cassandra.OpenTelemetry.csproj">
+      <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
+    </ProjectReference>
   </ItemGroup>
 
   <ItemGroup Condition=" '$(TargetFramework)' == 'net7' ">
@@ -33,9 +36,12 @@
       <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
     </ProjectReference>
     <ProjectReference Include="..\Cassandra.Tests\Cassandra.Tests.csproj">
-      <SetTargetFramework>TargetFramework=net7</SetTargetFramework>
+      <SetTargetFramework>TargetFramework=$(TargetFramework)</SetTargetFramework>
     </ProjectReference>
     <ProjectReference Include="..\Cassandra\Cassandra.csproj">
+      <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
+    </ProjectReference>
+    <ProjectReference Include="..\Extensions\Cassandra.OpenTelemetry\Cassandra.OpenTelemetry.csproj">
       <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
     </ProjectReference>
   </ItemGroup>
@@ -47,6 +53,9 @@
       <SetTargetFramework>TargetFramework=net6</SetTargetFramework>
     </ProjectReference>
     <ProjectReference Include="..\Cassandra\Cassandra.csproj">
+      <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
+    </ProjectReference>
+    <ProjectReference Include="..\Extensions\Cassandra.OpenTelemetry\Cassandra.OpenTelemetry.csproj">
       <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
     </ProjectReference>
   </ItemGroup>
@@ -71,9 +80,6 @@
   </ItemGroup>
   <ItemGroup Condition=" '$(TargetFramework)' == 'net6' Or '$(TargetFramework)' == 'net7' Or '$(TargetFramework)' == 'net8'">
     <PackageReference Include="System.Net.NameResolution" Version="4.3.0" />
-  </ItemGroup>
-  <ItemGroup>
-    <ProjectReference Include="..\Extensions\Cassandra.OpenTelemetry\Cassandra.OpenTelemetry.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Service Include="{82a7f48d-3b50-4b1e-b82e-3ada8210c358}" />
