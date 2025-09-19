@@ -4,9 +4,18 @@ on:
   push:
     branches:
       - master
+    paths-ignore:
+      - "docs/**"
+      - .github/workflows/docs-pages.yml
+      - .github/workflows/docs-pr.yml
+      - .github/workflows/publish.yml
   pull_request:
     types: [opened, synchronize, reopened]
-
+    paths-ignore:
+      - "docs/**"
+      - .github/workflows/docs-pages.yml
+      - .github/workflows/docs-pr.yml
+      - .github/workflows/publish.yml
 jobs:
   test:
     runs-on: ubuntu-24.04
