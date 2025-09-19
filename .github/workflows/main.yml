@@ -9,6 +9,15 @@ on:
       - .github/workflows/docs-pages.yml
       - .github/workflows/docs-pr.yml
       - .github/workflows/publish.yml
+      - .gitignore
+      - "*.md"
+      - .gitignore
+      - .gitattributes
+      - "*.md"
+      - "*.json"
+      - NOTICE
+      - doxyfile
+      - .nav
   pull_request:
     types: [opened, synchronize, reopened]
     paths-ignore:
@@ -16,6 +25,13 @@ on:
       - .github/workflows/docs-pages.yml
       - .github/workflows/docs-pr.yml
       - .github/workflows/publish.yml
+      - .gitignore
+      - .gitattributes
+      - "*.md"
+      - "*.json"
+      - NOTICE
+      - doxyfile
+      - .nav
 jobs:
   test:
     runs-on: ubuntu-24.04
