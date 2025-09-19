@@ -1,10 +1,8 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFrameworks Condition="'$(BuildAllTargets)' == 'True'">net8;net7;net6</TargetFrameworks>
-    <TargetFrameworks Condition="'$(BuildAllTargets)' != 'True' And '$(BuildCoreOnly)' != 'True'">net8</TargetFrameworks>
-    <TargetFrameworks Condition="'$(BuildCoreOnly)' == 'True' And '$(CASSANDRA_NETCORE_RUNTIME)' == '6'">net6</TargetFrameworks>
-    <TargetFrameworks Condition="'$(BuildCoreOnly)' == 'True' And '$(CASSANDRA_NETCORE_RUNTIME)' == '7'">net7</TargetFrameworks>
-    <TargetFrameworks Condition="'$(TargetFramework)' != ''">$(TargetFramework)</TargetFrameworks>
+    <TargetFrameworks Condition="'$(BuildTarget)' == 'all'">net8;net7;net6</TargetFrameworks>
+    <TargetFrameworks Condition="'$(BuildTarget)' == ''">net8</TargetFrameworks>
+    <TargetFrameworks Condition="'$(BuildTarget)' != 'all' And '$(BuildTarget)' != ''">$(BuildTarget)</TargetFrameworks>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <WarningsNotAsErrors>NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
     <PublicSign>false</PublicSign>
