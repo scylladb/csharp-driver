@@ -58,6 +58,9 @@ docs/source/api-docs/datastax-template
 # Ignore active snk file
 build/scylladb.snk
 
+# Ignore local dotnet config
+global.json
+
 # Ignore python virtual environments
 docs/.venv
 .venv*/
@@ -70,4 +73,4 @@ global.json
 
 # Claude / AI assistant metadata
 CLAUDE.md
-.claude/ 
+.claude/
