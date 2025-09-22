@@ -3,11 +3,16 @@ name: "Docs / Build PR"
 # see https://sphinx-theme.scylladb.com/stable/deployment/production.html#available-workflows
 
 on:
-  pull_request:
-    branches:
-      - master
+  push:
     paths:
       - "docs/**"
+      - ".github/workflows/docs-pr.yml"
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "docs/**"
+      - ".github/workflows/docs-pr.yml"
+  workflow_dispatch:
 
 jobs:
   build:
