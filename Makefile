@@ -144,3 +144,6 @@ publish-nuget-dry-run:
 	$(MAKE) .publish-proj-nuget PROJECT_PATH=src/Cassandra/Cassandra.csproj DRY_RUN=1
 	$(MAKE) .publish-proj-nuget PROJECT_PATH=src/Extensions/Cassandra.AppMetrics/Cassandra.AppMetrics.csproj DRY_RUN=1
 	$(MAKE) .publish-proj-nuget PROJECT_PATH=src/Extensions/Cassandra.OpenTelemetry/Cassandra.OpenTelemetry.csproj DRY_RUN=1
+
+clean:
+	find . -name '*.csproj' -print0 | xargs -0 -n1 dotnet clean
