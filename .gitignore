@@ -65,6 +65,9 @@ docs/.venv
 # Ignore release leftovers
 nupkgs/
 
+# Ignore dotnet project configuration
+global.json
+
 # Claude / AI assistant metadata
 CLAUDE.md
 .claude/ 
