@@ -226,10 +226,11 @@ namespace Cassandra.Tests.MetadataTests
 
         private void VerifyTimerChange(ITimer timer, long? delayMs, Times times)
         {
+            TimeSpan timeSpan = delayMs == null ? It.IsAny<TimeSpan>() : TimeSpan.FromMilliseconds(delayMs.Value);
             Mock.Get(timer).Verify(
                 t => t.Change(
                     It.IsAny<Action>(),
-                    delayMs == null ? It.IsAny<TimeSpan>() : TimeSpan.FromMilliseconds(delayMs.Value)),
+                    timeSpan),
                 times);
         }
 
