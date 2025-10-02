@@ -24,7 +24,7 @@
 
   <ItemGroup>
     <PackageReference Include="System.Diagnostics.DiagnosticSource" Version="9.0.9" />
-    <PackageReference Include="OpenTelemetry.Api" Version="1.2.0" />
+    <PackageReference Include="OpenTelemetry.Api" Version="1.13.0" />
   </ItemGroup>
 
   <ItemGroup>
