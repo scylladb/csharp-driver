@@ -1,10 +1,8 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFrameworks Condition="'$(BuildAllTargets)' == 'True'">net8;net7;net6</TargetFrameworks>
-    <TargetFrameworks Condition="'$(BuildAllTargets)' != 'True' And '$(BuildCoreOnly)' != 'True'">net8</TargetFrameworks>
-    <TargetFrameworks Condition="'$(BuildCoreOnly)' == 'True' And '$(CASSANDRA_NETCORE_RUNTIME)' == '6'">net6</TargetFrameworks>
-    <TargetFrameworks Condition="'$(BuildCoreOnly)' == 'True' And '$(CASSANDRA_NETCORE_RUNTIME)' == '7'">net7</TargetFrameworks>
-    <TargetFramework Condition="'$(BuildCoreOnly)' == 'True'">net8</TargetFramework>
+    <TargetFrameworks Condition="'$(BuildTarget)' == 'all'">net9;net8;net7;net6</TargetFrameworks>
+    <TargetFrameworks Condition="'$(BuildTarget)' == ''">net9</TargetFrameworks>
+    <TargetFrameworks Condition="'$(BuildTarget)' != 'all' And '$(BuildTarget)' != ''">$(BuildTarget)</TargetFrameworks>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <WarningsNotAsErrors>NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
     <PublicSign>false</PublicSign>
@@ -18,37 +16,18 @@
   <PropertyGroup Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('$(TargetFramework)', '^net\d$'))">
     <DefineConstants>$(DefineConstants);NETCOREAPP</DefineConstants>
   </PropertyGroup>
-  <ItemGroup Condition=" '$(TargetFramework)' == 'net8' ">
-    <ProjectReference Include="..\Extensions\Cassandra.AppMetrics\Cassandra.AppMetrics.csproj">
-      <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
-    </ProjectReference>
-    <ProjectReference Include="..\Cassandra.Tests\Cassandra.Tests.csproj">
-      <SetTargetFramework>TargetFramework=net8</SetTargetFramework>
-    </ProjectReference>
-    <ProjectReference Include="..\Cassandra\Cassandra.csproj">
-      <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
-    </ProjectReference>
-  </ItemGroup>
 
-  <ItemGroup Condition=" '$(TargetFramework)' == 'net7' ">
+  <ItemGroup>
     <ProjectReference Include="..\Extensions\Cassandra.AppMetrics\Cassandra.AppMetrics.csproj">
       <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
     </ProjectReference>
     <ProjectReference Include="..\Cassandra.Tests\Cassandra.Tests.csproj">
-      <SetTargetFramework>TargetFramework=net7</SetTargetFramework>
+      <SetTargetFramework>TargetFramework=$(TargetFramework)</SetTargetFramework>
     </ProjectReference>
     <ProjectReference Include="..\Cassandra\Cassandra.csproj">
       <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
     </ProjectReference>
-  </ItemGroup>
-  <ItemGroup Condition=" '$(TargetFramework)' == 'net6' ">
-    <ProjectReference Include="..\Extensions\Cassandra.AppMetrics\Cassandra.AppMetrics.csproj">
-      <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
-    </ProjectReference>
-    <ProjectReference Include="..\Cassandra.Tests\Cassandra.Tests.csproj">
-      <SetTargetFramework>TargetFramework=net6</SetTargetFramework>
-    </ProjectReference>
-    <ProjectReference Include="..\Cassandra\Cassandra.csproj">
+    <ProjectReference Include="..\Extensions\Cassandra.OpenTelemetry\Cassandra.OpenTelemetry.csproj">
       <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
     </ProjectReference>
   </ItemGroup>
@@ -60,7 +39,7 @@
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     <PackageReference Include="Appveyor.TestLogger" Version="2.0.0" />
     <PackageReference Include="Microsoft.DotNet.InternalAbstractions" Version="1.0.0" />
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.13.0" />
     <PackageReference Include="Moq" Version="4.20.72" />
     <PackageReference Include="NUnit" Version="4.4.0" />
     <PackageReference Include="NUnit3TestAdapter" Version="5.1.0" />
@@ -71,11 +50,8 @@
     <PackageReference Include="System.ValueTuple" Version="4.6.1" />
     <PackageReference Include="XunitXml.TestLogger" Version="6.1.0" />
   </ItemGroup>
-  <ItemGroup Condition=" '$(TargetFramework)' == 'net6' Or '$(TargetFramework)' == 'net7' Or '$(TargetFramework)' == 'net8'">
+  <ItemGroup Condition=" '$(TargetFramework)' == 'net6' Or '$(TargetFramework)' == 'net7' Or '$(TargetFramework)' == 'net8' Or '$(TargetFramework)' == 'net9'">
     <PackageReference Include="System.Net.NameResolution" Version="4.3.0" />
-  </ItemGroup>
-  <ItemGroup>
-    <ProjectReference Include="..\Extensions\Cassandra.OpenTelemetry\Cassandra.OpenTelemetry.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Service Include="{82a7f48d-3b50-4b1e-b82e-3ada8210c358}" />
