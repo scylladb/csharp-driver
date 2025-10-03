@@ -21,6 +21,11 @@ on:
         type: boolean
         default: false
 
+env:
+  SKIP_DUPLICATE: ${{ inputs.skip-duplicate }}
+  NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+  SNK_FILE: ${{ secrets.SNK_KEY }}
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -33,22 +38,12 @@ jobs:
     - name: Setup .NET
       uses: actions/setup-dotnet@v5
       with:
-        dotnet-version: '8.0.x'
+        dotnet-version: '9.0.x'
         
-    - name: Set SKIP_DUPLICATE environment variable
-      if: ${{ inputs.skip-duplicate == true }}
-      run: echo "SKIP_DUPLICATE=true" >> $GITHUB_ENV
-
     - name: Publish to NuGet (Dry Run)
       if: ${{ inputs.dry-run == true }}
       run: make publish-nuget-dry-run
-      env:
-        NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
-        SNK_FILE: ${{ secrets.SNK_KEY }}
 
     - name: Publish to NuGet (Production)
       if: ${{ inputs.dry-run == false }}
       run: make publish-nuget
-      env:
-        NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
-        SNK_FILE: ${{ secrets.SNK_KEY }}
