@@ -98,7 +98,7 @@ install-scylla-ccm:
 	@echo ${CCM_SCYLLA_VERSION} > ${CCM_CONFIG_DIR}/ccm-version
 
 .use-development-snk:
-	@[ -f build/scylladb.snk ] || ( cp build/scylladb-dev.snk build/scylladb.snk )
+	@[ -f build/scylladb.snk ] || ( cp -f build/scylladb-dev.snk build/scylladb.snk )
 
 .use-production-snk:
 	@if [ -z "${SNK_FILE}" ]; then \
@@ -107,12 +107,13 @@ install-scylla-ccm:
  	else \
  		echo "${SNK_FILE}" | base64 --decode > build/scylladb.snk; \
  	fi; \
- 	sn -p build/scylladb.snk /tmp/scylladb.pub; \
+ 	dotnet sn -p build/scylladb.snk /tmp/scylladb.pub; \
  	export PROD_SNK_PUBLIC_KEY=`hexdump -v -e '/1 "%02x"' /tmp/scylladb.pub`; \
  	echo "Switching to production SNK public key: $$PROD_SNK_PUBLIC_KEY"; \
+ 	echo "$$PROD_SNK_PUBLIC_KEY" ;\
  	for file in `grep --exclude=Makefile -rIl 'PublicKey=' .`; do \
  	  echo "Processing file: $$file"; \
- 	  grep 'PublicKey=$$PROD_SNK_PUBLIC_KEY' "$$file" || sed -i "s/PublicKey=${DEV_SNK_PUBLIC_KEY}/PublicKey=$$PROD_SNK_PUBLIC_KEY/g" "$$file" 2> /dev/null 1>&2; \
+ 	  grep 'PublicKey=$${DEV_SNK_PUBLIC_KEY}' "$$file" || sed -i "s/PublicKey=${DEV_SNK_PUBLIC_KEY}/PublicKey=$${PROD_SNK_PUBLIC_KEY}/g" "$$file" 2> /dev/null 1>&2; \
  	done;
 
 .target-to-dry-run-package:
