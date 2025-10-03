@@ -4,7 +4,7 @@
     <Description>This package builds on the ScyllaDB C# Driver for Scylla, adding a metrics provider implementation using App Metrics.</Description>
     <Copyright>Copyright © by DataStax and ScyllaDB</Copyright>
     <AssemblyVersion>3.99.0.0</AssemblyVersion>
-    <FileVersion>3.22.0.1</FileVersion>
+    <FileVersion>3.22.0.2</FileVersion>
     <Authors>DataStax and ScyllaDB</Authors>
     <TargetFramework>netstandard2.0</TargetFramework>
     <Authors>DataStax and ScyllaDB</Authors>
@@ -15,7 +15,7 @@
     <AssemblyOriginatorKeyFile>../../../build/scylladb.snk</AssemblyOriginatorKeyFile>
     <SignAssembly>true</SignAssembly>
     <PackageId>ScyllaDBCSharpDriver.AppMetrics</PackageId>
-    <Version>3.22.0.1</Version>
+    <Version>3.22.0.2</Version>
     <Title>ScyllaDB C# Drivers App Metrics Extension</Title>
     <PackageTags>scylladb;scylla;driver;client;metrics;appmetricsdatabase;nosql;dotnet;netcore;db</PackageTags>
     <PackageLicenseFile>LICENSE.md</PackageLicenseFile>

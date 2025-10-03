@@ -4,7 +4,7 @@
     <Copyright>Copyright © by DataStax and ScyllaDB</Copyright>
     <AssemblyTitle>ScyllaDB C# Driver for ScyllaDB</AssemblyTitle>
     <AssemblyVersion>3.99.0.0</AssemblyVersion>
-    <FileVersion>3.22.0.1</FileVersion>
+    <FileVersion>3.22.0.2</FileVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <Authors>DataStax and ScyllaDB</Authors>
     <TargetFramework>netstandard2.0</TargetFramework>
@@ -17,7 +17,7 @@
     <AssemblyOriginatorKeyFile>../../build/scylladb.snk</AssemblyOriginatorKeyFile>
     <SignAssembly>true</SignAssembly>
     <PackageId>ScyllaDBCSharpDriver</PackageId>
-    <Version>3.22.0.1</Version>
+    <Version>3.22.0.2</Version>
     <Title>ScyllaDB C# Driver</Title>
     <PackageTags>driver;client;database;nosql;dotnet;netcore;db;scylla;scylladb</PackageTags>
     <PackageLicenseFile>LICENSE.md</PackageLicenseFile>
