@@ -31,7 +31,7 @@
     <PackageReference Include="NUnit3TestAdapter" Version="5.1.0" />
     <PackageReference Include="NunitXml.TestLogger" Version="7.0.1" />
     <PackageReference Include="System.Runtime.InteropServices.RuntimeInformation" Version="4.3.0" />
-    <PackageReference Include="XunitXml.TestLogger" Version="7.0.1" />
+    <PackageReference Include="XunitXml.TestLogger" Version="7.0.2" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     <ProjectReference Include="..\Extensions\Cassandra.OpenTelemetry\Cassandra.OpenTelemetry.csproj">
       <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
