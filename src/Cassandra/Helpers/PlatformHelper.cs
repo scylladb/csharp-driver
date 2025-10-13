@@ -44,10 +44,12 @@ namespace Cassandra.Helpers
         {
             try
             {
+#if WINDOWS
                 if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
                 {
                     return PlatformHelper.GetWmiCpuInfo();
                 }
+#endif
 
                 if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
                 {
@@ -75,6 +77,7 @@ namespace Cassandra.Helpers
             }
         }
 
+#if WINDOWS
         public static CpuInfo GetWmiCpuInfo()
         {
             var count = 0;
@@ -95,6 +98,7 @@ namespace Cassandra.Helpers
 
             return new CpuInfo(firstCpuName, count);
         }
+#endif
 
         public static CpuInfo GetLinuxProcCpuInfo()
         {
