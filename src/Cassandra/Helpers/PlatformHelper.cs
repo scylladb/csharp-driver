@@ -33,8 +33,8 @@ namespace Cassandra.Helpers
 
         public static string GetTargetFramework()
         {
-#if NETSTANDARD2_0
-            return ".NET Standard 2.0";
+#if NET8_0_OR_GREATER
+            return ".NET 8+";
 #else
             return null;
 #endif
