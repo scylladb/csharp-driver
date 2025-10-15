@@ -29,6 +29,31 @@ namespace Cassandra
 {
     internal static class Utils
     {
+        /// <summary>
+        /// Reads exactly the specified number of bytes from the stream.
+        /// Throws an exception if the stream ends before reading all requested bytes.
+        ///
+        /// After deprecation of net6 to be replaced with Stream.ReadExactly
+        /// </summary>
+        internal static void ReadExactly(Stream stream, byte[] buffer, int offset, int count)
+        {
+            if (count == 0)
+            {
+                return;
+            }
+
+            int totalBytesRead = 0;
+            while (totalBytesRead < count)
+            {
+                var bytesRead = stream.Read(buffer, offset + totalBytesRead, count - totalBytesRead);
+                if (bytesRead == 0)
+                {
+                    throw new IOException($"Unexpected end of stream. Expected to read {count} bytes but only read {totalBytesRead} bytes.");
+                }
+                totalBytesRead += bytesRead;
+            }
+        }
+
         public static string ConvertToCqlMap(IDictionary<string, string> source)
         {
             var sb = new StringBuilder("{");
@@ -188,7 +213,7 @@ namespace Cassandra
         {
             var buffer = new byte[stream.Length - position];
             stream.Position = position;
-            stream.Read(buffer, 0, buffer.Length - position);
+            ReadExactly(stream, buffer, 0, buffer.Length - position);
             return buffer;
         }
 
@@ -203,7 +228,7 @@ namespace Cassandra
             {
                 stream.Position = 0;
                 var itemLength = (int)stream.Length;
-                stream.Read(buffer, offset, itemLength);
+                ReadExactly(stream, buffer, offset, itemLength);
                 offset += itemLength;
             }
             return buffer;
