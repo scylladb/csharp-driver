@@ -142,7 +142,7 @@ namespace Cassandra.Tests
                              .Concat(Encoding.UTF8.GetBytes("COUNTER")); // WriteType text
 
             var body = GetErrorBody(WriteFailureErrorCode, "Test error message", additional);
-            var response = GetResponse(body);
+            var response = GetResponse(body, ProtocolVersion.V5);
             var ex = IsErrorResponse<WriteFailureException>(response);
             Assert.AreEqual(ConsistencyLevel.Quorum, ex.ConsistencyLevel);
             Assert.AreEqual(2, ex.ReceivedAcknowledgements);
