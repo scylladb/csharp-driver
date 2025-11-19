@@ -789,13 +789,13 @@ sphinx = ">=1.8"
 
 [[package]]
 name = "sphinx-multiversion-scylla"
-version = "0.3.2"
+version = "0.3.3"
 description = "Add support for multiple versions to sphinx"
 optional = false
 python-versions = "*"
 groups = ["main"]
 files = [
-    {file = "sphinx_multiversion_scylla-0.3.2.tar.gz", hash = "sha256:f415311273228f4f766c36256503da8e2ce01f9d13423f3fcee3160d6284852b"},
+    {file = "sphinx_multiversion_scylla-0.3.3.tar.gz", hash = "sha256:a8fa7f4dc685bdb40a57b4abbe4ab0f15908302de7066c50e9ad234a6500d37f"},
 ]
 
 [package.dependencies]
