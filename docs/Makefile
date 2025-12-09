@@ -20,6 +20,14 @@ all: dirhtml
 .PHONY: setupenv
 setupenv:
 	pip install -q poetry
+	@if command -v dotnet >/dev/null 2>&1; then \
+		echo "Installing docfx..."; \
+		dotnet tool update -g docfx; \
+	else \
+		echo "Note: .NET SDK not found or not in PATH."; \
+		echo "Install from https://dotnet.microsoft.com/download"; \
+		echo "Then run: dotnet tool update -g docfx"; \
+	fi
 
 .PHONY: setup
 setup:
@@ -41,6 +49,7 @@ clean:
 # Generate output commands
 .PHONY: dirhtml
 dirhtml: setup
+	cd .. && ./docs/_utils/docfx.sh
 	$(SPHINXBUILD) -b dirhtml $(ALLSPHINXOPTS) $(BUILDDIR)/dirhtml
 	@echo
 	@echo "Build finished. The HTML pages are in $(BUILDDIR)/dirhtml."
@@ -65,7 +74,7 @@ epub3: setup
 
 .PHONY: multiversion
 multiversion: setup
-	$(POETRY) run sphinx-multiversion source $(BUILDDIR)/dirhtml
+	$(POETRY) run ./_utils/multiversion.sh
 	@echo
 	@echo "Build finished. The HTML pages are in $(BUILDDIR)/dirhtml."
 
@@ -78,11 +87,12 @@ redirects: setup
 # Preview commands
 .PHONY: preview
 preview: setup
+	cd .. && ./docs/_utils/docfx.sh
 	$(POETRY) run sphinx-autobuild -b dirhtml $(ALLSPHINXOPTS) $(BUILDDIR)/dirhtml --port 5500
 
 .PHONY: multiversionpreview
 multiversionpreview: multiversion
-	$(POETRY) run python -m http.server 5500 --directory $(BUILDDIR)/dirhtml
+	$(POETRY) run python3 -m http.server 5500 --directory $(BUILDDIR)/dirhtml
 
 # Test commands
 .PHONY: test

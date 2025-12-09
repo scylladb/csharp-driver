@@ -1,0 +1,37 @@
+/* Text */
+button, a, .toc .nav > li.active > a {
+  color: #3c4fe0;
+}
+
+button:hover, a:hover, .toc .nav > li.active > a:hover {
+  color: #3c4fe0;
+}
+
+.navbar-brand {
+  display: block;
+}
+
+/* Navbar */
+.navbar-inverse {
+  background-color: #0f1040;
+}
+
+.navbar-inverse .navbar-nav>li>a {
+  color: #fff;
+}
+
+.nav>li {
+  word-break: break-word;
+}
+
+/* Logo */
+.navbar-brand {
+  height: 30px;
+  margin-top: 10px;
+}
+
+#logo.svg {
+  max-height: 30px;
+  height: 30px;
+  width: auto;
+}

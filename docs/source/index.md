@@ -268,7 +268,7 @@ Licensed under the Apache License, Version 2.0 (the “License”); you may not 
 
 Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an “AS IS” BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.
 
-[apidocs]: https://docs.datastax.com/en/latest-csharp-driver-api/
+[apidocs]: api-reference
 [docindex]: https://csharp-driver.docs.scylladb.com/stable/
 [features]: https://csharp-driver.docs.scylladb.com/stable/features/index.html
 [faq]: https://csharp-driver.docs.scylladb.com/stable/faq/index.html
@@ -295,5 +295,5 @@ features/index
 faq/index
 upgrade-guide/index
 examples/index
-datastax-api-reference.md
+api-reference.md
 :::
