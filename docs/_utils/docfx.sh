@@ -7,6 +7,13 @@ if ! command -v docfx &> /dev/null; then
     exit 0
 fi
 
+# Ensure the signing key exists for docfx builds
+# The scylladb.snk file is gitignored, so use the dev key
+if [ ! -f "build/scylladb.snk" ]; then
+    echo "Using scylladb-dev.snk for documentation build..."
+    cp build/scylladb-dev.snk build/scylladb.snk
+fi
+
 # Navigate to the api-docs directory where docfx.json is located
 cd docs/source/api-docs
 
