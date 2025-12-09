@@ -8,7 +8,7 @@
             "src/Extensions/Cassandra.AppMetrics/**.csproj",
             "src/Extensions/Cassandra.OpenTelemetry/**.csproj"
           ],
-		  "src": "../../"
+          "src": "../../../"
         }
       ],
       "dest": "api",
@@ -31,18 +31,25 @@
 		"files": [ "index.md", "toc.yml" ]
 	  }
     ],
+    "resource": [
+      {
+        "files": [ "logo.svg", "favicon.ico" ]
+      }
+    ],
     "dest": "api-docs",
     "globalMetadataFiles": [],
     "fileMetadataFiles": [],
     "template": [
       "statictoc",
-	  "datastax-template"
+      "template"
     ],
 	"globalMetadata": {
       "_appTitle": "ScyllaDB C# Driver for Scylla",
       "_enableSearch": true,
 	  "_disableContribution": true,
-	  "_appFooter": "© DataStax, All rights reserved."
+	  "_appFooter": "<p>ScyllaDB C# Driver is available under the <a href=\"https://www.apache.org/licenses/LICENSE-2.0.html\">Apache v2 License</a>. ScyllaDB C# Driver is a fork of <a href=\"https://github.com/datastax/csharp-driver\">DataStax C# Driver</a>. See Copyright <a href=\"https://csharp-driver.docs.scylladb.com/stable/#license\">here</a>.</p>",
+      "_appLogoPath": "logo.svg",
+      "_appFaviconPath": "favicon.ico"
     },
     "postProcessors": [],
     "markdownEngineName": "markdig",

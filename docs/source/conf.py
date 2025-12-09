@@ -3,8 +3,10 @@ import os
 import sys
 import warnings
 from datetime import date
+from pathlib import Path
 
 from sphinx_scylladb_theme.utils import multiversion_regex_builder
+from redirects_cli import cli as redirects_cli
 
 # -- Global variables
 
@@ -126,8 +128,28 @@ htmlhelp_basename = "ScyllaDocumentationdoc"
 # URL which points to the root of the HTML documentation.
 html_baseurl = "https://csharp-driver.docs.scylladb.com"
 
-# Dictionary of values to pass into the template engine’s context for all pages
+# Dictionary of values to pass into the template engine's context for all pages
 html_context = {"html_baseurl": html_baseurl}
+
+# -- Redirects Configuration ----------------------------------------
+
+
+def redirect_api_page_to_docfx(app, exception):
+    """Create redirects from api-reference pages to the DocFX API documentation"""
+    api_reference_path = 'api-reference'
+    version_name = os.getenv("SPHINX_MULTIVERSION_NAME", "")
+    version_name = "/" + version_name if version_name else ""
+    redirect_to = version_name + '/api-docs/index.html'
+
+    # Create redirect at api-reference.html
+    out_file_1 = Path(app.outdir) / f'{api_reference_path}.html'
+    redirects_cli.create(redirect_to=redirect_to, out_file=str(out_file_1))
+
+    # Create redirect at api-reference/index.html
+    out_file_2 = Path(app.outdir) / api_reference_path / 'index.html'
+    out_file_2.parent.mkdir(parents=True, exist_ok=True)
+    redirects_cli.create(redirect_to=redirect_to, out_file=str(out_file_2))
+
 
 # -- Initialize Sphinx ----------------------------------------------
 
@@ -138,3 +160,4 @@ def setup(sphinx):
         category=UserWarning,
         message=r".*Container node skipped.*",
     )
+    sphinx.connect('build-finished', redirect_api_page_to_docfx)
