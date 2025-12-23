@@ -112,7 +112,13 @@ jobs:
           elif [[ "${{ matrix.scylla-version }}" == "LATEST" ]]; then
             echo "SCYLLA_VERSION=release:$(./get-version --source dockerhub-imagetag --repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST.LAST.LAST" | tr -d '\"')" >> $GITHUB_ENV
           elif [[ "${{ matrix.scylla-version }}" == "PRIOR" ]]; then
-            echo "SCYLLA_VERSION=release:$(./get-version --source dockerhub-imagetag --repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST.LAST.LAST-1" | tr -d '\"')" >> $GITHUB_ENV
+            SCYLLA_VERSION=$(./get-version --source dockerhub-imagetag --repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST.LAST.LAST-1" | tr -d '\"')
+            if [[ -z "$SCYLLA_VERSION" ]]; then
+              echo "No PRIOR version found, skipping test"
+              echo "SKIP_TEST=true" >> $GITHUB_ENV
+            else
+              echo "SCYLLA_VERSION=release:$SCYLLA_VERSION" >> $GITHUB_ENV
+            fi
           elif echo "${{ matrix.scylla-version }}" | grep -P '^[0-9\.]+'; then # If you want to run specific version do just that
             echo "SCYLLA_VERSION=release:${{ matrix.scylla-version }}" >> $GITHUB_ENV
           else
@@ -124,5 +130,6 @@ jobs:
         run: make test-unit
 
       - name: Run integration tests on Scylla
+        if: env.SKIP_TEST != 'true'
         run: make test-integration-scylla
 
