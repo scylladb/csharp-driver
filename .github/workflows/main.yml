@@ -82,6 +82,17 @@ jobs:
         with:
           dotnet-version: ${{ matrix.dotnet-version }}
 
+      - name: Cache NuGet
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.nuget/packages
+            ~/.dotnet/tools
+            ~/.local/share/NuGet/v3-cache
+          key: ${{ runner.os }}-${{ matrix.dotnet-version }}-${{ hashFiles('**/*.sln','**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
       - name: Set up JDK 8
         uses: actions/setup-java@v5
         with:
