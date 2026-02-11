@@ -105,7 +105,7 @@ namespace Cassandra.IntegrationTests.TestClusterManagement
                         ScyllaVersionString);
                     testCluster.Create(1, null);
                     string versionString = testCluster.GetVersion(1);
-                    _scyllaVersion = new Version(versionString);
+                    _scyllaVersion = Version.Parse(versionString.Split('-', '~')[0]);
                     return _scyllaVersion;
                 }
                 finally
