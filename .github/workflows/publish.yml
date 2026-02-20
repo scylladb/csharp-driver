@@ -37,11 +37,27 @@ jobs:
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       with:
         ref: ${{ inputs.target_tag || github.ref }}
+        persist-credentials: false
+
+    - name: Checkout SDK configuration
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      with:
+        ref: ${{ github.event.repository.default_branch }}
+        sparse-checkout: global.json
+        sparse-checkout-cone-mode: false
+        path: .sdk-config
+        persist-credentials: false
+
+    - name: Add SDK configuration to legacy checkout
+      run: |
+        if [[ ! -f global.json ]]; then
+          cp .sdk-config/global.json global.json
+        fi
 
     - name: Setup .NET
       uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
       with:
-        dotnet-version: '9.0.x'
+        global-json-file: global.json
 
     - name: Publish to NuGet (Dry Run)
       if: ${{ inputs.dry-run == true }}
