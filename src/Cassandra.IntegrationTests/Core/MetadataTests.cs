@@ -49,7 +49,7 @@ namespace Cassandra.IntegrationTests.Core
             Assert.Greater(initialLength, 0);
 
             //GetReplicas should yield the primary replica when the Keyspace is not found
-            Assert.AreEqual(1, cluster.GetReplicas("ks2", new byte[] { 0, 0, 0, 1 }).Count);
+            Assert.AreEqual(1, cluster.GetReplicas("ks2", null, new byte[] { 0, 0, 0, 1 }).Count);
 
             const string createKeyspaceQuery = "CREATE KEYSPACE {0} WITH replication = {{ 'class' : '{1}', {2} }}";
             session.Execute(string.Format(createKeyspaceQuery, "ks1", "SimpleStrategy", "'replication_factor' : 1"));
@@ -66,7 +66,7 @@ namespace Cassandra.IntegrationTests.Core
             Assert.NotNull(ks2);
             Assert.AreEqual(ks2.Replication["replication_factor"], 3);
             //GetReplicas should yield the 2 replicas (rf=3 but cluster=2) when the Keyspace is found
-            Assert.AreEqual(2, cluster.GetReplicas("ks2", new byte[] { 0, 0, 0, 1 }).Count);
+            Assert.AreEqual(2, cluster.GetReplicas("ks2", null, new byte[] { 0, 0, 0, 1 }).Count);
             var ks3 = cluster.Metadata.GetKeyspace("ks3");
             Assert.NotNull(ks3);
             Assert.AreEqual(ks3.Replication["dc1"], 1);
@@ -168,7 +168,7 @@ namespace Cassandra.IntegrationTests.Core
             TestHelper.Invoke(() => session.Execute("SELECT key FROM system.local WHERE key='local'"), 10);
             Assert.True(cluster.AllHosts().All(h => h.IsConsiderablyUp));
             //When the host of the control connection is used
-            //It can result that event UP is not fired as it is not received by the control connection (it reconnected but missed the event) 
+            //It can result that event UP is not fired as it is not received by the control connection (it reconnected but missed the event)
             Assert.True(upEventFired || useControlConnectionHost);
         }
 
@@ -344,7 +344,7 @@ namespace Cassandra.IntegrationTests.Core
             const bool durableWrites = false;
             const int replicationFactor = 1;
             string cql = string.Format(@"
-                        CREATE KEYSPACE {0} 
+                        CREATE KEYSPACE {0}
                         WITH replication = {{ 'class' : '{1}', 'replication_factor' : {2} }}
                         AND durable_writes={3};", keyspaceName, strategyClass, 1, durableWrites);
             session.Execute(cql);
@@ -545,15 +545,15 @@ namespace Cassandra.IntegrationTests.Core
         }
 
         /// Tests that materialized view metadata is being properly retrieved
-        /// 
+        ///
         /// GetMaterializedView_Should_Retrieve_View_Metadata tests that materialized view metadata is being properly populated by the driver.
         /// It first creates a base table with some sample columns, and a materialized view based on those columns. It then verifies the various metadata
-        /// associated with the view. 
-        /// 
+        /// associated with the view.
+        ///
         /// @since 3.0.0
         /// @jira_ticket CSHARP-348
         /// @expected_result Materialized view metadata is properly populated
-        /// 
+        ///
         /// @test_category metadata
         [Test, TestCassandraVersion(3, 0)]
         public void GetMaterializedView_Should_Retrieve_View_Metadata()
@@ -603,15 +603,15 @@ namespace Cassandra.IntegrationTests.Core
         }
 
         /// Tests that materialized view metadata with quoted identifiers is being retrieved
-        /// 
-        /// MaterializedView_Should_Retrieve_View_Metadata_Quoted_Identifiers tests that materialized view metadata with quoated identifiers is being 
+        ///
+        /// MaterializedView_Should_Retrieve_View_Metadata_Quoted_Identifiers tests that materialized view metadata with quoated identifiers is being
         /// properly populated by the driver. It first creates a base table with some sample columns, where these columns have quoted identifers as their name.
-        /// It then creates a materialized view based on those columns. It then verifies the various metadata associated with the view. 
-        /// 
+        /// It then creates a materialized view based on those columns. It then verifies the various metadata associated with the view.
+        ///
         /// @since 3.0.0
         /// @jira_ticket CSHARP-348
         /// @expected_result Materialized view metadata is properly populated
-        /// 
+        ///
         /// @test_category metadata
         [Test, TestCassandraVersion(3, 0)]
         public void MaterializedView_Should_Retrieve_View_Metadata_Quoted_Identifiers()
