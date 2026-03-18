@@ -18,6 +18,9 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
+using Cassandra.SessionManagement;
+using Cassandra.Tests.MetadataHelpers.TestHelpers;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 using CollectionAssert = NUnit.Framework.CollectionAssert;
@@ -483,14 +486,14 @@ namespace Cassandra.Tests
                 TestHelper.CreateHost("0.0.0.9", "dc1")
             };
             var n = 2;
-            var clusterMock = new Mock<ICluster>();
+            var clusterMock = new Mock<IInternalCluster>();
             clusterMock
                 .Setup(c => c.AllHosts())
                 .Returns(hostList)
                 .Verifiable();
             clusterMock
-                .Setup(c => c.GetReplicas(It.IsAny<string>(), It.IsAny<byte[]>()))
-                .Returns<string, byte[]>((keyspace, key) =>
+                .Setup(c => c.GetRoutingReplicas(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<byte[]>()))
+                .Returns<string, string, byte[]>((keyspace, table, key) =>
                 {
                     var i = key[0];
                     return hostList.Where(h =>
@@ -544,14 +547,14 @@ namespace Cassandra.Tests
                 TestHelper.CreateHost("0.0.0.8", "dc2"),
                 TestHelper.CreateHost("0.0.0.9", "dc1")
             };
-            var clusterMock = new Mock<ICluster>(MockBehavior.Strict);
+            var clusterMock = new Mock<IInternalCluster>(MockBehavior.Strict);
             clusterMock
                 .Setup(c => c.AllHosts())
                 .Returns(hostList)
                 .Verifiable();
             clusterMock
-                .Setup(c => c.GetReplicas(It.IsAny<string>(), It.IsAny<byte[]>()))
-                .Returns<string, byte[]>((keyspace, key) =>
+                .Setup(c => c.GetRoutingReplicas(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<byte[]>()))
+                .Returns<string, string, byte[]>((keyspace, table, key) =>
                 {
                     var i = key[0];
                     return hostList.Where(h =>
@@ -584,6 +587,74 @@ namespace Cassandra.Tests
             Assert.That(queryPlansWithHost1AsFirst / times, Is.GreaterThan(0.45).And.LessThan(0.55));
             Assert.That(queryPlansWithHost2AsFirst / times, Is.GreaterThan(0.45).And.LessThan(0.55));
             clusterMock.Verify();
+        }
+
+        [Test]
+        public void TokenAwarePolicyUsesStatementKeyspaceAndTableToGetRoutingReplicas()
+        {
+            var rawRoutingKey = new byte[] { 1, 2, 3, 4 };
+            var clusterMock = new Mock<IInternalCluster>();
+            clusterMock
+                .Setup(c => c.AllHosts())
+                .Returns(new List<Host>());
+            clusterMock
+                .Setup(c => c.GetRoutingReplicas(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<byte[]>()))
+                .Returns(new List<HostShard>());
+            var policy = new TokenAwarePolicy(new RoundRobinPolicy());
+            policy.Initialize(clusterMock.Object);
+
+            var _ = policy.NewQueryPlan("ks2", CreateStatement("ks1", "tbl1", rawRoutingKey)).ToList();
+
+            clusterMock.Verify(c => c.GetRoutingReplicas("ks1", "tbl1", rawRoutingKey), Times.Once);
+        }
+
+        [Test]
+        public void TokenAwarePolicyUsesMetadataReplicas_When_ClusterIsNotInternal()
+        {
+            var rawRoutingKey = new byte[] { 1, 2, 3, 4 };
+            var keyspaces = new ConcurrentDictionary<string, KeyspaceMetadata>();
+            keyspaces.TryAdd("ks1", FakeSchemaParserFactory.CreateSimpleKeyspace("ks1", 1));
+            var metadata = new Metadata(new Configuration(), new FakeSchemaParser(keyspaces)) { Partitioner = "Murmur3Partitioner" };
+            var hosts = new[] { "-4611686018427387904", "4611686018427387904" }.Select((token, i) =>
+            {
+                var host = metadata.Hosts.Add(new IPEndPoint(IPAddress.Parse($"127.0.0.{i + 1}"), 9042));
+                host.SetInfo(new TestHelper.DictionaryBasedRow(new Dictionary<string, object>
+                {
+                    { "host_id", Guid.NewGuid() },
+                    { "data_center", "dc1" },
+                    { "rack", "rack1" },
+                    { "release_version", "3.11.1" },
+                    { "tokens", new List<string> { token } }
+                }));
+                return host;
+            }).ToList();
+            metadata.RebuildTokenMapAsync(false, true).GetAwaiter().GetResult();
+            // The tablet replica has a shard, unlike token map replicas
+            metadata.TabletMap.AddTablet("ks1", "tbl1", new Tablet(
+                long.MinValue, long.MaxValue, new List<HostShardPair> { new HostShardPair(hosts[1].HostId, 3) }));
+            var clusterMock = new Mock<ICluster>();
+            clusterMock
+                .Setup(c => c.AllHosts())
+                .Returns(hosts);
+            clusterMock
+                .Setup(c => c.Metadata)
+                .Returns(metadata);
+            var policy = new TokenAwarePolicy(new RoundRobinPolicy());
+            policy.Initialize(clusterMock.Object);
+
+            var firstHost = policy.NewQueryPlan("ks2", CreateStatement("ks1", "tbl1", rawRoutingKey)).First();
+
+            Assert.AreSame(hosts[1], firstHost.Host);
+            Assert.AreEqual(3, firstHost.Shard);
+        }
+
+        private static Statement CreateStatement(string keyspace, string table, byte[] rawRoutingKey)
+        {
+            var statementMock = new Mock<Statement>(MockBehavior.Loose);
+            statementMock.Setup(s => s.RoutingKey).Returns(new RoutingKey(rawRoutingKey));
+            statementMock.Setup(s => s.Keyspace).Returns(keyspace);
+            statementMock.Setup(s => s.TableName).Returns(table);
+            return statementMock.Object;
         }
 
         [Test]
