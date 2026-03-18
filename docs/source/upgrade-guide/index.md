@@ -91,6 +91,37 @@ Connection pools now recover when a load balancing policy temporarily ignores a
 host and later treats it as local or remote again, including when the pool was
 empty or still draining its old connections.
 
+### Table-aware replica resolution
+
+The new table-aware `GetReplicas` overloads resolve replicas using tablet
+metadata when the table has a tablet mapping, and the token map otherwise:
+
+- `Metadata.GetReplicas(string keyspaceName, string tableName, byte[] partitionKey)`
+- `ICluster.GetReplicas(string keyspace, string table, byte[] partitionKey)`
+
+The following overloads cannot use tablet metadata and are now marked
+`[Obsolete]`:
+
+- `Metadata.GetReplicas(string keyspaceName, byte[] partitionKey)`
+- `Metadata.GetReplicas(byte[] partitionKey)`
+- `ICluster.GetReplicas(string keyspace, byte[] partitionKey)` and its `Cluster`
+  implementation
+- `ICluster.GetReplicas(byte[] partitionKey)` and its `Cluster` implementation
+
+They keep their previous behavior, but calling them produces compiler warning
+CS0618, which fails builds that use `TreatWarningsAsErrors`. Move to the
+table-aware overload, passing `null` as the table to keep the token map
+behavior, or suppress CS0618 for those calls.
+
+Custom `ICluster` implementations must implement the new
+`GetReplicas(string, string, byte[])` member.
+
+When a table has a tablet mapping but no cached tablet owns the partition key,
+or a tablet replica host is unknown, the table-aware overloads return an empty
+collection instead of token map replicas. In that case, `TokenAwarePolicy` uses
+its child policy's query plan until the driver learns the tablet from a server
+response.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.

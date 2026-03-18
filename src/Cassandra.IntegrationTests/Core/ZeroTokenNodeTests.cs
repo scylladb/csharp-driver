@@ -296,7 +296,7 @@ namespace Cassandra.IntegrationTests.Core
                     for (var i = 0; i < ZeroTokenNodeTests.RoutingKeySamples; i++)
                     {
                         var replicas = Cluster.Metadata
-                                              .GetReplicas(ZeroTokenNodeTests.RfKeyspace, GetRoutingKey(i))
+                                              .GetReplicas(ZeroTokenNodeTests.RfKeyspace, null, GetRoutingKey(i))
                                               .Select(r => r.Host)
                                               .ToList();
 
@@ -313,7 +313,7 @@ namespace Cassandra.IntegrationTests.Core
 
             for (var i = 0; i < ZeroTokenNodeTests.RoutingKeySamples; i++)
             {
-                var replicas = Cluster.Metadata.GetReplicas(KeyspaceName, GetRoutingKey(i));
+                var replicas = Cluster.Metadata.GetReplicas(KeyspaceName, null, GetRoutingKey(i));
 
                 Assert.IsNotEmpty(replicas, $"no replica was computed for partition key {i}");
                 Assert.IsFalse(
