@@ -489,8 +489,8 @@ namespace Cassandra.Tests
                 .Returns(hostList)
                 .Verifiable();
             clusterMock
-                .Setup(c => c.GetReplicas(It.IsAny<string>(), It.IsAny<byte[]>()))
-                .Returns<string, byte[]>((keyspace, key) =>
+                .Setup(c => c.GetReplicas(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<byte[]>()))
+                .Returns<string, string, byte[]>((keyspace, table, key) =>
                 {
                     var i = key[0];
                     return hostList.Where(h =>
@@ -550,8 +550,8 @@ namespace Cassandra.Tests
                 .Returns(hostList)
                 .Verifiable();
             clusterMock
-                .Setup(c => c.GetReplicas(It.IsAny<string>(), It.IsAny<byte[]>()))
-                .Returns<string, byte[]>((keyspace, key) =>
+                .Setup(c => c.GetReplicas(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<byte[]>()))
+                .Returns<string, string, byte[]>((keyspace, table, key) =>
                 {
                     var i = key[0];
                     return hostList.Where(h =>
