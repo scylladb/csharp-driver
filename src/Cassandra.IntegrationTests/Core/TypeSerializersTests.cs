@@ -57,12 +57,18 @@ namespace Cassandra.IntegrationTests.Core
         {
             get
             {
-                return new[]
+                var setupQueries = new List<string>
                 {
                     "CREATE TABLE tbl_decimal (id uuid PRIMARY KEY, text_value text, value1 decimal, value2 decimal)",
-                    "CREATE TABLE tbl_decimal_key (id decimal PRIMARY KEY)",
-                    string.Format("CREATE TABLE tbl_custom (id uuid PRIMARY KEY, value '{0}')", CustomTypeName)
+                    "CREATE TABLE tbl_decimal_key (id decimal PRIMARY KEY)"
                 };
+
+                if (!TestClusterManager.IsScylla)
+                {
+                    setupQueries.Add(string.Format("CREATE TABLE tbl_custom (id uuid PRIMARY KEY, value '{0}')", CustomTypeName));
+                }
+
+                return setupQueries.ToArray();
             }
         }
 
