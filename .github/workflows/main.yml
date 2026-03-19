@@ -110,8 +110,7 @@ jobs:
           if [[ "${{ matrix.scylla-version }}" == "LTS-LATEST" ]]; then
             echo "SCYLLA_VERSION=release:$(./get-version --source dockerhub-imagetag --repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST.1.LAST" | tr -d '\"')" >> $GITHUB_ENV
           elif [[ "${{ matrix.scylla-version }}" == "LTS-PRIOR" ]]; then
-            SCYLLA_VERSION=$(./get-version --source dockerhub-imagetag --repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST-1.1.LAST" | tr -d '\"')
-            [[ -z "$SCYLLA_VERSION" ]] && SCYLLA_VERSION=$(./get-version --source dockerhub-imagetag --repo scylladb/scylla-enterprise -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST-1.1.LAST" | tr -d '\"')
+            echo "SCYLLA_VERSION=release:$(./get-version --source dockerhub-imagetag --repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST-1.1.LAST" | tr -d '\"')" >> $GITHUB_ENV
           elif [[ "${{ matrix.scylla-version }}" == "LATEST" ]]; then
             echo "SCYLLA_VERSION=release:$(./get-version --source dockerhub-imagetag --repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST.LAST.LAST" | tr -d '\"')" >> $GITHUB_ENV
           elif [[ "${{ matrix.scylla-version }}" == "PRIOR" ]]; then
