@@ -49,6 +49,42 @@ Example: `3.4.1`
 
 These releases only contain bug fixes so they will never contain changes to the driver's public API.
 
+## 4.0 - Target framework changes
+
+### Breaking: Minimum target framework is now .NET 8
+
+The NuGet package targets have changed from `netstandard2.0` to `net8.0;net9.0`. This means:
+
+- **.NET 8** and **.NET 9** applications are fully supported.
+- **.NET 6**, **.NET 7**, and **.NET Framework** applications can no longer consume this package.
+
+Applications targeting older runtimes should remain on the 3.x driver series.
+
+This change also applies to the extension packages `Cassandra.AppMetrics` and `Cassandra.OpenTelemetry`, which now target `net8.0;net9.0` instead of `netstandard2.0`.
+
+This change enables the driver to take advantage of modern .NET APIs and performance improvements that are not available under `netstandard2.0`.
+
+### Breaking: `[Serializable]` attribute and serialization constructors removed
+
+The `[Serializable]` attribute has been removed from `DriverException` and `NoHostAvailableException`. The serialization constructors (accepting `SerializationInfo` and `StreamingContext`) have been removed from `DriverException`, `FunctionFailureException`, and `NoHostAvailableException`.
+
+Binary serialization has been obsolete since .NET 5 and is disabled by default in .NET 8+. If your application relies on binary serialization of driver exceptions (e.g., cross-AppDomain marshalling or certain logging frameworks), you will need to update your code.
+
+### Breaking: SSL default protocol changed
+
+The default SSL protocol has changed from `SslProtocols.Tls` (TLS 1.0) to `SslProtocols.None` (OS-negotiated, typically TLS 1.2+). This is the recommended setting for modern .NET applications. If you connect to servers that only support TLS 1.0, you must explicitly set `SSLOptions.SslProtocol` to `SslProtocols.Tls`.
+
+### Breaking: Public API removals
+
+The following public APIs have been removed:
+
+- `PlatformHelper.GetTargetFramework()`
+- `PlatformHelper.RuntimeSupportsCloudTlsSettings()`
+- `PlatformHelper.GetNetCoreVersion()`
+- `CloudSupportedAttribute`
+
+These APIs were used internally for multi-target framework support and are no longer needed now that the driver targets only .NET 8+.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.

@@ -75,7 +75,7 @@ namespace Cassandra.IntegrationTests.Policies.Tests
             var traces = new List<QueryTrace>();
             for (var i = -10; i < 10; i++)
             {
-                var partitionKey = BitConverter.GetBytes(i).Reverse().ToArray();
+                var partitionKey = BitConverter.GetBytes(i).AsEnumerable().Reverse().ToArray();
                 var statement = new SimpleStatement(string.Format("INSERT INTO " + policyTestTools.TableName + " (k, i) VALUES ({0}, {0})", i))
                     .SetRoutingKey(new RoutingKey() { RawRoutingKey = partitionKey })
                     .EnableTracing();
@@ -152,7 +152,7 @@ namespace Cassandra.IntegrationTests.Policies.Tests
                 var statement = new SimpleStatement(string.Format("INSERT INTO " + policyTestTools.TableName + " (k1, k2, i) VALUES ('{0}', {0}, {0})", i))
                     .SetRoutingKey(
                         new RoutingKey() { RawRoutingKey = Encoding.UTF8.GetBytes(i.ToString()) },
-                        new RoutingKey() { RawRoutingKey = BitConverter.GetBytes(i).Reverse().ToArray() })
+                        new RoutingKey() { RawRoutingKey = BitConverter.GetBytes(i).AsEnumerable().Reverse().ToArray() })
                     .EnableTracing();
                 var rs = session.Execute(statement);
                 traces.Add(rs.Info.QueryTrace);

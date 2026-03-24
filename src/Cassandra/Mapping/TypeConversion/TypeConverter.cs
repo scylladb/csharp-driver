@@ -22,6 +22,7 @@ using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
 using Cassandra.Collections;
+using Cassandra.Helpers;
 
 namespace Cassandra.Mapping.TypeConversion
 {
@@ -89,6 +90,10 @@ namespace Cassandra.Mapping.TypeConversion
         private static readonly MethodInfo ConvertIDictionaryToDbTypeMethod = typeof(TypeConverter)
             .GetTypeInfo().GetMethod(nameof(ConvertIDictionaryToDbType), PrivateInstance);
 
+        private static readonly MethodInfo InvokeConverterMethod = typeof(TypeConverter)
+            .GetMethod(nameof(InvokeConverter), BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("InvokeConverter method not found via reflection.");
+
         private readonly ConcurrentDictionary<Tuple<Type, Type>, Delegate> _fromDbConverterCache;
         private readonly ConcurrentDictionary<Tuple<Type, Type>, Delegate> _toDbConverterCache;
 
@@ -141,7 +146,7 @@ namespace Cassandra.Mapping.TypeConversion
                 throw new InvalidTypeException($"No converter is available from Type {valueType} is not convertible to type {dbType}");
             }
 
-            return converter.DynamicInvoke(value);
+            return SafeInvokeConverter(converter, value, valueType, dbType);
         }
 
         /// <summary>
@@ -155,7 +160,7 @@ namespace Cassandra.Mapping.TypeConversion
                 throw new InvalidTypeException($"No converter is available from Type {dbType} is not convertible to type {valueType}");
             }
 
-            return converter.DynamicInvoke(value);
+            return SafeInvokeConverter(converter, value, dbType, valueType);
         }
 
         /// <summary>
@@ -242,7 +247,7 @@ namespace Cassandra.Mapping.TypeConversion
                         return null;
                     }
 
-                    Func<TDatabase, TPoco> mapper = d => d == null ? default(TPoco) : (TPoco)deleg.DynamicInvoke(d);
+                    Func<TDatabase, TPoco> mapper = d => d == null ? default(TPoco) : (TPoco)SafeInvokeConverter(deleg, d, typeof(TDatabase), underlyingType);
                     return mapper;
                 }
             }
@@ -451,7 +456,7 @@ namespace Cassandra.Mapping.TypeConversion
                     {
                         if (d != null)
                         {
-                            return (TDatabase)deleg.DynamicInvoke(d);
+                            return (TDatabase)SafeInvokeConverter(deleg, d, underlyingType, typeof(TDatabase));
                         }
 
                         if (default(TDatabase) != null)
@@ -722,6 +727,53 @@ namespace Cassandra.Mapping.TypeConversion
         /// <typeparam name="TDatabase">The Type expected by C* for the database column.</typeparam>
         /// <returns>A Func that can converter between the two Types or null if one is not available.</returns>
         protected abstract Func<TPoco, TDatabase> GetUserDefinedToDbConverter<TPoco, TDatabase>();
+
+        /// <summary>
+        /// Invokes a converter delegate without using DynamicInvoke.
+        /// DynamicInvoke may fail on .NET 9+ for certain dynamically compiled delegates,
+        /// and is slower than a properly-typed invocation even for pre-built delegates.
+        /// </summary>
+        internal static object SafeInvokeConverter(Delegate converter, object value, Type sourceType, Type destType)
+        {
+            var invoker = ReflectionDelegateCache<(Type, Type), Func<Delegate, object, object>>.GetOrAdd(
+                (sourceType, destType), InvokeConverterMethod, key => new[] { key.Item1, key.Item2 });
+            return invoker(converter, value);
+        }
+
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Delegate, Delegate> ReboundDelegateCache = new();
+
+        private static object InvokeConverter<TSource, TDest>(Delegate del, object value)
+        {
+            if (del is Func<TSource, TDest> func)
+            {
+                return func((TSource)value);
+            }
+
+            // Fallback for user-defined converters that return a non-Func delegate type.
+            // Re-bind the delegate's method as a proper Func<TSource, TDest> so that we
+            // avoid both DynamicInvoke and Method.Invoke, which can fail on .NET 9+ for
+            // dynamically compiled delegates. The result is cached so re-binding happens
+            // only once per delegate instance.
+            var cached = (Func<TSource, TDest>)ReboundDelegateCache.GetValue(del, d =>
+            {
+                try
+                {
+                    return d.Target != null
+                        ? (Func<TSource, TDest>)Delegate.CreateDelegate(typeof(Func<TSource, TDest>), d.Target, d.Method)
+                        : (Func<TSource, TDest>)Delegate.CreateDelegate(typeof(Func<TSource, TDest>), d.Method);
+                }
+                catch (ArgumentException ex)
+                {
+                    throw new InvalidOperationException(
+                        $"Failed to invoke type converter from {typeof(TSource)} to {typeof(TDest)}. " +
+                        $"The delegate type '{d.GetType()}' (declaring type: {d.Method.DeclaringType}) " +
+                        $"could not be re-bound as Func<{typeof(TSource).Name}, {typeof(TDest).Name}>. " +
+                        "Ensure that user-defined type converters return a compatible Func<TSource, TDest> delegate.",
+                        ex);
+                }
+            });
+            return cached((TSource)value);
+        }
     }
 
     internal static class ReflectionUtils
