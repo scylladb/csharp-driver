@@ -22,6 +22,7 @@ using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
 using Cassandra.Data.Linq.ExpressionParsing;
+using Cassandra.Helpers;
 using Cassandra.Mapping;
 using Cassandra.Mapping.Utils;
 
@@ -59,6 +60,78 @@ namespace Cassandra.Data.Linq
         private int _limit;
 
         private static readonly ICqlIdentifierHelper CqlIdentifierHelper = new CqlIdentifierHelper();
+
+        private static readonly MethodInfo InvokeFuncMethod = typeof(CqlExpressionVisitor)
+            .GetMethod(nameof(InvokeFunc), BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("InvokeFunc method not found via reflection.");
+
+        /// <summary>
+        /// Compiles and evaluates an expression tree without using DynamicInvoke,
+        /// which throws on .NET 9 for dynamically compiled delegates.
+        /// Also unwraps ref struct types (e.g. ReadOnlySpan) that .NET 9+
+        /// introduces when resolving MemoryExtensions.Contains.
+        /// </summary>
+        private static object EvaluateExpression(Expression expression)
+        {
+            // Unwrap ref struct wrappers (ReadOnlySpan<T>, Span<T>, etc.)
+            // that can't be boxed, used as generic arguments, or invoked via reflection.
+            //
+            // .NET 9+ resolves collection.Contains(item) as
+            // MemoryExtensions.Contains(collection.AsSpan(), item), producing
+            // ReadOnlySpan<T> intermediaries. We peel these back to the underlying
+            // collection; the Contains semantics are handled separately by
+            // EvaluateContainsMethod.
+            const int maxUnwrapIterations = 10;
+            for (var i = 0; i < maxUnwrapIterations && expression.Type.IsByRefLike; i++)
+            {
+                if (expression is UnaryExpression unary)
+                {
+                    expression = unary.Operand;
+                }
+                else if (expression is MethodCallExpression call
+                         && call.Method.DeclaringType?.FullName == "System.MemoryExtensions"
+                         && call.Arguments.Count > 0)
+                {
+                    // MemoryExtensions static methods take the source collection as the
+                    // first argument (e.g. AsSpan(list)). Unwrap to that collection so
+                    // the caller can evaluate it normally.
+                    expression = call.Arguments[0];
+                }
+                else
+                {
+                    throw new InvalidOperationException(
+                        $"Cannot evaluate expression of ref struct type '{expression.Type}'. " +
+                        $"Expression: {expression}. " +
+                        (expression is MethodCallExpression mc
+                            ? $"Unsupported method: {mc.Method.DeclaringType?.FullName}.{mc.Method.Name}. "
+                            : "") +
+                        "This LINQ expression pattern is not supported.");
+                }
+            }
+
+            if (expression.Type.IsByRefLike)
+            {
+                throw new InvalidOperationException(
+                    $"Failed to unwrap ref struct type '{expression.Type}' after {maxUnwrapIterations} iterations. " +
+                    $"Expression: {expression}. This LINQ expression pattern is not supported.");
+            }
+
+            var compiled = Expression.Lambda(expression).Compile();
+            var invoker = ReflectionDelegateCache<Type, Func<Delegate, object>>.GetOrAdd(
+                expression.Type, InvokeFuncMethod, t => new[] { t });
+            return invoker(compiled);
+        }
+
+        private static object InvokeFunc<T>(Delegate del)
+        {
+            if (del is Func<T> func)
+            {
+                return func();
+            }
+            throw new InvalidOperationException(
+                $"Compiled expression delegate was {del.GetType()}, expected Func<{typeof(T)}>. " +
+                "This LINQ expression pattern may not be supported.");
+        }
 
         private readonly IList<Tuple<PocoColumn, object, ExpressionType>> _projections =
             new List<Tuple<PocoColumn, object, ExpressionType>>();
@@ -577,7 +650,7 @@ namespace Cassandra.Data.Linq
             }
             else
             {
-                value = Expression.Lambda(node).Compile().DynamicInvoke();
+                value = EvaluateExpression(node);
             }
             if (column == null)
             {
@@ -607,7 +680,7 @@ namespace Cassandra.Data.Linq
                 case nameof(string.StartsWith) when node.Method.DeclaringType == typeof(string):
                     Visit(node.Object);
                     var startsWithArgument = node.Arguments[0];
-                    var startString = (string)Expression.Lambda(startsWithArgument).Compile().DynamicInvoke();
+                    var startString = (string)EvaluateExpression(startsWithArgument);
                     var endString = startString + CqlExpressionVisitor.Utf8MaxValue;
                     // Create 2 conditions, ie: WHERE col1 >= startString AND col2 < endString
                     var column = condition.Column;
@@ -650,7 +723,7 @@ namespace Cassandra.Data.Linq
                     return node;
             }
             // Try to invoke to obtain the parameter value
-            condition.SetParameter(Expression.Lambda(node).Compile().DynamicInvoke());
+            condition.SetParameter(EvaluateExpression(node));
             return node;
         }
 
@@ -678,7 +751,7 @@ namespace Cassandra.Data.Linq
                 EvaluateCompositeColumn(columnExpression);
             }
 
-            var values = Expression.Lambda(parameterExpression).Compile().DynamicInvoke() as IEnumerable;
+            var values = EvaluateExpression(parameterExpression) as IEnumerable;
             if (values == null)
             {
                 throw new InvalidOperationException("Contains parameter must be IEnumerable");
@@ -751,17 +824,17 @@ namespace Cassandra.Data.Linq
             }
             // Use the last argument (valid for maps and list/sets)
             var argument = node.Arguments[node.Arguments.Count - 1];
-            var value = Expression.Lambda(argument).Compile().DynamicInvoke();
+            var value = EvaluateExpression(argument);
             _projections.Add(Tuple.Create(column, value, expressionType));
             return true;
         }
 
         private static Expression DropNullableConversion(Expression node)
         {
-            if (node is UnaryExpression && node.NodeType == ExpressionType.Convert && node.Type.GetTypeInfo().IsGenericType &&
-                string.Compare(node.Type.Name, "Nullable`1", StringComparison.Ordinal) == 0)
+            if (node is UnaryExpression unary && unary.NodeType == ExpressionType.Convert &&
+                Nullable.GetUnderlyingType(unary.Type) != null)
             {
-                return (node as UnaryExpression).Operand;
+                return unary.Operand;
             }
             return node;
         }
@@ -788,7 +861,7 @@ namespace Cassandra.Data.Linq
                 }
                 else
                 {
-                    var val = Expression.Lambda(node).Compile().DynamicInvoke();
+                    var val = EvaluateExpression(node);
                     condition.SetParameter(val);
                 }
                 return node;
@@ -803,7 +876,7 @@ namespace Cassandra.Data.Linq
                 }
                 if (column != null && column.IsCounter)
                 {
-                    var value = Expression.Lambda(node).Compile().DynamicInvoke();
+                    var value = EvaluateExpression(node);
                     if (!(value is long || value is int))
                     {
                         throw new ArgumentException("Only Int64 and Int32 values are supported as counter increment of decrement values");
@@ -876,7 +949,7 @@ namespace Cassandra.Data.Linq
 
                 if (!CqlExpressionVisitor.CqlUnsupTags.Contains(node.NodeType))
                 {
-                    condition.SetParameter(Expression.Lambda(node).Compile().DynamicInvoke());
+                    condition.SetParameter(EvaluateExpression(node));
                     return node;
                 }
             }
@@ -1115,7 +1188,7 @@ namespace Cassandra.Data.Linq
             }
             else
             {
-                value = Expression.Lambda(node).Compile().DynamicInvoke();
+                value = EvaluateExpression(node);
             }
             return value;
         }
