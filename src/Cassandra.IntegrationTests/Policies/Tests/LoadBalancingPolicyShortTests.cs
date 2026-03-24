@@ -382,7 +382,7 @@ namespace Cassandra.IntegrationTests.Policies.Tests
                 // Manually calculate the routing key
                 var routingKey = SerializerManager.Default.GetCurrentSerializer().Serialize(id);
                 // Get the replicas
-                var replicas = cluster.GetReplicas(ks, routingKey);
+                var replicas = cluster.GetReplicas(ks, "tbl1", routingKey);
                 Assert.AreEqual(metadataSync ? 2 : 1, replicas.Count);
                 CollectionAssert.AreEquivalent(replicas.Select(h => h.Host.Address), coordinators);
             }
