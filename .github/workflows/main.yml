@@ -45,7 +45,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: '9.0.x'
+          global-json-file: global.json
 
       - name: Run dotnet format (checks formatting)
         run: make check
@@ -80,9 +80,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Setup .NET ${{ matrix.dotnet-version }}
+      - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
+          global-json-file: global.json
           dotnet-version: ${{ matrix.dotnet-version }}
 
       - name: Set up JDK 8
