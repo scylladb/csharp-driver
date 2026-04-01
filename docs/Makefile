@@ -1,8 +1,8 @@
 # Global variables
 # You can set these variables from the command line.
-POETRY        = poetry
+UV            = uv
 SPHINXOPTS    = -j auto
-SPHINXBUILD   = $(POETRY) run sphinx-build
+SPHINXBUILD   = $(UV) run sphinx-build
 PAPER         =
 BUILDDIR      = _build
 SOURCEDIR     = source
@@ -19,7 +19,7 @@ all: dirhtml
 # Setup commands
 .PHONY: setupenv
 setupenv:
-	pip install -q poetry
+	pip install -q uv
 	@if command -v dotnet >/dev/null 2>&1; then \
 		echo "Installing docfx..."; \
 		dotnet tool update -g docfx; \
@@ -31,11 +31,11 @@ setupenv:
 
 .PHONY: setup
 setup:
-	$(POETRY) install
+	$(UV) sync
 
 .PHONY: update
 update:
-	$(POETRY) update
+	$(UV) sync --upgrade
 
 # Clean commands
 .PHONY: pristine
@@ -74,13 +74,13 @@ epub3: setup
 
 .PHONY: multiversion
 multiversion: setup
-	$(POETRY) run ./_utils/multiversion.sh
+	$(UV) run ./_utils/multiversion.sh
 	@echo
 	@echo "Build finished. The HTML pages are in $(BUILDDIR)/dirhtml."
 
 .PHONY: redirects
 redirects: setup
-	$(POETRY) run redirects-cli fromfile --yaml-file _utils/redirects.yaml --output-dir $(BUILDDIR)/dirhtml
+	$(UV) run redirects-cli fromfile --yaml-file _utils/redirects.yaml --output-dir $(BUILDDIR)/dirhtml
 	@echo
 	@echo "Build finished. The HTML pages are in $(BUILDDIR)/dirhtml."
 
@@ -88,11 +88,11 @@ redirects: setup
 .PHONY: preview
 preview: setup
 	cd .. && ./docs/_utils/docfx.sh
-	$(POETRY) run sphinx-autobuild -b dirhtml $(ALLSPHINXOPTS) $(BUILDDIR)/dirhtml --port 5500
+	$(UV) run sphinx-autobuild -b dirhtml $(ALLSPHINXOPTS) $(BUILDDIR)/dirhtml --port 5500
 
 .PHONY: multiversionpreview
 multiversionpreview: multiversion
-	$(POETRY) run python3 -m http.server 5500 --directory $(BUILDDIR)/dirhtml
+	$(UV) run python3 -m http.server 5500 --directory $(BUILDDIR)/dirhtml
 
 # Test commands
 .PHONY: test
