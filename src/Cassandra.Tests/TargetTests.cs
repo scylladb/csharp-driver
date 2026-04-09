@@ -33,7 +33,11 @@ namespace Cassandra.Tests
                             .GetCustomAttribute<TargetFrameworkAttribute>()?
                             .FrameworkName;
 
+#if NET8_0_OR_GREATER
+            Assert.AreEqual(".NETCoreApp,Version=v8.0", framework);
+#else
             Assert.AreEqual(".NETStandard,Version=v2.0", framework);
+#endif
         }
 #else
         [Test]
