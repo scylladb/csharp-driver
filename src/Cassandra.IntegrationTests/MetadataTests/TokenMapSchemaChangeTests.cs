@@ -96,7 +96,7 @@ namespace Cassandra.IntegrationTests.MetadataTests
             {
                 var replicas = newCluster.Metadata.TokenToReplicasMap.GetByKeyspace(keyspaceName);
                 Assert.AreEqual(newCluster.Metadata.Hosts.Sum(h => h.Tokens.Count()), replicas.Count);
-                Assert.AreEqual(3, newCluster.Metadata.GetReplicas(keyspaceName, Encoding.UTF8.GetBytes("123")).Count);
+                Assert.AreEqual(3, newCluster.Metadata.GetReplicas(keyspaceName, null, Encoding.UTF8.GetBytes("123")).Count);
             });
 
             Assert.AreEqual(3, newCluster.Metadata.Hosts.Count(h => h.IsUp));
@@ -108,7 +108,7 @@ namespace Cassandra.IntegrationTests.MetadataTests
             {
                 var replicas = newCluster.Metadata.TokenToReplicasMap.GetByKeyspace(keyspaceName);
                 Assert.AreEqual(newCluster.Metadata.Hosts.Sum(h => h.Tokens.Count()), replicas.Count);
-                Assert.AreEqual(2, newCluster.Metadata.GetReplicas(keyspaceName, Encoding.UTF8.GetBytes("123")).Count);
+                Assert.AreEqual(2, newCluster.Metadata.GetReplicas(keyspaceName, null, Encoding.UTF8.GetBytes("123")).Count);
             });
 
             Assert.AreEqual(3, newCluster.Metadata.Hosts.Count(h => h.IsUp));
