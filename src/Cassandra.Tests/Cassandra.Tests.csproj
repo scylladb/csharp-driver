@@ -11,15 +11,23 @@
     <SignAssembly>true</SignAssembly>
     <PackageId>Cassandra.Tests</PackageId>
     <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
-    <LangVersion>7.1</LangVersion>
+    <LangVersion>latest</LangVersion>
   </PropertyGroup>
-  <PropertyGroup Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('$(TargetFramework)', '^net\d$'))">
+  <PropertyGroup Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('$(TargetFramework)', '^net\d+$'))">
     <DefineConstants>$(DefineConstants);NETCOREAPP</DefineConstants>
+    <NoWarn>$(NoWarn);SYSLIB0051;SYSLIB0012;SYSLIB0039;CA1416</NoWarn>
   </PropertyGroup>
-  <ItemGroup>
+  <ItemGroup Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(TargetFramework)', '^net[89]$|^net\d{2,}$'))">
     <ProjectReference Include="..\Cassandra\Cassandra.csproj">
       <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
     </ProjectReference>
+  </ItemGroup>
+  <ItemGroup Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('$(TargetFramework)', '^net[89]$|^net\d{2,}$'))">
+    <ProjectReference Include="..\Cassandra\Cassandra.csproj">
+      <SetTargetFramework>TargetFramework=net8.0</SetTargetFramework>
+    </ProjectReference>
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\Extensions\Cassandra.AppMetrics\Cassandra.AppMetrics.csproj">
       <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
     </ProjectReference>

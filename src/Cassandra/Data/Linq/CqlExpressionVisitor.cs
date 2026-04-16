@@ -41,6 +41,39 @@ namespace Cassandra.Data.Linq
 
         private static readonly string Utf8MaxValue = Encoding.UTF8.GetString(new byte[] { 0xF4, 0x8F, 0xBF, 0xBF });
 
+        /// <summary>
+        /// Evaluates an expression by compiling it into a typed Func&lt;T&gt; delegate
+        /// and invoking it directly. This avoids:
+        /// 1. DynamicInvoke - which throws NotSupportedException on .NET 8+ for compiled delegates
+        /// 2. Expression.Convert to object - which can throw InvalidProgramException on .NET 9+
+        /// </summary>
+        private static object EvaluateExpressionValue(Expression expression)
+        {
+            // Ref structs (e.g. ReadOnlySpan<T>, Span<T>) cannot be used as generic type arguments.
+            // In .NET 9+, Enumerable.Contains() has overloads that accept ReadOnlySpan<T>, so the
+            // collection argument in the expression tree may be wrapped in a Convert node to
+            // ReadOnlySpan<T>. Unwrap it to recover the underlying enumerable.
+            if (expression.Type.IsByRefLike)
+            {
+                if (expression is UnaryExpression unary && unary.NodeType == ExpressionType.Convert)
+                {
+                    return EvaluateExpressionValue(unary.Operand);
+                }
+                throw new InvalidOperationException(
+                    $"Cannot evaluate expression of by-ref-like type '{expression.Type}'. " +
+                    "This may be caused by a ReadOnlySpan<T> overload being selected (e.g. Enumerable.Contains in .NET 9+).");
+            }
+            return EvalMethod.MakeGenericMethod(expression.Type).Invoke(null, new object[] { expression });
+        }
+
+        private static readonly MethodInfo EvalMethod =
+            typeof(CqlExpressionVisitor).GetMethod(nameof(CompileAndInvoke), BindingFlags.NonPublic | BindingFlags.Static);
+
+        private static object CompileAndInvoke<T>(Expression expression)
+        {
+            return Expression.Lambda<Func<T>>(expression).Compile().Invoke();
+        }
+
         private static readonly HashSet<ExpressionType> CqlUnsupTags = new HashSet<ExpressionType>
         {
             ExpressionType.Or,
@@ -577,7 +610,7 @@ namespace Cassandra.Data.Linq
             }
             else
             {
-                value = Expression.Lambda(node).Compile().DynamicInvoke();
+                value = EvaluateExpressionValue(node);
             }
             if (column == null)
             {
@@ -607,7 +640,7 @@ namespace Cassandra.Data.Linq
                 case nameof(string.StartsWith) when node.Method.DeclaringType == typeof(string):
                     Visit(node.Object);
                     var startsWithArgument = node.Arguments[0];
-                    var startString = (string)Expression.Lambda(startsWithArgument).Compile().DynamicInvoke();
+                    var startString = (string)EvaluateExpressionValue(startsWithArgument);
                     var endString = startString + CqlExpressionVisitor.Utf8MaxValue;
                     // Create 2 conditions, ie: WHERE col1 >= startString AND col2 < endString
                     var column = condition.Column;
@@ -650,7 +683,7 @@ namespace Cassandra.Data.Linq
                     return node;
             }
             // Try to invoke to obtain the parameter value
-            condition.SetParameter(Expression.Lambda(node).Compile().DynamicInvoke());
+            condition.SetParameter(EvaluateExpressionValue(node));
             return node;
         }
 
@@ -678,7 +711,7 @@ namespace Cassandra.Data.Linq
                 EvaluateCompositeColumn(columnExpression);
             }
 
-            var values = Expression.Lambda(parameterExpression).Compile().DynamicInvoke() as IEnumerable;
+            var values = EvaluateExpressionValue(parameterExpression) as IEnumerable;
             if (values == null)
             {
                 throw new InvalidOperationException("Contains parameter must be IEnumerable");
@@ -751,7 +784,7 @@ namespace Cassandra.Data.Linq
             }
             // Use the last argument (valid for maps and list/sets)
             var argument = node.Arguments[node.Arguments.Count - 1];
-            var value = Expression.Lambda(argument).Compile().DynamicInvoke();
+            var value = EvaluateExpressionValue(argument);
             _projections.Add(Tuple.Create(column, value, expressionType));
             return true;
         }
@@ -788,7 +821,7 @@ namespace Cassandra.Data.Linq
                 }
                 else
                 {
-                    var val = Expression.Lambda(node).Compile().DynamicInvoke();
+                    var val = EvaluateExpressionValue(node);
                     condition.SetParameter(val);
                 }
                 return node;
@@ -803,7 +836,7 @@ namespace Cassandra.Data.Linq
                 }
                 if (column != null && column.IsCounter)
                 {
-                    var value = Expression.Lambda(node).Compile().DynamicInvoke();
+                    var value = EvaluateExpressionValue(node);
                     if (!(value is long || value is int))
                     {
                         throw new ArgumentException("Only Int64 and Int32 values are supported as counter increment of decrement values");
@@ -876,7 +909,7 @@ namespace Cassandra.Data.Linq
 
                 if (!CqlExpressionVisitor.CqlUnsupTags.Contains(node.NodeType))
                 {
-                    condition.SetParameter(Expression.Lambda(node).Compile().DynamicInvoke());
+                    condition.SetParameter(EvaluateExpressionValue(node));
                     return node;
                 }
             }
@@ -1115,7 +1148,7 @@ namespace Cassandra.Data.Linq
             }
             else
             {
-                value = Expression.Lambda(node).Compile().DynamicInvoke();
+                value = EvaluateExpressionValue(node);
             }
             return value;
         }

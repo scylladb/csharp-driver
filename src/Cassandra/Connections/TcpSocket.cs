@@ -23,6 +23,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Tasks;
 using Microsoft.IO;
+#if NET8_0_OR_GREATER
+using System.Security.Authentication;
+#endif
 
 namespace Cassandra.Connections
 {
@@ -53,6 +56,12 @@ namespace Cassandra.Connections
         public SSLOptions SSLOptions { get; set; }
 
         /// <summary>
+        /// The per-cluster TLS session ticket cache for session resumption.
+        /// May be null if SSL is not configured.
+        /// </summary>
+        internal TlsSessionTicketCache TlsSessionTicketCache { get; set; }
+
+        /// <summary>
         /// Event that gets fired when new data is received.
         /// </summary>
         public event Action<byte[], int> Read;
@@ -72,11 +81,12 @@ namespace Cassandra.Connections
         /// <summary>
         /// Creates a new instance of TcpSocket using the endpoint and options provided.
         /// </summary>
-        public TcpSocket(IConnectionEndPoint endPoint, SocketOptions options, SSLOptions sslOptions)
+        public TcpSocket(IConnectionEndPoint endPoint, SocketOptions options, SSLOptions sslOptions, TlsSessionTicketCache tlsSessionTicketCache = null)
         {
             EndPoint = endPoint;
             Options = options;
             SSLOptions = sslOptions;
+            TlsSessionTicketCache = tlsSessionTicketCache;
 
             _socket = new Socket(EndPoint.SocketIpEndPoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp)
             {
@@ -199,6 +209,36 @@ namespace Cassandra.Connections
             TcpSocket.Logger.Verbose("Socket connected, starting SSL client authentication");
             //Stream mode: not the most performant but it has ssl support
             TcpSocket.Logger.Verbose("Starting SSL authentication");
+
+#if NET8_0_OR_GREATER
+            var serverName = await EndPoint.GetServerNameAsync().ConfigureAwait(false);
+            var sslStream = new SslStream(new NetworkStream(_socket), false);
+            _socketStream = sslStream;
+
+            // Use a timer to ensure that it does callback
+            var tcs = TaskHelper.TaskCompletionSourceWithTimeout<bool>(
+                Options.ConnectTimeoutMillis,
+                () => new TimeoutException("The timeout period elapsed prior to completion of SSL authentication operation."));
+
+            var authOptions = TlsSessionTicketCache.GetAuthenticationOptions(serverName, SSLOptions);
+            TcpSocket.Logger.Verbose("Using SslClientAuthenticationOptions with AllowTlsResume={0}", authOptions.AllowTlsResume);
+
+            sslStream.AuthenticateAsClientAsync(authOptions)
+                     .ContinueWith(t =>
+                     {
+                         if (t.Exception != null)
+                         {
+                             t.Exception.Handle(_ => true);
+                             tcs.TrySetException(t.Exception.InnerException);
+                             return;
+                         }
+                         tcs.TrySetResult(true);
+                     }, TaskContinuationOptions.ExecuteSynchronously)
+                     .Forget();
+
+            await tcs.Task.ConfigureAwait(false);
+            TcpSocket.Logger.Verbose("SSL authentication successful");
+#else
             var sslStream = new SslStream(new NetworkStream(_socket), false, SSLOptions.RemoteCertValidationCallback, null);
             _socketStream = sslStream;
             // Use a timer to ensure that it does callback
@@ -226,6 +266,7 @@ namespace Cassandra.Connections
 
             await tcs.Task.ConfigureAwait(false);
             TcpSocket.Logger.Verbose("SSL authentication successful");
+#endif
             ReceiveAsync();
             return true;
         }
