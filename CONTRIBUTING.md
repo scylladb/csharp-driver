@@ -120,29 +120,26 @@ The command `dotnet build src/Cassandra.sln` should succeed. Otherwise, you need
 You can build specific projects against specific target frameworks on any platform like this:
 
 ```bash
-dotnet build src/Cassandra/Cassandra.csproj -f netstandard2.0
-dotnet build src/Cassandra.Tests/Cassandra.Tests.csproj -f net8
-dotnet build src/Cassandra.IntegrationTests/Cassandra.IntegrationTests.csproj -f net8
+dotnet build src/Cassandra/Cassandra.csproj -f net8.0
+dotnet build src/Cassandra.Tests/Cassandra.Tests.csproj -f net8.0
+dotnet build src/Cassandra.IntegrationTests/Cassandra.IntegrationTests.csproj -f net8.0
 ```
-
-Alternatively you can set the `BuildCoreOnly` environment variable which will cause the projects to support .NET Core / .NET Standard targets only (you can see the conditions on the `.csproj` files).
 
 ### Running Unit Tests
 
 ```bash
-dotnet test src/Cassandra.Tests/Cassandra.Tests.csproj -f net8
+dotnet test src/Cassandra.Tests/Cassandra.Tests.csproj -f net8.0
 ```
 
-The target framework supported by the test projects is `net8` (by default). If you set the `BuildAllTargets` environment variable, the test projects will support these targets:
+The target framework supported by the test projects is `net8.0` (by default). If you set the `BuildAllTargets` environment variable, the test projects will support these targets:
 
-- `net6` 
-- `net7`(not LTS, might be removed at some point)
-- `net8`
+- `net8.0`
+- `net9.0`
 
 Running the unit tests for a single target should take no more than 5 minutes (usually less):
 
 ```bash
-dotnet test src/Cassandra.Tests/Cassandra.Tests.csproj -c Release -f net8 -l "console;verbosity=detailed"
+dotnet test src/Cassandra.Tests/Cassandra.Tests.csproj -c Release -f net8.0 -l "console;verbosity=detailed"
 ```
 
 ### Running Integration Tests

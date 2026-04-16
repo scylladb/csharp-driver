@@ -49,7 +49,7 @@ namespace Cassandra
         {
             var buffer = new byte[_stream.Length];
             _stream.Position = 0;
-            Utils.ReadExactly(_stream, buffer, 0, _stream.Length > int.MaxValue ? int.MaxValue : (int)_stream.Length);
+            _stream.ReadExactly(buffer, 0, _stream.Length > int.MaxValue ? int.MaxValue : (int)_stream.Length);
             return buffer;
         }
 
