@@ -139,6 +139,78 @@ namespace Cassandra.IntegrationTests.MetadataTests
             }
         }
 
+        [Test]
+        public void AllClusters_Should_DetectDecommission_When_ContactPointNodeIsDecommissioned()
+        {
+            // Regression test for https://github.com/scylladb/csharp-driver/issues/202
+            //
+            // When the control connection is on the node being decommissioned, it must
+            // reconnect to a surviving node. The TOPOLOGY_CHANGE REMOVED_NODE event may
+            // be broadcast while the CC is disconnected. Without the post-reconnection
+            // node list refresh, the CC never learns about the decommissioned node.
+            //
+            // Using multiple independent Cluster objects (all initially on node 1) makes
+            // it very likely that at least one CC will miss the event, turning this
+            // probabilistic race condition into a near-certain test failure.
+
+            const int clusterCount = 5;
+            var clusters = new List<ICluster>();
+            var listener = new TestTraceListener();
+            var level = Diagnostics.CassandraTraceSwitch.Level;
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                TestCluster = TestClusterManager.CreateNew(3, new TestClusterOptions { UseVNodes = true });
+
+                for (var i = 0; i < clusterCount; i++)
+                {
+                    var cluster = ClusterBuilder()
+                        .AddContactPoint(TestCluster.InitialContactPoint)
+                        .WithMetadataSyncOptions(new MetadataSyncOptions().SetMetadataSyncEnabled(true))
+                        .WithReconnectionPolicy(new ConstantReconnectionPolicy(1000))
+                        .Build();
+                    clusters.Add(cluster);
+                    cluster.Connect();
+                }
+
+                TestHelper.RetryAssert(() =>
+                {
+                    foreach (var cluster in clusters)
+                    {
+                        Assert.AreEqual(3, cluster.Metadata.Hosts.Count);
+                    }
+                }, 100, 150);
+
+                TestCluster.DecommissionNode(1);
+                TestCluster.Stop(1);
+
+                TestHelper.RetryAssert(() =>
+                {
+                    for (var i = 0; i < clusters.Count; i++)
+                    {
+                        Assert.AreEqual(2, clusters[i].Metadata.Hosts.Count,
+                            $"Cluster[{i}].Metadata.Hosts.Count");
+                    }
+                }, 1000, 120);
+            }
+            catch (Exception ex)
+            {
+                Trace.Flush();
+                Assert.Fail("Exception: " + ex + Environment.NewLine +
+                            string.Join(Environment.NewLine, listener.Queue.ToArray()));
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = level;
+                foreach (var cluster in clusters)
+                {
+                    cluster?.Shutdown();
+                }
+            }
+        }
+
         [TearDown]
         public void TearDown()
         {
