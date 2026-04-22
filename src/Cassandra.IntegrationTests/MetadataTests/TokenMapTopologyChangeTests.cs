@@ -61,7 +61,7 @@ namespace Cassandra.IntegrationTests.MetadataTests
                 var sessionNotSync = ClusterObjNotSync.Connect();
                 var sessionSync = ClusterObjSync.Connect();
 
-                var createKeyspaceCql = $"CREATE KEYSPACE {keyspaceName} WITH replication = {{'class': 'SimpleStrategy', 'replication_factor' : 3}}";
+                var createKeyspaceCql = $"CREATE KEYSPACE {keyspaceName} WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor' : 3}}";
                 sessionNotSync.Execute(createKeyspaceCql);
 
                 TestUtils.WaitForSchemaAgreement(ClusterObjNotSync);

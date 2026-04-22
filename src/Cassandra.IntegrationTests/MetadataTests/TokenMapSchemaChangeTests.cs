@@ -43,7 +43,7 @@ namespace Cassandra.IntegrationTests.MetadataTests
             Assert.AreEqual(3, newCluster.Metadata.Hosts.Count);
 
             Assert.IsNull(newCluster.Metadata.TokenToReplicasMap.GetByKeyspace(keyspaceName));
-            var createKeyspaceCql = $"CREATE KEYSPACE {keyspaceName} WITH replication = {{'class': 'SimpleStrategy', 'replication_factor' : 3}}";
+            var createKeyspaceCql = $"CREATE KEYSPACE {keyspaceName} WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor' : 3}}";
 
             newSession.Execute(createKeyspaceCql);
             TestUtils.WaitForSchemaAgreement(newCluster);
@@ -65,7 +65,7 @@ namespace Cassandra.IntegrationTests.MetadataTests
         public void TokenMap_Should_UpdateExistingTokenMap_When_KeyspaceIsRemoved()
         {
             var keyspaceName = TestUtils.GetUniqueKeyspaceName().ToLower();
-            var createKeyspaceCql = $"CREATE KEYSPACE {keyspaceName} WITH replication = {{'class': 'SimpleStrategy', 'replication_factor' : 3}}";
+            var createKeyspaceCql = $"CREATE KEYSPACE {keyspaceName} WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor' : 3}}";
             Session.Execute(createKeyspaceCql);
             TestUtils.WaitForSchemaAgreement(Cluster);
 
@@ -86,7 +86,7 @@ namespace Cassandra.IntegrationTests.MetadataTests
         public void TokenMap_Should_UpdateExistingTokenMap_When_KeyspaceIsChanged()
         {
             var keyspaceName = TestUtils.GetUniqueKeyspaceName().ToLower();
-            var createKeyspaceCql = $"CREATE KEYSPACE {keyspaceName} WITH replication = {{'class': 'SimpleStrategy', 'replication_factor' : 3}}";
+            var createKeyspaceCql = $"CREATE KEYSPACE {keyspaceName} WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor' : 3}}";
             Session.Execute(createKeyspaceCql);
             TestUtils.WaitForSchemaAgreement(Cluster);
 
@@ -101,7 +101,7 @@ namespace Cassandra.IntegrationTests.MetadataTests
 
             Assert.AreEqual(3, newCluster.Metadata.Hosts.Count(h => h.IsUp));
             var oldTokenMap = newCluster.Metadata.TokenToReplicasMap;
-            var alterKeyspaceCql = $"ALTER KEYSPACE {keyspaceName} WITH replication = {{'class': 'SimpleStrategy', 'replication_factor' : 2}}";
+            var alterKeyspaceCql = $"ALTER KEYSPACE {keyspaceName} WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor' : 2}}";
             newSession.Execute(alterKeyspaceCql);
             TestUtils.WaitForSchemaAgreement(newCluster);
             TestHelper.RetryAssert(() =>

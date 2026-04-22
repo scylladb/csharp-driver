@@ -53,12 +53,13 @@ namespace Cassandra.IntegrationTests.Data
             var cmd = _connection.CreateCommand();
 
             string keyspaceName = "keyspace_ado_1";
-            cmd.CommandText = string.Format(TestUtils.CreateKeyspaceSimpleFormat, keyspaceName, 3);
+            cmd.CommandText = string.Format(TestUtils.CreateKeyspaceGenericFormat, keyspaceName, "NetworkTopologyStrategy",
+                                              string.Format("'replication_factor' : {0}", 3));
             cmd.ExecuteNonQuery();
 
             VerifyStatement(
                 QueryType.Query,
-                $"CREATE KEYSPACE \"{keyspaceName}\" WITH replication = {{ 'class' : 'SimpleStrategy', 'replication_factor' : {3} }}",
+                $"CREATE KEYSPACE {keyspaceName} WITH replication = {{ 'class' : 'NetworkTopologyStrategy', 'replication_factor' : {3} }}",
                 1);
 
             _connection.ChangeDatabase(keyspaceName);

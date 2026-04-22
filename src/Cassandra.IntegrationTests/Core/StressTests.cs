@@ -45,7 +45,7 @@ namespace Cassandra.IntegrationTests.Core
                 var session = cluster.Connect();
                 var uniqueKsName = "keyspace_" + Randomm.RandomAlphaNum(10);
                 session.Execute(@"CREATE KEYSPACE " + uniqueKsName +
-                                " WITH replication = {'class': 'SimpleStrategy', 'replication_factor' : 3};");
+                                " WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 3};");
                 session.ChangeKeyspace(uniqueKsName);
 
                 var tableName = "table_" + Guid.NewGuid().ToString("N").ToLower();
@@ -102,7 +102,7 @@ namespace Cassandra.IntegrationTests.Core
                 var session = cluster.Connect();
                 var uniqueKsName = "keyspace_" + Randomm.RandomAlphaNum(10);
                 session.Execute(@"CREATE KEYSPACE " + uniqueKsName +
-                    " WITH replication = {'class': 'SimpleStrategy', 'replication_factor' : 3};");
+                    " WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 3};");
                 session.ChangeKeyspace(uniqueKsName);
 
                 var tableName = "table_" + Guid.NewGuid().ToString("N").ToLower();
