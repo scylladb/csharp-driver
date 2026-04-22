@@ -72,7 +72,7 @@ namespace Cassandra.IntegrationTests
             Assert.True(statementLWT.IsLwt, "LWT statement should be detected as LWT");
         }
 
-        [Test]
+        [Test, TestScyllaVersion(2026, 1)]
         public void Should_Use_Only_One_Node_When_LWT_Detected()
         {
             _realCluster = TestClusterManager.CreateNew(3);
@@ -84,7 +84,7 @@ namespace Cassandra.IntegrationTests
 
             // Create keyspace and table
             session.Execute("DROP KEYSPACE IF EXISTS lwt_test");
-            session.Execute($"CREATE KEYSPACE lwt_test WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': 3}}");
+            session.Execute($"CREATE KEYSPACE lwt_test WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor': 3}}");
             session.Execute($"USE lwt_test");
             session.Execute("CREATE TABLE foo (pk int, ck int, v int, PRIMARY KEY (pk, ck))");
 
@@ -125,7 +125,7 @@ namespace Cassandra.IntegrationTests
 
             // Create keyspace and table
             session.Execute("DROP KEYSPACE IF EXISTS lwt_test");
-            session.Execute($"CREATE KEYSPACE lwt_test WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': 3}}");
+            session.Execute($"CREATE KEYSPACE lwt_test WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor': 3}}");
             session.Execute($"USE lwt_test");
             session.Execute("CREATE TABLE foo (pk int, ck int, v int, PRIMARY KEY (pk, ck))");
 

@@ -266,7 +266,7 @@ namespace Cassandra.IntegrationTests.Mapping.Tests
         }
 
         /// <summary>
-        /// Successfully insert a new record into a table that was created with fluent mapping, 
+        /// Successfully insert a new record into a table that was created with fluent mapping,
         /// using Session.Execute to insert an Insert object created with table.Insert()
         /// </summary>
         [Test, TestCassandraVersion(2, 0)]
@@ -304,7 +304,7 @@ namespace Cassandra.IntegrationTests.Mapping.Tests
         }
 
         /// <summary>
-        /// By default Linq preserves class param casing, but cqlpoco does not, 
+        /// By default Linq preserves class param casing, but cqlpoco does not,
         /// so expect "unconfigured columnfamily" when trying to insert via cqlpoco using default settings
         /// This also validates that a private class can be used by the CqlPoco client
         /// </summary>
@@ -476,7 +476,7 @@ namespace Cassandra.IntegrationTests.Mapping.Tests
 
         /// Tests if timestamp is set on CqlQueryOptions.
         ///
-        /// The TIMESTAMP input is in microseconds. If not specified, the time (in microseconds) that the write occurred to the column is used. 
+        /// The TIMESTAMP input is in microseconds. If not specified, the time (in microseconds) that the write occurred to the column is used.
         /// when all nodes in the cluster is down, given a set ReadTimeoutMillis of 3 seconds.
         ///
         /// @since 2.1
@@ -557,8 +557,8 @@ namespace Cassandra.IntegrationTests.Mapping.Tests
                 var session = cluster.Connect();
                 session.CreateKeyspace(anotherKeyspace, new Dictionary<string, string>
                 {
-                    { "class", "SimpleStrategy"},
-                    { "replication_factor", "3"}
+                    { "class", "NetworkTopologyStrategy" },
+                    { "replication_factor", "1"}
                 });
                 session.ChangeKeyspace(anotherKeyspace);
 
@@ -593,7 +593,7 @@ namespace Cassandra.IntegrationTests.Mapping.Tests
                 var batch = mapper.CreateBatch();
                 batch.Insert(user1);
                 batch.Insert(user2);
-                var consistency = ConsistencyLevel.All;
+                var consistency = ConsistencyLevel.Three;
                 batch.WithOptions(o => o.SetConsistencyLevel(consistency));
                 //Timestamp for BATCH request is supported in Cassandra 2.1 or above.
                 if (TestClusterManager.CassandraVersion > Version.Parse("2.1"))
@@ -602,8 +602,8 @@ namespace Cassandra.IntegrationTests.Mapping.Tests
                     batch.WithOptions(o => o.SetTimestamp(timestamp));
                 }
                 var ex = Assert.Throws<UnavailableException>(() => mapper.Execute(batch));
-                Assert.AreEqual(ConsistencyLevel.All, ex.Consistency,
-                            "Consistency level of batch exception should be the same as specified at CqlQueryOptions: ALL");
+                Assert.AreEqual(ConsistencyLevel.Three, ex.Consistency,
+                            "Consistency level of batch exception should be the same as specified at CqlQueryOptions: THREE");
                 Assert.AreEqual(3, ex.RequiredReplicas);
                 Assert.AreEqual(1, ex.AliveReplicas);
             }

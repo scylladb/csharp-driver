@@ -48,9 +48,9 @@ namespace Cassandra.IntegrationTests.Core
         }
 
         /** name of test: ParallelInsertTest
-         * 
+         *
          * @param nothingActually.
-         * 
+         *
          */
         [Test]
         public void ParallelInsertTest()
@@ -59,7 +59,7 @@ namespace Cassandra.IntegrationTests.Core
             ISession localSession = localCluster.Connect();
             string keyspaceName = "kp_pi1_" + Randomm.RandomAlphaNum(10);
 
-            localSession.Execute(string.Format(@"CREATE KEYSPACE {0} WITH replication = {{ 'class' : 'SimpleStrategy', 'replication_factor' : 2 }};", keyspaceName));
+            localSession.Execute(string.Format(@"CREATE KEYSPACE {0} WITH replication = {{ 'class' : 'NetworkTopologyStrategy', 'replication_factor' : 2 }};", keyspaceName));
 
             TestUtils.WaitForSchemaAgreement(localCluster);
             localSession.ChangeKeyspace(keyspaceName);
@@ -105,7 +105,7 @@ namespace Cassandra.IntegrationTests.Core
                             }
 
                             ar[i] = localSession.BeginExecute(string.Format(@"
-                                INSERT INTO {0} (tweet_id, author, isok, body) 
+                                INSERT INTO {0} (tweet_id, author, isok, body)
                                 VALUES ({1},'test{2}',{3},'body{2}');",
                                 tableName, Guid.NewGuid(), i, i % 2 == 0 ? "false" : "true"), ConsistencyLevel.One, null, null);
                             Interlocked.MemoryBarrier();
@@ -229,8 +229,8 @@ namespace Cassandra.IntegrationTests.Core
             ISession localSession = localCluster.Connect();
             string keyspaceName = "kp_mat_" + Randomm.RandomAlphaNum(8);
             localSession.Execute(
-                string.Format(@"CREATE KEYSPACE {0} 
-                    WITH replication = {{ 'class' : 'SimpleStrategy', 'replication_factor' : 2 }};"
+                string.Format(@"CREATE KEYSPACE {0}
+                    WITH replication = {{ 'class' : 'NetworkTopologyStrategy', 'replication_factor' : 2 }};"
                                 , keyspaceName));
             localSession.ChangeKeyspace(keyspaceName);
 
@@ -295,7 +295,7 @@ namespace Cassandra.IntegrationTests.Core
             ISession localSession = localCluster.Connect();
             string keyspaceName = "keyspace" + Guid.NewGuid().ToString("N").ToLower();
             localSession.Execute(
-                    string.Format(@"CREATE KEYSPACE {0} WITH replication = {{ 'class' : 'SimpleStrategy', 'replication_factor' : 2 }};", keyspaceName));
+                    string.Format(@"CREATE KEYSPACE {0} WITH replication = {{ 'class' : 'NetworkTopologyStrategy', 'replication_factor' : 2 }};", keyspaceName));
             localSession.ChangeKeyspace(keyspaceName);
 
             string tableName = "table" + Guid.NewGuid().ToString("N").ToLower();

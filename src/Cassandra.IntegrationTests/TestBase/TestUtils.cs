@@ -40,7 +40,7 @@ namespace Cassandra.IntegrationTests.TestBase
         private const int DefaultSleepIterationMs = 1000;
 
         public static readonly string CreateKeyspaceSimpleFormat =
-            "CREATE KEYSPACE \"{0}\" WITH replication = {{ 'class' : 'SimpleStrategy', 'replication_factor' : {1} }}";
+            "CREATE KEYSPACE \"{0}\" WITH replication = {{ 'class' : 'NetworkTopologyStrategy', 'replication_factor' : {1} }} AND tablets = {{'enabled': false}}";
 
         public static readonly string CreateKeyspaceGenericFormat = "CREATE KEYSPACE {0} WITH replication = {{ 'class' : '{1}', {2} }}";
 

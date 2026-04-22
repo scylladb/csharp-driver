@@ -305,7 +305,7 @@ namespace Cassandra.IntegrationTests.Core
             {
                 var session = cluster.Connect();
                 //Will wait for all the nodes to have the same schema
-                session.Execute("CREATE KEYSPACE ks1 WITH replication = {'class': 'SimpleStrategy', 'replication_factor' : 3}");
+                session.Execute("CREATE KEYSPACE ks1 WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 3}");
             }
         }
 
@@ -324,7 +324,7 @@ namespace Cassandra.IntegrationTests.Core
             {
                 var session = cluster.Connect();
                 //Will wait for all the nodes to have the same schema
-                session.Execute("CREATE KEYSPACE ks1 WITH replication = {'class': 'SimpleStrategy', 'replication_factor' : 3}");
+                session.Execute("CREATE KEYSPACE ks1 WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 3}");
                 session.ChangeKeyspace("ks1");
                 TestHelper.ParallelInvoke(() =>
                 {

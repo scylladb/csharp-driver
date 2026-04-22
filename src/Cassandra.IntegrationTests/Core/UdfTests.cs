@@ -69,7 +69,7 @@ namespace Cassandra.IntegrationTests.Core
                 var session = cluster.Connect();
                 var queries = new List<string>
                 {
-                    "CREATE KEYSPACE  ks_udf WITH replication = {'class': 'SimpleStrategy', 'replication_factor' : 1}",
+                    "CREATE KEYSPACE  ks_udf WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 1}",
                     $"CREATE FUNCTION  ks_udf.return_one() RETURNS NULL ON NULL INPUT RETURNS int LANGUAGE {udfLanguage} AS 'return 1;'",
                     $"CREATE FUNCTION  ks_udf.plus(s int, v int) RETURNS NULL ON NULL INPUT RETURNS int LANGUAGE {udfLanguage} AS 'return s+v;'",
                     $"CREATE FUNCTION  ks_udf.plus(s bigint, v bigint) RETURNS NULL ON NULL INPUT RETURNS bigint LANGUAGE {udfLanguage} AS 'return s+v;'",

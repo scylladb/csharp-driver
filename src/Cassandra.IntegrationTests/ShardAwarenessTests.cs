@@ -26,7 +26,7 @@ namespace Cassandra.IntegrationTests
         [Test]
         public void CorrectShardInTracingTest()
         {
-            _realCluster = TestClusterManager.CreateNew();
+            _realCluster = TestClusterManager.CreateNew(1);
             var cluster = ClusterBuilder()
                           .WithSocketOptions(new SocketOptions().SetReadTimeoutMillis(22000).SetConnectTimeoutMillis(60000))
                           .AddContactPoint(_realCluster.InitialContactPoint)
@@ -34,7 +34,7 @@ namespace Cassandra.IntegrationTests
             var _session = cluster.Connect();
 
             _session.Execute("DROP KEYSPACE IF EXISTS shardawaretest");
-            _session.Execute("CREATE KEYSPACE shardawaretest WITH replication = {'class': 'SimpleStrategy', 'replication_factor': '3'}");
+            _session.Execute("CREATE KEYSPACE shardawaretest WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor': '1'} AND tablets = {'enabled': false}");
             _session.Execute("CREATE TABLE shardawaretest.t (pk text, ck text, v text, PRIMARY KEY (pk, ck))");
 
             var populateStatement = _session.Prepare("INSERT INTO shardawaretest.t (pk, ck, v) VALUES (?, ?, ?)");
