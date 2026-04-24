@@ -68,7 +68,7 @@ namespace Cassandra.Tests
                 if ((counter++) % 2 == 0)
                 {
                     //invert order
-                    actions = actions.Reverse().ToArray();
+                    actions = actions.AsEnumerable().Reverse().ToArray();
                 }
                 TestHelper.ParallelInvoke(actions);
             }, times);

@@ -452,7 +452,7 @@ namespace Cassandra.Mapping
                 // (TColumn) poco.SomeFieldOrProp
                 return Convert.ChangeType(value, column.ColumnType);
             }
-            return converter.DynamicInvoke(value);
+            return TypeConverter.SafeInvokeConverter(converter, value, column.MemberInfoType, column.ColumnType);
         }
 
         /// <summary>
