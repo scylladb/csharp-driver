@@ -324,7 +324,7 @@ namespace Cassandra.IntegrationTests.Core
 
         private void SetupForFrozenNestedCollectionTest(ISession session, string keyspaceName, string fqTableName)
         {
-            session.Execute(string.Format("CREATE KEYSPACE IF NOT EXISTS {0} WITH replication = {1};", keyspaceName, "{'class': 'SimpleStrategy', 'replication_factor' : 1}"));
+            session.Execute(string.Format("CREATE KEYSPACE IF NOT EXISTS {0} WITH replication = {1};", keyspaceName, "{'class': 'NetworkTopologyStrategy', 'replication_factor' : 1}"));
             session.Execute(string.Format("CREATE TABLE IF NOT EXISTS {0} " +
                                           "(id int primary key, " +
                                           "map1 map<text, frozen<list<text>>>," +

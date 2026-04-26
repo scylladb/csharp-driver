@@ -32,7 +32,7 @@ namespace Cassandra.IntegrationTests
             var _session = cluster.Connect();
 
             _session.Execute("DROP KEYSPACE IF EXISTS lwt_test");
-            _session.Execute($"CREATE KEYSPACE lwt_test WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor': '1'}}");
+            _session.Execute($"CREATE KEYSPACE lwt_test WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor': '1'}} AND tablets = {{'enabled': false}}");
             _session.Execute("CREATE TABLE IF NOT EXISTS lwt_test.bound_statement_test (a int PRIMARY KEY, b int)");
 
             // Prepare a non-LWT statement
@@ -59,7 +59,7 @@ namespace Cassandra.IntegrationTests
             var _session = cluster.Connect();
 
             _session.Execute("DROP KEYSPACE IF EXISTS lwt_test");
-            _session.Execute($"CREATE KEYSPACE lwt_test WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor': '1'}}");
+            _session.Execute($"CREATE KEYSPACE lwt_test WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor': '1'}} AND tablets = {{'enabled': false}}");
             _session.Execute("CREATE TABLE IF NOT EXISTS lwt_test.prepared_statement_test (a int PRIMARY KEY, b int)");
 
             // Prepare a non-LWT statement
@@ -84,7 +84,7 @@ namespace Cassandra.IntegrationTests
 
             // Create keyspace and table
             session.Execute("DROP KEYSPACE IF EXISTS lwt_test");
-            session.Execute($"CREATE KEYSPACE lwt_test WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': 3}}");
+            session.Execute($"CREATE KEYSPACE lwt_test WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor': 3}} AND tablets = {{'enabled': false}}");
             session.Execute($"USE lwt_test");
             session.Execute("CREATE TABLE foo (pk int, ck int, v int, PRIMARY KEY (pk, ck))");
 
@@ -125,7 +125,7 @@ namespace Cassandra.IntegrationTests
 
             // Create keyspace and table
             session.Execute("DROP KEYSPACE IF EXISTS lwt_test");
-            session.Execute($"CREATE KEYSPACE lwt_test WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': 3}}");
+            session.Execute($"CREATE KEYSPACE lwt_test WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor': 3}} AND tablets = {{'enabled': false}}");
             session.Execute($"USE lwt_test");
             session.Execute("CREATE TABLE foo (pk int, ck int, v int, PRIMARY KEY (pk, ck))");
 
@@ -156,7 +156,7 @@ namespace Cassandra.IntegrationTests
             var _session = cluster.Connect();
 
             _session.Execute("DROP KEYSPACE IF EXISTS lwt_test");
-            _session.Execute($"CREATE KEYSPACE lwt_test WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor': '1'}}");
+            _session.Execute($"CREATE KEYSPACE lwt_test WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor': '1'}} AND tablets = {{'enabled': false}}");
             _session.Execute("CREATE TABLE IF NOT EXISTS lwt_test.prepared_statement_test (a int PRIMARY KEY, b int)");
 
             // Prepare a non-LWT statement, but override it
@@ -181,7 +181,7 @@ namespace Cassandra.IntegrationTests
             var _session = cluster.Connect();
 
             _session.Execute("DROP KEYSPACE IF EXISTS lwt_test");
-            _session.Execute($"CREATE KEYSPACE lwt_test WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor': '1'}}");
+            _session.Execute($"CREATE KEYSPACE lwt_test WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor': '1'}} AND tablets = {{'enabled': false}}");
             _session.Execute("CREATE TABLE IF NOT EXISTS lwt_test.bound_statement_test (a int PRIMARY KEY, b int)");
 
             var statementNonLWT = _session.Prepare("UPDATE lwt_test.bound_statement_test SET b = ? WHERE a = ?");

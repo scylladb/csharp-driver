@@ -294,7 +294,7 @@ namespace Cassandra.IntegrationTests.Core
             using (var connection = CreateConnection())
             {
                 await connection.Open().ConfigureAwait(false);
-                await Query(connection, "CREATE KEYSPACE ks_conn_consume WITH replication = {'class': 'SimpleStrategy', 'replication_factor' : 1}")
+                await Query(connection, "CREATE KEYSPACE ks_conn_consume WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 1}")
                     .ConfigureAwait(false);
 
                 await Query(connection, "CREATE TABLE ks_conn_consume.tbl1 (id uuid primary key)").ConfigureAwait(false);
@@ -516,9 +516,9 @@ namespace Cassandra.IntegrationTests.Core
         public async Task SetKeyspace_Parallel_Calls_Serially_Executes()
         {
             const string queryKs1 = "create keyspace if not exists ks_to_switch_p1 WITH replication = " +
-                                    "{'class': 'SimpleStrategy', 'replication_factor' : 1}";
+                                    "{'class': 'NetworkTopologyStrategy', 'replication_factor' : 1}";
             const string queryKs2 = "create keyspace if not exists ks_to_switch_p2 WITH replication = " +
-                                    "{'class': 'SimpleStrategy', 'replication_factor' : 1}";
+                                    "{'class': 'NetworkTopologyStrategy', 'replication_factor' : 1}";
             // ReSharper disable AccessToDisposedClosure, AccessToModifiedClosure
             using (var connection = CreateConnection())
             {
@@ -565,8 +565,8 @@ namespace Cassandra.IntegrationTests.Core
         [Test]
         public void SetKeyspace_Serial_Calls_Serially_Executes()
         {
-            const string queryKs1 = "create keyspace ks_to_switch_s1 WITH replication = {'class': 'SimpleStrategy', 'replication_factor' : 1}";
-            const string queryKs2 = "create keyspace ks_to_switch_s2 WITH replication = {'class': 'SimpleStrategy', 'replication_factor' : 1}";
+            const string queryKs1 = "create keyspace ks_to_switch_s1 WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 1}";
+            const string queryKs2 = "create keyspace ks_to_switch_s2 WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 1}";
             using (var connection = CreateConnection())
             {
                 connection.Open().Wait();
@@ -606,7 +606,7 @@ namespace Cassandra.IntegrationTests.Core
         public void SetKeyspace_When_Disposing_Faults_Task()
         {
             //Invoke multiple times, as it involves different threads and can be scheduled differently
-            const string queryKs = "create keyspace ks_to_switch_when1 WITH replication = {'class': 'SimpleStrategy', 'replication_factor' : 1}";
+            const string queryKs = "create keyspace ks_to_switch_when1 WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 1}";
             using (var connection = CreateConnection())
             {
                 connection.Open().Wait();

@@ -57,8 +57,8 @@ namespace Cassandra.IntegrationTests.Policies.Tests
             }
         }
         /// <summary>
-        /// Validate that no hops occur when inserting into a single partition 
-        /// 
+        /// Validate that no hops occur when inserting into a single partition
+        ///
         /// @test_category load_balancing:dc_aware,round_robin
         /// @test_category replication_strategy
         /// </summary>
@@ -91,8 +91,8 @@ namespace Cassandra.IntegrationTests.Policies.Tests
         }
 
         /// <summary>
-        /// Validate that no hops occur when inserting GUID values into the key 
-        /// 
+        /// Validate that no hops occur when inserting GUID values into the key
+        ///
         /// @test_category load_balancing:dc_aware,round_robin
         /// @test_category replication_strategy
         /// </summary>
@@ -128,8 +128,8 @@ namespace Cassandra.IntegrationTests.Policies.Tests
         }
 
         /// <summary>
-        /// Validate that no hops occur when inserting into a composite key 
-        /// 
+        /// Validate that no hops occur when inserting into a composite key
+        ///
         /// @test_category load_balancing:dc_aware,round_robin
         /// @test_category replication_strategy
         /// </summary>
@@ -202,8 +202,8 @@ namespace Cassandra.IntegrationTests.Policies.Tests
         }
 
         /// <summary>
-        /// Validate that no hops occur when inserting string values via a prepared statement 
-        /// 
+        /// Validate that no hops occur when inserting string values via a prepared statement
+        ///
         /// @test_category load_balancing:dc_aware,round_robin
         /// @test_category replication_strategy
         /// @test_category prepared_statements
@@ -242,8 +242,8 @@ namespace Cassandra.IntegrationTests.Policies.Tests
         }
 
         /// <summary>
-        /// Validate that no hops occur when inserting int values via a prepared statement 
-        /// 
+        /// Validate that no hops occur when inserting int values via a prepared statement
+        ///
         /// @test_category load_balancing:dc_aware,round_robin
         /// @test_category replication_strategy
         /// @test_category prepared_statements
@@ -279,8 +279,8 @@ namespace Cassandra.IntegrationTests.Policies.Tests
         }
 
         /// <summary>
-        /// Validate that hops occur when the wrong partition is targeted 
-        /// 
+        /// Validate that hops occur when the wrong partition is targeted
+        ///
         /// @test_category load_balancing:dc_aware,round_robin
         /// @test_category replication_strategy
         /// </summary>
@@ -325,7 +325,7 @@ namespace Cassandra.IntegrationTests.Policies.Tests
                 var session = cluster.Connect();
                 Assert.AreEqual(256, cluster.AllHosts().First().Tokens.Count());
                 var ks = TestUtils.GetUniqueKeyspaceName();
-                session.Execute($"CREATE KEYSPACE \"{ks}\" WITH replication = {{'class': 'SimpleStrategy', 'replication_factor' : 1}}");
+                session.Execute($"CREATE KEYSPACE \"{ks}\" WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor' : 1}} AND tablets = {{'enabled': false}}");
                 session.ChangeKeyspace(ks);
                 session.Execute("CREATE TABLE tbl1 (id uuid primary key)");
                 var ps = session.Prepare("INSERT INTO tbl1 (id) VALUES (?)");
@@ -365,7 +365,7 @@ namespace Cassandra.IntegrationTests.Policies.Tests
                 // Connect without a keyspace
                 var session = cluster.Connect();
                 var ks = TestUtils.GetUniqueKeyspaceName();
-                session.Execute($"CREATE KEYSPACE \"{ks}\" WITH replication = {{'class': 'SimpleStrategy', 'replication_factor' : 2}}");
+                session.Execute($"CREATE KEYSPACE \"{ks}\" WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor' : 2}} AND tablets = {{'enabled': false}}");
                 session.ChangeKeyspace(ks);
                 session.Execute($"CREATE TABLE tbl1 (id uuid primary key)");
                 var ps = session.Prepare($"INSERT INTO tbl1 (id) VALUES (?)");
