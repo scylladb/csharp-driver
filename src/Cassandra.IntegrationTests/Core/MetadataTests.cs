@@ -52,10 +52,10 @@ namespace Cassandra.IntegrationTests.Core
             Assert.AreEqual(1, cluster.GetReplicas("ks2", new byte[] { 0, 0, 0, 1 }).Count);
 
             const string createKeyspaceQuery = "CREATE KEYSPACE {0} WITH replication = {{ 'class' : '{1}', {2} }}";
-            session.Execute(string.Format(createKeyspaceQuery, "ks1", "SimpleStrategy", "'replication_factor' : 1"));
-            session.Execute(string.Format(createKeyspaceQuery, "ks2", "SimpleStrategy", "'replication_factor' : 3"));
+            session.Execute(string.Format(createKeyspaceQuery, "ks1", "NetworkTopologyStrategy", "'replication_factor' : 1"));
+            session.Execute(string.Format(createKeyspaceQuery, "ks2", "NetworkTopologyStrategy", "'replication_factor' : 3"));
             session.Execute(string.Format(createKeyspaceQuery, "ks3", "NetworkTopologyStrategy", "'dc1' : 1"));
-            session.Execute(string.Format(createKeyspaceQuery, "\"KS4\"", "SimpleStrategy", "'replication_factor' : 3"));
+            session.Execute(string.Format(createKeyspaceQuery, "\"KS4\"", "NetworkTopologyStrategy", "'replication_factor' : 3"));
             //Let the magic happen
             Thread.Sleep(5000);
             Assert.Greater(cluster.Metadata.GetKeyspaces().Count, initialLength);
@@ -168,7 +168,7 @@ namespace Cassandra.IntegrationTests.Core
             TestHelper.Invoke(() => session.Execute("SELECT key FROM system.local WHERE key='local'"), 10);
             Assert.True(cluster.AllHosts().All(h => h.IsConsiderablyUp));
             //When the host of the control connection is used
-            //It can result that event UP is not fired as it is not received by the control connection (it reconnected but missed the event) 
+            //It can result that event UP is not fired as it is not received by the control connection (it reconnected but missed the event)
             Assert.True(upEventFired || useControlConnectionHost);
         }
 
@@ -262,17 +262,18 @@ namespace Cassandra.IntegrationTests.Core
         }
 
         [Test]
-        public void CheckSimpleStrategyKeyspace()
+        public void CheckNetworkTopologyStrategyKeyspace_SingleDatacenter()
         {
             ITestCluster testCluster = TestClusterManager.GetNonShareableTestCluster(DefaultNodeCount);
             var session = testCluster.Session;
             bool durableWrites = Randomm.Instance.NextBoolean();
             string keyspaceName = TestUtils.GetUniqueKeyspaceName();
 
-            string strategyClass = ReplicationStrategies.SimpleStrategy;
+            string strategyClass = ReplicationStrategies.NetworkTopologyStrategy;
             int replicationFactor = Randomm.Instance.Next(1, 21);
             session.CreateKeyspace(keyspaceName,
-                ReplicationStrategies.CreateSimpleStrategyReplicationProperty(replicationFactor),
+                ReplicationStrategies.CreateNetworkTopologyStrategyReplicationProperty(
+                    new Dictionary<string, int> { { "replication_factor", replicationFactor } }),
                 durableWrites);
             session.ChangeKeyspace(keyspaceName);
 
@@ -340,11 +341,11 @@ namespace Cassandra.IntegrationTests.Core
             ITestCluster testCluster = TestClusterManager.GetNonShareableTestCluster(DefaultNodeCount);
             var session = testCluster.Session;
 
-            const string strategyClass = "SimpleStrategy";
+            const string strategyClass = "NetworkTopologyStrategy";
             const bool durableWrites = false;
             const int replicationFactor = 1;
             string cql = string.Format(@"
-                        CREATE KEYSPACE {0} 
+                        CREATE KEYSPACE {0}
                         WITH replication = {{ 'class' : '{1}', 'replication_factor' : {2} }}
                         AND durable_writes={3};", keyspaceName, strategyClass, 1, durableWrites);
             session.Execute(cql);
@@ -504,11 +505,11 @@ namespace Cassandra.IntegrationTests.Core
             var testCluster = TestClusterManager.GetNonShareableTestCluster(3, DefaultMaxClusterCreateRetries, true, false);
             var queries = new[]
             {
-                "CREATE KEYSPACE ks1 WITH replication = {'class': 'SimpleStrategy', 'replication_factor' : 3};",
+                "CREATE KEYSPACE ks1 WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 3};",
                 "CREATE TABLE ks1.tbl1 (id uuid PRIMARY KEY, value text)",
                 "SELECT * FROM ks1.tbl1",
                 "SELECT * FROM ks1.tbl1 where id = d54cb06d-d168-45a0-b1b2-9f5c75435d3d",
-                "CREATE KEYSPACE ks2 WITH replication = {'class': 'SimpleStrategy', 'replication_factor' : 3};",
+                "CREATE KEYSPACE ks2 WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 3};",
                 "CREATE TABLE ks2.tbl2 (id uuid PRIMARY KEY, value text)",
                 "SELECT * FROM ks2.tbl2",
                 "SELECT * FROM ks2.tbl2",
@@ -545,22 +546,22 @@ namespace Cassandra.IntegrationTests.Core
         }
 
         /// Tests that materialized view metadata is being properly retrieved
-        /// 
+        ///
         /// GetMaterializedView_Should_Retrieve_View_Metadata tests that materialized view metadata is being properly populated by the driver.
         /// It first creates a base table with some sample columns, and a materialized view based on those columns. It then verifies the various metadata
-        /// associated with the view. 
-        /// 
+        /// associated with the view.
+        ///
         /// @since 3.0.0
         /// @jira_ticket CSHARP-348
         /// @expected_result Materialized view metadata is properly populated
-        /// 
+        ///
         /// @test_category metadata
         [Test, TestCassandraVersion(3, 0)]
         public void GetMaterializedView_Should_Retrieve_View_Metadata()
         {
             var queries = new[]
             {
-                "CREATE KEYSPACE ks_view_meta WITH replication = {'class': 'SimpleStrategy', 'replication_factor' : 3}",
+                "CREATE KEYSPACE ks_view_meta WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 3}",
                 "CREATE TABLE ks_view_meta.scores (user TEXT, game TEXT, year INT, month INT, day INT, score INT, PRIMARY KEY (user, game, year, month, day))",
                 "CREATE MATERIALIZED VIEW ks_view_meta.dailyhigh AS SELECT user FROM scores WHERE game IS NOT NULL AND year IS NOT NULL AND month IS NOT NULL AND day IS NOT NULL AND score IS NOT NULL AND user IS NOT NULL PRIMARY KEY ((game, year, month, day), score, user) WITH CLUSTERING ORDER BY (score DESC)"
             };
@@ -603,22 +604,22 @@ namespace Cassandra.IntegrationTests.Core
         }
 
         /// Tests that materialized view metadata with quoted identifiers is being retrieved
-        /// 
-        /// MaterializedView_Should_Retrieve_View_Metadata_Quoted_Identifiers tests that materialized view metadata with quoated identifiers is being 
+        ///
+        /// MaterializedView_Should_Retrieve_View_Metadata_Quoted_Identifiers tests that materialized view metadata with quoated identifiers is being
         /// properly populated by the driver. It first creates a base table with some sample columns, where these columns have quoted identifers as their name.
-        /// It then creates a materialized view based on those columns. It then verifies the various metadata associated with the view. 
-        /// 
+        /// It then creates a materialized view based on those columns. It then verifies the various metadata associated with the view.
+        ///
         /// @since 3.0.0
         /// @jira_ticket CSHARP-348
         /// @expected_result Materialized view metadata is properly populated
-        /// 
+        ///
         /// @test_category metadata
         [Test, TestCassandraVersion(3, 0)]
         public void MaterializedView_Should_Retrieve_View_Metadata_Quoted_Identifiers()
         {
             var queries = new[]
             {
-                "CREATE KEYSPACE ks_view_meta2 WITH replication = {'class': 'SimpleStrategy', 'replication_factor' : 3}",
+                "CREATE KEYSPACE ks_view_meta2 WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 3}",
                 @"CREATE TABLE ks_view_meta2.t1 (""theKey"" INT, ""the;Clustering"" INT, ""the Value"" INT, PRIMARY KEY (""theKey"", ""the;Clustering""))",
                 @"CREATE MATERIALIZED VIEW ks_view_meta2.mv1 AS SELECT ""theKey"", ""the;Clustering"", ""the Value"" FROM t1 WHERE ""theKey"" IS NOT NULL AND ""the;Clustering"" IS NOT NULL AND ""the Value"" IS NOT NULL PRIMARY KEY (""theKey"", ""the;Clustering"")"
             };

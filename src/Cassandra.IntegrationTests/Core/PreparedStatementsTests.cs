@@ -202,7 +202,7 @@ namespace Cassandra.IntegrationTests.Core
 
                 // Create schema and insert data
                 session1.Execute(
-                    "CREATE KEYSPACE ks1 WITH replication = {'class': 'SimpleStrategy', 'replication_factor' : 1}");
+                    "CREATE KEYSPACE ks1 WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 1}");
                 session1.ChangeKeyspace("ks1");
                 session2.ChangeKeyspace("ks1");
                 session1.Execute("CREATE TABLE table1 (id int PRIMARY KEY, a text, c text)");
@@ -730,7 +730,7 @@ namespace Cassandra.IntegrationTests.Core
                 .Build())
             {
                 var session = localCluster.Connect("system");
-                session.Execute("CREATE KEYSPACE bound_changeks_test WITH replication = {'class': 'SimpleStrategy', 'replication_factor' : 3}");
+                session.Execute("CREATE KEYSPACE bound_changeks_test WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 3}");
                 TestUtils.WaitForSchemaAgreement(localCluster);
                 var ps = session.Prepare("SELECT * FROM system.local WHERE key='local'");
                 session.ChangeKeyspace("bound_changeks_test");
