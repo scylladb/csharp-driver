@@ -93,7 +93,7 @@ namespace Cassandra.IntegrationTests
             routingKey.RawRoutingKey = new byte[] { 0, 0, 0x04, 0xd2 }; // pk=1234 as bytes
 
             // Get the replicas for this routing key
-            var replicas = cluster.GetReplicas("lwt_test", routingKey.RawRoutingKey);
+            var replicas = cluster.GetReplicas("lwt_test", "foo", routingKey.RawRoutingKey);
             var owner = replicas.First();
 
             var statement = session.Prepare("INSERT INTO foo (pk, ck, v) VALUES (?, ?, ?) IF NOT EXISTS");

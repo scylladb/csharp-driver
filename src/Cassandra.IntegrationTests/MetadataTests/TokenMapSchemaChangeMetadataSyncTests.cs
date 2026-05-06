@@ -77,7 +77,7 @@ namespace Cassandra.IntegrationTests.MetadataTests
                 newSession.ChangeKeyspace(keyspaceName);
 
                 Assert.IsNull(newCluster.Metadata.TokenToReplicasMap.GetByKeyspace(keyspaceName));
-                Assert.AreEqual(1, newCluster.Metadata.GetReplicas(keyspaceName, Encoding.UTF8.GetBytes("123")).Count);
+                Assert.AreEqual(1, newCluster.Metadata.GetReplicas(keyspaceName, null, Encoding.UTF8.GetBytes("123")).Count);
                 Assert.IsTrue(object.ReferenceEquals(newCluster.Metadata.TokenToReplicasMap, oldTokenMap));
             }
         }
@@ -102,7 +102,7 @@ namespace Cassandra.IntegrationTests.MetadataTests
                 TestUtils.WaitForSchemaAgreement(newCluster);
                 var oldTokenMap = newCluster.Metadata.TokenToReplicasMap;
                 Assert.IsNull(newCluster.Metadata.TokenToReplicasMap.GetByKeyspace(keyspaceName));
-                Assert.AreEqual(1, newCluster.Metadata.GetReplicas(keyspaceName, Encoding.UTF8.GetBytes("123")).Count);
+                Assert.AreEqual(1, newCluster.Metadata.GetReplicas(keyspaceName, null, Encoding.UTF8.GetBytes("123")).Count);
                 Assert.IsTrue(object.ReferenceEquals(newCluster.Metadata.TokenToReplicasMap, oldTokenMap));
             }
         }
@@ -126,7 +126,7 @@ namespace Cassandra.IntegrationTests.MetadataTests
                 {
                     var replicas = newCluster.Metadata.TokenToReplicasMap.GetByKeyspace(keyspaceName);
                     Assert.IsNull(replicas);
-                    Assert.AreEqual(1, newCluster.Metadata.GetReplicas(keyspaceName, Encoding.UTF8.GetBytes("123")).Count);
+                    Assert.AreEqual(1, newCluster.Metadata.GetReplicas(keyspaceName, null, Encoding.UTF8.GetBytes("123")).Count);
                 });
 
                 Assert.AreEqual(3, newCluster.Metadata.Hosts.Count(h => h.IsUp));
@@ -138,7 +138,7 @@ namespace Cassandra.IntegrationTests.MetadataTests
                 {
                     var replicas = newCluster.Metadata.TokenToReplicasMap.GetByKeyspace(keyspaceName);
                     Assert.IsNull(replicas);
-                    Assert.AreEqual(1, newCluster.Metadata.GetReplicas(keyspaceName, Encoding.UTF8.GetBytes("123")).Count);
+                    Assert.AreEqual(1, newCluster.Metadata.GetReplicas(keyspaceName, null, Encoding.UTF8.GetBytes("123")).Count);
                 });
 
                 Assert.AreEqual(3, newCluster.Metadata.Hosts.Count(h => h.IsUp));
@@ -168,9 +168,9 @@ namespace Cassandra.IntegrationTests.MetadataTests
                 var oldTokenMap = newCluster.Metadata.TokenToReplicasMap;
                 var replicas = newCluster.Metadata.TokenToReplicasMap.GetByKeyspace(keyspaceName);
                 Assert.IsNull(replicas);
-                Assert.AreEqual(1, newCluster.Metadata.GetReplicas(keyspaceName, Encoding.UTF8.GetBytes("123")).Count);
+                Assert.AreEqual(1, newCluster.Metadata.GetReplicas(keyspaceName, null, Encoding.UTF8.GetBytes("123")).Count);
                 Assert.AreEqual(3, newCluster.Metadata.Hosts.Count(h => h.IsUp));
-                Assert.AreEqual(1, newCluster.Metadata.GetReplicas(keyspaceName, Encoding.UTF8.GetBytes("123")).Count);
+                Assert.AreEqual(1, newCluster.Metadata.GetReplicas(keyspaceName, null, Encoding.UTF8.GetBytes("123")).Count);
 
                 await newCluster.RefreshSchemaAsync(keyspaceName).ConfigureAwait(false);
 
@@ -178,7 +178,7 @@ namespace Cassandra.IntegrationTests.MetadataTests
 
                 replicas = newCluster.Metadata.TokenToReplicasMap.GetByKeyspace(keyspaceName);
                 Assert.AreEqual(newCluster.Metadata.Hosts.Sum(h => h.Tokens.Count()), replicas.Count);
-                Assert.AreEqual(3, newCluster.Metadata.GetReplicas(keyspaceName, Encoding.UTF8.GetBytes("123")).Count);
+                Assert.AreEqual(3, newCluster.Metadata.GetReplicas(keyspaceName, null, Encoding.UTF8.GetBytes("123")).Count);
 
                 Assert.AreEqual(3, newCluster.Metadata.Hosts.Count(h => h.IsUp));
                 Assert.IsTrue(object.ReferenceEquals(newCluster.Metadata.TokenToReplicasMap, oldTokenMap));
@@ -206,10 +206,10 @@ namespace Cassandra.IntegrationTests.MetadataTests
                 var newSession = newCluster.Connect(keyspaceName);
                 var replicas = newCluster.Metadata.TokenToReplicasMap.GetByKeyspace(keyspaceName);
                 Assert.IsNull(replicas);
-                Assert.AreEqual(1, newCluster.Metadata.GetReplicas(keyspaceName, Encoding.UTF8.GetBytes("123")).Count);
+                Assert.AreEqual(1, newCluster.Metadata.GetReplicas(keyspaceName, null, Encoding.UTF8.GetBytes("123")).Count);
                 var oldTokenMap = newCluster.Metadata.TokenToReplicasMap;
                 Assert.AreEqual(3, newCluster.Metadata.Hosts.Count(h => h.IsUp));
-                Assert.AreEqual(1, newCluster.Metadata.GetReplicas(keyspaceName, Encoding.UTF8.GetBytes("123")).Count);
+                Assert.AreEqual(1, newCluster.Metadata.GetReplicas(keyspaceName, null, Encoding.UTF8.GetBytes("123")).Count);
 
                 await newCluster.RefreshSchemaAsync().ConfigureAwait(false);
 
@@ -217,11 +217,11 @@ namespace Cassandra.IntegrationTests.MetadataTests
 
                 replicas = newCluster.Metadata.TokenToReplicasMap.GetByKeyspace(keyspaceName);
                 Assert.AreEqual(newCluster.Metadata.Hosts.Sum(h => h.Tokens.Count()), replicas.Count);
-                Assert.AreEqual(3, newCluster.Metadata.GetReplicas(keyspaceName, Encoding.UTF8.GetBytes("123")).Count);
+                Assert.AreEqual(3, newCluster.Metadata.GetReplicas(keyspaceName, null, Encoding.UTF8.GetBytes("123")).Count);
 
                 replicas = newCluster.Metadata.TokenToReplicasMap.GetByKeyspace(keyspaceName1);
                 Assert.AreEqual(newCluster.Metadata.Hosts.Sum(h => h.Tokens.Count()), replicas.Count);
-                Assert.AreEqual(3, newCluster.Metadata.GetReplicas(keyspaceName, Encoding.UTF8.GetBytes("123")).Count);
+                Assert.AreEqual(3, newCluster.Metadata.GetReplicas(keyspaceName, null, Encoding.UTF8.GetBytes("123")).Count);
 
                 Assert.AreEqual(3, newCluster.Metadata.Hosts.Count(h => h.IsUp));
                 Assert.IsFalse(object.ReferenceEquals(newCluster.Metadata.TokenToReplicasMap, oldTokenMap));
