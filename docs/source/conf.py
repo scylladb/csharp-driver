@@ -11,12 +11,12 @@ from redirects_cli import cli as redirects_cli
 # -- Global variables
 
 # Builds documentation for the following tags and branches.
-TAGS = ["v3.22.0.1", "v3.22.0.2"]
+TAGS = ["v3.22.0.1", "v3.22.0.2", "v3.22.0.3"]
 BRANCHES = [
     "master",
 ]
 # Sets the latest version.
-LATEST_VERSION = "v3.22.0.2"
+LATEST_VERSION = "v3.22.0.3"
 # Set which versions are not released yet.
 UNSTABLE_VERSIONS = ["master"]
 # Set which versions are deprecated
