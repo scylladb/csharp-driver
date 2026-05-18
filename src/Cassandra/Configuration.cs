@@ -226,6 +226,12 @@ namespace Cassandra
 
         internal IServerNameResolver ServerNameResolver { get; }
 
+        /// <summary>
+        /// Per-cluster TLS session ticket cache used for TLS session resumption.
+        /// Null when SSL is not configured.
+        /// </summary>
+        internal TlsSessionTicketCache TlsSessionTicketCache { get; }
+
         internal Configuration() :
             this(Policies.DefaultPolicies,
                  new ProtocolOptions(),
@@ -361,6 +367,11 @@ namespace Cassandra
             // to create the instance.
             BufferPool = new RecyclableMemoryStreamManager(16 * 1024, 256 * 1024, ProtocolOptions.MaximumFrameLength);
             Timer = new HashedWheelTimer();
+
+            if (ProtocolOptions.SslOptions != null)
+            {
+                TlsSessionTicketCache = new TlsSessionTicketCache();
+            }
         }
 
         /// <summary>

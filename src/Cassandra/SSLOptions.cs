@@ -33,6 +33,7 @@ namespace Cassandra
         private bool _checkCertificateRevocation;
         private X509CertificateCollection _certificateCollection = new X509CertificateCollection();
         private Func<IPAddress, string> _hostNameResolver = GetHostName;
+        private bool _enableSessionResumption = true;
 
         /// <summary>
         /// Verifies Cassandra host SSL certificate used for authentication.
@@ -75,21 +76,32 @@ namespace Cassandra
         }
 
         /// <summary>
-        ///  Creates SSLOptions with default values.   
+        /// Gets whether TLS session resumption (session tickets) is enabled.
+        /// When enabled, subsequent TLS connections to the same host can reuse
+        /// previously negotiated session parameters, reducing handshake overhead.
+        /// Effective on .NET 8.0 and later. Defaults to <c>true</c>.
+        /// </summary>
+        public bool EnableSessionResumption
+        {
+            get { return _enableSessionResumption; }
+        }
+
+        /// <summary>
+        ///  Creates SSLOptions with default values.
         /// </summary>
         public SSLOptions()
         {
         }
 
         /// <summary>
-        /// Creates SSL options used for SSL connections with Casandra hosts. 
+        /// Creates SSL options used for SSL connections with Casandra hosts.
         /// </summary>
         /// <param name="sslProtocol">type of SSL protocol, default set to Tls.</param>
         /// <param name="checkCertificateRevocation">specifies whether the certificate revocation list is checked during connection authentication.</param>
         /// <param name="remoteCertValidationCallback">verifies Cassandra host SSL certificate used for authentication.
         ///     <remarks>
-        ///         Default RemoteCertificateValidationCallback won't establish a connection if any error will occur.         
-        ///     </remarks> 
+        ///         Default RemoteCertificateValidationCallback won't establish a connection if any error will occur.
+        ///     </remarks>
         ///     </param>
         public SSLOptions(SslProtocols sslProtocol, bool checkCertificateRevocation, RemoteCertificateValidationCallback remoteCertValidationCallback)
         {
@@ -131,6 +143,18 @@ namespace Cassandra
         public SSLOptions SetRemoteCertValidationCallback(RemoteCertificateValidationCallback callback)
         {
             _remoteCertValidationCallback = callback;
+            return this;
+        }
+
+        /// <summary>
+        /// Sets whether TLS session resumption (session tickets) is enabled.
+        /// When enabled, subsequent TLS connections to the same host can reuse
+        /// previously negotiated session parameters, reducing handshake overhead.
+        /// Effective on .NET 8.0 and later. Defaults to <c>true</c>.
+        /// </summary>
+        public SSLOptions SetEnableSessionResumption(bool flag)
+        {
+            _enableSessionResumption = flag;
             return this;
         }
 

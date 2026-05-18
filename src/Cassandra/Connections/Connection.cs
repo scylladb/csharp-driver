@@ -180,7 +180,7 @@ namespace Cassandra.Connections
             Configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
             _startupRequestFactory = startupRequestFactory ?? throw new ArgumentNullException(nameof(startupRequestFactory));
             _heartBeatInterval = configuration.GetHeartBeatInterval() ?? 0;
-            _tcpSocket = new TcpSocket(endPoint, configuration.SocketOptions, configuration.ProtocolOptions.SslOptions);
+            _tcpSocket = new TcpSocket(endPoint, configuration.SocketOptions, configuration.ProtocolOptions.SslOptions, configuration.TlsSessionTicketCache);
             _idleTimer = new Timer(IdleTimeoutHandler, null, Timeout.Infinite, Timeout.Infinite);
             _connectionObserver = connectionObserver;
             _timerEnabled = configuration.MetricsEnabled
