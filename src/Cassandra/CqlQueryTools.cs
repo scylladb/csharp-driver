@@ -75,7 +75,7 @@ namespace Cassandra
         {
             if (replication == null)
             {
-                replication = new Dictionary<string, string> { { "class", ReplicationStrategies.SimpleStrategy }, { "replication_factor", "1" } };
+                replication = new Dictionary<string, string> { { "class", ReplicationStrategies.NetworkTopologyStrategy }, { "replication_factor", "1" } };
             }
 
             return string.Format(
