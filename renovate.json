@@ -9,6 +9,11 @@
   "packageRules": [
     {
       "matchManagers": ["github-actions"],
+      "pinDigests": true,
+      "minimumReleaseAge": "90 days"
+    },
+    {
+      "matchManagers": ["github-actions"],
       "matchPackageNames": ["actions/setup-python"],
       "enabled": false
     }

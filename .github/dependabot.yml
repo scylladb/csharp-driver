@@ -7,3 +7,8 @@ updates:
     allow:
       - dependency-name: "sphinx-scylladb-theme"
       - dependency-name: "sphinx-multiversion-scylla"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
