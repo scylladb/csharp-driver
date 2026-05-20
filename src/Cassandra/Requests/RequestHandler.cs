@@ -82,7 +82,7 @@ namespace Cassandra.Requests
                 RetryPolicy = sessionRequestInfo.Statement.RetryPolicy.Wrap(RetryPolicy);
             }
 
-            _queryPlan = RequestHandler.GetQueryPlan(session, sessionRequestInfo.Statement, RequestOptions.LoadBalancingPolicy).GetEnumerator();
+            _queryPlan = RequestHandler.GetQueryPlan(session, sessionRequestInfo.Statement, RequestOptions.LoadBalancingPolicy, RequestOptions).GetEnumerator();
         }
 
         /// <summary>
@@ -107,14 +107,29 @@ namespace Cassandra.Requests
         /// In the special case when a Host is provided at Statement level, it will return a query plan with a single
         /// host.
         /// </summary>
-        private static IEnumerable<HostShard> GetQueryPlan(ISession session, IStatement statement, ILoadBalancingPolicy lbp)
+        private static IEnumerable<HostShard> GetQueryPlan(ISession session, IStatement statement, ILoadBalancingPolicy lbp, IRequestOptions requestOptions)
         {
             // Single host iteration
             var host = (statement as Statement)?.Host;
 
-            return host == null
-                ? lbp.NewQueryPlan(session.Keyspace, statement)
-                : Enumerable.Repeat(new HostShard(host, -1), 1);
+            if (host != null)
+            {
+                return Enumerable.Repeat(new HostShard(host, -1), 1);
+            }
+
+            // Determine whether to route as LWT: either the statement itself says so,
+            // or the effective CL from requestOptions/execution profile is serial.
+            var routeAsLwt = statement?.ShouldRouteAsLwt() == true
+                || (statement is Statement stmt
+                    && stmt.ConsistencyLevel == null
+                    && requestOptions.ConsistencyLevel.IsSerialConsistencyLevel());
+
+            if (lbp is IExtendedLoadBalancingPolicy extendedLbp)
+            {
+                return extendedLbp.NewQueryPlan(session.Keyspace, statement, routeAsLwt);
+            }
+
+            return lbp.NewQueryPlan(session.Keyspace, statement);
         }
 
         /// <inheritdoc />

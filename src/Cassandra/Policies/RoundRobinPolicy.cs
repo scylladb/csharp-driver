@@ -33,7 +33,7 @@ namespace Cassandra
     ///  <see cref="DCAwareRoundRobinPolicy"/> load balancing policy instead.
     /// </para>
     /// </summary>
-    public class RoundRobinPolicy : ILoadBalancingPolicy
+    public class RoundRobinPolicy : IExtendedLoadBalancingPolicy
     {
         ICluster _cluster;
         int _index;
@@ -68,10 +68,16 @@ namespace Cassandra
         ///  first for querying, which one to use as failover, etc...</returns>
         public IEnumerable<HostShard> NewQueryPlan(string keyspace, IStatement query)
         {
+            return NewQueryPlan(keyspace, query, query?.ShouldRouteAsLwt() == true);
+        }
+
+        /// <inheritdoc />
+        public IEnumerable<HostShard> NewQueryPlan(string keyspace, IStatement query, bool routeAsLwt)
+        {
             //shallow copy the all hosts
             var hosts = (from h in _cluster.AllHosts() select h).ToArray();
             var startIndex = 0;
-            if (query?.IsLwt() != true)
+            if (!routeAsLwt)
             {
                 startIndex = Interlocked.Increment(ref _index);
 

@@ -142,7 +142,18 @@ namespace Cassandra
 
         string TableName { get; }
 
+        /// <summary>
+        /// Returns whether this statement is a confirmed LWT (lightweight transaction),
+        /// based on prepared statement metadata or explicit marking.
+        /// </summary>
         bool IsLwt();
+
+        /// <summary>
+        /// Returns whether this statement should be routed as an LWT.
+        /// This considers both <see cref="IsLwt()"/> and whether the statement's
+        /// consistency level is serial (<c>SERIAL</c> or <c>LOCAL_SERIAL</c>).
+        /// </summary>
+        bool ShouldRouteAsLwt();
 
         /// <summary>
         /// Sets the paging behavior.

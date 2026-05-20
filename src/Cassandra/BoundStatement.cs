@@ -83,6 +83,11 @@ namespace Cassandra
             return _preparedStatement.IsLwt;
         }
 
+        public override bool ShouldRouteAsLwt()
+        {
+            return IsLwt() || ConsistencyLevel?.IsSerialConsistencyLevel() == true;
+        }
+
         public BoundStatement SetLwt(bool isLwt)
         {
             _preparedStatement.SetLwt(isLwt);
