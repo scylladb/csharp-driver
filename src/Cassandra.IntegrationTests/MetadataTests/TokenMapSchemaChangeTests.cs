@@ -101,7 +101,8 @@ namespace Cassandra.IntegrationTests.MetadataTests
 
             Assert.AreEqual(3, newCluster.Metadata.Hosts.Count(h => h.IsUp));
             var oldTokenMap = newCluster.Metadata.TokenToReplicasMap;
-            var alterKeyspaceCql = $"ALTER KEYSPACE {keyspaceName} WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor' : 2}}";
+            var localDc = newCluster.AllHosts().First().Datacenter;
+            var alterKeyspaceCql = $"ALTER KEYSPACE {keyspaceName} WITH replication = {{'class': 'NetworkTopologyStrategy', '{localDc}' : 2}}";
             newSession.Execute(alterKeyspaceCql);
             TestUtils.WaitForSchemaAgreement(newCluster);
             TestHelper.RetryAssert(() =>

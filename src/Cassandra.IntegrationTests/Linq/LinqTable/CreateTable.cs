@@ -419,7 +419,7 @@ namespace Cassandra.IntegrationTests.Linq.LinqTable
             VerifyStatement(
                 QueryType.Query,
                 $"CREATE KEYSPACE \"{newUniqueKsName}\" " +
-                "WITH replication = {'class' : 'SimpleStrategy', 'replication_factor' : '1'}" +
+                "WITH replication = {'class' : 'NetworkTopologyStrategy', 'replication_factor' : '1'}" +
                 " AND durable_writes = true",
                 1);
 
