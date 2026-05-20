@@ -500,7 +500,7 @@ namespace Cassandra.Requests
 
             if (ex is ReadTimeoutException e)
             {
-                return new RetryDecisionWithReason(
+                return GuardSerialConsistencyDowngrade(new RetryDecisionWithReason(
                     policy.OnReadTimeout(
                         statement,
                         e.ConsistencyLevel,
@@ -509,12 +509,12 @@ namespace Cassandra.Requests
                         e.WasDataRetrieved,
                         retryCount),
                     RequestErrorType.ReadTimeOut
-                );
+                ), e.ConsistencyLevel);
             }
 
             if (ex is WriteTimeoutException e1)
             {
-                return new RetryDecisionWithReason(
+                return GuardSerialConsistencyDowngrade(new RetryDecisionWithReason(
                     policy.OnWriteTimeout(
                         statement,
                         e1.ConsistencyLevel,
@@ -523,19 +523,55 @@ namespace Cassandra.Requests
                         e1.ReceivedAcknowledgements,
                         retryCount),
                     RequestErrorType.WriteTimeOut
-                );
+                ), e1.ConsistencyLevel);
             }
 
             if (ex is UnavailableException e2)
             {
-                return new RetryDecisionWithReason(
+                return GuardSerialConsistencyDowngrade(new RetryDecisionWithReason(
                     policy.OnUnavailable(statement, e2.Consistency, e2.RequiredReplicas, e2.AliveReplicas, retryCount),
                     RequestErrorType.Unavailable
-                );
+                ), e2.Consistency);
             }
 
             // Any other Exception just throw it
             return new RetryDecisionWithReason(RetryDecision.Rethrow(), RequestExecution.GetErrorType(error));
+        }
+
+        /// Guards retry decisions for requests whose original consistency level is serial
+        /// (<c>SERIAL</c> or <c>LOCAL_SERIAL</c>).
+        /// For retry decisions on serial-consistency requests:
+        /// - <c>Unavailable</c>: rethrow instead of retrying
+        /// - Retry with a non-serial consistency level: rethrow instead of downgrading consistency
+        internal static RetryDecisionWithReason GuardSerialConsistencyDowngrade(RetryDecisionWithReason result, ConsistencyLevel originalCl)
+        {
+            if (!originalCl.IsSerialConsistencyLevel() || result.Decision.DecisionType != RetryDecision.RetryDecisionType.Retry)
+            {
+                return result;
+            }
+
+            // UnavailableException means the target node is down - always rethrow for LWT
+            if (result.Reason == RequestErrorType.Unavailable)
+            {
+                return new RetryDecisionWithReason(RetryDecision.Rethrow(), result.Reason);
+            }
+
+            // For ReadTimeout/WriteTimeout: node is up, prevent CL downgrade and force retry on current host
+            if (result.Decision.RetryConsistencyLevel.HasValue
+                && result.Decision.RetryConsistencyLevel.Value != originalCl)
+            {
+                return new RetryDecisionWithReason(RetryDecision.Rethrow(), result.Reason);
+            }
+
+            // Ensure retry stays on the current host for LWT
+            if (!result.Decision.UseCurrentHost)
+            {
+                return new RetryDecisionWithReason(
+                    RetryDecision.Retry(result.Decision.RetryConsistencyLevel, true),
+                    result.Reason);
+            }
+
+            return result;
         }
 
         internal static RequestErrorType GetErrorType(IRequestError error)
