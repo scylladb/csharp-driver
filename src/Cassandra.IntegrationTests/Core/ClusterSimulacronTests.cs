@@ -22,6 +22,7 @@ using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 
+using Cassandra.Connections.Control;
 using Cassandra.IntegrationTests.SimulacronAPI.PrimeBuilder.Then;
 using Cassandra.IntegrationTests.TestClusterManagement.Simulacron;
 using Cassandra.Tasks;
@@ -48,14 +49,17 @@ namespace Cassandra.IntegrationTests.Core
 
             try
             {
+                var selectPeersV2 = TopologyRefresher.SelectPeersV2;
+                var selectPeers = TopologyRefresher.SelectPeers;
+
                 TestCluster.PrimeFluent(
-                    p => p.WhenQuery("SELECT * FROM system.peers_v2")
+                    p => p.WhenQuery(selectPeersV2)
                           .ThenServerError(ServerError.Invalid, "error"));
 
                 SetupNewSession(b => b.WithPoolingOptions(new PoolingOptions().SetHeartBeatInterval(3000)));
 
-                var peersV2Queries = TestCluster.GetQueries("SELECT * FROM system.peers_v2");
-                var peersQueries = TestCluster.GetQueries("SELECT * FROM system.peers");
+                var peersV2Queries = TestCluster.GetQueries(selectPeersV2);
+                var peersQueries = TestCluster.GetQueries(selectPeers);
 
                 var oldCcHost = Session.Cluster.Metadata.ControlConnection.Host;
 
@@ -86,8 +90,8 @@ namespace Cassandra.IntegrationTests.Core
                     200,
                     100);
 
-                var afterPeersV2Queries = TestCluster.GetQueries("SELECT * FROM system.peers_v2");
-                var afterPeersQueries = TestCluster.GetQueries("SELECT * FROM system.peers");
+                var afterPeersV2Queries = TestCluster.GetQueries(selectPeersV2);
+                var afterPeersQueries = TestCluster.GetQueries(selectPeers);
 
                 Assert.AreEqual(peersV2Queries.Count, afterPeersV2Queries.Count);
                 Assert.GreaterOrEqual(afterPeersQueries.Count, peersQueries.Count + 2);
