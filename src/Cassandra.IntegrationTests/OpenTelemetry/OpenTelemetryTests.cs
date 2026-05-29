@@ -211,7 +211,7 @@ namespace Cassandra.IntegrationTests.OpenTelemetry
         }
 
         [Category(TestCategory.RealCluster)]
-        [Test]
+        [Test, TestScyllaVersion(2026, 1)]
         public async Task AddOpenTelemetry_MapperAndMapperAsync_SessionRequestIsParentOfNodeRequest()
         {
             var testProfile = "testProfile";

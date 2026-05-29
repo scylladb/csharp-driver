@@ -61,7 +61,7 @@ namespace Cassandra.IntegrationTests.Mapping.Tests
 
         /// <summary>
         /// Attempt to update a single record to the same values, validate that the record is not altered.
-        /// 
+        ///
         /// @test_category queries:basic
         /// </summary>
         [Test]
@@ -80,7 +80,7 @@ namespace Cassandra.IntegrationTests.Mapping.Tests
 
         /// <summary>
         /// Update a single record to different values, validate that the resultant data in Cassandra is correct.
-        /// 
+        ///
         /// @test_category queries:basic
         /// </summary>
         [Test]
@@ -100,7 +100,7 @@ namespace Cassandra.IntegrationTests.Mapping.Tests
             Assert.IsFalse(Movie.ListContains(actualMovieList, movieToUpdate));
         }
 
-        [Test]
+        [Test, TestScyllaVersion(2026, 1)]
         public void UpdateIf_Applied_Test()
         {
             var config = new MappingConfiguration()
@@ -125,7 +125,7 @@ namespace Cassandra.IntegrationTests.Mapping.Tests
 
         /// <summary>
         /// Attempt to update a record without defining the partition key
-        /// 
+        ///
         /// @test_category queries:basic
         /// </summary>
         [Test]
