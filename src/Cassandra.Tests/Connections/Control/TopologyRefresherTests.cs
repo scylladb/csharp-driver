@@ -33,9 +33,9 @@ namespace Cassandra.Tests.Connections.Control
     [TestFixture]
     public class TopologyRefresherTests
     {
-        private const string LocalQuery = "SELECT * FROM system.local WHERE key='local'";
-        private const string PeersQuery = "SELECT * FROM system.peers";
-        private const string PeersV2Query = "SELECT * FROM system.peers_v2";
+        private const string LocalQuery = "SELECT broadcast_address, cluster_name, data_center, host_id, listen_address, partitioner, rack, release_version, rpc_address, schema_version, tokens FROM system.local WHERE key='local'";
+        private const string PeersQuery = "SELECT peer, data_center, host_id, rack, release_version, rpc_address, schema_version, tokens FROM system.peers";
+        private const string PeersV2Query = "SELECT peer, data_center, host_id, native_address, native_port, rack, release_version, schema_version, tokens FROM system.peers_v2";
 
         private Metadata _metadata;
 

@@ -1,12 +1,12 @@
-﻿// 
+﻿//
 //       Copyright (C) DataStax Inc.
-// 
+//
 //    Licensed under the Apache License, Version 2.0 (the "License");
 //    you may not use this file except in compliance with the License.
 //    You may obtain a copy of the License at
-// 
+//
 //       http://www.apache.org/licenses/LICENSE-2.0
-// 
+//
 //    Unless required by applicable law or agreed to in writing, software
 //    distributed under the License is distributed on an "AS IS" BASIS,
 //    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -27,9 +27,11 @@ namespace Cassandra.Connections.Control
     /// <inheritdoc />
     internal class TopologyRefresher : ITopologyRefresher
     {
-        private const string SelectPeers = "SELECT * FROM system.peers";
-        private const string SelectPeersV2 = "SELECT * FROM system.peers_v2";
-        private const string SelectLocal = "SELECT * FROM system.local WHERE key='local'";
+        // NOTE: Before adding a new column name to these queries, verify that the column
+        // is available across all supported Scylla versions.
+        internal const string SelectPeers = "SELECT peer, data_center, host_id, rack, release_version, rpc_address, schema_version, tokens FROM system.peers";
+        internal const string SelectPeersV2 = "SELECT peer, data_center, host_id, native_address, native_port, rack, release_version, schema_version, tokens FROM system.peers_v2";
+        internal const string SelectLocal = "SELECT broadcast_address, cluster_name, data_center, host_id, listen_address, partitioner, rack, release_version, rpc_address, schema_version, tokens FROM system.local WHERE key='local'";
 
         private static readonly IPAddress BindAllAddress = new IPAddress(new byte[4]);
 
