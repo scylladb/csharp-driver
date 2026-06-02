@@ -162,7 +162,7 @@ namespace Cassandra.IntegrationTests.Mapping.Tests
             Assert.Throws<AggregateException>(() => _mapper.DeleteAsync(movieToDelete, new CqlQueryOptions().SetConsistencyLevel(ConsistencyLevel.Three)).Wait());
         }
 
-        [Test]
+        [Test, TestScyllaVersion(2026, 1)]
         public void DeleteIf_Applied_Test()
         {
             var config = new MappingConfiguration()

@@ -393,7 +393,7 @@ namespace Cassandra.IntegrationTests.Mapping.Tests
             StringAssert.Contains(expectedMessage, ex.Message);
         }
 
-        [Test]
+        [Test, TestScyllaVersion(2026, 1)]
         public void InsertIfNotExists_Applied_Test()
         {
             var config = new MappingConfiguration()
