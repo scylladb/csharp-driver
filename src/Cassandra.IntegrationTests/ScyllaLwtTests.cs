@@ -16,12 +16,33 @@ namespace Cassandra.IntegrationTests
         private static readonly byte[] PkBytes = { 0, 0, 0x04, 0xd2 }; // pk=1234 as big-endian int
 
         private ITestCluster _realCluster;
+        private ICluster _cluster;
 
         [TearDown]
         public void TestTearDown()
         {
+            _cluster?.Shutdown();
+            _cluster = null;
             TestClusterManager.TryRemove();
             _realCluster = null;
+        }
+
+        private ISession CreateClusterAndSession(int nodeCount = 3, QueryOptions queryOptions = null,
+            Action<IExecutionProfileOptions> executionProfiles = null)
+        {
+            _realCluster = TestClusterManager.CreateNew(nodeCount);
+            var builder = ClusterBuilder()
+                .WithSocketOptions(new SocketOptions().SetReadTimeoutMillis(22000).SetConnectTimeoutMillis(60000))
+                .AddContactPoint(_realCluster.InitialContactPoint);
+
+            if (queryOptions != null)
+                builder = builder.WithQueryOptions(queryOptions);
+
+            if (executionProfiles != null)
+                builder = builder.WithExecutionProfiles(executionProfiles);
+
+            _cluster = builder.Build();
+            return _cluster.Connect();
         }
 
         private void Execute(ISession session, string cql, bool useExplicitCl)
@@ -46,17 +67,17 @@ namespace Cassandra.IntegrationTests
                 Execute(session, $"INSERT INTO foo (pk, ck, v) VALUES ({Pk}, {i}, {i})", useExplicitCl);
         }
 
-        private Host GetReplicaOwner(ICluster cluster)
+        private Host GetReplicaOwner()
         {
             var routingKey = new RoutingKey();
             routingKey.RawRoutingKey = PkBytes;
-            var replicas = cluster.GetReplicas("lwt_test", routingKey.RawRoutingKey);
+            var replicas = _cluster.GetReplicas("lwt_test", routingKey.RawRoutingKey);
             return replicas.First().Host;
         }
 
-        private void AssertAllQueriesRouteToSameOwner(ICluster cluster, Func<int, RowSet> executeQuery, string description)
+        private void AssertAllQueriesRouteToSameOwner(Func<int, RowSet> executeQuery, string description)
         {
-            var owner = GetReplicaOwner(cluster);
+            var owner = GetReplicaOwner();
             var coordinatorEndpoints = new HashSet<System.Net.IPEndPoint>();
             for (int i = 0; i < 30; i++)
             {
@@ -73,19 +94,14 @@ namespace Cassandra.IntegrationTests
         [Test]
         public void Scylla_Should_Recognize_Bound_LWT_Query()
         {
-            _realCluster = TestClusterManager.CreateNew();
-            var cluster = ClusterBuilder()
-                          .WithSocketOptions(new SocketOptions().SetReadTimeoutMillis(22000).SetConnectTimeoutMillis(60000))
-                          .AddContactPoint(_realCluster.InitialContactPoint)
-                          .Build();
-            var _session = cluster.Connect();
+            var session = CreateClusterAndSession(nodeCount: 1);
 
-            _session.Execute("DROP KEYSPACE IF EXISTS lwt_test");
-            _session.Execute($"CREATE KEYSPACE lwt_test WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor': '1'}}");
-            _session.Execute("CREATE TABLE IF NOT EXISTS lwt_test.bound_statement_test (a int PRIMARY KEY, b int)");
+            session.Execute("DROP KEYSPACE IF EXISTS lwt_test");
+            session.Execute($"CREATE KEYSPACE lwt_test WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor': '1'}}");
+            session.Execute("CREATE TABLE IF NOT EXISTS lwt_test.bound_statement_test (a int PRIMARY KEY, b int)");
 
-            var statementNonLWT = _session.Prepare("UPDATE lwt_test.bound_statement_test SET b = ? WHERE a = ?");
-            var statementLWT = _session.Prepare("UPDATE lwt_test.bound_statement_test SET b = ? WHERE a = ? IF b = ?");
+            var statementNonLWT = session.Prepare("UPDATE lwt_test.bound_statement_test SET b = ? WHERE a = ?");
+            var statementLWT = session.Prepare("UPDATE lwt_test.bound_statement_test SET b = ? WHERE a = ? IF b = ?");
 
             var boundNonLWT = statementNonLWT.Bind(3, 1);
             var boundLWT = statementLWT.Bind(3, 1, 5);
@@ -97,19 +113,14 @@ namespace Cassandra.IntegrationTests
         [Test]
         public void Scylla_Should_Recognize_Prepared_LWT_Query()
         {
-            _realCluster = TestClusterManager.CreateNew();
-            var cluster = ClusterBuilder()
-                          .WithSocketOptions(new SocketOptions().SetReadTimeoutMillis(22000).SetConnectTimeoutMillis(60000))
-                          .AddContactPoint(_realCluster.InitialContactPoint)
-                          .Build();
-            var _session = cluster.Connect();
+            var session = CreateClusterAndSession(nodeCount: 1);
 
-            _session.Execute("DROP KEYSPACE IF EXISTS lwt_test");
-            _session.Execute($"CREATE KEYSPACE lwt_test WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor': '1'}}");
-            _session.Execute("CREATE TABLE IF NOT EXISTS lwt_test.prepared_statement_test (a int PRIMARY KEY, b int)");
+            session.Execute("DROP KEYSPACE IF EXISTS lwt_test");
+            session.Execute($"CREATE KEYSPACE lwt_test WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor': '1'}}");
+            session.Execute("CREATE TABLE IF NOT EXISTS lwt_test.prepared_statement_test (a int PRIMARY KEY, b int)");
 
-            var statementNonLWT = _session.Prepare("UPDATE lwt_test.prepared_statement_test SET b = 3 WHERE a = 1");
-            var statementLWT = _session.Prepare("UPDATE lwt_test.prepared_statement_test SET b = 3 WHERE a = 1 IF b = 5");
+            var statementNonLWT = session.Prepare("UPDATE lwt_test.prepared_statement_test SET b = 3 WHERE a = 1");
+            var statementLWT = session.Prepare("UPDATE lwt_test.prepared_statement_test SET b = 3 WHERE a = 1 IF b = 5");
 
             Assert.False(statementNonLWT.IsLwt, "Non-LWT statement should not be detected as LWT");
             Assert.True(statementLWT.IsLwt, "LWT statement should be detected as LWT");
@@ -118,12 +129,7 @@ namespace Cassandra.IntegrationTests
         [Test]
         public void Scylla_Should_Override_Prepared_LWT_Query()
         {
-            _realCluster = TestClusterManager.CreateNew(1);
-            var cluster = ClusterBuilder()
-                .WithSocketOptions(new SocketOptions().SetReadTimeoutMillis(22000).SetConnectTimeoutMillis(60000))
-                .AddContactPoint(_realCluster.InitialContactPoint)
-                .Build();
-            var session = cluster.Connect();
+            var session = CreateClusterAndSession(nodeCount: 1);
 
             session.Execute("DROP KEYSPACE IF EXISTS lwt_test");
             session.Execute($"CREATE KEYSPACE lwt_test WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor': '1'}}");
@@ -139,12 +145,7 @@ namespace Cassandra.IntegrationTests
         [Test]
         public void Scylla_Should_Override_Bound_LWT_Query()
         {
-            _realCluster = TestClusterManager.CreateNew(1);
-            var cluster = ClusterBuilder()
-                .WithSocketOptions(new SocketOptions().SetReadTimeoutMillis(22000).SetConnectTimeoutMillis(60000))
-                .AddContactPoint(_realCluster.InitialContactPoint)
-                .Build();
-            var session = cluster.Connect();
+            var session = CreateClusterAndSession(nodeCount: 1);
 
             session.Execute("DROP KEYSPACE IF EXISTS lwt_test");
             session.Execute($"CREATE KEYSPACE lwt_test WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor': '1'}}");
@@ -165,18 +166,13 @@ namespace Cassandra.IntegrationTests
         [Test, TestScyllaVersion(2026, 1)]
         public void Should_Use_Only_One_Node_When_LWT_Detected()
         {
-            _realCluster = TestClusterManager.CreateNew(3);
-            var cluster = ClusterBuilder()
-                .WithSocketOptions(new SocketOptions().SetReadTimeoutMillis(22000).SetConnectTimeoutMillis(60000))
-                .AddContactPoint(_realCluster.InitialContactPoint)
-                .Build();
-            var session = cluster.Connect();
+            var session = CreateClusterAndSession();
             SetupKeyspaceAndTable(session);
 
             var statement = session.Prepare("INSERT INTO foo (pk, ck, v) VALUES (?, ?, ?) IF NOT EXISTS");
             Assert.True(statement.IsLwt, "Statement should be detected as LWT");
 
-            AssertAllQueriesRouteToSameOwner(cluster,
+            AssertAllQueriesRouteToSameOwner(
                 i => session.Execute(statement.Bind(Pk, i, 123)),
                 "LWT queries");
         }
@@ -184,12 +180,7 @@ namespace Cassandra.IntegrationTests
         [Test]
         public void Should_Not_Use_Only_One_Node_When_Non_LWT()
         {
-            _realCluster = TestClusterManager.CreateNew(3);
-            var cluster = ClusterBuilder()
-                .WithSocketOptions(new SocketOptions().SetReadTimeoutMillis(22000).SetConnectTimeoutMillis(60000))
-                .AddContactPoint(_realCluster.InitialContactPoint)
-                .Build();
-            var session = cluster.Connect();
+            var session = CreateClusterAndSession();
             SetupKeyspaceAndTable(session);
 
             var statement = session.Prepare("INSERT INTO foo (pk, ck, v) VALUES (?, ?, ?)");
@@ -208,19 +199,14 @@ namespace Cassandra.IntegrationTests
         [Test, TestScyllaVersion(2026, 1)]
         public void Should_Use_Only_One_Node_When_Select_With_Serial_Consistency()
         {
-            _realCluster = TestClusterManager.CreateNew(3);
-            var cluster = ClusterBuilder()
-                .WithSocketOptions(new SocketOptions().SetReadTimeoutMillis(22000).SetConnectTimeoutMillis(60000))
-                .AddContactPoint(_realCluster.InitialContactPoint)
-                .Build();
-            var _session = cluster.Connect();
+            var session = CreateClusterAndSession();
             SetupKeyspaceAndTable(session);
             InsertTestData(session);
 
             var statement = session.Prepare("SELECT v FROM foo WHERE pk = ?");
             Assert.False(statement.IsLwt, "SELECT statement should not be marked as LWT by server");
 
-            AssertAllQueriesRouteToSameOwner(cluster, i =>
+            AssertAllQueriesRouteToSameOwner(i =>
             {
                 var bound = statement.Bind(Pk);
                 bound.SetConsistencyLevel(ConsistencyLevel.Serial);
@@ -232,18 +218,13 @@ namespace Cassandra.IntegrationTests
         [Test, TestScyllaVersion(2026, 1)]
         public void Should_Use_Only_One_Node_When_Select_With_LocalSerial_Consistency()
         {
-            _realCluster = TestClusterManager.CreateNew(3);
-            var cluster = ClusterBuilder()
-                .WithSocketOptions(new SocketOptions().SetReadTimeoutMillis(22000).SetConnectTimeoutMillis(60000))
-                .AddContactPoint(_realCluster.InitialContactPoint)
-                .Build();
-            var session = cluster.Connect();
+            var session = CreateClusterAndSession();
             SetupKeyspaceAndTable(session);
             InsertTestData(session);
 
             var statement = session.Prepare("SELECT v FROM foo WHERE pk = ?");
 
-            AssertAllQueriesRouteToSameOwner(cluster, i =>
+            AssertAllQueriesRouteToSameOwner(i =>
             {
                 var bound = statement.Bind(Pk);
                 bound.SetConsistencyLevel(ConsistencyLevel.LocalSerial);
@@ -255,16 +236,11 @@ namespace Cassandra.IntegrationTests
         [Test, TestScyllaVersion(2026, 1)]
         public void Should_Use_Only_One_Node_When_SimpleStatement_With_Serial_Consistency()
         {
-            _realCluster = TestClusterManager.CreateNew(3);
-            var cluster = ClusterBuilder()
-                .WithSocketOptions(new SocketOptions().SetReadTimeoutMillis(22000).SetConnectTimeoutMillis(60000))
-                .AddContactPoint(_realCluster.InitialContactPoint)
-                .Build();
-            var session = cluster.Connect();
+            var session = CreateClusterAndSession();
             SetupKeyspaceAndTable(session);
             InsertTestData(session);
 
-            AssertAllQueriesRouteToSameOwner(cluster, i =>
+            AssertAllQueriesRouteToSameOwner(i =>
             {
                 var stmt = new SimpleStatement("SELECT v FROM foo WHERE pk = 1234");
                 stmt.SetConsistencyLevel(ConsistencyLevel.Serial);
@@ -277,20 +253,15 @@ namespace Cassandra.IntegrationTests
         [Test, TestScyllaVersion(2026, 1)]
         public void Should_Use_Only_One_Node_When_Select_With_Serial_Consistency_From_RequestOptions()
         {
-            _realCluster = TestClusterManager.CreateNew(3);
-            var cluster = ClusterBuilder()
-                .WithSocketOptions(new SocketOptions().SetReadTimeoutMillis(22000).SetConnectTimeoutMillis(60000))
-                .AddContactPoint(_realCluster.InitialContactPoint)
-                .WithQueryOptions(new QueryOptions().SetConsistencyLevel(ConsistencyLevel.Serial))
-                .Build();
-            var session = cluster.Connect();
+            var session = CreateClusterAndSession(
+                queryOptions: new QueryOptions().SetConsistencyLevel(ConsistencyLevel.Serial));
             SetupKeyspaceAndTable(session, useExplicitCl: true);
             InsertTestData(session, useExplicitCl: true);
 
             var statement = session.Prepare("SELECT v FROM foo WHERE pk = ?");
             Assert.False(statement.IsLwt, "SELECT statement should not be marked as LWT by server");
 
-            AssertAllQueriesRouteToSameOwner(cluster, i =>
+            AssertAllQueriesRouteToSameOwner(i =>
             {
                 var bound = statement.Bind(Pk);
                 Assert.False(bound.ShouldRouteAsLwt(), "BoundStatement without explicit CL should not report ShouldRouteAsLwt");
@@ -301,19 +272,14 @@ namespace Cassandra.IntegrationTests
         [Test, TestScyllaVersion(2026, 1)]
         public void Should_Use_Only_One_Node_When_Select_With_LocalSerial_Consistency_From_RequestOptions()
         {
-            _realCluster = TestClusterManager.CreateNew(3);
-            var cluster = ClusterBuilder()
-                .WithSocketOptions(new SocketOptions().SetReadTimeoutMillis(22000).SetConnectTimeoutMillis(60000))
-                .AddContactPoint(_realCluster.InitialContactPoint)
-                .WithQueryOptions(new QueryOptions().SetConsistencyLevel(ConsistencyLevel.LocalSerial))
-                .Build();
-            var session = cluster.Connect();
+            var session = CreateClusterAndSession(
+                queryOptions: new QueryOptions().SetConsistencyLevel(ConsistencyLevel.LocalSerial));
             SetupKeyspaceAndTable(session, useExplicitCl: true);
             InsertTestData(session, useExplicitCl: true);
 
             var statement = session.Prepare("SELECT v FROM foo WHERE pk = ?");
 
-            AssertAllQueriesRouteToSameOwner(cluster, i =>
+            AssertAllQueriesRouteToSameOwner(i =>
             {
                 var bound = statement.Bind(Pk);
                 Assert.False(bound.ShouldRouteAsLwt(), "BoundStatement without explicit CL should not report ShouldRouteAsLwt");
@@ -324,22 +290,16 @@ namespace Cassandra.IntegrationTests
         [Test, TestScyllaVersion(2026, 1)]
         public void Should_Use_Only_One_Node_When_Select_With_Serial_Consistency_From_ExecutionProfile()
         {
-            _realCluster = TestClusterManager.CreateNew(3);
-            var cluster = ClusterBuilder()
-                .WithSocketOptions(new SocketOptions().SetReadTimeoutMillis(22000).SetConnectTimeoutMillis(60000))
-                .AddContactPoint(_realCluster.InitialContactPoint)
-                .WithExecutionProfiles(opts => opts
-                    .WithProfile("serial", profile => profile
-                        .WithConsistencyLevel(ConsistencyLevel.Serial)))
-                .Build();
-            var session = cluster.Connect();
+            var session = CreateClusterAndSession(executionProfiles: opts => opts
+                .WithProfile("serial", profile => profile
+                    .WithConsistencyLevel(ConsistencyLevel.Serial)));
             SetupKeyspaceAndTable(session);
             InsertTestData(session);
 
             var statement = session.Prepare("SELECT v FROM foo WHERE pk = ?");
             Assert.False(statement.IsLwt, "SELECT statement should not be marked as LWT by server");
 
-            AssertAllQueriesRouteToSameOwner(cluster, i =>
+            AssertAllQueriesRouteToSameOwner(i =>
             {
                 var bound = statement.Bind(Pk);
                 Assert.False(bound.ShouldRouteAsLwt(), "BoundStatement without explicit CL should not report ShouldRouteAsLwt");
@@ -350,22 +310,16 @@ namespace Cassandra.IntegrationTests
         [Test, TestScyllaVersion(2026, 1)]
         public void Should_Use_Only_One_Node_When_Select_With_LocalSerial_Consistency_From_ExecutionProfile()
         {
-            _realCluster = TestClusterManager.CreateNew(3);
-            var cluster = ClusterBuilder()
-                .WithSocketOptions(new SocketOptions().SetReadTimeoutMillis(22000).SetConnectTimeoutMillis(60000))
-                .AddContactPoint(_realCluster.InitialContactPoint)
-                .WithExecutionProfiles(opts => opts
-                    .WithProfile("local_serial", profile => profile
-                        .WithConsistencyLevel(ConsistencyLevel.LocalSerial)))
-                .Build();
-            var session = cluster.Connect();
+            var session = CreateClusterAndSession(executionProfiles: opts => opts
+                .WithProfile("local_serial", profile => profile
+                    .WithConsistencyLevel(ConsistencyLevel.LocalSerial)));
             SetupKeyspaceAndTable(session);
             InsertTestData(session);
 
             var statement = session.Prepare("SELECT v FROM foo WHERE pk = ?");
             Assert.False(statement.IsLwt, "SELECT statement should not be marked as LWT by server");
 
-            AssertAllQueriesRouteToSameOwner(cluster, i =>
+            AssertAllQueriesRouteToSameOwner(i =>
             {
                 var bound = statement.Bind(Pk);
                 Assert.False(bound.ShouldRouteAsLwt(), "BoundStatement without explicit CL should not report ShouldRouteAsLwt");
@@ -376,17 +330,12 @@ namespace Cassandra.IntegrationTests
         [Test, TestScyllaVersion(2026, 1)]
         public void Should_Use_Only_One_Node_When_SimpleStatement_With_Serial_Consistency_From_RequestOptions()
         {
-            _realCluster = TestClusterManager.CreateNew(3);
-            var cluster = ClusterBuilder()
-                .WithSocketOptions(new SocketOptions().SetReadTimeoutMillis(22000).SetConnectTimeoutMillis(60000))
-                .AddContactPoint(_realCluster.InitialContactPoint)
-                .WithQueryOptions(new QueryOptions().SetConsistencyLevel(ConsistencyLevel.Serial))
-                .Build();
-            var session = cluster.Connect();
+            var session = CreateClusterAndSession(
+                queryOptions: new QueryOptions().SetConsistencyLevel(ConsistencyLevel.Serial));
             SetupKeyspaceAndTable(session, useExplicitCl: true);
             InsertTestData(session, useExplicitCl: true);
 
-            AssertAllQueriesRouteToSameOwner(cluster, i =>
+            AssertAllQueriesRouteToSameOwner(i =>
             {
                 var stmt = new SimpleStatement("SELECT v FROM foo WHERE pk = 1234");
                 stmt.SetRoutingValues(Pk);
