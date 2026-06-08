@@ -31,7 +31,7 @@ namespace Cassandra
     /// See the comments on <see cref="DCAwareRoundRobinPolicy(string, int)"/> for more information.
     /// </para>
     /// </summary>
-    public class DCAwareRoundRobinPolicy : ILoadBalancingPolicy
+    public class DCAwareRoundRobinPolicy : IExtendedLoadBalancingPolicy
     {
         private const string UsedHostsPerRemoteDcObsoleteMessage =
             "The usedHostsPerRemoteDc parameter will be removed in the next major release of the driver. " +
@@ -70,7 +70,7 @@ namespace Cassandra
         ///  Creates a new datacenter aware round robin policy given the name of the local
         ///  datacenter. <p> The name of the local datacenter provided must be the local
         ///  datacenter name as known by Cassandra. </p><p> The policy created will ignore all
-        ///  remote hosts. In other words, this is equivalent to 
+        ///  remote hosts. In other words, this is equivalent to
         ///  <c>new DCAwareRoundRobinPolicy(localDc, 0)</c>.</p>
         /// </summary>
         /// <param name="localDc"> the name of the local datacenter (as known by Cassandra).</param>
@@ -204,8 +204,14 @@ namespace Cassandra
         ///  first for querying, which one to use as failover, etc...</returns>
         public IEnumerable<HostShard> NewQueryPlan(string keyspace, IStatement query)
         {
+            return NewQueryPlan(keyspace, query, query?.ShouldRouteAsLwt() == true);
+        }
+
+        /// <inheritdoc />
+        public IEnumerable<HostShard> NewQueryPlan(string keyspace, IStatement query, bool routeAsLwt)
+        {
             var startIndex = 0;
-            if (query?.IsLwt() != true)
+            if (!routeAsLwt)
             {
                 startIndex = Interlocked.Increment(ref _index);
                 //Simplified overflow protection
@@ -280,7 +286,7 @@ namespace Cassandra
                 //shallow copy the nodes
                 var allNodes = _cluster.AllHosts().ToArray();
 
-                //Split between local and remote nodes 
+                //Split between local and remote nodes
                 foreach (var h in allNodes)
                 {
                     if (GetDatacenter(h) == _localDc)

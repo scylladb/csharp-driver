@@ -30,7 +30,7 @@ namespace Cassandra
     /// returned for other workloads.
     /// </para>
     /// </summary>
-    public class DefaultLoadBalancingPolicy : ILoadBalancingPolicy
+    public class DefaultLoadBalancingPolicy : IExtendedLoadBalancingPolicy
     {
         private volatile Host _lastPreferredHost;
 
@@ -93,6 +93,23 @@ namespace Cassandra
             {
                 _lastPreferredHost = targetedStatement.PreferredHost;
                 return YieldPreferred(keyspace, targetedStatement);
+            }
+
+            return ChildPolicy.NewQueryPlan(keyspace, statement);
+        }
+
+        /// <inheritdoc />
+        public IEnumerable<HostShard> NewQueryPlan(string keyspace, IStatement statement, bool routeAsLwt)
+        {
+            if (statement is TargettedSimpleStatement targetedStatement && targetedStatement.PreferredHost != null)
+            {
+                _lastPreferredHost = targetedStatement.PreferredHost;
+                return YieldPreferred(keyspace, targetedStatement);
+            }
+
+            if (ChildPolicy is IExtendedLoadBalancingPolicy extendedChild)
+            {
+                return extendedChild.NewQueryPlan(keyspace, statement, routeAsLwt);
             }
 
             return ChildPolicy.NewQueryPlan(keyspace, statement);

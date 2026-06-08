@@ -32,7 +32,7 @@ namespace Cassandra
     /// </item>
     /// </list>
     /// </summary>
-    public class TokenAwarePolicy : ILoadBalancingPolicy
+    public class TokenAwarePolicy : IExtendedLoadBalancingPolicy
     {
         private ICluster _cluster;
         private readonly ThreadLocal<Random> _prng = new ThreadLocal<Random>(() => new Random(
@@ -82,11 +82,19 @@ namespace Cassandra
         /// <returns>the new query plan.</returns>
         public IEnumerable<HostShard> NewQueryPlan(string loggedKeyspace, IStatement query)
         {
+            return NewQueryPlan(loggedKeyspace, query, query?.ShouldRouteAsLwt() == true);
+        }
+
+        /// <inheritdoc />
+        public IEnumerable<HostShard> NewQueryPlan(string loggedKeyspace, IStatement query, bool routeAsLwt)
+        {
             var routingKey = query?.RoutingKey;
             IEnumerable<HostShard> childIterator;
             if (routingKey == null)
             {
-                childIterator = ChildPolicy.NewQueryPlan(loggedKeyspace, query);
+                childIterator = ChildPolicy is IExtendedLoadBalancingPolicy extChild
+                    ? extChild.NewQueryPlan(loggedKeyspace, query, routeAsLwt)
+                    : ChildPolicy.NewQueryPlan(loggedKeyspace, query);
                 foreach (var h in childIterator)
                 {
                     yield return h;
@@ -119,8 +127,8 @@ namespace Cassandra
             if (localReplicaList.Count > 0)
             {
                 var startIndex = 0;
-                // Use a pseudo random start index if query is not LWT
-                if (query?.IsLwt() != true)
+                // Use a pseudo random start index if query should not be routed as LWT
+                if (!routeAsLwt)
                 {
                     startIndex = _prng.Value.Next();
                 }
@@ -131,7 +139,9 @@ namespace Cassandra
             }
 
             // Then, return the rest of child policy hosts
-            childIterator = ChildPolicy.NewQueryPlan(loggedKeyspace, query);
+            childIterator = ChildPolicy is IExtendedLoadBalancingPolicy extChild2
+                ? extChild2.NewQueryPlan(loggedKeyspace, query, routeAsLwt)
+                : ChildPolicy.NewQueryPlan(loggedKeyspace, query);
             foreach (var h in childIterator)
             {
                 if (localReplicaSet.Contains(h))
