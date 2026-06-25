@@ -15,6 +15,7 @@
 //
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Net;
@@ -122,6 +123,23 @@ namespace Cassandra.Tests
             connectionMock.Setup(c => c.InFlight).Returns(inflight);
             connectionMock.Setup(c => c.TimedOutOperations).Returns(timedOutOperations);
             connectionMock.Setup(c => c.Dispose()).Raises(c => c.Closing += null, connectionMock.Object);
+            return connectionMock.Object;
+        }
+
+        private static IConnection GetShardedConnectionMock(int shardId, int shardCount, int inFlight = 0)
+        {
+            var connectionMock = new Mock<IConnection>();
+            connectionMock.SetupProperty(c => c.ShardID, shardId);
+            connectionMock.Setup(c => c.InFlight).Returns(inFlight);
+            connectionMock.Setup(c => c.ShardingInfo()).Returns(
+                ShardingInfo.Create(
+                    shardId.ToString(),
+                    shardCount.ToString(),
+                    "org.apache.cassandra.dht.Murmur3Partitioner",
+                    "biased-token-round-robin",
+                    "12",
+                    "19042",
+                    "19142"));
             return connectionMock.Object;
         }
 
@@ -364,6 +382,66 @@ namespace Cassandra.Tests
             Assert.AreEqual(3, Volatile.Read(ref creationCounter));
             Assert.AreEqual(0, Volatile.Read(ref isCreating));
             Assert.AreEqual(3, pool.OpenConnections);
+        }
+
+        [Test]
+        public async Task Warmup_Should_Target_All_Shard_Ids_When_First_Connection_Uses_High_Shard()
+        {
+            const int shardCount = 4;
+            _mock = GetPoolMock(null, GetConfig(1, 1));
+            var attempts = new List<Tuple<int, int, int>>();
+            _mock
+                .Setup(p => p.DoCreateAndOpen(It.IsAny<bool>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>()))
+                .Returns<bool, int, int, int>((isReconnection, shardId, shardAwarePort, count) =>
+                {
+                    attempts.Add(Tuple.Create(shardId, shardAwarePort, count));
+                    return TaskHelper.ToTask(GetShardedConnectionMock(shardId == -1 ? 1 : shardId, shardCount));
+                });
+
+            var pool = _mock.Object;
+            pool.SetDistance(HostDistance.Local);
+
+            await pool.Warmup().ConfigureAwait(false);
+
+            Assert.AreEqual(shardCount, pool.OpenConnections);
+            for (var shardId = 0; shardId < shardCount; shardId++)
+            {
+                Assert.AreEqual(
+                    1,
+                    pool.ConnectionsSnapshot.Count(c => c.ShardID == shardId),
+                    "Unexpected number of connections for shard " + shardId);
+            }
+            CollectionAssert.AreEqual(new[] { 2, 3, 0 }, attempts.Skip(1).Select(a => a.Item1).ToArray());
+            Assert.IsTrue(attempts.Skip(1).All(a => a.Item2 == 19042 && a.Item3 == shardCount));
+        }
+
+        [Test]
+        public async Task ConsiderResizingPool_Should_Target_Shard_When_Core_Per_Shard_Is_Full()
+        {
+            const int shardCount = 4;
+            _mock = GetPoolMock(null, GetConfig(4, 8));
+            var attempts = new List<Tuple<int, int, int>>();
+            _mock
+                .Setup(p => p.DoCreateAndOpen(It.IsAny<bool>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>()))
+                .Returns<bool, int, int, int>((isReconnection, shardId, shardAwarePort, count) =>
+                {
+                    attempts.Add(Tuple.Create(shardId, shardAwarePort, count));
+                    return TaskHelper.ToTask(GetShardedConnectionMock(shardId == -1 ? 0 : shardId, shardCount, 1500));
+                });
+
+            var pool = _mock.Object;
+            pool.SetDistance(HostDistance.Local);
+            await pool.Warmup().ConfigureAwait(false);
+            var attemptsBeforeResize = attempts.Count;
+
+            pool.ConsiderResizingPool(1500);
+
+            await TestHelper.WaitUntilAsync(() => pool.OpenConnections == 5).ConfigureAwait(false);
+            Assert.AreEqual(5, attempts.Count);
+            Assert.AreEqual(0, attempts[attemptsBeforeResize].Item1);
+            Assert.AreEqual(19042, attempts[attemptsBeforeResize].Item2);
+            Assert.AreEqual(shardCount, attempts[attemptsBeforeResize].Item3);
+            Assert.AreEqual(2, pool.ConnectionsSnapshot.Count(c => c.ShardID == 0));
         }
 
         [Test]
