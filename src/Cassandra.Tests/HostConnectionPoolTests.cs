@@ -445,6 +445,37 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public async Task Reconnection_Should_Target_Missing_Shard_When_Resized_Pool_Is_Unbalanced()
+        {
+            const int shardCount = 4;
+            _mock = GetPoolMock(null, GetConfig(4, 8, new ConstantReconnectionPolicy(1)));
+            var attempts = new List<Tuple<int, int, int>>();
+            _mock
+                .Setup(p => p.DoCreateAndOpen(It.IsAny<bool>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>()))
+                .Returns<bool, int, int, int>((isReconnection, shardId, shardAwarePort, count) =>
+                {
+                    attempts.Add(Tuple.Create(shardId, shardAwarePort, count));
+                    return TaskHelper.ToTask(GetShardedConnectionMock(shardId == -1 ? 0 : shardId, shardCount, 1500));
+                });
+
+            var pool = _mock.Object;
+            pool.SetDistance(HostDistance.Local);
+            await pool.Warmup().ConfigureAwait(false);
+            pool.ConsiderResizingPool(1500);
+            await TestHelper.WaitUntilAsync(() => pool.OpenConnections == 5).ConfigureAwait(false);
+            var attemptsBeforeReplacement = attempts.Count;
+
+            var connectionToRemove = pool.ConnectionsSnapshot.First(c => c.ShardID == 2);
+            pool.OnConnectionClosing(connectionToRemove);
+
+            await TestHelper.WaitUntilAsync(() => pool.OpenConnections == 5).ConfigureAwait(false);
+            Assert.AreEqual(2, attempts[attemptsBeforeReplacement].Item1);
+            Assert.AreEqual(19042, attempts[attemptsBeforeReplacement].Item2);
+            Assert.AreEqual(shardCount, attempts[attemptsBeforeReplacement].Item3);
+            Assert.AreEqual(1, pool.ConnectionsSnapshot.Count(c => c.ShardID == 2));
+        }
+
+        [Test]
         public void MinInFlight_Returns_The_Min_Inflight_From_Two_Connections()
         {
             var connections = new ShardedList<IConnection>(new[]

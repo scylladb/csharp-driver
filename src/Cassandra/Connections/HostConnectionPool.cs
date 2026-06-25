@@ -781,20 +781,10 @@ namespace Cassandra.Connections
                 {
                     shardAwarePort = _config.ProtocolOptions.SslOptions != null ? shardingInfo.ScyllaShardAwarePortSSL : shardingInfo.ScyllaShardAwarePort;
                     shardCount = shardingInfo.ScyllaNrShards;
-                    connectionsSnapshot = _connections.GetSnapshot();
-                    var connectionsPerShard = GetConnectionsPerShardTarget(shardCount);
-                    // Find the next shard with fewer connections than the current target.
-                    // It's important to start counting from 1 here because we want
-                    // to consider the next shard after the previously attempted one.
-                    for (var i = 1; i <= shardCount; i++)
+                    shardID = GetLeastRepresentedShard(shardCount);
+                    if (shardID != -1)
                     {
-                        var currentShardID = (lastAttemptedShard + i) % shardCount;
-                        if (connectionsSnapshot.GetItemsForShard(currentShardID).Length < connectionsPerShard)
-                        {
-                            lastAttemptedShard = currentShardID;
-                            shardID = currentShardID;
-                            break;
-                        }
+                        lastAttemptedShard = shardID;
                     }
                 }
                 c = await DoCreateAndOpen(isReconnection, shardID, shardAwarePort, shardCount).ConfigureAwait(false);
@@ -843,6 +833,35 @@ namespace Cassandra.Connections
             }
 
             return await FinishOpen(tcs, true, null, c).ConfigureAwait(false);
+        }
+
+        private int GetLeastRepresentedShard(int shardCount)
+        {
+            var selectedShardId = -1;
+            var selectedShardConnectionCount = int.MaxValue;
+            var connectionsPerShard = GetConnectionsPerShardTarget(shardCount);
+            var connectionsSnapshot = _connections.GetSnapshot();
+
+            // Start after the previously attempted shard to preserve round-robin
+            // behavior when multiple below-target shards have the same count.
+            for (var i = 1; i <= shardCount; i++)
+            {
+                var shardId = (lastAttemptedShard + i) % shardCount;
+                var connectionCount = connectionsSnapshot.GetItemsForShard(shardId).Length;
+                if (connectionCount >= connectionsPerShard || connectionCount >= selectedShardConnectionCount)
+                {
+                    continue;
+                }
+
+                selectedShardId = shardId;
+                selectedShardConnectionCount = connectionCount;
+                if (connectionCount == 0)
+                {
+                    break;
+                }
+            }
+
+            return selectedShardId;
         }
 
         private Task<IConnection> FinishOpen(
