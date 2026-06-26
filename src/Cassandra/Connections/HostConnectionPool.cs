@@ -73,7 +73,6 @@ namespace Cassandra.Connections
         private readonly ISerializerManager _serializerManager;
         private readonly IObserverFactory _observerFactory;
         private readonly CopyOnWriteShardedList<IConnection> _connections = new CopyOnWriteShardedList<IConnection>();
-        private volatile int _connectionsPerShard;
         private volatile HostDistance _distance;
         private readonly HashedWheelTimer _timer;
         private readonly SemaphoreSlim _allConnectionClosedEventLock = new SemaphoreSlim(1, 1);
@@ -782,18 +781,10 @@ namespace Cassandra.Connections
                 {
                     shardAwarePort = _config.ProtocolOptions.SslOptions != null ? shardingInfo.ScyllaShardAwarePortSSL : shardingInfo.ScyllaShardAwarePort;
                     shardCount = shardingInfo.ScyllaNrShards;
-                    // Find the shard without a connection
-                    // It's important to start counting from 1 here because we want
-                    // to consider the next shard after the previously attempted one
-                    for (var i = 1; i <= shardCount; i++)
+                    shardID = GetLeastRepresentedShard(shardCount);
+                    if (shardID != -1)
                     {
-                        var _shardID = (lastAttemptedShard + i) % shardCount;
-                        if (_connections.Length > _shardID && _connections.GetItemsForShard(_shardID).Length < _connectionsPerShard)
-                        {
-                            lastAttemptedShard = _shardID;
-                            shardID = _shardID;
-                            break;
-                        }
+                        lastAttemptedShard = shardID;
                     }
                 }
                 c = await DoCreateAndOpen(isReconnection, shardID, shardAwarePort, shardCount).ConfigureAwait(false);
@@ -842,6 +833,35 @@ namespace Cassandra.Connections
             }
 
             return await FinishOpen(tcs, true, null, c).ConfigureAwait(false);
+        }
+
+        private int GetLeastRepresentedShard(int shardCount)
+        {
+            var selectedShardId = -1;
+            var selectedShardConnectionCount = int.MaxValue;
+            var connectionsPerShard = GetConnectionsPerShardTarget(shardCount);
+            var connectionsSnapshot = _connections.GetSnapshot();
+
+            // Start after the previously attempted shard to preserve round-robin
+            // behavior when multiple below-target shards have the same count.
+            for (var i = 1; i <= shardCount; i++)
+            {
+                var shardId = (lastAttemptedShard + i) % shardCount;
+                var connectionCount = connectionsSnapshot.GetItemsForShard(shardId).Length;
+                if (connectionCount >= connectionsPerShard || connectionCount >= selectedShardConnectionCount)
+                {
+                    continue;
+                }
+
+                selectedShardId = shardId;
+                selectedShardConnectionCount = connectionCount;
+                if (connectionCount == 0)
+                {
+                    break;
+                }
+            }
+
+            return selectedShardId;
         }
 
         private Task<IConnection> FinishOpen(
@@ -1040,9 +1060,19 @@ namespace Cassandra.Connections
                 var coreSize = _poolingOptions.GetCoreConnectionsPerHost(_distance);
                 var shardsCount = shardingInfo == null ? 1 : shardingInfo.ScyllaNrShards;
 
-                _connectionsPerShard = coreSize / shardsCount + (coreSize % shardsCount > 0 ? 1 : 0);
-                _expectedConnectionLength = shardsCount * _connectionsPerShard;
+                var connectionsPerShard = HostConnectionPool.CeilingDivide(coreSize, shardsCount);
+                _expectedConnectionLength = shardsCount * connectionsPerShard;
             }
+        }
+
+        private int GetConnectionsPerShardTarget(int shardCount)
+        {
+            return shardCount <= 0 ? 0 : HostConnectionPool.CeilingDivide(_expectedConnectionLength, shardCount);
+        }
+
+        private static int CeilingDivide(int value, int divisor)
+        {
+            return value / divisor + (value % divisor > 0 ? 1 : 0);
         }
 
         /// <summary>
