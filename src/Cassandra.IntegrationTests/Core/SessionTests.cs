@@ -193,12 +193,17 @@ namespace Cassandra.IntegrationTests.Core
                 localSession1.Execute("SELECT * FROM system.local WHERE key='local'");
             }
 
-            Thread.Sleep(2000);
-            var pool11 = localSession1.GetOrCreateConnectionPool(hosts1[0], HostDistance.Local);
-            var pool12 = localSession1.GetOrCreateConnectionPool(hosts1[1], HostDistance.Local);
             var expectedConnections1 = useShardAwareness ? 4 : 3;
-            Assert.That(pool11.OpenConnections, Is.EqualTo(expectedConnections1));
-            Assert.That(pool12.OpenConnections, Is.EqualTo(expectedConnections1));
+            TestHelper.RetryAssert(
+                () =>
+                {
+                    var pool11 = localSession1.GetOrCreateConnectionPool(hosts1[0], HostDistance.Local);
+                    var pool12 = localSession1.GetOrCreateConnectionPool(hosts1[1], HostDistance.Local);
+                    Assert.That(pool11.OpenConnections, Is.EqualTo(expectedConnections1));
+                    Assert.That(pool12.OpenConnections, Is.EqualTo(expectedConnections1));
+                },
+                200,
+                50);
 
             var poolingOptions2 = new PoolingOptions().SetCoreConnectionsPerHost(HostDistance.Local, 1);
             if (!useShardAwareness)
@@ -219,12 +224,17 @@ namespace Cassandra.IntegrationTests.Core
                     localSession2.Execute("SELECT * FROM system.local WHERE key='local'");
                 }
 
-                Thread.Sleep(2000);
-                var pool21 = localSession2.GetOrCreateConnectionPool(hosts2[0], HostDistance.Local);
-                var pool22 = localSession2.GetOrCreateConnectionPool(hosts2[1], HostDistance.Local);
                 var expectedConnections2 = useShardAwareness ? 2 : 1;
-                Assert.That(pool21.OpenConnections, Is.EqualTo(expectedConnections2));
-                Assert.That(pool22.OpenConnections, Is.EqualTo(expectedConnections2));
+                TestHelper.RetryAssert(
+                    () =>
+                    {
+                        var pool21 = localSession2.GetOrCreateConnectionPool(hosts2[0], HostDistance.Local);
+                        var pool22 = localSession2.GetOrCreateConnectionPool(hosts2[1], HostDistance.Local);
+                        Assert.That(pool21.OpenConnections, Is.EqualTo(expectedConnections2));
+                        Assert.That(pool22.OpenConnections, Is.EqualTo(expectedConnections2));
+                    },
+                    200,
+                    50);
             }
         }
 

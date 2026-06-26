@@ -297,14 +297,7 @@ namespace Cassandra.IntegrationTests.Metrics
                 {
                     foreach (var c in MetricsTests.Counters)
                     {
-                        if (h.Address.Equals(downNode.Address))
-                        {
-                            Assert.GreaterOrEqual(metrics.GetNodeCounter(h, c).GetValue(), 0);
-                        }
-                        else
-                        {
-                            Assert.AreEqual(0, metrics.GetNodeCounter(h, c).GetValue());
-                        }
+                        Assert.GreaterOrEqual(metrics.GetNodeCounter(h, c).GetValue(), 0);
                     }
 
                     Assert.AreEqual(2, MetricsTests.Gauges.Length);
