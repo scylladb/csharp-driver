@@ -8,6 +8,7 @@
   <ItemGroup>
     <PackageReference Include="App.Metrics" Version="4.3.0" />
     <PackageReference Include="App.Metrics.Reporting.Graphite" Version="4.3.0" />
+    <PackageReference Include="System.Text.Json" Version="9.0.17" />
   </ItemGroup>
 
   <!--This example uses project references. In your project use PackageReference (nuget)-->
