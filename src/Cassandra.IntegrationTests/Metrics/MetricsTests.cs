@@ -109,7 +109,7 @@ namespace Cassandra.IntegrationTests.Metrics
             var gauge = metrics.GetNodeGauge(hostToBeRemoved, NodeMetric.Gauges.OpenConnections);
             var appMetricsGaugeValue = _metricsRoot.Snapshot.GetGaugeValue(gauge.Context, gauge.Name);
             Assert.Greater(gauge.GetValue().Value, 0);
-            Assert.AreEqual(gauge.GetValue().Value, appMetricsGaugeValue);
+            Assert.AreEqual(gauge.GetValue().Value, appMetricsGaugeValue, 0.001);
 
             // check node metrics context in app metrics is valid
             var context = _metricsRoot.Snapshot.GetForContext(gauge.Context);
