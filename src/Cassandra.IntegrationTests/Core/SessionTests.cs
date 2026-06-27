@@ -195,7 +195,7 @@ namespace Cassandra.IntegrationTests.Core
 
             var expectedConnections1 = useShardAwareness ? 4 : 3;
             TestHelper.RetryAssert(
-                () => AssertFirstTwoPoolsHaveOpenConnections(localSession1, hosts1, expectedConnections1),
+                () => WarmupAndAssertFirstTwoPoolsHaveOpenConnections(localSession1, hosts1, expectedConnections1),
                 500,
                 60);
 
@@ -220,23 +220,19 @@ namespace Cassandra.IntegrationTests.Core
 
                 var expectedConnections2 = useShardAwareness ? 2 : 1;
                 TestHelper.RetryAssert(
-                    () => AssertFirstTwoPoolsHaveOpenConnections(localSession2, hosts2, expectedConnections2),
+                    () => WarmupAndAssertFirstTwoPoolsHaveOpenConnections(localSession2, hosts2, expectedConnections2),
                     500,
                     60);
             }
         }
 
-        private static void AssertFirstTwoPoolsHaveOpenConnections(
+        private static void WarmupAndAssertFirstTwoPoolsHaveOpenConnections(
             IInternalSession session, IList<Host> hosts, int expectedConnections)
         {
-            for (var i = 0; i < hosts.Count * expectedConnections; i++)
-            {
-                session.Execute("SELECT * FROM system.local WHERE key='local'");
-            }
-
             for (var i = 0; i < 2; i++)
             {
                 var pool = session.GetOrCreateConnectionPool(hosts[i], HostDistance.Local);
+                pool.Warmup().GetAwaiter().GetResult();
                 Assert.That(
                     pool.OpenConnections,
                     Is.EqualTo(expectedConnections),
