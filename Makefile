@@ -16,6 +16,10 @@ TARGET_FRAMEWORK ?=
 SNK_FILE ?=
 DEV_SNK_PUBLIC_KEY ?= 0024000004800000940000000602000000240000525341310004000001000100fb083dc01ba81b96b526327f232e7f4c1301c8ec177a2c66adecc315a9c2308f33ecd9dc70d6d1435107578b4dd04658c8f92a51a60d50c528ca6fba3955fa844fe79c884452024b0ba67d19a70140818aa61a1faeb23d5dcfe0bd9820d587829caf36d0ac7e0dc450d3654d5f5bee009dda3d11fd4066d4640b935c2ca048a4
 
+ifneq ($(filter true 1 yes,$(SKIP_DUPLICATE)),)
+	NUGET_PUSH_OPTIONS := --skip-duplicate
+endif
+
 ifeq (${CCM_CONFIG_DIR},)
 	CCM_CONFIG_DIR = ~/.ccm
 endif
@@ -140,12 +144,9 @@ else
 endif
 	dotnet restore $(PROJECT_PATH)
 	dotnet build $(PROJECT_PATH) --configuration Release --no-restore
+	rm -rf ./nupkgs
 	dotnet pack $(PROJECT_PATH) --configuration Release --no-build --output ./nupkgs
-ifndef SKIP_DUPLICATE
-	dotnet nuget push "./nupkgs/*.nupkg" --api-key ${NUGET_API_KEY} --source https://api.nuget.org/v3/index.json
-else
-	dotnet nuget push --skip-duplicate "./nupkgs/*.nupkg" --api-key ${NUGET_API_KEY} --source https://api.nuget.org/v3/index.json
-endif
+	dotnet nuget push ${NUGET_PUSH_OPTIONS} "./nupkgs/*.nupkg" --api-key ${NUGET_API_KEY} --source https://api.nuget.org/v3/index.json
 
 .PHONY: publish-nuget
 publish-nuget:
