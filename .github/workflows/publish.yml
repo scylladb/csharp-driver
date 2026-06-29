@@ -25,7 +25,7 @@ on:
         default: false
 
 env:
-  SKIP_DUPLICATE: ${{ inputs.skip-duplicate }}
+  SKIP_DUPLICATE: ${{ inputs.skip-duplicate || github.event_name == 'push' }}
   NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
   SNK_FILE: ${{ secrets.SNK_KEY }}
 
