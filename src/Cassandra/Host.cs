@@ -16,6 +16,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Threading;
 using Cassandra.Connections;
@@ -32,7 +33,7 @@ namespace Cassandra
         private static readonly Logger Logger = new Logger(typeof(Host));
         private long _isUpNow = 1;
         private int _distance = (int)HostDistance.Ignored;
-        private static readonly IReadOnlyCollection<string> WorkloadsDefault = new string[0];
+        private static readonly IReadOnlyCollection<string> WorkloadsDefault = Array.Empty<string>();
 
         /// <summary>
         /// Event that gets raised when the host is set as DOWN (not available) by the driver, after being UP.
@@ -88,6 +89,17 @@ namespace Cassandra
         internal IEnumerable<string> Tokens { get; private set; }
 
         /// <summary>
+        /// <c>true</c> if the node is a zero-token node — i.e. the
+        /// <c>tokens</c> column was present in the topology row and contained an empty
+        /// (or NULL) token set. <c>false</c> when the host owns tokens, or when no token
+        /// metadata has been received yet (the column was absent from the row).
+        /// </summary>
+        internal bool IsZeroTokenNode => _isZeroTokenNode;
+
+        // Cached in SetInfo so query-path readers get an atomic value and avoid enumerating Tokens.
+        private volatile bool _isZeroTokenNode;
+
+        /// <summary>
         ///  Gets the name of the datacenter this host is part of. The returned
         ///  datacenter name is the one as known by Cassandra. Also note that it is
         ///  possible for this information to not be available. In that case this method
@@ -128,6 +140,7 @@ namespace Cassandra
         {
             Address = address ?? throw new ArgumentNullException(nameof(address));
             ContactPoint = contactPoint;
+            Tokens = Array.Empty<string>();
         }
 
         /// <summary>
@@ -171,11 +184,42 @@ namespace Cassandra
         /// <summary>
         /// Sets datacenter, rack and other basic information of a host.
         /// </summary>
+        // NOTE: SetInfo is called only from the topology-refresh loop, which runs on a single scheduler
+        // thread. Concurrent calls are not expected; the token block below is therefore not locked.
         internal void SetInfo(IRow row)
         {
             Datacenter = row.GetValue<string>("data_center");
             Rack = row.GetValue<string>("rack");
-            Tokens = row.GetValue<IEnumerable<string>>("tokens") ?? new string[0];
+            if (row.ContainsColumn("tokens"))
+            {
+                // When the tokens column is selected it is authoritative: a NULL value means the node
+                // advertises an empty token set (Scylla returns the empty non-frozen set as NULL in
+                // system.local/system.peers), i.e. a real zero-token node. Only skip the update when the
+                // column is absent, which means token information was not requested/available.
+                var tokens = row.IsNull("tokens")
+                    ? Array.Empty<string>()
+                    : row.GetValue<IEnumerable<string>>("tokens") ?? Array.Empty<string>();
+                // Materialize once: Tokens is consumed again later (e.g. TokenMap) and _isZeroTokenNode
+                // needs the count, so avoid enumerating a potentially lazy sequence more than once.
+                var tokenList = tokens as ICollection<string> ?? tokens.ToArray();
+                Tokens = tokenList;
+                _isZeroTokenNode = tokenList.Count == 0;
+                if (_isZeroTokenNode)
+                {
+                    SetDistance(HostDistance.Ignored);
+                }
+                // Distance recovery on the reverse edge (a former zero-token node that gains tokens) is
+                // intentionally lazy: we do NOT fire SetDistance/DistanceChanged here. Once _isZeroTokenNode
+                // is false again, IInternalCluster.RetrieveAndSetDistance stops forcing Ignored and the
+                // configured load balancing policy decides the distance; that call happens on the next query
+                // plan / prepare / control-connection refresh, which re-includes the host and creates its
+                // pool. See PrepareHandlerTests.Should_CreateConnectionPoolForHost_When_ZeroTokenHostGainsTokens.
+                // We also do not call BringUpIfDown() here: a token update does not prove liveness —
+                // system.peers can still contain a down peer — so marking the host UP before any
+                // successful connection would trigger query routing and Up subscribers prematurely. The
+                // connection pool's successful open will call BringUpIfDown() once a real connection
+                // confirms the node is reachable.
+            }
 
             if (row.ContainsColumn("release_version"))
             {

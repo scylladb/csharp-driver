@@ -151,13 +151,20 @@ namespace Cassandra.Tests
         {
             var h = new Host(new IPEndPoint(IPAddress.Parse(address), ProtocolOptions.DefaultPort),
                              new ConstantReconnectionPolicy(1));
-            h.SetInfo(new DictionaryBasedRow(new Dictionary<string, object>
+            var values = new Dictionary<string, object>
             {
                 { "data_center", dc },
                 { "rack", rack },
-                { "tokens", tokens },
                 { "release_version", cassandraVersion },
-            }));
+            };
+            // A null tokens argument models a row that does not carry token information (the column was
+            // not selected), so the host keeps its default, non-zero-token state. Passing an empty
+            // collection models a real zero-token node (an empty/NULL tokens column).
+            if (tokens != null)
+            {
+                values["tokens"] = tokens;
+            }
+            h.SetInfo(new DictionaryBasedRow(values));
             return h;
         }
 
