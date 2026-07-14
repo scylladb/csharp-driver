@@ -478,6 +478,101 @@ namespace Cassandra.Tests.Requests
             }
         }
 
+        [Test]
+        public async Task Should_CreateConnectionPoolForHost_When_ZeroTokenHostGainsTokens()
+        {
+            var lbp = new RoundRobinPolicy();
+            var mockResult = BuildPrepareHandler(
+                builder =>
+                {
+                    builder.QueryOptions =
+                        new QueryOptions()
+                            .SetConsistencyLevel(ConsistencyLevel.LocalOne)
+                            .SetSerialConsistencyLevel(ConsistencyLevel.LocalSerial);
+                    builder.SocketOptions =
+                        new SocketOptions().SetReadTimeoutMillis(10);
+                    builder.Policies = new Cassandra.Policies(
+                        lbp,
+                        new ConstantReconnectionPolicy(5),
+                        new DefaultRetryPolicy(),
+                        NoSpeculativeExecutionPolicy.Instance,
+                        new AtomicMonotonicTimestampGenerator(),
+                        null);
+                });
+            // mock connection send
+            mockResult.ConnectionFactory.OnCreate += connection =>
+            {
+                Mock.Get(connection)
+                    .Setup(c => c.Send(It.IsAny<IRequest>()))
+                    .Returns<IRequest>(async req =>
+                    {
+                        mockResult.SendResults.Enqueue(new ConnectionSendResult { Connection = connection, Request = req });
+                        await Task.Delay(1).ConfigureAwait(false);
+                        return new ProxyResultResponse(
+                            ResultResponse.ResultResponseKind.Void,
+                            new OutputPrepared(
+                                new byte[0], new RowSetMetadata { Columns = new CqlColumn[0] }, new RowSetMetadata { Columns = new CqlColumn[0] }));
+                    });
+            };
+
+            var zeroTokenAddress = new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042);
+            var host = mockResult.Session.InternalCluster.AllHosts().Single(h => h.Address.Equals(zeroTokenAddress));
+            var request = new InternalPrepareRequest(_serializer, "TEST", null, null);
+
+            // The host is reported as a zero-token node: it must be ignored, excluded from the query plan
+            // and the session must not create a pool for it even when it is placed first in the plan.
+            host.SetInfo(BuildHostRow(new string[0]));
+            Assert.IsTrue(host.IsZeroTokenNode);
+            Assert.AreEqual(HostDistance.Ignored, mockResult.Session.InternalCluster.RetrieveAndSetDistance(host));
+            Assert.IsFalse(
+                lbp.NewQueryPlan(null, new SimpleStatement()).Select(h => h.Host.Address).Contains(zeroTokenAddress));
+
+            await mockResult.PrepareHandler.Prepare(
+                request,
+                mockResult.Session,
+                BuildQueryPlanWithHostFirst(mockResult, zeroTokenAddress)).ConfigureAwait(false);
+            Assert.IsNull(mockResult.Session.GetExistingPool(zeroTokenAddress));
+
+            // The host now owns tokens: it must be routable again and the session must create a pool for it.
+            host.SetInfo(BuildHostRow(new[] { "2" }));
+            Assert.IsFalse(host.IsZeroTokenNode);
+            Assert.AreEqual(HostDistance.Local, mockResult.Session.InternalCluster.RetrieveAndSetDistance(host));
+            Assert.IsTrue(
+                lbp.NewQueryPlan(null, new SimpleStatement()).Select(h => h.Host.Address).Contains(zeroTokenAddress));
+
+            await mockResult.PrepareHandler.Prepare(
+                request,
+                mockResult.Session,
+                BuildQueryPlanWithHostFirst(mockResult, zeroTokenAddress)).ConfigureAwait(false);
+
+            var pool = mockResult.Session.GetExistingPool(zeroTokenAddress);
+            Assert.IsNotNull(pool);
+            Assert.IsTrue(pool.HasConnections);
+        }
+
+        private static IEnumerator<HostShard> BuildQueryPlanWithHostFirst(PrepareHandlerMockResult mockResult, IPEndPoint firstHostAddress)
+        {
+            var hosts = mockResult.Session.InternalCluster.AllHosts();
+            var plan = new List<HostShard>
+            {
+                new HostShard(hosts.Single(h => h.Address.Equals(firstHostAddress)), -1)
+            };
+            plan.AddRange(hosts.Where(h => !h.Address.Equals(firstHostAddress)).Select(h => new HostShard(h, -1)));
+            return plan.GetEnumerator();
+        }
+
+        private static IRow BuildHostRow(IEnumerable<string> tokens)
+        {
+            return new TestHelper.DictionaryBasedRow(new Dictionary<string, object>
+            {
+                { "host_id", Guid.NewGuid() },
+                { "data_center", "dc1" },
+                { "rack", "rack1" },
+                { "release_version", "3.11.1" },
+                { "tokens", tokens }
+            });
+        }
+
         private PrepareHandlerMockResult BuildPrepareHandler(Action<TestConfigurationBuilder> configBuilderAct)
         {
             var factory = new FakeConnectionFactory(MockConnection);

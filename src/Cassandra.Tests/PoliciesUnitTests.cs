@@ -121,6 +121,33 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public void RoundRobinPolicySkipsZeroTokenHosts()
+        {
+            var hostList = new List<Host>
+            {
+                TestHelper.CreateHost("0.0.0.1", tokens: new[] { "1" }),
+                TestHelper.CreateHost("0.0.0.2", tokens: new string[0]),
+                TestHelper.CreateHost("0.0.0.3", tokens: new[] { "3" })
+            };
+
+            var clusterMock = new Mock<ICluster>();
+            clusterMock
+                .Setup(c => c.AllHosts())
+                .Returns(hostList)
+                .Verifiable();
+
+            var policy = new RoundRobinPolicy();
+            policy.Initialize(clusterMock.Object);
+
+            CollectionAssert.AreEquivalent(
+                new byte[] { 1, 3 },
+                policy.NewQueryPlan(null, new SimpleStatement()).Select(h => TestHelper.GetLastAddressByte(h.Host)));
+            Assert.AreEqual(HostDistance.Ignored, policy.Distance(hostList[1]));
+            Assert.AreEqual(HostDistance.Local, policy.Distance(hostList[0]));
+            clusterMock.Verify();
+        }
+
+        [Test]
         public void DCAwareRoundRobinPolicyNeverHitsRemoteWhenSet()
         {
             byte hostLength = 5;
@@ -158,6 +185,106 @@ namespace Cassandra.Tests
 
             //Check that there aren't remote nodes.
             Assert.AreEqual(0, followingRounds.Count(h => h.Host.Datacenter != "local"));
+        }
+
+        [Test]
+        public void DCAwareRoundRobinPolicySkipsZeroTokenHosts()
+        {
+            var hostList = new List<Host>
+            {
+                TestHelper.CreateHost("0.0.0.1", "dc1", tokens: new[] { "1" }),
+                TestHelper.CreateHost("0.0.0.2", "dc1", tokens: new string[0]),
+                TestHelper.CreateHost("0.0.0.3", "dc2", tokens: new[] { "3" }),
+                TestHelper.CreateHost("0.0.0.4", "dc2", tokens: new string[0])
+            };
+            var clusterMock = new Mock<ICluster>();
+            clusterMock
+                .Setup(c => c.AllHosts())
+                .Returns(hostList);
+
+            var policy = new DCAwareRoundRobinPolicy("dc1", 1);
+            policy.Initialize(clusterMock.Object);
+
+            CollectionAssert.AreEqual(
+                new byte[] { 1, 3 },
+                policy.NewQueryPlan(null, new SimpleStatement()).Select(h => TestHelper.GetLastAddressByte(h.Host)));
+            Assert.AreEqual(HostDistance.Ignored, policy.Distance(hostList[1]));
+            Assert.AreEqual(HostDistance.Ignored, policy.Distance(hostList[3]));
+            Assert.AreEqual(HostDistance.Local, policy.Distance(hostList[0]));
+            Assert.AreEqual(HostDistance.Remote, policy.Distance(hostList[2]));
+        }
+
+        [Test]
+        public void DCAwareRoundRobinPolicyRoutesHostThatGainsTokens()
+        {
+            var host = TestHelper.CreateHost("0.0.0.1", "dc1", tokens: new string[0]);
+            var hostList = new List<Host>
+            {
+                host,
+                TestHelper.CreateHost("0.0.0.2", "dc1", tokens: new[] { "2" })
+            };
+            var clusterMock = new Mock<ICluster>();
+            clusterMock
+                .Setup(c => c.AllHosts())
+                .Returns(hostList);
+
+            var policy = new DCAwareRoundRobinPolicy("dc1", 0);
+            policy.Initialize(clusterMock.Object);
+
+            CollectionAssert.AreEqual(
+                new byte[] { 2 },
+                policy.NewQueryPlan(null, new SimpleStatement()).Select(h => TestHelper.GetLastAddressByte(h.Host)));
+
+            host.SetInfo(new TestHelper.DictionaryBasedRow(new Dictionary<string, object>
+            {
+                { "data_center", "dc1" },
+                { "rack", "rack1" },
+                { "tokens", new[] { "1" } }
+            }));
+
+            CollectionAssert.AreEquivalent(
+                new byte[] { 1, 2 },
+                policy.NewQueryPlan(null, new SimpleStatement()).Select(h => TestHelper.GetLastAddressByte(h.Host)));
+            Assert.AreEqual(HostDistance.Local, policy.Distance(host));
+        }
+
+        [Test]
+        public void DCAwareRoundRobinPolicyBalancesFirstHostAcrossRoutableLocalHosts()
+        {
+            //A zero-token node precedes the routable hosts. The rotation must be balanced across the
+            //routable hosts only, not skewed towards the host that follows the zero-token node.
+            var hostList = new List<Host>
+            {
+                TestHelper.CreateHost("0.0.0.1", "dc1", tokens: new string[0]),
+                TestHelper.CreateHost("0.0.0.2", "dc1", tokens: new[] { "2" }),
+                TestHelper.CreateHost("0.0.0.3", "dc1", tokens: new[] { "3" })
+            };
+            var clusterMock = new Mock<ICluster>();
+            clusterMock
+                .Setup(c => c.AllHosts())
+                .Returns(hostList);
+
+            var policy = new DCAwareRoundRobinPolicy("dc1", 0);
+            policy.Initialize(clusterMock.Object);
+
+            var firstHostCounts = new Dictionary<byte, int>();
+            const int iterations = 1000;
+            for (var i = 0; i < iterations; i++)
+            {
+                var plan = policy.NewQueryPlan(null, new SimpleStatement())
+                                 .Select(h => TestHelper.GetLastAddressByte(h.Host))
+                                 .ToArray();
+                //The zero-token host is never part of the plan
+                CollectionAssert.DoesNotContain(plan, (byte)1);
+                CollectionAssert.AreEquivalent(new byte[] { 2, 3 }, plan);
+                var first = plan[0];
+                firstHostCounts.TryGetValue(first, out var count);
+                firstHostCounts[first] = count + 1;
+            }
+
+            //Both routable hosts must receive the same number of first attempts
+            Assert.AreEqual(iterations / 2, firstHostCounts[2]);
+            Assert.AreEqual(iterations / 2, firstHostCounts[3]);
         }
 
         [Test]
