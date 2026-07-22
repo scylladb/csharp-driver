@@ -40,10 +40,10 @@ namespace Cassandra.Tests
                 EndianBitConverter.SetBytes(false, buffer, 0, v.Item1);
                 CollectionAssert.AreEqual(v.Item2, buffer);
                 EndianBitConverter.SetBytes(true, buffer, 0, v.Item1);
-                CollectionAssert.AreEqual(v.Item2.Reverse(), buffer);
+                CollectionAssert.AreEqual(v.Item2.AsEnumerable().Reverse(), buffer);
                 var decoded = EndianBitConverter.ToInt32(false, v.Item2, 0);
                 Assert.AreEqual(v.Item1, decoded);
-                decoded = EndianBitConverter.ToInt32(true, v.Item2.Reverse().ToArray(), 0);
+                decoded = EndianBitConverter.ToInt32(true, v.Item2.AsEnumerable().Reverse().ToArray(), 0);
                 Assert.AreEqual(v.Item1, decoded);
             }
         }
@@ -65,10 +65,10 @@ namespace Cassandra.Tests
                 EndianBitConverter.SetBytes(false, buffer, 0, v.Item1);
                 CollectionAssert.AreEqual(v.Item2, buffer);
                 EndianBitConverter.SetBytes(true, buffer, 0, v.Item1);
-                CollectionAssert.AreEqual(v.Item2.Reverse(), buffer);
+                CollectionAssert.AreEqual(v.Item2.AsEnumerable().Reverse(), buffer);
                 var decoded = EndianBitConverter.ToDouble(false, v.Item2, 0);
                 Assert.AreEqual(v.Item1, decoded);
-                decoded = EndianBitConverter.ToDouble(true, v.Item2.Reverse().ToArray(), 0);
+                decoded = EndianBitConverter.ToDouble(true, v.Item2.AsEnumerable().Reverse().ToArray(), 0);
                 Assert.AreEqual(v.Item1, decoded);
             }
         }
