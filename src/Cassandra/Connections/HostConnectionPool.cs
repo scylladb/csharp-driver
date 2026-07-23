@@ -37,6 +37,10 @@ namespace Cassandra.Connections
         private Random rand = new Random();
         private const int ConnectionIndexOverflow = int.MaxValue - 1000000;
         private const long BetweenResizeDelay = 2000;
+        private const long EmptyDrainRecheckMillis = 1000;
+        // Maximum number of 1-second polls in FinishEmptyDrain before forcing completion.
+        // Mirrors the spirit of the DrainConnectionsTimer steps cap.
+        private const int EmptyDrainMaxRetries = 30;
 
         /// <summary>
         /// Represents the possible states of the pool.
@@ -106,6 +110,15 @@ namespace Cassandra.Connections
         /// Determines whether the pool is not on the initial state.
         /// </summary>
         private bool IsClosing => Volatile.Read(ref _state) != PoolState.Init;
+
+        /// <summary>
+        /// True when a freshly opened connection must not be kept: either the pool is shutting
+        /// down/draining, or the host is <see cref="HostDistance.Ignored"/>. Checking <see cref="_distance"/>
+        /// in addition to the pool state closes the race where the empty-drain timeout resets the pool
+        /// state back to <see cref="PoolState.Init"/> while a connection open is still in flight; an
+        /// ignored host must never end up with an established connection.
+        /// </summary>
+        private bool ShouldDiscardNewConnection => IsClosing || _distance == HostDistance.Ignored;
 
         /// <inheritdoc />
         public IConnection[] ConnectionsSnapshot => _connections.GetSnapshot().GetAllItems();
@@ -538,6 +551,7 @@ namespace Cassandra.Connections
             if (connections.Length == 0)
             {
                 HostConnectionPool.Logger.Info("Pool #{0} to {1} had no connections", GetHashCode(), _host.Address);
+                FinishEmptyDrain(afterDrainHandler);
                 return;
             }
             // The request handler might execute up to 2 queries with a single connection:
@@ -550,6 +564,53 @@ namespace Cassandra.Connections
                 delay = maxDelay;
             }
             DrainConnectionsTimer(connections, afterDrainHandler, delay / 1000);
+        }
+
+        /// <summary>
+        /// Completes the draining of a pool that has no established connections. It waits for any connection
+        /// open that is still in progress before invoking the handler, so the pool state is not reset while
+        /// an open could still add a connection to an ignored host.
+        /// </summary>
+        private void FinishEmptyDrain(Action afterDrainHandler, int retriesLeft = HostConnectionPool.EmptyDrainMaxRetries)
+        {
+            if (Volatile.Read(ref _connectionOpenTcs) == null || retriesLeft <= 0)
+            {
+                if (retriesLeft <= 0)
+                {
+                    HostConnectionPool.Logger.Warning(
+                        "Pool #{0} to {1}: in-flight connection open did not complete within {2} s; " +
+                        "forcing drain completion.",
+                        GetHashCode(), _host.Address, HostConnectionPool.EmptyDrainMaxRetries);
+                }
+                // No open in flight (or we gave up waiting), safe to complete the drain (which resets the pool state).
+                CompleteDrain(afterDrainHandler);
+                return;
+            }
+            // A connection open is still in progress. Keep the pool in Closing and retry shortly so the
+            // in-flight open finishes and discards its connection before the state is reset.
+            HostConnectionPool.Logger.Info(
+                "Pool #{0} to {1} waiting for an in-flight connection open before finishing drain",
+                GetHashCode(), _host.Address);
+            _timer.NewTimeout(_ => Task.Run(() => FinishEmptyDrain(afterDrainHandler, retriesLeft - 1)), null, HostConnectionPool.EmptyDrainRecheckMillis);
+        }
+
+        /// <summary>
+        /// Runs the after-drain handler (which resets the pool state) and then recovers a reconnection that
+        /// may have been missed while the pool was Closing. If OnDistanceChanged(Ignored → Local/Remote)
+        /// fired during the drain, its ScheduleReconnection call returned early because IsClosing was true
+        /// at that point; now that the state has been reset to Init we kick off reconnection so the pool is
+        /// not left idle.
+        /// </summary>
+        private void CompleteDrain(Action afterDrainHandler)
+        {
+            afterDrainHandler?.Invoke();
+            if (!IsClosing && _distance != HostDistance.Ignored)
+            {
+                // Mirror OnDistanceChanged / OnHostUp: reset _canCreateForeground before reconnecting
+                // so that foreground EnsureCreate calls don't fail while the reconnection is pending.
+                _canCreateForeground = true;
+                ScheduleReconnection(true);
+            }
         }
 
         private void DrainConnectionsTimer(ShardedList<IConnection> connections, Action afterDrainHandler, int steps)
@@ -572,7 +633,7 @@ namespace Cassandra.Connections
                     {
                         c.Dispose();
                     }
-                    afterDrainHandler?.Invoke();
+                    CompleteDrain(afterDrainHandler);
                 });
             }, null, 1000);
         }
@@ -799,7 +860,7 @@ namespace Cassandra.Connections
                 return await FinishOpen(tcs, true, ex).ConfigureAwait(false);
             }
 
-            if (IsClosing)
+            if (ShouldDiscardNewConnection)
             {
                 HostConnectionPool.Logger.Info("Connection to {0} opened successfully but pool #{1} was being closed",
                     _host.Address, GetHashCode());
@@ -811,7 +872,7 @@ namespace Cassandra.Connections
             HostConnectionPool.Logger.Info("Connection to {0} opened successfully, pool #{1} length: {2}",
                 _host.Address, GetHashCode(), newLength);
 
-            if (IsClosing)
+            if (ShouldDiscardNewConnection)
             {
                 // We haven't use a CAS operation, so it's possible that the pool is being closed while adding a new
                 // connection, we should remove it.

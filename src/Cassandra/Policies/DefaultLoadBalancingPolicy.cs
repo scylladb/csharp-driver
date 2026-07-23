@@ -65,6 +65,11 @@ namespace Cassandra
         /// <returns>the HostDistance to <c>host</c>.</returns>
         public HostDistance Distance(Host host)
         {
+            if (host.IsZeroTokenNode)
+            {
+                return HostDistance.Ignored;
+            }
+
             var lastPreferredHost = _lastPreferredHost;
             if (lastPreferredHost != null && host == lastPreferredHost)
             {
@@ -117,7 +122,11 @@ namespace Cassandra
 
         private IEnumerable<HostShard> YieldPreferred(string keyspace, TargettedSimpleStatement statement)
         {
-            yield return new HostShard(statement.PreferredHost, -1);
+            // Skip a zero-token preferred host; it is not routable.
+            if (!statement.PreferredHost.IsZeroTokenNode)
+            {
+                yield return new HostShard(statement.PreferredHost, -1);
+            }
             foreach (var h in ChildPolicy.NewQueryPlan(keyspace, statement))
             {
                 yield return h;

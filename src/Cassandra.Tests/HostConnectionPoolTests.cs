@@ -331,6 +331,130 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public async Task OnDistanceChanged_To_Ignored_On_Empty_Pool_Should_Not_Block_Later_Reconnection()
+        {
+            // Reproduces the case where a host loses its tokens (becomes Ignored) while its pool is empty
+            // and later gains them back. Draining an empty pool must still transition the pool state back
+            // to Init; otherwise it stays Closing and IsClosing blocks the reconnection when the host
+            // becomes routable again, leaving the node permanently unusable.
+            var host = TestHelper.CreateHost("127.0.0.1");
+            _mock = GetPoolMock(host, GetConfig(1, 1, new ConstantReconnectionPolicy(3600000)));
+            var allowCreation = 0;
+            _mock.Setup(p => p.DoCreateAndOpen(It.IsAny<bool>(), -1, 0, 0)).Returns(() =>
+            {
+                if (Volatile.Read(ref allowCreation) == 0)
+                {
+                    return TaskHelper.FromException<IConnection>(new Exception("Test Exception"));
+                }
+                return TaskHelper.ToTask(CreateConnection());
+            });
+            var pool = _mock.Object;
+
+            // Move the empty pool to Local (creation fails, so the pool stays empty) and then to Ignored,
+            // which drains the (empty) pool.
+            host.SetDistance(HostDistance.Local);
+            host.SetDistance(HostDistance.Ignored);
+            Assert.AreEqual(0, pool.OpenConnections);
+
+            // The host gains tokens again: allow connections and bring it back to Local.
+            Volatile.Write(ref allowCreation, 1);
+            host.SetDistance(HostDistance.Local);
+
+            await TestHelper.WaitUntilAsync(() => pool.OpenConnections == 1).ConfigureAwait(false);
+            Assert.AreEqual(1, pool.OpenConnections);
+        }
+
+        [Test]
+        public async Task OnDistanceChanged_To_Ignored_Should_Not_Add_Connection_From_InFlight_Open()
+        {
+            // A connection open can be in progress when the host becomes Ignored (for example a zero-token
+            // node). Draining the (still empty) pool must not reset its state while that open is in flight,
+            // otherwise the completing open observes a non-closing pool and adds a connection to the
+            // ignored host.
+            var host = TestHelper.CreateHost("127.0.0.1");
+            _mock = GetPoolMock(host, GetConfig(1, 1, new ConstantReconnectionPolicy(3600000)));
+            var openGate = new TaskCompletionSource<bool>();
+            var openStarted = new TaskCompletionSource<bool>();
+            _mock.Setup(p => p.DoCreateAndOpen(It.IsAny<bool>(), -1, 0, 0)).Returns(async () =>
+            {
+                openStarted.TrySetResult(true);
+                await openGate.Task.ConfigureAwait(false);
+                return CreateConnection();
+            });
+            var pool = _mock.Object;
+
+            // Start opening a connection and wait until it is in flight (blocked on the gate).
+            host.SetDistance(HostDistance.Local);
+            await openStarted.Task.ConfigureAwait(false);
+
+            // The host becomes ignored while the open is still in progress; this drains the empty pool.
+            host.SetDistance(HostDistance.Ignored);
+
+            // Let the in-flight open complete. It must observe the closing/ignored state and discard its
+            // connection instead of adding it to the pool.
+            openGate.SetResult(true);
+
+            // Poll for the incorrect behaviour (a connection being added). This returns as soon as the bug
+            // is observed, otherwise it settles after the full window and we assert nothing was added.
+            await TestHelper.WaitUntilAsync(() => pool.OpenConnections == 1, 50, 10).ConfigureAwait(false);
+            Assert.AreEqual(0, pool.OpenConnections);
+        }
+
+        [Test]
+        public async Task OnDistanceChanged_To_Ignored_Then_Local_During_FinishEmptyDrain_Should_Reconnect()
+        {
+            // Reproduces the race where a host becomes Ignored (empty pool, in-flight open) and then
+            // immediately becomes Local again while FinishEmptyDrain is still polling.
+            //
+            // Timeline:
+            //   1. pool empty; connection open in flight (blocked on gate)
+            //   2. host → Ignored: pool state Closing, FinishEmptyDrain polls (open still in flight)
+            //   3. host → Local: OnDistanceChanged fires ScheduleReconnection but IsClosing is true → skipped
+            //   4. in-flight open finishes: pool is Closing so connection is discarded; _connectionOpenTcs cleared
+            //   5. FinishEmptyDrain retry: _connectionOpenTcs == null → afterDrainHandler() → state = Init
+            //      → ScheduleReconnection triggered by FinishEmptyDrain to recover from the missed call in step 3
+            //   6. pool should reconnect and reach OpenConnections == 1
+            var host = TestHelper.CreateHost("127.0.0.1");
+            _mock = GetPoolMock(host, GetConfig(1, 1, new ConstantReconnectionPolicy(50)));
+            var openGate = new TaskCompletionSource<bool>();
+            var openStarted = new TaskCompletionSource<bool>();
+            var callCount = 0;
+            _mock.Setup(p => p.DoCreateAndOpen(It.IsAny<bool>(), -1, 0, 0)).Returns(async () =>
+            {
+                var call = Interlocked.Increment(ref callCount);
+                if (call == 1)
+                {
+                    // First open: block until the gate is released (the in-flight open that gets discarded).
+                    openStarted.TrySetResult(true);
+                    await openGate.Task.ConfigureAwait(false);
+                    return CreateConnection();
+                }
+                // Subsequent opens: succeed immediately so the pool can reconnect.
+                return CreateConnection();
+            });
+            var pool = _mock.Object;
+
+            // Start the first open and wait until it is in flight.
+            host.SetDistance(HostDistance.Local);
+            await openStarted.Task.ConfigureAwait(false);
+
+            // Host becomes Ignored: pool → Closing; FinishEmptyDrain polls because open is still in flight.
+            host.SetDistance(HostDistance.Ignored);
+
+            // Host regains tokens: distance updated to Local while pool is still Closing.
+            // OnDistanceChanged calls ScheduleReconnection but CreateOrScheduleReconnectAsync returns early.
+            host.SetDistance(HostDistance.Local);
+
+            // Release the in-flight open. The pool is still Closing so the connection is discarded.
+            openGate.SetResult(true);
+
+            // FinishEmptyDrain should eventually complete (state → Init) and call ScheduleReconnection
+            // to recover the missed reconnect. The pool must reach OpenConnections == 1.
+            await TestHelper.WaitUntilAsync(() => pool.OpenConnections == 1, 200, 20).ConfigureAwait(false);
+            Assert.AreEqual(1, pool.OpenConnections);
+        }
+
+        [Test]
         public async Task EnsureCreate_After_Reconnection_Attempt_Waits_Existing()
         {
             _mock = GetPoolMock(null, GetConfig(2, 2));

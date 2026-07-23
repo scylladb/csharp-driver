@@ -173,16 +173,24 @@ namespace Cassandra
         }
 
         /// <summary>
-        ///  Return the HostDistance for the provided host. <p> This policy consider nodes
-        ///  in the local datacenter as <c>Local</c>. For each remote datacenter, it
-        ///  considers a configurable number of hosts as <c>Remote</c> and the rest
-        ///  is <c>Ignored</c>. </p><p> To configure how many host in each remote
-        ///  datacenter is considered <c>Remote</c>.</p>
+        ///  Return the HostDistance for the provided host. This policy considers nodes
+        ///  in the local datacenter as <c>Local</c> and all other non-zero-token nodes as
+        ///  <c>Remote</c>. The <c>usedHostsPerRemoteDc</c> limit controls how many remote
+        ///  hosts appear in a query plan, but does not affect the distance returned here.
+        ///  <para>Zero-token nodes are always <see cref="HostDistance.Ignored"/>
+        ///  regardless of their datacenter and are never included in a query plan.</para>
         /// </summary>
         /// <param name="host"> the host of which to return the distance of. </param>
-        /// <returns>the HostDistance to <c>host</c>.</returns>
+        /// <returns><see cref="HostDistance.Ignored"/> when <paramref name="host"/> is a
+        /// zero-token node; <see cref="HostDistance.Local"/> for hosts
+        /// in the local DC; <see cref="HostDistance.Remote"/> for all other hosts.</returns>
         public HostDistance Distance(Host host)
         {
+            if (host.IsZeroTokenNode)
+            {
+                return HostDistance.Ignored;
+            }
+
             var dc = GetDatacenter(host);
             if (dc == _localDc)
             {
@@ -193,10 +201,11 @@ namespace Cassandra
 
         /// <summary>
         ///  Returns the hosts to use for a new query. <p> The returned plan will always
-        ///  try each known host in the local datacenter first, and then, if none of the
-        ///  local host is reachable, will try up to a configurable number of other host
-        ///  per remote datacenter. The order of the local node in the returned query plan
-        ///  will follow a Round-robin algorithm.</p>
+        ///  try each known <em>routable</em> (non-zero-token) host in the local datacenter
+        ///  first, and then, if none of the local hosts is reachable, will try up to a
+        ///  configurable number of other routable hosts per remote datacenter. Zero-token
+        ///  nodes are excluded from the plan entirely. The order of the
+        ///  local nodes in the returned query plan follows a Round-robin algorithm.</p>
         /// </summary>
         /// <param name="keyspace">Keyspace on which the query is going to be executed</param>
         /// <param name="query"> the query for which to build the plan. </param>
@@ -223,10 +232,38 @@ namespace Cassandra
             var hosts = GetHosts();
             var localHosts = hosts.Item1;
             var remoteHosts = hosts.Item2;
-            //Round-robin through local nodes
-            for (var i = 0; i < localHosts.Count; i++)
+            //Filter out zero-token nodes before applying the round-robin modulo so that the rotation is
+            //balanced across the routable hosts. Rotating over the full list (including skipped hosts)
+            //would make hosts that follow a zero-token node receive more first attempts. The filtering is
+            //done per query plan, so hosts that later gain tokens are observed again automatically.
+            //Single-pass back-fill: no allocation in the common case (no zero-token local hosts);
+            //one O(N) pass and one allocation in the zero-token case.
+            IList<Host> routableLocalHosts = localHosts;
+            List<Host> filteredLocalHosts = null;
+            for (var j = 0; j < localHosts.Count; j++)
             {
-                yield return new HostShard(localHosts[(startIndex + i) % localHosts.Count], -1);
+                var h = localHosts[j];
+                if (h.IsZeroTokenNode)
+                {
+                    if (filteredLocalHosts == null)
+                    {
+                        // First zero-token node found; back-fill all routable hosts seen so far.
+                        filteredLocalHosts = new List<Host>(localHosts.Count);
+                        for (var k = 0; k < j; k++) filteredLocalHosts.Add(localHosts[k]);
+                    }
+                    // Skip this zero-token node.
+                }
+                else
+                {
+                    filteredLocalHosts?.Add(h);
+                }
+            }
+            if (filteredLocalHosts != null) routableLocalHosts = filteredLocalHosts;
+            //Round-robin through the routable local nodes
+            for (var i = 0; i < routableLocalHosts.Count; i++)
+            {
+                var host = routableLocalHosts[(startIndex + i) % routableLocalHosts.Count];
+                yield return new HostShard(host, -1);
             }
 
             if (_usedHostsPerRemoteDc == 0)
@@ -236,6 +273,10 @@ namespace Cassandra
             var dcHosts = new Dictionary<string, int>();
             foreach (var h in remoteHosts)
             {
+                if (h.IsZeroTokenNode)
+                {
+                    continue;
+                }
                 var dc = GetDatacenter(h);
                 dcHosts.TryGetValue(dc, out int hostYieldedByDc);
                 if (hostYieldedByDc >= _usedHostsPerRemoteDc)

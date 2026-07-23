@@ -63,5 +63,41 @@ namespace Cassandra.Tests.Policies
             lbp.NewQueryPlan(null, statement);
             Assert.AreEqual(HostDistance.Local, lbp.Distance(statement.PreferredHost));
         }
+
+        [Test]
+        public void Should_Return_Ignored_Distance_For_Zero_Token_Preferred_Host()
+        {
+            // A zero-token node must remain Ignored even after being set as the preferred host.
+#pragma warning disable 618
+            var lbp = new DefaultLoadBalancingPolicy(new TestLoadBalancingPolicy());
+#pragma warning restore 618
+            var zeroTokenHost = TestHelper.CreateHost("0.0.0.5", tokens: new string[0]);
+            Assert.IsTrue(zeroTokenHost.IsZeroTokenNode);
+
+            var statement = new TargettedSimpleStatement("Q");
+            statement.PreferredHost = zeroTokenHost;
+            lbp.NewQueryPlan(null, statement);
+
+            Assert.AreEqual(HostDistance.Ignored, lbp.Distance(zeroTokenHost));
+        }
+
+        [Test]
+        public void Should_Not_Yield_Zero_Token_Preferred_Host_In_Query_Plan()
+        {
+            // A zero-token preferred host must not appear in the query plan.
+#pragma warning disable 618
+            var lbp = new DefaultLoadBalancingPolicy(new TestLoadBalancingPolicy());
+#pragma warning restore 618
+            var zeroTokenHost = TestHelper.CreateHost("0.0.0.5", tokens: new string[0]);
+            Assert.IsTrue(zeroTokenHost.IsZeroTokenNode);
+
+            var statement = new TargettedSimpleStatement("Q");
+            statement.PreferredHost = zeroTokenHost;
+            var hosts = lbp.NewQueryPlan(null, statement).Select(h => h.Host).ToList();
+
+            CollectionAssert.DoesNotContain(hosts, zeroTokenHost);
+            // Child policy hosts are still returned.
+            Assert.AreEqual(2, hosts.Count);
+        }
     }
 }

@@ -605,6 +605,18 @@ namespace Cassandra
         /// <inheritdoc />
         HostDistance IInternalCluster.RetrieveAndSetDistance(Host host)
         {
+            // Zero-token nodes must never be routed to, regardless of the configured
+            // load balancing policy. Enforcing it here — the single choke point every code path funnels
+            // through (request handler, prepare handler, control connection, session warmup) — guarantees
+            // the exclusion holds even for custom policies that do not check Host.IsZeroTokenNode, and keeps
+            // the distance consistent with the Ignored value that Host.SetInfo forces when the node is
+            // first observed as zero-token.
+            if (host.IsZeroTokenNode)
+            {
+                host.SetDistance(HostDistance.Ignored);
+                return HostDistance.Ignored;
+            }
+
             var distance = _loadBalancingPolicies[0].Distance(host);
 
             for (var i = 1; i < _loadBalancingPolicies.Count; i++)

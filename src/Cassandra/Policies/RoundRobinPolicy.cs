@@ -24,13 +24,15 @@ namespace Cassandra
     /// <summary>
     ///  A Round-robin load balancing policy.
     /// <para> This policy queries nodes in a
-    ///  round-robin fashion. For a given query, if an host fail, the next one
-    ///  (following the round-robin order) is tried, until all hosts have been tried.
+    ///  round-robin fashion. For a given query, if a host fails, the next one
+    ///  (following the round-robin order) is tried, until all routable hosts have been tried.
     ///  </para>
     /// <para> This policy is not datacenter aware and will include every known
-    ///  Cassandra host in its round robin algorithm. If you use multiple datacenter
-    ///  this will be inefficient and you will want to use the
-    ///  <see cref="DCAwareRoundRobinPolicy"/> load balancing policy instead.
+    ///  routable (non-zero-token) Cassandra host in its round-robin algorithm.
+    ///  Zero-token nodes are excluded: they are assigned
+    ///  <see cref="HostDistance.Ignored"/> and never appear in a query plan.
+    ///  If you use multiple datacenters this will be inefficient and you will want
+    ///  to use the <see cref="DCAwareRoundRobinPolicy"/> load balancing policy instead.
     /// </para>
     /// </summary>
     public class RoundRobinPolicy : IExtendedLoadBalancingPolicy
@@ -50,17 +52,23 @@ namespace Cassandra
         ///  <link>DCAwareRoundRobinPolicy</link> instead.</p>
         /// </summary>
         /// <param name="host"> the host of which to return the distance of. </param>
-        /// <returns>the HostDistance to <c>host</c>.</returns>
+        /// <returns><see cref="HostDistance.Ignored"/> if <paramref name="host"/> is a zero-token
+        /// node; otherwise <see cref="HostDistance.Local"/>.</returns>
         public HostDistance Distance(Host host)
         {
+            if (host.IsZeroTokenNode)
+            {
+                return HostDistance.Ignored;
+            }
+
             return HostDistance.Local;
         }
 
         /// <summary>
-        ///  Returns the hosts to use for a new query. <p> The returned plan will try each
-        ///  known host of the cluster. Upon each call to this method, the ith host of the
-        ///  plans returned will cycle over all the host of the cluster in a round-robin
-        ///  fashion.</p>
+        ///  Returns the hosts to use for a new query. The returned plan will try each
+        ///  known <em>routable</em> host of the cluster (zero-token nodes are excluded).
+        ///  Upon each call to this method, the ith host of the plans returned will cycle
+        ///  over all routable hosts in a round-robin fashion.
         /// </summary>
         /// <param name="keyspace">Keyspace on which the query is going to be executed</param>
         /// <param name="query"> the query for which to build the plan. </param>
@@ -74,8 +82,32 @@ namespace Cassandra
         /// <inheritdoc />
         public IEnumerable<HostShard> NewQueryPlan(string keyspace, IStatement query, bool routeAsLwt)
         {
-            //shallow copy the all hosts
-            var hosts = (from h in _cluster.AllHosts() select h).ToArray();
+            // Snapshot AllHosts() once. AllHosts() returns a live ConcurrentDictionary.Values view;
+            // snapshotting ensures both the zero-token check and the filter operate on the same set.
+            // In the common case (no zero-token nodes) the snapshot is used directly. Only when a
+            // zero-token node is found is a second, smaller array allocated (single-pass back-fill).
+            var allHosts = _cluster.AllHosts().ToArray();
+            Host[] hosts = allHosts;
+            List<Host> filteredHosts = null;
+            for (var j = 0; j < allHosts.Length; j++)
+            {
+                var h = allHosts[j];
+                if (h.IsZeroTokenNode)
+                {
+                    if (filteredHosts == null)
+                    {
+                        // First zero-token node found; back-fill all routable hosts seen so far.
+                        filteredHosts = new List<Host>(allHosts.Length);
+                        for (var k = 0; k < j; k++) filteredHosts.Add(allHosts[k]);
+                    }
+                    // Skip this zero-token node.
+                }
+                else
+                {
+                    filteredHosts?.Add(h);
+                }
+            }
+            if (filteredHosts != null) hosts = filteredHosts.ToArray();
             var startIndex = 0;
             if (!routeAsLwt)
             {
