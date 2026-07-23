@@ -31,9 +31,9 @@ namespace Cassandra
     /// Cassandra cluster would be:
     /// </para>
     /// <code>
-    /// Cluster cluster = Cluster.Builder().AddContactPoint("192.168.0.1").Build(); 
-    /// Session session = cluster.Connect("db1"); 
-    /// foreach (var row in session.Execute("SELECT * FROM table1")) 
+    /// Cluster cluster = Cluster.Builder().AddContactPoint("192.168.0.1").Build();
+    /// Session session = cluster.Connect("db1");
+    /// foreach (var row in session.Execute("SELECT * FROM table1"))
     ///     // do something ...
     /// </code>
     /// <para>
@@ -46,7 +46,7 @@ namespace Cassandra
     public interface ICluster : IDisposable
     {
         /// <summary>
-        ///  Gets read-only metadata on the connected cluster. 
+        ///  Gets read-only metadata on the connected cluster.
         /// <para>This includes the
         ///  know nodes (with their status as seen by the driver) as well as the schema
         ///  definitions.
@@ -108,19 +108,31 @@ namespace Cassandra
         Host GetHost(IPEndPoint address);
 
         /// <summary>
-        /// Gets a collection of replicas for a given partitionKey. Backward-compatibility only, use GetReplicas(keyspace, partitionKey) instead.
+        /// Gets a collection of replicas for a given partitionKey. Backward-compatibility only.
         /// </summary>
         /// <param name="partitionKey">Byte array representing the partition key</param>
         /// <returns></returns>
+        [Obsolete("Use GetReplicas(string keyspace, string table, byte[] partitionKey) for tablet-aware replica resolution.")]
         ICollection<HostShard> GetReplicas(byte[] partitionKey);
 
         /// <summary>
         /// Gets a collection of replicas for a given partitionKey on a given keyspace
         /// </summary>
-        /// <param name="keyspace">Byte array representing the partition key</param>
+        /// <param name="keyspace">The keyspace name</param>
         /// <param name="partitionKey">Byte array representing the partition key</param>
         /// <returns></returns>
+        [Obsolete("Use GetReplicas(string keyspace, string table, byte[] partitionKey) for tablet-aware replica resolution.")]
         ICollection<HostShard> GetReplicas(string keyspace, byte[] partitionKey);
+
+        /// <summary>
+        /// Gets a collection of replicas for a given partition key on a given keyspace and table.
+        /// Tablet metadata is used when available, with token-map fallback otherwise.
+        /// </summary>
+        /// <param name="keyspace">The keyspace name.</param>
+        /// <param name="table">The table name.</param>
+        /// <param name="partitionKey">Byte array representing the partition key.</param>
+        /// <returns>A collection of replicas for the provided partition key.</returns>
+        ICollection<HostShard> GetReplicas(string keyspace, string table, byte[] partitionKey);
 
         /// <summary>
         ///  Shutdown this cluster instance. This closes all connections from all the
