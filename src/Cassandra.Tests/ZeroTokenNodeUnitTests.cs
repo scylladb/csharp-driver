@@ -113,6 +113,106 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public void TokenMap_NetworkTopologyStrategy_Should_NotCountZeroTokenRackForRfPlacement()
+        {
+            // Two token owners are on rack1 and a zero-token host is on rack2.
+            // RF=2 in NTS must still return both token owners.
+            var withTokens1 = TestHelper.CreateHost("192.168.1.0", "dc1", "rack1", new[] { "0" });
+            var zeroToken = TestHelper.CreateHost("192.168.1.1", "dc1", "rack2", new string[0]);
+            var withTokens2 = TestHelper.CreateHost("192.168.1.2", "dc1", "rack1", new[] { "20" });
+            var hosts = new List<Host> { withTokens1, zeroToken, withTokens2 };
+            var keyspaces = new List<KeyspaceMetadata>
+            {
+                FakeSchemaParserFactory.CreateNetworkTopologyKeyspace(
+                    "ks_nts",
+                    new Dictionary<string, string> { { "dc1", "2" } })
+            };
+
+            var tokenMap = TokenMap.Build("Murmur3Partitioner", hosts, keyspaces);
+
+            foreach (var tokenValue in new long[] { -100, 0, 5, 20, 500000 })
+            {
+                var replicas = tokenMap.GetReplicas("ks_nts", new M3PToken(tokenValue)).Select(r => r.Host).ToList();
+                CollectionAssert.AreEquivalent(new[] { withTokens1, withTokens2 }, replicas);
+                CollectionAssert.DoesNotContain(replicas, zeroToken);
+            }
+        }
+
+        [Test]
+        public void TokenMap_Should_IgnoreDatacenter_When_ItOnlyContainsZeroTokenHosts()
+        {
+            // dc2 owns no token at all, so it must not take part in replica placement and its
+            // replication factor must be considered satisfied instead of triggering a full ring scan.
+            var withTokens1 = NormalHost("192.168.2.0", "dc1", "0");
+            var withTokens2 = NormalHost("192.168.2.1", "dc1", "20");
+            var zeroTokenOnlyDc = ZeroTokenHost("192.168.2.2", "dc2");
+            var hosts = new List<Host> { withTokens1, withTokens2, zeroTokenOnlyDc };
+            var keyspaces = new List<KeyspaceMetadata>
+            {
+                FakeSchemaParserFactory.CreateNetworkTopologyKeyspace(
+                    "ks_nts",
+                    new Dictionary<string, string> { { "dc1", "2" }, { "dc2", "1" } })
+            };
+
+            var tokenMap = TokenMap.Build("Murmur3Partitioner", hosts, keyspaces);
+
+            foreach (var tokenValue in new long[] { -100, 0, 5, 20, 500000 })
+            {
+                var replicas = tokenMap.GetReplicas("ks_nts", new M3PToken(tokenValue)).Select(r => r.Host).ToList();
+                CollectionAssert.AreEquivalent(new[] { withTokens1, withTokens2 }, replicas);
+                CollectionAssert.DoesNotContain(replicas, zeroTokenOnlyDc);
+            }
+        }
+
+        [Test]
+        public void TokenMap_NetworkTopologyStrategy_Should_StartPlacingReplicasInDc_When_ZeroTokenHostIsReplaced()
+        {
+            var dc1Host1 = NormalHost("192.168.3.0", "dc1", "0");
+            var dc1Host2 = NormalHost("192.168.3.1", "dc1", "20");
+            var dc2ZeroToken = ZeroTokenHost("192.168.3.2", "dc2");
+            var keyspaces = new List<KeyspaceMetadata>
+            {
+                FakeSchemaParserFactory.CreateNetworkTopologyKeyspace(
+                    "ks_nts",
+                    new Dictionary<string, string> { { "dc1", "1" }, { "dc2", "1" } })
+            };
+
+            var tokenMapBeforeReplacement = TokenMap.Build(
+                "Murmur3Partitioner",
+                new List<Host> { dc1Host1, dc1Host2, dc2ZeroToken },
+                keyspaces);
+
+            var dc2Replacement = NormalHost("192.168.3.2", "dc2", "10");
+            var tokenMapAfterReplacement = TokenMap.Build(
+                "Murmur3Partitioner",
+                new List<Host> { dc1Host1, dc1Host2, dc2Replacement },
+                keyspaces);
+
+            foreach (var tokenValue in new long[] { -100, 0, 5, 10, 20, 500000 })
+            {
+                var replicasBefore = tokenMapBeforeReplacement
+                    .GetReplicas("ks_nts", new M3PToken(tokenValue))
+                    .Select(r => r.Host)
+                    .ToList();
+
+                CollectionAssert.DoesNotContain(replicasBefore, dc2ZeroToken);
+                Assert.IsFalse(replicasBefore.Any(h => h.Datacenter == "dc2"));
+                Assert.AreEqual(1, replicasBefore.Count(h => h.Datacenter == "dc1"));
+                Assert.AreEqual(1, replicasBefore.Count);
+
+                var replicasAfter = tokenMapAfterReplacement
+                    .GetReplicas("ks_nts", new M3PToken(tokenValue))
+                    .Select(r => r.Host)
+                    .ToList();
+
+                CollectionAssert.Contains(replicasAfter, dc2Replacement);
+                Assert.AreEqual(1, replicasAfter.Count(h => h.Datacenter == "dc2"));
+                Assert.AreEqual(1, replicasAfter.Count(h => h.Datacenter == "dc1"));
+                Assert.AreEqual(2, replicasAfter.Count);
+            }
+        }
+
+        [Test]
         public void TokenMap_Build_Should_NotThrow_When_HostHasNoTokens()
         {
             var hosts = new List<Host>

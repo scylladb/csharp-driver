@@ -121,7 +121,13 @@ namespace Cassandra
             var datacenters = new Dictionary<string, DatacenterInfo>();
             foreach (var host in hosts)
             {
-                if (host.Datacenter != null)
+                // Only hosts that own tokens take part in replica placement, so zero-token hosts must not
+                // contribute to a datacenter's host count or rack set. This keeps the invariant that every
+                // host in primaryReplicas with a non null datacenter has an entry in `datacenters`, which
+                // the replication strategies rely on. A datacenter made up exclusively of zero-token hosts
+                // is therefore absent from `datacenters` and its replication factor is trivially satisfied.
+                var hasTokens = host.Tokens.Any();
+                if (hasTokens && host.Datacenter != null)
                 {
                     if (!datacenters.TryGetValue(host.Datacenter, out var dc))
                     {
