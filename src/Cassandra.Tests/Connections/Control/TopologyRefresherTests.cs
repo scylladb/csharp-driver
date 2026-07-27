@@ -16,6 +16,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
@@ -259,6 +260,52 @@ namespace Cassandra.Tests.Connections.Control
             Assert.AreEqual("ut-dc3", host3.Datacenter);
             Assert.AreEqual("ut-rack3", host3.Rack);
             Assert.AreEqual(Version.Parse("2.1.5"), host3.CassandraVersion);
+        }
+
+        [Test]
+        public async Task Should_TolerateZeroTokenPeer_WithoutWarnings()
+        {
+            var oldLevel = Diagnostics.CassandraTraceSwitch.Level;
+            var listener = new TestTraceListener();
+            Trace.Listeners.Add(listener);
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
+            try
+            {
+                var zeroTokenPeer = IPAddress.Parse("127.0.0.2");
+                var normalPeer = IPAddress.Parse("127.0.0.3");
+                var rows = TestHelper.CreateRows(new List<Dictionary<string, object>>
+                {
+                    // zero-token node: advertises NULL tokens (e.g. a Scylla coordinator-only node)
+                    new Dictionary<string, object>{{"rpc_address", zeroTokenPeer}, {"peer", zeroTokenPeer}, { "data_center", "ut-dc" }, { "rack", "ut-rack" }, {"tokens", null}, {"release_version", "3.0.8"}},
+                    // regular node that owns a token
+                    new Dictionary<string, object>{{"rpc_address", normalPeer}, {"peer", normalPeer}, { "data_center", "ut-dc" }, { "rack", "ut-rack" }, {"tokens", new [] { "0" }}, {"release_version", "3.0.8"}}
+                });
+                var topologyRefresher = CreateTopologyRefresher(peersRows: rows);
+
+                await topologyRefresher.RefreshNodeListAsync(
+                    new FakeConnectionEndPoint("127.0.0.1", 9042), Mock.Of<IConnection>(), _serializer).ConfigureAwait(false);
+
+                // The zero-token node is a valid, routable host and is part of the cluster metadata.
+                Assert.AreEqual(3, _metadata.AllHosts().Count);
+
+                var zeroTokenHost = _metadata.GetHost(new IPEndPoint(zeroTokenPeer, ProtocolOptions.DefaultPort));
+                Assert.NotNull(zeroTokenHost);
+                Assert.IsFalse(zeroTokenHost.Tokens.Any(), "zero-token host should have no tokens");
+
+                var normalHost = _metadata.GetHost(new IPEndPoint(normalPeer, ProtocolOptions.DefaultPort));
+                Assert.NotNull(normalHost);
+                Assert.IsTrue(normalHost.Tokens.Any(), "regular host should keep its tokens");
+
+                // Processing a zero-token node must not produce any warnings or errors.
+                Trace.Flush();
+                var offending = listener.Queue.Where(m => m.Contains("#ERROR") || m.Contains("#WARNING")).ToList();
+                Assert.AreEqual(0, offending.Count, string.Join(Environment.NewLine, offending));
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = oldLevel;
+            }
         }
 
         [Test]
