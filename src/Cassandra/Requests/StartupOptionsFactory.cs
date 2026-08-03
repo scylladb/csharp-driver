@@ -57,27 +57,38 @@ namespace Cassandra.Requests
         private readonly string _appVersion;
         private readonly Guid _clusterId;
         private readonly Guid _sessionId;
+        private readonly IDriverConfigReporter _driverConfigReporter;
 
-        public StartupOptionsFactory(Guid clusterId, string appVersion, string appName)
-            : this(clusterId, Guid.NewGuid(), appVersion, appName)
+        public StartupOptionsFactory(Guid clusterId, string appVersion, string appName, IDriverConfigReporter driverConfigReporter)
+            : this(clusterId, Guid.NewGuid(), appVersion, appName, driverConfigReporter)
         {
         }
 
-        internal StartupOptionsFactory(Guid clusterId, Guid sessionId, string appVersion, string appName)
+        internal StartupOptionsFactory(
+            Guid clusterId, Guid sessionId, string appVersion, string appName, IDriverConfigReporter driverConfigReporter)
         {
             _appName = appName;
             _appVersion = appVersion;
             _clusterId = clusterId;
             _sessionId = sessionId;
+            _driverConfigReporter = driverConfigReporter;
         }
 
         public IReadOnlyDictionary<string, string> CreateStartupOptions(
-            ProtocolOptions options, ISupportedOptionsInitializer supportedOptionsInitializer = null)
+            ProtocolOptions options, ISupportedOptionsInitializer supportedOptionsInitializer = null, bool isControlConnection = false)
         {
             var startupOptions = new Dictionary<string, string>
             {
                 { StartupOptionsFactory.CqlVersionOption, StartupOptionsFactory.CqlVersion }
             };
+
+            if (isControlConnection)
+            {
+                // The configuration is the same for every connection, only the control connection reports it.
+                // A null reporter means reporting the driver configuration is disabled.
+                // This has to run before any other option is added below, so that it can never override them.
+                _driverConfigReporter?.AddStartupOptions(startupOptions);
+            }
 
             string compressionName = null;
             switch (options.Compression)
@@ -127,6 +138,7 @@ namespace Cassandra.Requests
 
             startupOptions[StartupOptionsFactory.ClientIdOption] = _clusterId.ToString();
             startupOptions[StartupOptionsFactory.SessionIdOption] = _sessionId.ToString();
+
             return startupOptions;
         }
     }

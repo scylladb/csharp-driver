@@ -21,15 +21,23 @@ namespace Cassandra.Requests
     internal class StartupRequestFactory : IStartupRequestFactory
     {
         private readonly IStartupOptionsFactory _optionsFactory;
+        private readonly bool _isControlConnection;
 
-        public StartupRequestFactory(IStartupOptionsFactory optionsFactory)
+        /// <param name="optionsFactory">Builds the options of the <c>STARTUP</c> requests.</param>
+        /// <param name="isControlConnection">
+        /// Whether the connection this factory belongs to is the control connection, which is the only one
+        /// reporting the driver configuration.
+        /// </param>
+        public StartupRequestFactory(IStartupOptionsFactory optionsFactory, bool isControlConnection)
         {
             _optionsFactory = optionsFactory;
+            _isControlConnection = isControlConnection;
         }
 
         public IRequest CreateStartupRequest(ProtocolOptions protocolOptions, ISupportedOptionsInitializer supportedOptionsInitializer)
         {
-            return new StartupRequest(_optionsFactory.CreateStartupOptions(protocolOptions, supportedOptionsInitializer));
+            return new StartupRequest(
+                _optionsFactory.CreateStartupOptions(protocolOptions, supportedOptionsInitializer, _isControlConnection));
         }
     }
 }

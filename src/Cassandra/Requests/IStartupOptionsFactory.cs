@@ -21,6 +21,13 @@ namespace Cassandra.Requests
 {
     internal interface IStartupOptionsFactory
     {
-        IReadOnlyDictionary<string, string> CreateStartupOptions(ProtocolOptions options, ISupportedOptionsInitializer supportedOptionsInitializer);
+        /// <param name="options">The protocol options of the cluster.</param>
+        /// <param name="supportedOptionsInitializer">Supplies the options the server advertised, may be null.</param>
+        /// <param name="isControlConnection">
+        /// Whether the options are being built for the control connection, which is the only one reporting the
+        /// driver configuration.
+        /// </param>
+        IReadOnlyDictionary<string, string> CreateStartupOptions(
+            ProtocolOptions options, ISupportedOptionsInitializer supportedOptionsInitializer, bool isControlConnection);
     }
 }

@@ -27,7 +27,8 @@ namespace Cassandra.Connections
         IConnection Create(ISerializer serializer, IConnectionEndPoint endPoint, Configuration configuration, IConnectionObserver connectionObserver);
 
         /// <summary>
-        /// Create an unobserved connection (without a <see cref="IConnectionObserver"/>). Usually used for control connections.
+        /// Create an unobserved connection (without a <see cref="IConnectionObserver"/>). Used for control connections,
+        /// which are the only ones reporting the driver configuration on startup.
         /// </summary>
         IConnection CreateUnobserved(ISerializer serializer, IConnectionEndPoint endPoint, Configuration configuration);
     }

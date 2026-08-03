@@ -79,7 +79,7 @@ namespace Cassandra.Tests
                 new SerializerManager(ProtocolVersion.MaxSupported).GetCurrentSerializer(),
                 new ConnectionEndPoint(GetIpEndPoint(lastIpByte), config.ServerNameResolver, null),
                 config,
-                new StartupRequestFactory(config.StartupOptionsFactory),
+                new StartupRequestFactory(config.StartupOptionsFactory, isControlConnection: false),
                 NullConnectionObserver.Instance);
         }
 

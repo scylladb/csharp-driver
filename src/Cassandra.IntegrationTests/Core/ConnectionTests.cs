@@ -654,7 +654,7 @@ namespace Cassandra.IntegrationTests.Core
                             config.ServerNameResolver,
                             null),
                     config,
-                    new StartupRequestFactory(config.StartupOptionsFactory),
+                    new StartupRequestFactory(config.StartupOptionsFactory, isControlConnection: false),
                     NullConnectionObserver.Instance))
             {
                 var ex = Assert.Throws<SocketException>(() => TaskHelper.WaitToComplete(connection.Open()));
@@ -668,7 +668,7 @@ namespace Cassandra.IntegrationTests.Core
                         config.ServerNameResolver,
                         null),
                     config,
-                    new StartupRequestFactory(config.StartupOptionsFactory),
+                    new StartupRequestFactory(config.StartupOptionsFactory, isControlConnection: false),
                     NullConnectionObserver.Instance))
             {
                 Assert.Throws<SocketException>(() => TaskHelper.WaitToComplete(connection.Open()));
@@ -869,7 +869,7 @@ namespace Cassandra.IntegrationTests.Core
                 new SerializerManager(protocolVersion).GetCurrentSerializer(),
                 new ConnectionEndPoint(new IPEndPoint(IPAddress.Parse(contactPoint ?? _testCluster.InitialContactPoint), 9042), config.ServerNameResolver, null),
                 config,
-                new StartupRequestFactory(config.StartupOptionsFactory),
+                new StartupRequestFactory(config.StartupOptionsFactory, isControlConnection: false),
                 NullConnectionObserver.Instance);
         }
 

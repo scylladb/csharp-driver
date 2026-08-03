@@ -53,7 +53,7 @@ namespace Cassandra.Tests
 
         public MetadataSyncOptions MetadataSyncOptions { get; set; } = new MetadataSyncOptions();
 
-        public IStartupOptionsFactory StartupOptionsFactory { get; set; } = new StartupOptionsFactory(Guid.NewGuid(), Configuration.DefaultApplicationVersion, Builder.DefaultApplicationName);
+        public IStartupOptionsFactory StartupOptionsFactory { get; set; }
 
         public IRequestOptionsMapper RequestOptionsMapper { get; set; } = new RequestOptionsMapper();
 
@@ -90,6 +90,8 @@ namespace Cassandra.Tests
         public bool? KeepContactPointsUnresolved { get; set; }
 
         public bool? AllowBetaProtocolVersions { get; set; }
+
+        public bool? DriverConfigReportingEnabled { get; set; }
 
         public IContactPointParser ContactPointParser { get; set; }
 
@@ -156,7 +158,8 @@ namespace Cassandra.Tests
                 SchemaParserFactory,
                 SupportedOptionsInitializerFactory,
                 ProtocolVersionNegotiator,
-                ServerEventsSubscriber);
+                ServerEventsSubscriber,
+                driverConfigReportingEnabled: DriverConfigReportingEnabled);
         }
     }
 }
