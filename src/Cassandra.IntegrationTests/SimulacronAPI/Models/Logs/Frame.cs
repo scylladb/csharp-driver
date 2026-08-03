@@ -70,6 +70,11 @@ namespace Cassandra.IntegrationTests.SimulacronAPI.Models.Logs
             return GetTypedMessage<BatchMessage>();
         }
 
+        public Dictionary<string, string> GetStartupMessage()
+        {
+            return GetTypedMessage<StartupMessage>()?.Options;
+        }
+
         private T GetTypedMessage<T>()
         {
             return MessageJson == null ? default : JsonConvert.DeserializeObject<T>(MessageJson);
