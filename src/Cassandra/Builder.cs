@@ -75,6 +75,7 @@ namespace Cassandra
         private string _sessionName;
         private bool? _keepContactPointsUnresolved;
         private bool? _allowBetaProtocolVersions;
+        private bool? _driverConfigReportingEnabled;
 
         public Builder()
         {
@@ -186,7 +187,8 @@ namespace Cassandra
                 typeSerializerDefinitions,
                 _keepContactPointsUnresolved,
                 _allowBetaProtocolVersions,
-                requestTracker: _requestTracker);
+                requestTracker: _requestTracker,
+                driverConfigReportingEnabled: _driverConfigReportingEnabled);
 
             return config;
         }
@@ -1099,6 +1101,21 @@ namespace Cassandra
         internal Builder WithMonitorReporting(MonitorReportingOptions options)
         {
             _monitorReportingOptions = options;
+            return this;
+        }
+
+        /// <summary>
+        /// Determines whether the driver describes its effective configuration to the cluster while setting up
+        /// the control connection, so that operators can inspect the settings of a client while investigating
+        /// an incident. The description is sent as the <c>DRIVER_CONFIG</c> startup option and ScyllaDB exposes
+        /// it in the <c>client_options</c> column of its clients table.
+        /// </summary>
+        /// <remarks>If not set, the configuration is reported.</remarks>
+        /// <param name="enabled">Flag that controls whether the driver configuration is reported.</param>
+        /// <returns>This Builder.</returns>
+        public Builder WithDriverConfigReporting(bool enabled)
+        {
+            _driverConfigReportingEnabled = enabled;
             return this;
         }
 

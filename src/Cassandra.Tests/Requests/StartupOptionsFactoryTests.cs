@@ -29,11 +29,13 @@ namespace Cassandra.Tests.Requests
         [Test]
         public void Should_ReturnCorrectProtocolStartupOptions_When_OptionsAreSet()
         {
-            var factory = new StartupOptionsFactory(Guid.NewGuid(), null, null);
+            var sessionId = Guid.NewGuid();
+            var factory = new StartupOptionsFactory(Guid.NewGuid(), sessionId, null, null, new DriverConfigReporter());
 
             var options = factory.CreateStartupOptions(new ProtocolOptions().SetNoCompact(true).SetCompression(CompressionType.Snappy));
 
-            Assert.AreEqual(6, options.Count);
+            Assert.AreEqual(7, options.Count);
+            Assert.AreEqual(sessionId.ToString(), options["SESSION_ID"]);
             Assert.AreEqual("snappy", options["COMPRESSION"]);
             Assert.AreEqual("true", options["NO_COMPACT"]);
             var driverName = options["DRIVER_NAME"];
@@ -61,13 +63,58 @@ namespace Cassandra.Tests.Requests
         public void Should_NotReturnOptions_When_OptionsAreNull()
         {
             var clusterId = Guid.NewGuid();
-            var factory = new StartupOptionsFactory(clusterId, null, null);
+            var factory = new StartupOptionsFactory(clusterId, null, null, new DriverConfigReporter());
 
             var options = factory.CreateStartupOptions(new ProtocolOptions().SetNoCompact(true).SetCompression(CompressionType.Snappy));
 
-            Assert.AreEqual(6, options.Count);
+            Assert.AreEqual(7, options.Count);
             Assert.IsFalse(options.ContainsKey("APPLICATION_NAME"));
             Assert.IsFalse(options.ContainsKey("APPLICATION_VERSION"));
+        }
+
+        [Test]
+        public void Should_ReportTheSameSessionId_When_OptionsAreBuiltForSeveralConnections()
+        {
+            var factory = new StartupOptionsFactory(Guid.NewGuid(), null, null, new DriverConfigReporter());
+
+            var controlConnectionOptions = factory.CreateStartupOptions(new ProtocolOptions(), null, true);
+            var poolOptions = factory.CreateStartupOptions(new ProtocolOptions(), null, false);
+
+            Assert.AreEqual(controlConnectionOptions["SESSION_ID"], poolOptions["SESSION_ID"]);
+        }
+
+        [Test]
+        public void Should_ReportDistinctSessionIds_When_ThereAreSeveralClusters()
+        {
+            var clusterId = Guid.NewGuid();
+            var firstFactory = new StartupOptionsFactory(clusterId, null, null, new DriverConfigReporter());
+            var secondFactory = new StartupOptionsFactory(clusterId, null, null, new DriverConfigReporter());
+
+            var firstOptions = firstFactory.CreateStartupOptions(new ProtocolOptions());
+            var secondOptions = secondFactory.CreateStartupOptions(new ProtocolOptions());
+
+            Assert.AreNotEqual(firstOptions["SESSION_ID"], secondOptions["SESSION_ID"]);
+        }
+
+        [Test]
+        public void Should_ReportDriverConfig_When_OptionsAreForTheControlConnection()
+        {
+            var factory = new StartupOptionsFactory(Guid.NewGuid(), null, null, new DriverConfigReporter());
+
+            var options = factory.CreateStartupOptions(new ProtocolOptions(), null, true);
+
+            Assert.AreEqual("{\"version\":1}", options["DRIVER_CONFIG"]);
+        }
+
+        [Test]
+        public void Should_NotReportDriverConfig_When_OptionsAreNotForTheControlConnection()
+        {
+            var factory = new StartupOptionsFactory(Guid.NewGuid(), null, null, new DriverConfigReporter());
+
+            var options = factory.CreateStartupOptions(new ProtocolOptions(), null, false);
+
+            Assert.IsTrue(options.ContainsKey("SESSION_ID"));
+            Assert.IsFalse(options.ContainsKey("DRIVER_CONFIG"));
         }
     }
 }

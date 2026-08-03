@@ -27,7 +27,11 @@ namespace Cassandra.Connections
             ISerializer serializer, IConnectionEndPoint endPoint, Configuration configuration, IConnectionObserver connectionObserver)
         {
             return new Connection(
-                serializer, endPoint, configuration, new StartupRequestFactory(configuration.StartupOptionsFactory), connectionObserver);
+                serializer,
+                endPoint,
+                configuration,
+                new StartupRequestFactory(configuration.StartupOptionsFactory, isControlConnection: false),
+                connectionObserver);
         }
 
         public IConnection CreateUnobserved(ISerializer serializer, IConnectionEndPoint endPoint, Configuration configuration)
@@ -36,7 +40,7 @@ namespace Cassandra.Connections
                 serializer,
                 endPoint,
                 configuration,
-                new StartupRequestFactory(configuration.StartupOptionsFactory),
+                new StartupRequestFactory(configuration.StartupOptionsFactory, isControlConnection: true),
                 NullConnectionObserver.Instance);
         }
     }

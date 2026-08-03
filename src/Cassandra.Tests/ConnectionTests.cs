@@ -47,7 +47,7 @@ namespace Cassandra.Tests
                 serializer?.GetCurrentSerializer() ?? new SerializerManager(ProtocolVersion.MaxSupported).GetCurrentSerializer(),
                 new ConnectionEndPoint(ConnectionTests.Address, config.ServerNameResolver, null),
                 config,
-                new StartupRequestFactory(config.StartupOptionsFactory),
+                new StartupRequestFactory(config.StartupOptionsFactory, isControlConnection: false),
                 NullConnectionObserver.Instance);
         }
 
@@ -352,7 +352,7 @@ namespace Cassandra.Tests
                 return new byte[]
                 {
                     //header
-                    header, 0, bytes[0], bytes[1], ResultResponse.OpCode, 0, 0, 0, 4, 
+                    header, 0, bytes[0], bytes[1], ResultResponse.OpCode, 0, 0, 0, 4,
                     //body
                     0, 0, 0, 1
                 };
@@ -361,7 +361,7 @@ namespace Cassandra.Tests
             return new byte[]
             {
                 //header
-                header, 0, (byte)streamId, ResultResponse.OpCode, 0, 0, 0, 4, 
+                header, 0, (byte)streamId, ResultResponse.OpCode, 0, 0, 0, 4,
                 //body
                 0, 0, 0, 1
             };

@@ -311,5 +311,24 @@ namespace Cassandra.Tests
             Assert.AreEqual(expected, cluster.Configuration.MonitorReportingOptions.MonitorReportingEnabled);
             Assert.AreEqual(MonitorReportingOptions.DefaultStatusEventDelayMilliseconds, cluster.Configuration.MonitorReportingOptions.StatusEventDelayMilliseconds);
         }
+
+        [Test]
+        public void Should_ReturnDefaultDriverConfigReportingEnabled_When_NotProvidedToBuilder()
+        {
+            var cluster = Cluster.Builder()
+                                 .AddContactPoint("192.168.1.10")
+                                 .Build();
+            Assert.AreEqual(Configuration.DefaultDriverConfigReportingEnabled, cluster.Configuration.DriverConfigReportingEnabled);
+        }
+
+        [Test]
+        public void Should_ReturnDriverConfigReportingDisabled_When_ProvidedToBuilder()
+        {
+            var cluster = Cluster.Builder()
+                                 .AddContactPoint("192.168.1.10")
+                                 .WithDriverConfigReporting(false)
+                                 .Build();
+            Assert.IsFalse(cluster.Configuration.DriverConfigReportingEnabled);
+        }
     }
 }
