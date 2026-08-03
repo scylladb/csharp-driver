@@ -29,11 +29,13 @@ namespace Cassandra.Tests.Requests
         [Test]
         public void Should_ReturnCorrectProtocolStartupOptions_When_OptionsAreSet()
         {
-            var factory = new StartupOptionsFactory(Guid.NewGuid(), null, null);
+            var sessionId = Guid.NewGuid();
+            var factory = new StartupOptionsFactory(Guid.NewGuid(), sessionId, null, null);
 
             var options = factory.CreateStartupOptions(new ProtocolOptions().SetNoCompact(true).SetCompression(CompressionType.Snappy));
 
-            Assert.AreEqual(6, options.Count);
+            Assert.AreEqual(7, options.Count);
+            Assert.AreEqual(sessionId.ToString(), options["SESSION_ID"]);
             Assert.AreEqual("snappy", options["COMPRESSION"]);
             Assert.AreEqual("true", options["NO_COMPACT"]);
             var driverName = options["DRIVER_NAME"];
@@ -65,9 +67,33 @@ namespace Cassandra.Tests.Requests
 
             var options = factory.CreateStartupOptions(new ProtocolOptions().SetNoCompact(true).SetCompression(CompressionType.Snappy));
 
-            Assert.AreEqual(6, options.Count);
+            Assert.AreEqual(7, options.Count);
             Assert.IsFalse(options.ContainsKey("APPLICATION_NAME"));
             Assert.IsFalse(options.ContainsKey("APPLICATION_VERSION"));
+        }
+
+        [Test]
+        public void Should_ReportTheSameSessionId_When_OptionsAreBuiltForSeveralConnections()
+        {
+            var factory = new StartupOptionsFactory(Guid.NewGuid(), null, null);
+
+            var firstOptions = factory.CreateStartupOptions(new ProtocolOptions());
+            var secondOptions = factory.CreateStartupOptions(new ProtocolOptions());
+
+            Assert.AreEqual(firstOptions["SESSION_ID"], secondOptions["SESSION_ID"]);
+        }
+
+        [Test]
+        public void Should_ReportDistinctSessionIds_When_ThereAreSeveralClusters()
+        {
+            var clusterId = Guid.NewGuid();
+            var firstFactory = new StartupOptionsFactory(clusterId, null, null);
+            var secondFactory = new StartupOptionsFactory(clusterId, null, null);
+
+            var firstOptions = firstFactory.CreateStartupOptions(new ProtocolOptions());
+            var secondOptions = secondFactory.CreateStartupOptions(new ProtocolOptions());
+
+            Assert.AreNotEqual(firstOptions["SESSION_ID"], secondOptions["SESSION_ID"]);
         }
     }
 }
