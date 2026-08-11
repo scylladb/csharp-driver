@@ -16,6 +16,14 @@
   <PropertyGroup Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('$(TargetFramework)', '^net\d$'))">
     <DefineConstants>$(DefineConstants);NETCOREAPP</DefineConstants>
   </PropertyGroup>
+  <!-- JsonSchema.Net reaches System.Text.Json 10 and System.Collections.Immutable 10 through Json.More.Net,
+       whose netstandard2.0 group requires them outright, so they cannot be pinned lower. Those support net8 and
+       above, and warn on anything older, so the validator is only referenced there. The report is one code path
+       with no per-framework behaviour, so validating it on net8/net9 establishes its conformance for every
+       target; only the assertions that need the validator are skipped elsewhere. -->
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net8' Or '$(TargetFramework)' == 'net9'">
+    <DefineConstants>$(DefineConstants);JSON_SCHEMA_VALIDATOR</DefineConstants>
+  </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Cassandra\Cassandra.csproj">
       <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
@@ -33,6 +41,12 @@
     <PackageReference Include="System.Runtime.InteropServices.RuntimeInformation" Version="4.3.0" />
     <PackageReference Include="XunitXml.TestLogger" Version="8.0.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+    <!-- Validates the DRIVER_CONFIG report against the normative v1 schema shipped alongside it. Test only, and
+         only where its dependencies support the target framework: see the JSON_SCHEMA_VALIDATOR property above.
+         Pinned to the 8.0.x line, the last one published under a plain MIT license: from 9.0.0 the NuGet binaries
+         carry an Open Source Maintenance Fee EULA that asks revenue-generating users for a monthly fee. -->
+    <PackageReference Include="JsonSchema.Net" Version="8.0.5"
+                      Condition="'$(TargetFramework)' == 'net8' Or '$(TargetFramework)' == 'net9'" />
     <ProjectReference Include="..\Extensions\Cassandra.OpenTelemetry\Cassandra.OpenTelemetry.csproj">
       <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
     </ProjectReference>
@@ -40,6 +54,11 @@
   <ItemGroup Condition=" '$(TargetFramework)' == 'net6' Or '$(TargetFramework)' == 'net7' Or '$(TargetFramework)' == 'net8' Or '$(TargetFramework)' == 'net9'">
     <PackageReference Include="System.Threading.Thread" Version="4.3.0" />
     <PackageReference Include="System.Threading.Tasks.Parallel" Version="4.3.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The normative DRIVER_CONFIG v1 schema, shipped verbatim so the reporter is checked against the real
+         thing rather than against a restatement of it. -->
+    <EmbeddedResource Include="Requests\driver-config-report-v1.schema.json" />
   </ItemGroup>
   <ItemGroup>
     <Service Include="{82a7f48d-3b50-4b1e-b82e-3ada8210c358}" />
