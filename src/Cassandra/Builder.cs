@@ -714,6 +714,9 @@ namespace Cassandra
         /// <returns>this builder</returns>
         public Builder WithQueryTimeout(int queryAbortTimeout)
         {
+            // Validated here as well as in ClientOptions, which owns the value, so that the mistake is reported
+            // from the call that made it rather than later from Build().
+            ClientOptions.ValidateQueryAbortTimeout(queryAbortTimeout);
             _queryAbortTimeout = queryAbortTimeout;
             return this;
         }

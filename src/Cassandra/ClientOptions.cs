@@ -14,6 +14,10 @@
 //   limitations under the License.
 //
 
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+
 namespace Cassandra
 {
     /// <summary>
@@ -54,9 +58,32 @@ namespace Cassandra
 
         public ClientOptions(bool withoutRowSetBuffering, int queryAbortTimeout, string defaultKeyspace)
         {
+            ClientOptions.ValidateQueryAbortTimeout(queryAbortTimeout);
+
             _withoutRowSetBuffering = withoutRowSetBuffering;
             _queryAbortTimeout = queryAbortTimeout;
             _defaultKeyspace = defaultKeyspace;
+        }
+
+        /// <summary>
+        /// Rejects a query timeout that is neither a bound nor the absence of one.
+        /// <para>
+        /// Only a positive number of milliseconds and <see cref="Timeout.Infinite"/> are meaningful. In particular
+        /// 0 is not "no timeout": the synchronous paths hand this value to <see cref="Task.Wait(int)"/>, which
+        /// returns immediately, so every request would fail with a <see cref="TimeoutException"/> before it could
+        /// complete. Anything below <see cref="Timeout.Infinite"/> makes <see cref="Task.Wait(int)"/> throw
+        /// instead. Both are rejected as the value is stored, so the mistake surfaces where it is made.
+        /// </para>
+        /// </summary>
+        internal static void ValidateQueryAbortTimeout(int queryAbortTimeout)
+        {
+            if (queryAbortTimeout != Timeout.Infinite && queryAbortTimeout <= 0)
+            {
+                throw new ArgumentException(
+                    $"Query timeout must be a positive number of milliseconds, or Timeout.Infinite " +
+                    $"({Timeout.Infinite}) to wait indefinitely, but was {queryAbortTimeout}. A timeout of 0 " +
+                    "would make every request time out before it could complete.");
+            }
         }
     }
 }

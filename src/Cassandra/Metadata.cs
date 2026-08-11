@@ -352,7 +352,10 @@ namespace Cassandra
         /// <returns>a TableMetadata for the specified table in the specified keyspace.</returns>
         public TableMetadata GetTable(string keyspace, string tableName)
         {
-            return TaskHelper.WaitToComplete(GetTableAsync(keyspace, tableName), _queryAbortTimeout * 2);
+            // Through GetQueryAbortTimeout so that Timeout.Infinite survives the scaling; doubling it directly
+            // yields -2, which Task.Wait rejects. See Metadata.RefreshSchema.
+            return TaskHelper.WaitToComplete(
+                GetTableAsync(keyspace, tableName), Configuration.DefaultRequestOptions.GetQueryAbortTimeout(2));
         }
 
         internal Task<TableMetadata> GetTableAsync(string keyspace, string tableName)
@@ -382,7 +385,10 @@ namespace Cassandra
                     : ksMetadata.GetMaterializedViewMetadata(name);
             }
 
-            return TaskHelper.WaitToComplete(SchemaParser.GetViewAsync(keyspace, name), _queryAbortTimeout * 2);
+            // Through GetQueryAbortTimeout so that Timeout.Infinite survives the scaling; doubling it directly
+            // yields -2, which Task.Wait rejects. See Metadata.RefreshSchema.
+            return TaskHelper.WaitToComplete(
+                SchemaParser.GetViewAsync(keyspace, name), Configuration.DefaultRequestOptions.GetQueryAbortTimeout(2));
         }
 
         /// <summary>
@@ -457,7 +463,12 @@ namespace Cassandra
         /// </summary>
         public bool RefreshSchema(string keyspace = null, string table = null)
         {
-            return TaskHelper.WaitToComplete(RefreshSchemaAsync(keyspace, table), Configuration.DefaultRequestOptions.QueryAbortTimeout * 2);
+            // Through GetQueryAbortTimeout rather than multiplying the timeout here, so that Timeout.Infinite
+            // survives the scaling: doubling it directly yields -2, which Task.Wait rejects outright, so a cluster
+            // configured to wait indefinitely could not refresh its schema synchronously at all. The equivalent
+            // two-query waits in KeyspaceMetadata already go through this helper.
+            return TaskHelper.WaitToComplete(
+                RefreshSchemaAsync(keyspace, table), Configuration.DefaultRequestOptions.GetQueryAbortTimeout(2));
         }
 
         /// <summary>
