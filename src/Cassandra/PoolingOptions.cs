@@ -369,6 +369,17 @@ namespace Cassandra
         /// </summary>
         public PoolingOptions SetMaxRequestsPerConnection(int value)
         {
+            // Only a positive maximum is meaningful. HostConnectionPool rejects a borrow once the in-flight count
+            // reaches this value, so zero or less rejects every borrow with a BusyPoolException and the pool can
+            // never serve a request. Rejected here rather than at the first query, so the mistake surfaces while
+            // the cluster is being configured.
+            if (value <= 0)
+            {
+                throw new ArgumentException(
+                    $"The maximum amount of requests per connection must be a positive number, but was {value}. " +
+                    "A maximum of 0 or less would reject every request with a BusyPoolException.");
+            }
+
             _maxRequestsPerConnection = value;
             return this;
         }

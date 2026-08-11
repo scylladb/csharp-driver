@@ -16,6 +16,7 @@
 
 using System;
 using System.Linq;
+using System.Threading;
 using System.Net;
 using Cassandra.Connections;
 using NUnit.Framework;
@@ -247,6 +248,34 @@ namespace Cassandra.Tests
             var builder = Cluster.Builder();
             var ex = Assert.Throws<ArgumentException>(() => builder.WithMaxSchemaAgreementWaitSeconds(seconds));
             Assert.That(ex.Message, Is.EqualTo("Max schema agreement wait must be greater than zero"));
+        }
+
+        [Test]
+        [TestCase(0)]
+        [TestCase(-2)]
+        [TestCase(int.MinValue)]
+        public void Should_ThrowArgumentException_When_ProvidedQueryTimeoutIsInvalid(int queryAbortTimeout)
+        {
+            // 0 is not "no timeout": the synchronous paths hand it to Task.Wait, which returns at once, so every
+            // request would time out before completing. Below Timeout.Infinite, Task.Wait throws instead.
+            var builder = Cluster.Builder();
+
+            Assert.Throws<ArgumentException>(() => builder.WithQueryTimeout(queryAbortTimeout));
+        }
+
+        [Test]
+        [TestCase(1)]
+        [TestCase(30000)]
+        [TestCase(Timeout.Infinite)]
+        [TestCase(int.MaxValue)]
+        public void Should_AcceptQueryTimeout_When_ItIsPositiveOrInfinite(int queryAbortTimeout)
+        {
+            var config = Cluster.Builder()
+                                .AddContactPoint("192.168.1.10")
+                                .WithQueryTimeout(queryAbortTimeout)
+                                .GetConfiguration();
+
+            Assert.AreEqual(queryAbortTimeout, config.ClientOptions.QueryAbortTimeout);
         }
 
         [Test]

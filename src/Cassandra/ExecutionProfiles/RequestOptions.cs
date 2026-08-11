@@ -127,7 +127,13 @@ namespace Cassandra.ExecutionProfiles
                 return QueryAbortTimeout;
             }
 
-            return QueryAbortTimeout * amountOfQueries;
+            // Scaled in 64 bits so the product cannot wrap. int.MaxValue is a valid timeout, and doubling it in
+            // 32 bits lands on -2, which Task.Wait rejects outright — the same failure the Timeout.Infinite case
+            // above avoids. Clamped rather than rejected, since int.MaxValue is already about 24 days and is the
+            // longest finite wait Task.Wait accepts, so it is the closest honest answer to an unscalable one.
+            var scaled = (long)QueryAbortTimeout * amountOfQueries;
+
+            return scaled > int.MaxValue ? int.MaxValue : (int)scaled;
         }
     }
 }
