@@ -28,7 +28,15 @@ namespace Cassandra
     public class SSLOptions
     {
         private readonly static Logger _logger = new Logger(typeof(SSLOptions));
-        private RemoteCertificateValidationCallback _remoteCertValidationCallback = ValidateServerCertificate;
+
+        /// <summary>
+        /// The callback installed unless the application provides its own. Held in a field so that
+        /// <see cref="VerifiesHostName"/> can recognize it without depending on delegate-to-method-group
+        /// comparison semantics.
+        /// </summary>
+        private readonly static RemoteCertificateValidationCallback DefaultCertValidationCallback = ValidateServerCertificate;
+
+        private RemoteCertificateValidationCallback _remoteCertValidationCallback = SSLOptions.DefaultCertValidationCallback;
         private SslProtocols _sslProtocol = SslProtocols.Tls;
         private bool _checkCertificateRevocation;
         private X509CertificateCollection _certificateCollection = new X509CertificateCollection();
@@ -41,6 +49,23 @@ namespace Cassandra
         {
             get { return _remoteCertValidationCallback; }
         }
+
+        /// <summary>
+        /// Whether the server host name is verified against its certificate, or <c>null</c> when that cannot be
+        /// determined.
+        /// <para>
+        /// The driver hands the server name to <see cref="System.Net.Security.SslStream"/>, which reports a name
+        /// mismatch as <see cref="SslPolicyErrors.RemoteCertificateNameMismatch"/>. Both the callback the driver
+        /// installs by default and .NET's own validation (used when the callback is <c>null</c>) reject that, so
+        /// the host name is verified in both cases. An application supplied callback decides for itself and what
+        /// it decides is not introspectable, so the answer is <c>null</c> rather than <c>false</c>: the driver
+        /// cannot vouch for the verification, but neither can it claim the host name goes unchecked.
+        /// </para>
+        /// </summary>
+        internal bool? VerifiesHostName =>
+            _remoteCertValidationCallback == null || _remoteCertValidationCallback == SSLOptions.DefaultCertValidationCallback
+                ? true
+                : (bool?)null;
 
         /// <summary>
         /// Ssl Protocol used for communication with Cassandra hosts.
