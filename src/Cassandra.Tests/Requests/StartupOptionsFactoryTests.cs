@@ -18,6 +18,7 @@ using System;
 using System.Reflection;
 using Cassandra.Helpers;
 using Cassandra.Requests;
+using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 
@@ -30,7 +31,7 @@ namespace Cassandra.Tests.Requests
         public void Should_ReturnCorrectProtocolStartupOptions_When_OptionsAreSet()
         {
             var sessionId = Guid.NewGuid();
-            var factory = new StartupOptionsFactory(Guid.NewGuid(), sessionId, null, null, new DriverConfigReporter());
+            var factory = new StartupOptionsFactory(Guid.NewGuid(), sessionId, null, null, new DriverConfigReporter(new TestConfigurationBuilder().Build()));
 
             var options = factory.CreateStartupOptions(new ProtocolOptions().SetNoCompact(true).SetCompression(CompressionType.Snappy));
 
@@ -63,7 +64,7 @@ namespace Cassandra.Tests.Requests
         public void Should_NotReturnOptions_When_OptionsAreNull()
         {
             var clusterId = Guid.NewGuid();
-            var factory = new StartupOptionsFactory(clusterId, null, null, new DriverConfigReporter());
+            var factory = new StartupOptionsFactory(clusterId, null, null, new DriverConfigReporter(new TestConfigurationBuilder().Build()));
 
             var options = factory.CreateStartupOptions(new ProtocolOptions().SetNoCompact(true).SetCompression(CompressionType.Snappy));
 
@@ -75,7 +76,7 @@ namespace Cassandra.Tests.Requests
         [Test]
         public void Should_ReportTheSameSessionId_When_OptionsAreBuiltForSeveralConnections()
         {
-            var factory = new StartupOptionsFactory(Guid.NewGuid(), null, null, new DriverConfigReporter());
+            var factory = new StartupOptionsFactory(Guid.NewGuid(), null, null, new DriverConfigReporter(new TestConfigurationBuilder().Build()));
 
             var controlConnectionOptions = factory.CreateStartupOptions(new ProtocolOptions(), null, true);
             var poolOptions = factory.CreateStartupOptions(new ProtocolOptions(), null, false);
@@ -87,8 +88,8 @@ namespace Cassandra.Tests.Requests
         public void Should_ReportDistinctSessionIds_When_ThereAreSeveralClusters()
         {
             var clusterId = Guid.NewGuid();
-            var firstFactory = new StartupOptionsFactory(clusterId, null, null, new DriverConfigReporter());
-            var secondFactory = new StartupOptionsFactory(clusterId, null, null, new DriverConfigReporter());
+            var firstFactory = new StartupOptionsFactory(clusterId, null, null, new DriverConfigReporter(new TestConfigurationBuilder().Build()));
+            var secondFactory = new StartupOptionsFactory(clusterId, null, null, new DriverConfigReporter(new TestConfigurationBuilder().Build()));
 
             var firstOptions = firstFactory.CreateStartupOptions(new ProtocolOptions());
             var secondOptions = secondFactory.CreateStartupOptions(new ProtocolOptions());
@@ -99,17 +100,19 @@ namespace Cassandra.Tests.Requests
         [Test]
         public void Should_ReportDriverConfig_When_OptionsAreForTheControlConnection()
         {
-            var factory = new StartupOptionsFactory(Guid.NewGuid(), null, null, new DriverConfigReporter());
+            var factory = new StartupOptionsFactory(Guid.NewGuid(), null, null, new DriverConfigReporter(new TestConfigurationBuilder().Build()));
 
             var options = factory.CreateStartupOptions(new ProtocolOptions(), null, true);
 
-            Assert.AreEqual("{\"version\":1}", options["DRIVER_CONFIG"]);
+            // What the report contains is covered by DriverConfigReporterTests; here it only has to arrive.
+            Assert.AreEqual(
+                DriverConfigReporter.SchemaVersion, JObject.Parse(options["DRIVER_CONFIG"])["version"].Value<int>());
         }
 
         [Test]
         public void Should_NotReportDriverConfig_When_OptionsAreNotForTheControlConnection()
         {
-            var factory = new StartupOptionsFactory(Guid.NewGuid(), null, null, new DriverConfigReporter());
+            var factory = new StartupOptionsFactory(Guid.NewGuid(), null, null, new DriverConfigReporter(new TestConfigurationBuilder().Build()));
 
             var options = factory.CreateStartupOptions(new ProtocolOptions(), null, false);
 

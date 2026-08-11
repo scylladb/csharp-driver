@@ -220,7 +220,17 @@ namespace Cassandra.Connections
         /// </summary>
         public int GetMaxConcurrentRequests(ISerializer serializer)
         {
-            if (!serializer.ProtocolVersion.Uses2BytesStreamIds())
+            return Connection.GetMaxConcurrentRequests(serializer.ProtocolVersion);
+        }
+
+        /// <summary>
+        /// The size of a connection's stream identifier pool, and so the number of requests it can have in flight
+        /// before further ones have to wait for an identifier to come free. Depends only on the protocol version,
+        /// never on how the pool is configured.
+        /// </summary>
+        internal static int GetMaxConcurrentRequests(ProtocolVersion protocolVersion)
+        {
+            if (!protocolVersion.Uses2BytesStreamIds())
             {
                 return 128;
             }

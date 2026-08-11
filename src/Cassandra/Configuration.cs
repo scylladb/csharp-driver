@@ -334,7 +334,9 @@ namespace Cassandra
                 ClusterId,
                 ApplicationVersion,
                 ApplicationName,
-                DriverConfigReportingEnabled ? new DriverConfigReporter() : null);
+                // Handing `this` out of a constructor is safe here: the reporter only reads the configuration when
+                // it builds a report, which happens on a control connection handshake, long after this returns.
+                DriverConfigReportingEnabled ? new DriverConfigReporter(this) : null);
             SessionFactory = sessionFactory ?? new SessionFactory();
             RequestOptionsMapper = requestOptionsMapper ?? new RequestOptionsMapper();
             MetadataSyncOptions = metadataSyncOptions?.Clone() ?? new MetadataSyncOptions();
