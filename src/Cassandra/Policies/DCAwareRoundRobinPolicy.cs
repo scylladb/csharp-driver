@@ -41,6 +41,7 @@ namespace Cassandra
         private static readonly Logger Logger = new Logger(typeof(DCAwareRoundRobinPolicy));
 
         private string _localDc;
+        private readonly bool _localDcIsExplicit;
         private readonly int _usedHostsPerRemoteDc;
 
         private readonly int _maxIndex = Int32.MaxValue - 10000;
@@ -102,6 +103,7 @@ namespace Cassandra
         public DCAwareRoundRobinPolicy(string localDc, int usedHostsPerRemoteDc)
         {
             _localDc = localDc;
+            _localDcIsExplicit = localDc != null;
             _usedHostsPerRemoteDc = usedHostsPerRemoteDc;
         }
 
@@ -109,6 +111,17 @@ namespace Cassandra
         /// Gets the Local Datacenter. This value is provided in the constructor.
         /// </summary>
         public string LocalDc => _localDc;
+
+        /// <summary>
+        /// Whether <see cref="LocalDc"/> was provided by the application rather than inferred by
+        /// <see cref="Initialize"/> from the datacenter of the host the control connection uses.
+        /// <para>
+        /// <see cref="LocalDc"/> alone cannot answer this: <see cref="Initialize"/> overwrites the field when no
+        /// datacenter was configured, so both cases look the same afterwards. The driver configuration report
+        /// needs the distinction to tell an explicit datacenter preference from an inferred one.
+        /// </para>
+        /// </summary>
+        internal bool LocalDcIsExplicit => _localDcIsExplicit;
 
         /// <summary>
         /// Gets the number of hosts per remote datacenter that should be considered. This value is provided in the constructor.
