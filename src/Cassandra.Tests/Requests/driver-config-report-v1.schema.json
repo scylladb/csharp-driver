@@ -92,8 +92,7 @@
       "description": "Per-connection CQL request and protocol stream capacity. `orphaned.max` is expected to be lower than `in-flight.max`.",
       "additionalProperties": false,
       "required": [
-        "in-flight",
-        "orphaned"
+        "in-flight"
       ],
       "properties": {
         "in-flight": {
@@ -120,7 +119,7 @@
           "properties": {
             "max": {
               "$ref": "#/$defs/nonNegativeInteger",
-              "description": "Maximum number of orphaned requests allowed on one connection before the driver closes and replaces it."
+              "description": "Maximum number of orphaned requests allowed on one connection before the driver closes and replaces it. Absent only when this bound is unknown, for example when the client never replaces a connection over accumulated orphans and so has no limit to report."
             }
           }
         }
