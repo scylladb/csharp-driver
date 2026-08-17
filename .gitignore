@@ -58,18 +58,12 @@ docs/source/api-docs/datastax-template
 # Ignore active snk file
 build/scylladb.snk
 
-# Ignore local dotnet config
-global.json
-
 # Ignore python virtual environments
 docs/.venv
 .venv*/
 
 # Ignore release leftovers
 nupkgs/
-
-# Ignore dotnet project configuration
-global.json
 
 # Personal and AI TODO list
 TODO*.md
