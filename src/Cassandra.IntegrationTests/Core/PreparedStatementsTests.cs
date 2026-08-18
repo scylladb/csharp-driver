@@ -213,8 +213,8 @@ namespace Cassandra.IntegrationTests.Core
                 var selectPs1 = session1.Prepare("SELECT * FROM table1");
                 var selectPs2 = session2.Prepare("SELECT * FROM table1");
 
-                var protocolVersion = (ProtocolVersion)session1.BinaryProtocolVersion;
-                if (protocolVersion.SupportsResultMetadataId())
+                var exchangesResultMetadataId = selectPs1.ExchangesResultMetadataId();
+                if (exchangesResultMetadataId)
                 {
                     originalResultMetadataId = selectPs1.ResultMetadata.ResultMetadataId;
                     Assert.That(selectPs2.ResultMetadata.ResultMetadataId, Is.EquivalentTo(selectPs1.ResultMetadata.ResultMetadataId));
@@ -245,7 +245,7 @@ namespace Cassandra.IntegrationTests.Core
                     Assert.That(rs2.Columns.Select(c => c.Name), Does.Contain("a").And.Contain("b").And.Contain("c"));
                 }
 
-                if (protocolVersion.SupportsResultMetadataId())
+                if (exchangesResultMetadataId)
                 {
                     // The ResultMetadataId changed and it's updated on both PreparedStatement instances
                     Assert.That(selectPs1.ResultMetadata.ResultMetadataId, Is.Not.EquivalentTo(originalResultMetadataId));
