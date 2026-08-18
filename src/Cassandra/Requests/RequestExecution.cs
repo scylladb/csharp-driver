@@ -677,9 +677,13 @@ namespace Cassandra.Requests
 
                     if (_parent.Statement is BoundStatement boundStatement)
                     {
-                        // Use the latest result metadata id
+                        // Use the latest result metadata id. Copied, like every other site that installs a
+                        // statement's long-lived result metadata, so that a cached instance never carries
+                        // the response-scoped parts of the one it came from.
                         boundStatement.PreparedStatement.UpdateResultMetadata(
-                            new ResultMetadata(outputPrepared.ResultMetadataId, outputPrepared.ResultRowsMetadata));
+                            new ResultMetadata(
+                                outputPrepared.ResultMetadataId,
+                                RowSetMetadata.CopyForCachedResultMetadata(outputPrepared.ResultRowsMetadata)));
                     }
 
                     if (_parent.SetNodeExecutionCompleted(nodeRequestInfo.ExecutionId))
