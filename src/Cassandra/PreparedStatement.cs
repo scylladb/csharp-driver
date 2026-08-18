@@ -16,6 +16,7 @@
 
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using Cassandra.Requests;
 using Cassandra.Serialization;
 
@@ -35,7 +36,13 @@ namespace Cassandra
         private volatile RoutingKey _routingKey;
         private string[] _routingNames;
         private volatile int[] _routingIndexes;
-        private volatile ResultMetadata _resultMetadata;
+        /// <summary>
+        /// Written only through <see cref="UpdateResultMetadata"/>, which publishes with
+        /// <see cref="Interlocked.CompareExchange(ref object, object, object)"/>, so this is deliberately
+        /// not <c>volatile</c>: a reference to a volatile field cannot be passed by reference. Reads go
+        /// through <see cref="Volatile.Read{T}(ref T)"/> instead.
+        /// </summary>
+        private ResultMetadata _resultMetadata;
         private volatile bool _isLwt;
 
         /// <summary>
@@ -77,7 +84,7 @@ namespace Cassandra
         /// </summary>
         internal ResultMetadata ResultMetadata
         {
-            get { return _resultMetadata; }
+            get { return Volatile.Read(ref _resultMetadata); }
         }
 
         /// <summary>
@@ -135,9 +142,110 @@ namespace Cassandra
             _isLwt = isLwt;
         }
 
+        /// <summary>
+        /// Publishes result metadata obtained either from a RESULT/Rows that reported
+        /// <see cref="RowSetMetadataFlags.MetadataChanged"/>, or from repreparing after an
+        /// <c>UNPREPARED</c> error.
+        /// </summary>
+        /// <remarks>
+        /// A result metadata id is a deterministic hash of the metadata it identifies, so an unchanged
+        /// non-empty id means unchanged metadata and there is nothing to publish. Empty ids carry no such
+        /// information - the connection did not exchange them - so those always update.
+        /// <para>
+        /// That means a reprepare on a connection without the extension replaces a valid id with none,
+        /// reachable during a rolling upgrade, after which the statement asks for metadata again until the
+        /// server hands it a fresh id. Keeping the previous id while taking the new columns would avoid
+        /// that, and is deliberately not done: it would pair an id from one response with columns from
+        /// another, and if the two nodes disagree on the schema for a moment - the very window this
+        /// mechanism exists to close - a node that still matches the kept id would skip metadata and the
+        /// rows would be decoded against the wrong columns. The id and the columns it describes are only
+        /// ever taken from the same response, so what is lost is response size, not correctness.
+        /// </para>
+        /// </remarks>
         internal void UpdateResultMetadata(ResultMetadata resultMetadata)
         {
-            _resultMetadata = resultMetadata;
+            // Deciding whether to publish means reading the current value first, so the decision and the
+            // write have to be one step. Two responses for the same statement can arrive on different
+            // connections at once - a METADATA_CHANGED and a reprepare after UNPREPARED - and a plain
+            // assignment would let both decide against the same stale value and let the later write win,
+            // which can discard columns the other had just published.
+            while (true)
+            {
+                var current = Volatile.Read(ref _resultMetadata);
+                var toPublish = PreparedStatement.ResolvePublication(current, resultMetadata);
+                if (toPublish == null)
+                {
+                    return;
+                }
+
+                if (ReferenceEquals(
+                        Interlocked.CompareExchange(ref _resultMetadata, toPublish, current), current))
+                {
+                    return;
+                }
+
+                // Someone published between the read and the exchange; decide again against what they left.
+            }
+        }
+
+        /// <summary>
+        /// The metadata to publish over <paramref name="current"/>, or null to keep what is there.
+        /// </summary>
+        /// <remarks>
+        /// Returns the incoming instance unchanged in every case but one: columns arriving under an id the
+        /// statement already held describe metadata that id was not hashed from, so what is published
+        /// records that (see <see cref="ResultMetadata.IdDescribesColumns"/>).
+        /// </remarks>
+        private static ResultMetadata ResolvePublication(ResultMetadata current, ResultMetadata incoming)
+        {
+            var currentHasColumns = current?.ContainsColumnDefinitions() == true;
+            var incomingHasColumns = incoming?.ContainsColumnDefinitions() == true;
+
+            if (currentHasColumns && !incomingHasColumns)
+            {
+                // Never trade columns for none. A reprepare can answer with no result metadata at all - on
+                // a connection without the extension, or for a statement the server reports none for - and
+                // adopting that would leave nothing to decode with and nothing to skip on.
+                return null;
+            }
+
+            var idUnchanged = current?.ContainsResultMetadataId() == true
+                              && incoming?.ContainsResultMetadataId() == true
+                              && current.ResultMetadataId.SequenceEqual(incoming.ResultMetadataId);
+
+            if (!idUnchanged)
+            {
+                // A different id was hashed from the metadata it arrived with, so it describes it and can
+                // be trusted to change again. This also covers an id going empty, which a reprepare on a
+                // connection without the extension does: nothing is skipped without an id to send.
+                return incoming;
+            }
+
+            if (!incomingHasColumns)
+            {
+                // Neither side has columns and the id did not move: nothing to say.
+                return null;
+            }
+
+            if (!currentHasColumns)
+            {
+                // Columns arriving under an id the statement already held. That id was hashed from the
+                // emptiness the PREPARE reported, and the server reuses it for the real columns, so equal
+                // ids do not imply equal metadata here. See scylladb/scylla-rust-driver#1575.
+                //
+                // Taking the columns is the point of this branch - without them every execution pays for
+                // the full column set. What is recorded alongside them is that the id does not describe
+                // them: the server has no id left to change when these columns stop being the right ones,
+                // so a match on it is not evidence that the metadata is current and nothing downstream may
+                // read it as such.
+                return incoming.WithIdNotDescribingColumns();
+            }
+
+            // Both hold columns under the same id. Normally that means unchanged metadata and there is
+            // nothing to publish; but if the id never described the columns, it cannot vouch for them now
+            // either, so take what the server just sent and keep the mark rather than letting a reprepare
+            // quietly restore trust in the id.
+            return current.IdDescribesColumns ? null : incoming.WithIdNotDescribingColumns();
         }
 
         /// <summary>

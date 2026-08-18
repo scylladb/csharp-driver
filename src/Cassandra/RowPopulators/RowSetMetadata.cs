@@ -317,6 +317,40 @@ namespace Cassandra
         {
         }
 
+        /// <summary>
+        /// Copies only what decoding a row needs. Every site that installs a prepared statement's
+        /// long-lived result metadata goes through here - the RESULT/Prepared that creates the statement,
+        /// the reprepare after UNPREPARED, and the METADATA_CHANGED that supersedes it - so that what a
+        /// statement caches has one shape whatever response it came from.
+        /// </summary>
+        /// <remarks>
+        /// The rest of a parsed instance describes the one response it came from - its flags, its paging
+        /// cursor, the column count it declared - and keeping those on a copy that outlives that response
+        /// would leave a statement reporting one execution's page state as its own. The three members here
+        /// are what <see cref="OutputRows.ProcessRows"/> reads when a response skipped its metadata: the
+        /// columns, the name lookup they are handed to <see cref="Row"/> through, and the keyspace fallback
+        /// for a column that carries none, which decrypting a value needs.
+        /// <para>
+        /// Only result metadata. A statement's variables metadata is kept whole, because its flags carry the
+        /// LWT mark that <see cref="Requests.PrepareHandler"/> reads.
+        /// </para>
+        /// <para>
+        /// A method rather than a copy constructor on purpose. An overload taking RowSetMetadata would sit
+        /// beside one taking a FrameReader whose second parameter is optional, and C# prefers the candidate
+        /// that needs no default argument - so every existing <c>new RowSetMetadata(null)</c> would quietly
+        /// rebind to it and dereference the null.
+        /// </para>
+        /// </remarks>
+        internal static RowSetMetadata CopyForCachedResultMetadata(RowSetMetadata source)
+        {
+            return new RowSetMetadata
+            {
+                Columns = source.Columns,
+                ColumnIndexes = source.ColumnIndexes,
+                Keyspace = source.Keyspace
+            };
+        }
+
         internal RowSetMetadata(FrameReader reader, bool parsePartitionKeys = false)
         {
             if (reader == null)

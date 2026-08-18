@@ -59,8 +59,12 @@ namespace Cassandra.Responses
                     Output = outputRows;
                     if (outputRows.ResultRowsMetadata.HasNewResultMetadataId())
                     {
+                        // Copied rather than kept whole: this becomes the statement's long-lived result
+                        // metadata, and a parsed instance also carries the flags and paging cursor of the
+                        // one response it came from.
                         NewResultMetadata = new ResultMetadata(
-                            outputRows.ResultRowsMetadata.NewResultMetadataId, outputRows.ResultRowsMetadata);
+                            outputRows.ResultRowsMetadata.NewResultMetadataId,
+                            RowSetMetadata.CopyForCachedResultMetadata(outputRows.ResultRowsMetadata));
                     }
                     break;
                 case ResultResponseKind.SetKeyspace:
