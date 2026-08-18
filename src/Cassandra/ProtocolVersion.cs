@@ -247,6 +247,12 @@ namespace Cassandra
         /// <summary>
         /// Determines if the protocol supports result_metadata_id on PREPARED response and EXECUTE request.
         /// </summary>
+        /// <remarks>
+        /// Not the right question to ask at a frame encoding or decoding site: the
+        /// <c>SCYLLA_USE_METADATA_ID</c> extension backports the field to CQL v4, so its presence is a
+        /// property of the connection rather than of the version. Use
+        /// <see cref="Connections.IConnection.UseMetadataId"/>, which combines the two.
+        /// </remarks>
         public static bool SupportsResultMetadataId(this ProtocolVersion version)
         {
             return version >= ProtocolVersion.V5;

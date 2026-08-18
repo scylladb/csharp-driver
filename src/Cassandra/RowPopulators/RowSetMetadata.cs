@@ -294,6 +294,20 @@ namespace Cassandra
         internal int Flags { get; private set; }
 
         /// <summary>
+        /// The <c>columns_count</c> the response declared, which the server sends even when NO_METADATA
+        /// omits the column specs themselves.
+        /// </summary>
+        /// <remarks>
+        /// The one thing a NO_METADATA response says about its own shape, and so the only check on cached
+        /// columns that does not go through the result metadata id. That matters because the id is not
+        /// always a hash of the metadata it is paired with: a statement whose PREPARE reported no result
+        /// metadata is handed a hash of that emptiness and keeps it after the real columns arrive by
+        /// METADATA_CHANGED, leaving the server nothing to change when the shape does. See
+        /// scylladb/scylla-rust-driver#1575.
+        /// </remarks>
+        internal int DeclaredColumnCount { get; private set; }
+
+        /// <summary>
         /// Whether the new_metadata_id was set.
         /// </summary>
         internal bool HasNewResultMetadataId() => NewResultMetadataId != null;
@@ -313,6 +327,7 @@ namespace Cassandra
             Flags = reader.ReadInt32();
             var flags = (RowSetMetadataFlags)Flags;
             var columnLength = reader.ReadInt32();
+            DeclaredColumnCount = columnLength;
 
             if (parsePartitionKeys)
             {
@@ -331,9 +346,52 @@ namespace Cassandra
                 PagingState = reader.ReadBytes();
             }
 
+            // Only read after the paging state, matching the CQL v5 spec and Cassandra's encoder
+            // (ResultSet$ResultMetadata$Codec.encode).
             if ((flags & RowSetMetadataFlags.MetadataChanged) == RowSetMetadataFlags.MetadataChanged)
             {
+                if (!reader.UseMetadataId)
+                {
+                    // The flag arrived on a connection that never agreed to exchange ids, so there is no
+                    // reading of the body that is known to be right: the field is defined from CQL v5 on
+                    // and backported to v4 only by the extension, and skipping it when the server did write
+                    // it leaves everything after shifted by its length - the global table spec and the
+                    // column specs are then parsed from the middle of it, giving either an opaque
+                    // end-of-stream failure or plausible-looking nonsense depending on the bytes.
+                    //
+                    // Reading it unconditionally instead, as this driver did before the extension, is the
+                    // mirror of the same problem for a server that set the bit without writing the field.
+                    // Neither guess is safe, so the disagreement is reported rather than resolved. It has
+                    // no legitimate cause - v5 and above always exchange ids, v4 sets the flag only behind
+                    // the negotiated extension, and below that the bit is undefined - and it is where a
+                    // widened or narrowed IConnection.UseMetadataId would otherwise go silent.
+                    throw new DriverInternalError(
+                        "Server reported changed result metadata on a connection that does not exchange " +
+                        "result metadata ids: the RESULT/Rows metadata has the METADATA_CHANGED flag set, " +
+                        "which is defined only for CQL v5 or for v4 with the SCYLLA_USE_METADATA_ID " +
+                        "extension negotiated.");
+                }
+
                 NewResultMetadataId = reader.ReadShortBytes();
+
+                if ((flags & RowSetMetadataFlags.NoMetadata) == RowSetMetadataFlags.NoMetadata)
+                {
+                    // MetadataChanged obliges the server to include the new metadata, so this response is
+                    // malformed and there is no safe way to continue. Adopting the new id while keeping the
+                    // cached columns would be unrecoverable: the server would match the id from then on and
+                    // stop sending metadata, leaving the driver decoding rows against stale columns
+                    // indefinitely. Decoding this response against those columns is no better, since the
+                    // server has just declared them stale.
+                    //
+                    // Throwing from the parse is reported to the caller rather than retried - the frame
+                    // parser's exceptions are wrapped as a client error, which the retry policy rethrows -
+                    // so what this leaves open is a re-execution by the application. That is worth
+                    // something because the old id stays cached, giving the server another chance to send
+                    // the metadata it owes; it is not a retry the driver performs on its own.
+                    throw new DriverInternalError(
+                        "Server reported changed result metadata but sent no column metadata: the RESULT/Rows " +
+                        "metadata has both the METADATA_CHANGED and the NO_METADATA flag set.");
+                }
             }
 
             if ((flags & RowSetMetadataFlags.NoMetadata) == RowSetMetadataFlags.NoMetadata)
