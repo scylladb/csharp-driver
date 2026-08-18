@@ -1,4 +1,4 @@
-//
+﻿//
 //      Copyright (C) DataStax Inc.
 //
 //   Licensed under the Apache License, Version 2.0 (the "License");
@@ -40,6 +40,9 @@ namespace Cassandra.Requests
             set { _queryOptions.PagingState = value; }
         }
 
+        /// <summary>
+        /// The skip_metadata flag as emitted: unlike an EXECUTE, a QUERY applies no write-time override.
+        /// </summary>
         public bool SkipMetadata
         {
             get { return _queryOptions.SkipMetadata; }

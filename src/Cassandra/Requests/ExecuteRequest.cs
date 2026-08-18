@@ -80,10 +80,13 @@ namespace Cassandra.Requests
             _id = id;
             _queryOptions = queryOptions;
 
-            if (protocolVersion.SupportsResultMetadataId())
-            {
-                ResultMetadata = resultMetadata;
-            }
+            // Serves two roles: it holds the result metadata id to send, and it is the cached column
+            // metadata used to decode a response that skipped its own. Both are read from this one
+            // instance, on purpose: reading the id from the PreparedStatement at write time instead would
+            // let a concurrent METADATA_CHANGED pair a new id with the old columns, and the server would
+            // then match that id, skip the metadata, and the rows would be decoded against the wrong
+            // columns. One snapshot per request keeps the two in step.
+            ResultMetadata = resultMetadata;
 
             if (queryOptions.SerialConsistency != ConsistencyLevel.Any
                 && queryOptions.SerialConsistency.IsSerialConsistencyLevel() == false)
@@ -103,9 +106,12 @@ namespace Cassandra.Requests
         {
             wb.WriteShortBytes(_id);
 
-            if (ResultMetadata != null)
+            if (wb.UseMetadataId)
             {
-                wb.WriteShortBytes(ResultMetadata.ResultMetadataId);
+                // Obligatory once the field exists, even when there is nothing to send: a statement
+                // prepared on a connection that did not exchange ids has none, and an empty id reads as a
+                // mismatch, which is what gets it one.
+                wb.WriteShortBytes(ResultMetadata?.ResultMetadataId);
             }
 
             _queryOptions.Write(wb, true);

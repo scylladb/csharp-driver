@@ -1,4 +1,4 @@
-//
+﻿//
 //      Copyright (C) DataStax Inc.
 //
 //   Licensed under the Apache License, Version 2.0 (the "License");
@@ -284,7 +284,7 @@ namespace Cassandra.IntegrationTests.Core
 
         private byte[] serializeForDynamicType(params object[] vals)
         {
-            var elt = new FrameWriter(new MemoryStream(), new SerializerManager(ProtocolVersion.V1).GetCurrentSerializer());
+            var elt = new FrameWriter(new MemoryStream(), new SerializerManager(ProtocolVersion.V1).GetCurrentSerializer(), false);
             foreach (object p in vals)
             {
                 if (p is int)

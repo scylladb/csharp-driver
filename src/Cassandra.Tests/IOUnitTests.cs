@@ -1,4 +1,4 @@
-//
+﻿//
 //      Copyright (C) DataStax Inc.
 //
 //   Licensed under the Apache License, Version 2.0 (the "License");
@@ -136,7 +136,7 @@ namespace Cassandra.Tests
             {
                 for (var i = 0; i < iterations; i++)
                 {
-                    var writer = new FrameWriter(stream, new SerializerManager(protocolVersion).GetCurrentSerializer());
+                    var writer = new FrameWriter(stream, new SerializerManager(protocolVersion).GetCurrentSerializer(), false);
                     writer.WriteFrameHeader(0, 127, 8);
                     writer.WriteUInt16(Convert.ToUInt16(0x0900 + i));
                     var length = writer.Close();

@@ -38,6 +38,18 @@ namespace Cassandra.Tests
         private static readonly ISerializerManager SerializerManager = new SerializerManager(ProtocolVersion.MaxSupported);
         private static readonly ISerializer Serializer = new SerializerManager(ProtocolVersion.MaxSupported).GetCurrentSerializer();
 
+        /// <summary>
+        /// How a connection that did not negotiate <c>SCYLLA_USE_METADATA_ID</c> resolves
+        /// <see cref="Cassandra.Connections.IConnection.UseMetadataId"/>: from the protocol version alone.
+        /// <para>
+        /// False for as long as <see cref="ProtocolVersion.MaxSupported"/> is v4, so the id-carrying frame
+        /// layout is <b>not</b> exercised here - <c>ResultMetadataIdTests</c> covers that, driving the flag
+        /// both ways explicitly. This exists so that the byte offsets below survive a bump of
+        /// <c>MaxSupported</c> to v5, which would start writing the field and shift them.
+        /// </para>
+        /// </summary>
+        private static readonly bool UseMetadataId = ProtocolVersion.MaxSupported.SupportsResultMetadataId();
+
         private static Configuration GetConfig(QueryOptions queryOptions = null, Cassandra.Policies policies = null, PoolingOptions poolingOptions = null)
         {
             return new TestConfigurationBuilder
@@ -559,9 +571,9 @@ namespace Cassandra.Tests
             // <query_id><consistency><flags><result_page_size><paging_state><serial_consistency><timestamp>
             // Skip the queryid and consistency (2)
             var offset = 2 + ps.Id.Length + 2;
-            if (Serializer.ProtocolVersion.SupportsResultMetadataId())
+            if (RequestHandlerTests.UseMetadataId)
             {
-                // Short bytes: 2 + 16
+                // Unreachable while MaxSupported is v4; see the field. Short bytes: 2 + 16.
                 offset += 18;
             }
             var flags = GetQueryFlags(bodyBuffer, ref offset);
@@ -589,9 +601,9 @@ namespace Cassandra.Tests
             // <query_id><consistency><flags><result_page_size><paging_state><serial_consistency><timestamp>
             // Skip the queryid and consistency (2)
             var offset = 2 + ps.Id.Length + 2;
-            if (Serializer.ProtocolVersion.SupportsResultMetadataId())
+            if (RequestHandlerTests.UseMetadataId)
             {
-                // Short bytes: 2 + 16
+                // Unreachable while MaxSupported is v4; see the field. Short bytes: 2 + 16.
                 offset += 18;
             }
             var flags = GetQueryFlags(bodyBuffer, ref offset);
@@ -716,7 +728,7 @@ namespace Cassandra.Tests
             }
 
             var stream = new MemoryStream();
-            request.WriteFrame(1, stream, serializer);
+            request.WriteFrame(1, stream, serializer, RequestHandlerTests.UseMetadataId);
             var headerSize = serializer.ProtocolVersion.GetHeaderSize();
             var bodyBuffer = new byte[stream.Length - headerSize];
             stream.Position = headerSize;
