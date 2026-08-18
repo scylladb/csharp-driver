@@ -127,21 +127,23 @@ namespace Cassandra.IntegrationTests.Core
         }
 
         [Test]
-        [TestCassandraVersion(4, 0)]
+        // Cassandra needs 4.0 for native protocol v5; ScyllaDB reaches the same mechanism on protocol v4
+        // through the SCYLLA_USE_METADATA_ID extension, so the plain Cassandra gate skipped it everywhere.
+        [TestCassandraOrScyllaVersion(4, 0, 2026, 1)]
         public void Should_PagingOnBoundStatement_When_NewResultMetadataIsSet()
         {
-            if (Session.Cluster.Metadata.ControlConnection.Serializer.CurrentProtocolVersion < ProtocolVersion.V5)
-            {
-                Assert.Ignore("This test requires protocol v5+");
-                return;
-            }
-
             var pageSize = 10;
             var totalRowLength = 25;
             var tableName = CreateSimpleTableAndInsert(totalRowLength);
 
             var statementToBeBound = "SELECT * from " + tableName;
             var ps = Session.Prepare(statementToBeBound);
+
+            if (!ps.ExchangesResultMetadataId())
+            {
+                Assert.Ignore("This test requires protocol v5+ or the SCYLLA_USE_METADATA_ID extension");
+                return;
+            }
 
             var allRows = Session.Execute(ps.Bind()).ToList();
             var previousResultMetadata = ps.ResultMetadata;
