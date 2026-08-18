@@ -810,7 +810,9 @@ namespace Cassandra.IntegrationTests.Core
             var ex = new Exception("Test exception");
             var requestMock = new Mock<IRequest>(MockBehavior.Strict);
             // Create a request that throws an exception when writing the frame
-            requestMock.Setup(r => r.WriteFrame(It.IsAny<short>(), It.IsAny<MemoryStream>(), It.IsAny<ISerializer>()))
+            requestMock.Setup(
+                           r => r.WriteFrame(
+                               It.IsAny<short>(), It.IsAny<MemoryStream>(), It.IsAny<ISerializer>(), It.IsAny<bool>()))
                        .Throws(ex);
             requestMock.SetupGet(r => r.ResultMetadata)
                        .Returns((ResultMetadata)null);
