@@ -32,7 +32,13 @@ namespace Cassandra.Requests
         /// <summary>
         /// Writes the frame for this request on the provided stream
         /// </summary>
-        int WriteFrame(short streamId, MemoryStream stream, ISerializer connectionSerializer);
+        /// <remarks>
+        /// <c>useMetadataId</c> tells whether the connection being written to exchanges result metadata
+        /// ids. That is negotiated per connection, while a request instance is built before a connection
+        /// is chosen and is reused across hosts and retries, so it can only be known here.
+        /// See <see cref="Cassandra.Connections.IConnection.UseMetadataId"/>.
+        /// </remarks>
+        int WriteFrame(short streamId, MemoryStream stream, ISerializer connectionSerializer, bool useMetadataId);
 
         /// <summary>
         /// Result Metadata to parse the response rows. Only EXECUTE requests set this value so it will be null
