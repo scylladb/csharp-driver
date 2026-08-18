@@ -40,6 +40,7 @@ namespace Cassandra.Connections.Control
         private TabletInfo _tabletInfo;
 
         private LwtInfo _lwtInfo;
+        private bool _shouldUseMetadataId;
 
         public SupportedOptionsInitializer(Metadata metadata)
         {
@@ -51,10 +52,10 @@ namespace Cassandra.Connections.Control
             var request = new OptionsRequest();
             var response = await connection.Send(request).ConfigureAwait(false);
 
-            ApplySupportedFromResponse(response);
+            ApplySupportedFromResponse(response, connection.Serializer.ProtocolVersion);
         }
 
-        public void ApplySupportedFromResponse(Response response)
+        public void ApplySupportedFromResponse(Response response, ProtocolVersion protocolVersion)
         {
             if (response == null)
             {
@@ -70,6 +71,7 @@ namespace Cassandra.Connections.Control
             ApplyScyllaShardingOption(supportedResponse.Output.Options);
             ApplyScyllaTabletOption(supportedResponse.Output.Options);
             ApplyScyllaLwtOption(supportedResponse.Output.Options);
+            ApplyScyllaMetadataIdOption(supportedResponse.Output.Options, protocolVersion);
         }
 
         public ShardingInfo GetShardingInfo()
@@ -85,6 +87,11 @@ namespace Cassandra.Connections.Control
         public LwtInfo GetLwtInfo()
         {
             return _lwtInfo;
+        }
+
+        public bool ShouldUseMetadataId()
+        {
+            return _shouldUseMetadataId;
         }
 
         private void ApplyProductTypeOption(IDictionary<string, string[]> options)
@@ -180,6 +187,25 @@ namespace Cassandra.Connections.Control
         private void ApplyScyllaLwtOption(IDictionary<string, string[]> options)
         {
             _lwtInfo = LwtInfo.ParseLwtInfo(options);
+        }
+
+        /// <remarks>
+        /// The opt-in is restricted to <see cref="ProtocolVersion.V4"/> because it changes the wire format:
+        /// EXECUTE gains a <c>[short bytes]</c> result metadata id and RESULT/Prepared answers with one. On
+        /// v3 and below that field is not defined, so opting in would desynchronise a connection the driver
+        /// otherwise supports. On v5 and above the field is already mandatory (see
+        /// <see cref="ProtocolVersionExtensions.SupportsResultMetadataId"/>), so asking for it again would
+        /// be redundant.
+        /// <para>
+        /// Decided here rather than at either reader, so that the STARTUP opt-in
+        /// (<see cref="Requests.StartupOptionsFactory"/>) and the frame-level encoding and decoding
+        /// (<see cref="IConnection.UseMetadataId"/>) cannot disagree about it.
+        /// </para>
+        /// </remarks>
+        private void ApplyScyllaMetadataIdOption(IDictionary<string, string[]> options, ProtocolVersion protocolVersion)
+        {
+            _shouldUseMetadataId =
+                protocolVersion == ProtocolVersion.V4 && MetadataIdSupport.IsAdvertised(options);
         }
     }
 }

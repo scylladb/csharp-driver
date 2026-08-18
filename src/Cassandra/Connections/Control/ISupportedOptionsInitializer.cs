@@ -21,9 +21,27 @@ namespace Cassandra.Connections.Control
     internal interface ISupportedOptionsInitializer
     {
         Task ApplySupportedOptionsAsync(IConnection connection);
-        void ApplySupportedFromResponse(Response response);
+
+        /// <param name="response">The SUPPORTED response to parse.</param>
+        /// <param name="protocolVersion">
+        /// The protocol version of the connection the response came from. Some extensions change the
+        /// wire format, so whether they can be used at all depends on it.
+        /// </param>
+        void ApplySupportedFromResponse(Response response, ProtocolVersion protocolVersion);
+
         ShardingInfo GetShardingInfo();
         TabletInfo GetTabletInfo();
         LwtInfo GetLwtInfo();
+
+        /// <summary>
+        /// Whether this connection should use the <c>SCYLLA_USE_METADATA_ID</c> extension: the server
+        /// advertised it in <c>SUPPORTED</c> and the protocol version permits it.
+        /// </summary>
+        /// <remarks>
+        /// A decision rather than a completed negotiation - <c>SUPPORTED</c> only advertises, and the driver
+        /// opts in by naming the extension in <c>STARTUP</c>, which is one of the two things this answer
+        /// drives (the other being how frames are encoded and decoded).
+        /// </remarks>
+        bool ShouldUseMetadataId();
     }
 }

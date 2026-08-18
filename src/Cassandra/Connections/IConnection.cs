@@ -160,5 +160,17 @@ namespace Cassandra.Connections
         /// Returns the current lwt info.
         /// </summary>
         LwtInfo LwtInfo();
+
+        /// <summary>
+        /// Whether EXECUTE requests on this connection carry a result metadata id and RESULT responses
+        /// answer with one, i.e. whether the connection speaks a protocol version that makes the field
+        /// mandatory (v5 and above) or negotiated the <c>SCYLLA_USE_METADATA_ID</c> extension.
+        /// <para>
+        /// This is what makes it safe to ask the server to skip result metadata: it reports a stale id
+        /// with <see cref="RowSetMetadataFlags.MetadataChanged"/> instead of silently answering with
+        /// the metadata the statement was prepared against.
+        /// </para>
+        /// </summary>
+        bool UseMetadataId { get; }
     }
 }
