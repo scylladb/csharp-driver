@@ -1,4 +1,4 @@
-//
+﻿//
 //      Copyright (C) DataStax Inc.
 //
 //   Licensed under the Apache License, Version 2.0 (the "License");
@@ -47,7 +47,13 @@ namespace Cassandra.Requests
 
         public ConsistencyLevel SerialConsistency => _queryOptions.SerialConsistency;
 
-        public bool SkipMetadata => _queryOptions.SkipMetadata;
+        /// <summary>
+        /// The statement-level <see cref="IStatement.SkipMetadata"/> intent, which an EXECUTE does not act
+        /// on: the flag written to the frame is decided per connection by
+        /// <see cref="ShouldSkipResultMetadata"/>. Exposed so that a test can pin the decision to write
+        /// time; deliberately not named SkipMetadata, which would read as the emitted flag.
+        /// </summary>
+        internal bool StatementSkipMetadata => _queryOptions.SkipMetadata;
 
         /// <inheritdoc />
         public override ResultMetadata ResultMetadata { get; }
@@ -102,6 +108,44 @@ namespace Cassandra.Requests
 
         protected override byte OpCode => ExecuteRequest.ExecuteOpCode;
 
+        /// <summary>
+        /// Decides whether an EXECUTE should ask the server to skip result metadata in its RESULT/Rows
+        /// response.
+        /// </summary>
+        /// <param name="useMetadataId">
+        /// Whether the connection exchanges result metadata ids, see
+        /// <see cref="Cassandra.Connections.IConnection.UseMetadataId"/>. Without it the server has
+        /// nothing to compare against and answers a stale statement with the metadata it was prepared
+        /// against rather than reporting the change, which is the bug this whole mechanism exists to
+        /// prevent (scylladb/scylladb#20860).
+        /// </param>
+        /// <param name="resultMetadata">The cached result metadata of the prepared statement.</param>
+        /// <remarks>
+        /// The column check is not merely an optimisation. A statement whose RESULT/Prepared carried no
+        /// result metadata has nothing to reuse, and asking to skip is unrecoverable: it is handed an id
+        /// hashed from empty metadata, the server compares the returned id against that same id, always
+        /// matches, and so never sets METADATA_CHANGED, leaving the driver with rows and no columns to
+        /// decode them with. <c>LIST ROLES OF</c> is the motivating case.
+        /// <para>
+        /// The non-empty id check covers a statement prepared before the ids were available - the
+        /// prepared statement outlives reconnects, so that is reachable during a rolling upgrade. Such a
+        /// statement asks for metadata for one more round trip: the empty id it sends reads as a
+        /// mismatch, the server answers METADATA_CHANGED with a fresh id, and later executions skip.
+        /// There is therefore never a window where the driver skips metadata it cannot recover.
+        /// </para>
+        /// <para>
+        /// Once both hold, skipping is the safe default, per scylladb/scylla-drivers#81.
+        /// </para>
+        /// </remarks>
+        internal static bool ShouldSkipResultMetadata(bool useMetadataId, ResultMetadata resultMetadata)
+        {
+            return useMetadataId
+                   && resultMetadata != null
+                   && resultMetadata.ContainsColumnDefinitions()
+                   && resultMetadata.ResultMetadataId != null
+                   && resultMetadata.ResultMetadataId.Length > 0;
+        }
+
         protected override void WriteBody(FrameWriter wb)
         {
             wb.WriteShortBytes(_id);
@@ -114,7 +158,8 @@ namespace Cassandra.Requests
                 wb.WriteShortBytes(ResultMetadata?.ResultMetadataId);
             }
 
-            _queryOptions.Write(wb, true);
+            _queryOptions.Write(
+                wb, true, ExecuteRequest.ShouldSkipResultMetadata(wb.UseMetadataId, ResultMetadata));
         }
 
         public void WriteToBatch(FrameWriter wb)
