@@ -29,11 +29,29 @@ namespace Cassandra
 
         public System.Guid? TraceId { get; internal set; }
 
+        /// <summary>
+        /// Parses a RESULT/Prepared body:
+        /// <code>
+        /// &lt;id&gt;                 [short bytes]  prepared statement id
+        /// &lt;result_metadata_id&gt; [short bytes]  CQL v5, or v4 with SCYLLA_USE_METADATA_ID
+        /// &lt;metadata&gt;           bind variables and partition key indexes (request side)
+        /// &lt;result_metadata&gt;    the columns rows will carry (response side)
+        /// </code>
+        /// The two metadata blocks describe opposite directions and are unrelated. Only the second one
+        /// has an id, because only it can go stale without the driver noticing.
+        /// <para>
+        /// The id read here is the first one issued for the statement, and every later EXECUTE echoes
+        /// it back. A superseding id arrives by a different route, as
+        /// <see cref="RowSetMetadata.NewResultMetadataId"/> inside a RESULT/Rows behind
+        /// <see cref="RowSetMetadataFlags.MetadataChanged"/>, so the server can repair a stale id in a
+        /// response it was already sending instead of making the driver reprepare.
+        /// </para>
+        /// </summary>
         internal OutputPrepared(ProtocolVersion protocolVersion, FrameReader reader)
         {
             QueryId = reader.ReadShortBytes();
 
-            if (protocolVersion.SupportsResultMetadataId())
+            if (reader.UseMetadataId)
             {
                 ResultMetadataId = reader.ReadShortBytes();
             }

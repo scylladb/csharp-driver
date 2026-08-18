@@ -66,6 +66,19 @@ namespace Cassandra
             {
                 resultMetadata = providedResultMetadata?.RowSetMetadata;
                 rs.Columns = resultMetadata?.Columns;
+
+                if (resultMetadata == null)
+                {
+                    // Columns are null only when the response set NO_METADATA, which the server may do only
+                    // in answer to SKIP_METADATA, which the driver sets only when it holds the columns to
+                    // decode with (see ExecuteRequest.ShouldSkipResultMetadata). So there is nothing left to
+                    // decode against and the response is a protocol violation rather than a driver state to
+                    // recover from. Reported as such, because the alternative is dereferencing null below
+                    // and surfacing an opaque NullReferenceException.
+                    throw new DriverInternalError(
+                        "Server answered with no column metadata for a request that did not ask to skip it, " +
+                        "and there is no cached result metadata to decode the rows with.");
+                }
             }
 
             var reusableBuffer = ReusableBuffer.Value;

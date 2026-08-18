@@ -79,7 +79,7 @@ namespace Cassandra.Responses
                     frame.Header.BodyLength, frame.Body.Length - frame.Body.Position, frame.Body.Position));
             }
 
-            Reader = new FrameReader(frame.Body, frame.Serializer);
+            Reader = new FrameReader(frame.Body, frame.Serializer, frame.UseMetadataId);
 
             if (frame.Header.Flags.HasFlag(HeaderFlags.Tracing))
             {

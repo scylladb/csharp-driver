@@ -817,6 +817,7 @@ namespace Cassandra.Connections
             ResultMetadata resultMetadata, ISerializer serializer, FrameHeader header, Func<IRequestError, Response, long, Task> callback)
         {
             var compressor = Compressor;
+            var useMetadataId = UseMetadataId;
 
             Task DeserializeResponseStream(MemoryStream stream, long timestamp)
             {
@@ -831,7 +832,8 @@ namespace Cassandra.Connections
                         plainTextStream = compressor.Decompress(new WrappedStream(stream, header.BodyLength));
                         plainTextStream.Position = 0;
                     }
-                    response = FrameParser.Parse(new Frame(header, plainTextStream, serializer, resultMetadata));
+                    response = FrameParser.Parse(
+                        new Frame(header, plainTextStream, serializer, resultMetadata, useMetadataId));
                 }
                 catch (Exception caughtException)
                 {
