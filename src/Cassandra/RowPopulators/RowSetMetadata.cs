@@ -294,6 +294,20 @@ namespace Cassandra
         internal int Flags { get; private set; }
 
         /// <summary>
+        /// The <c>columns_count</c> the response declared, which the server sends even when NO_METADATA
+        /// omits the column specs themselves.
+        /// </summary>
+        /// <remarks>
+        /// The one thing a NO_METADATA response says about its own shape, and so the only check on cached
+        /// columns that does not go through the result metadata id. That matters because the id is not
+        /// always a hash of the metadata it is paired with: a statement whose PREPARE reported no result
+        /// metadata is handed a hash of that emptiness and keeps it after the real columns arrive by
+        /// METADATA_CHANGED, leaving the server nothing to change when the shape does. See
+        /// scylladb/scylla-rust-driver#1575.
+        /// </remarks>
+        internal int DeclaredColumnCount { get; private set; }
+
+        /// <summary>
         /// Whether the new_metadata_id was set.
         /// </summary>
         internal bool HasNewResultMetadataId() => NewResultMetadataId != null;
@@ -313,6 +327,7 @@ namespace Cassandra
             Flags = reader.ReadInt32();
             var flags = (RowSetMetadataFlags)Flags;
             var columnLength = reader.ReadInt32();
+            DeclaredColumnCount = columnLength;
 
             if (parsePartitionKeys)
             {
@@ -331,9 +346,33 @@ namespace Cassandra
                 PagingState = reader.ReadBytes();
             }
 
-            if ((flags & RowSetMetadataFlags.MetadataChanged) == RowSetMetadataFlags.MetadataChanged)
+            // Only read after the paging state, matching the CQL v5 spec and Cassandra's encoder
+            // (ResultSet$ResultMetadata$Codec.encode). Gated on the connection rather than on the flag
+            // alone so that a server which does not exchange result metadata ids cannot desynchronise
+            // the parse by setting the bit, whatever it may come to mean there.
+            if (reader.UseMetadataId
+                && (flags & RowSetMetadataFlags.MetadataChanged) == RowSetMetadataFlags.MetadataChanged)
             {
                 NewResultMetadataId = reader.ReadShortBytes();
+
+                if ((flags & RowSetMetadataFlags.NoMetadata) == RowSetMetadataFlags.NoMetadata)
+                {
+                    // MetadataChanged obliges the server to include the new metadata, so this response is
+                    // malformed and there is no safe way to continue. Adopting the new id while keeping the
+                    // cached columns would be unrecoverable: the server would match the id from then on and
+                    // stop sending metadata, leaving the driver decoding rows against stale columns
+                    // indefinitely. Decoding this response against those columns is no better, since the
+                    // server has just declared them stale.
+                    //
+                    // Throwing from the parse is reported to the caller rather than retried - the frame
+                    // parser's exceptions are wrapped as a client error, which the retry policy rethrows -
+                    // so what this leaves open is a re-execution by the application. That is worth
+                    // something because the old id stays cached, giving the server another chance to send
+                    // the metadata it owes; it is not a retry the driver performs on its own.
+                    throw new DriverInternalError(
+                        "Server reported changed result metadata but sent no column metadata: the RESULT/Rows " +
+                        "metadata has both the METADATA_CHANGED and the NO_METADATA flag set.");
+                }
             }
 
             if ((flags & RowSetMetadataFlags.NoMetadata) == RowSetMetadataFlags.NoMetadata)
