@@ -1,4 +1,4 @@
-//
+﻿//
 //      Copyright (C) DataStax Inc.
 //
 //   Licensed under the Apache License, Version 2.0 (the "License");
@@ -168,6 +168,15 @@ namespace Cassandra.Connections
 
         public int ShardID { get; set; }
         private int _requestedShardID { get; set; }
+
+        /// <summary>
+        /// Set once during <see cref="DoOpen"/>, before any request other than OPTIONS/STARTUP can be
+        /// written, and read afterwards from the IO threads that encode and decode frames.
+        /// </summary>
+        private volatile bool _useMetadataId;
+
+        /// <inheritdoc />
+        public bool UseMetadataId => _useMetadataId;
 
         internal Connection(
             ISerializer serializer,
@@ -545,7 +554,13 @@ namespace Cassandra.Connections
                 }
                 throw;
             }
-            _supportedOptionsInitializer.ApplySupportedFromResponse(optionsResponse);
+            _supportedOptionsInitializer.ApplySupportedFromResponse(optionsResponse, Serializer.ProtocolVersion);
+
+            // Has to be resolved before STARTUP, which is where the extension is opted into, so that the
+            // frames written and parsed from here on agree with what the server was told.
+            _useMetadataId = Serializer.ProtocolVersion.SupportsResultMetadataId()
+                             || _supportedOptionsInitializer.IsMetadataIdNegotiated();
+
             if (_supportedOptionsInitializer.GetShardingInfo() != null)
             {
                 ShardID = _supportedOptionsInitializer.GetShardingInfo().ScyllaShard;
