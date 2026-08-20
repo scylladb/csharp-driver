@@ -44,8 +44,14 @@ namespace Cassandra
 
         private static ProtocolVersion _maxProtocolVersion = ProtocolVersion.MaxSupported;
         internal static readonly Logger Logger = new Logger(typeof(Cluster));
+        private static readonly IEqualityComparer<byte[]> PreparedStatementIdComparer = new ByteArrayComparer();
         private readonly CopyOnWriteList<IInternalSession> _connectedSessions = new CopyOnWriteList<IInternalSession>();
         private readonly IControlConnection _controlConnection;
+        private readonly ConcurrentDictionary<PreparedStatementCacheKey, PreparedStatementCacheEntry> _preparedStatementCache =
+            new ConcurrentDictionary<PreparedStatementCacheKey, PreparedStatementCacheEntry>();
+        private readonly AsyncLocal<PreparedStatementPreparationScope> _preparedStatementPreparationScope =
+            new AsyncLocal<PreparedStatementPreparationScope>();
+        private long _preparedStatementCacheGeneration;
         private volatile bool _initialized;
         private volatile Exception _initException;
         private readonly SemaphoreSlim _initLock = new SemaphoreSlim(1, 1);
@@ -77,7 +83,7 @@ namespace Cassandra
 
         /// <inheritdoc />
         ConcurrentDictionary<byte[], PreparedStatement> IInternalCluster.PreparedQueries { get; }
-            = new ConcurrentDictionary<byte[], PreparedStatement>(new ByteArrayComparer());
+            = new ConcurrentDictionary<byte[], PreparedStatement>(Cluster.PreparedStatementIdComparer);
 
         /// <summary>
         ///  Build a new cluster based on the provided initializer. <p> Note that for
@@ -554,6 +560,7 @@ namespace Cassandra
         {
             if (!_initialized)
             {
+                _preparedStatementCache.Clear();
                 _metadata.ShutDown(timeoutMs);
                 _controlConnection.Dispose();
                 await _protocolEventDebouncer.ShutdownAsync().ConfigureAwait(false);
@@ -581,6 +588,7 @@ namespace Cassandra
                 }
                 throw;
             }
+            _preparedStatementCache.Clear();
             _metadata.ShutDown(timeoutMs);
             _controlConnection.Dispose();
             await _protocolEventDebouncer.ShutdownAsync().ConfigureAwait(false);
@@ -625,18 +633,167 @@ namespace Cassandra
         async Task<PreparedStatement> IInternalCluster.Prepare(
             IInternalSession session, ISerializerManager serializerManager, InternalPrepareRequest request)
         {
-            var lbp = session.Cluster.Configuration.DefaultRequestOptions.LoadBalancingPolicy;
-            var handler = InternalRef.Configuration.PrepareHandlerFactory.CreatePrepareHandler(serializerManager, this, session, request);
-            var ps = await handler.Prepare(request, session, lbp.NewQueryPlan(session.Keyspace, null).GetEnumerator()).ConfigureAwait(false);
-            var psAdded = InternalRef.PreparedQueries.GetOrAdd(ps.Id, ps);
-            if (ps != psAdded)
+            var serializer = serializerManager.GetCurrentSerializer();
+            var sessionKeyspace = string.IsNullOrEmpty(session.Keyspace) ? null : session.Keyspace;
+            var requestKeyspace = serializer.ProtocolVersion.SupportsKeyspaceInRequest()
+                ? request.Keyspace
+                : null;
+            var effectiveKeyspace = requestKeyspace ?? sessionKeyspace;
+            var cacheKey = new PreparedStatementCacheKey(
+                request.Query, effectiveKeyspace, request.Payload);
+
+            if (PreparedStatementPreparationScope.Contains(_preparedStatementPreparationScope.Value, cacheKey))
             {
-                PrepareHandler.Logger.Warning("Re-preparing already prepared query is generally an anti-pattern and will likely " +
-                               "affect performance. Consider preparing the statement only once. Query='{0}'", ps.Cql);
-                ps = psAdded;
+                throw new InvalidOperationException(
+                    "A prepare callback can not recursively prepare the same query, keyspace, and custom payload.");
             }
 
+            if (request.Payload != null)
+            {
+                return await PrepareWithScopeAsync(
+                    cacheKey,
+                    session,
+                    serializerManager,
+                    request,
+                    sessionKeyspace,
+                    effectiveKeyspace,
+                    Volatile.Read(ref _preparedStatementCacheGeneration)).ConfigureAwait(false);
+            }
+
+            var cacheGeneration = Volatile.Read(ref _preparedStatementCacheGeneration);
+            var prepareEntry = _preparedStatementCache.GetOrAdd(
+                cacheKey,
+                key => new PreparedStatementCacheEntry(
+                    cacheGeneration,
+                    () => PrepareWithScopeAsync(
+                        key,
+                        session,
+                        serializerManager,
+                        new InternalPrepareRequest(
+                            serializer, request.Query, requestKeyspace, key.GetCustomPayload()),
+                        sessionKeyspace,
+                        effectiveKeyspace,
+                        cacheGeneration)));
+
+            try
+            {
+                var preparedStatement = await prepareEntry.Task.Value.ConfigureAwait(false);
+                if (Volatile.Read(ref _preparedStatementCacheGeneration) != prepareEntry.Generation)
+                {
+                    RemovePreparedStatementCacheEntry(cacheKey, prepareEntry);
+                }
+                return preparedStatement;
+            }
+            catch
+            {
+                // A failed prepare must not poison the cache. Remove only this exact value: another caller may
+                // have already removed it and started a new attempt.
+                RemovePreparedStatementCacheEntry(cacheKey, prepareEntry);
+                throw;
+            }
+        }
+
+        private async Task<PreparedStatement> PrepareWithScopeAsync(
+            PreparedStatementCacheKey cacheKey,
+            IInternalSession session,
+            ISerializerManager serializerManager,
+            InternalPrepareRequest request,
+            string sessionKeyspace,
+            string effectiveKeyspace,
+            long cacheGeneration)
+        {
+            var previousScope = _preparedStatementPreparationScope.Value;
+            var currentScope = new PreparedStatementPreparationScope(cacheKey, previousScope);
+            _preparedStatementPreparationScope.Value = currentScope;
+            try
+            {
+                return await PrepareAsync(
+                    session,
+                    serializerManager,
+                    request,
+                    sessionKeyspace,
+                    effectiveKeyspace,
+                    cacheGeneration).ConfigureAwait(false);
+            }
+            finally
+            {
+                currentScope.Deactivate();
+                _preparedStatementPreparationScope.Value = previousScope;
+            }
+        }
+
+        private async Task<PreparedStatement> PrepareAsync(
+            IInternalSession session,
+            ISerializerManager serializerManager,
+            InternalPrepareRequest request,
+            string sessionKeyspace,
+            string effectiveKeyspace,
+            long cacheGeneration)
+        {
+            var lbp = session.Cluster.Configuration.DefaultRequestOptions.LoadBalancingPolicy;
+            var handler = InternalRef.Configuration.PrepareHandlerFactory.CreatePrepareHandler(serializerManager, this, session, request);
+            var ps = await handler.Prepare(
+                request,
+                session,
+                lbp.NewQueryPlan(sessionKeyspace, null).GetEnumerator(),
+                sessionKeyspace).ConfigureAwait(false);
+            if (!string.Equals(ps.Keyspace, effectiveKeyspace, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"The session keyspace changed while preparing the statement. Expected '{effectiveKeyspace}', " +
+                    $"but the statement was prepared with '{ps.Keyspace}'. Retry the prepare operation.");
+            }
+            // Track one instance per server-side ID for prepare-on-up. Different custom payloads can legitimately
+            // produce different response payloads even though the server returns the same prepared ID.
+            if (Volatile.Read(ref _preparedStatementCacheGeneration) == cacheGeneration)
+            {
+                InternalRef.PreparedQueries.TryAdd(ps.Id, ps);
+                if (Volatile.Read(ref _preparedStatementCacheGeneration) != cacheGeneration)
+                {
+                    ((ICollection<KeyValuePair<byte[], PreparedStatement>>)InternalRef.PreparedQueries)
+                        .Remove(new KeyValuePair<byte[], PreparedStatement>(ps.Id, ps));
+                }
+            }
             return ps;
+        }
+
+        private void RemovePreparedStatementCacheEntry(
+            PreparedStatementCacheKey cacheKey, PreparedStatementCacheEntry prepareEntry)
+        {
+            ((ICollection<KeyValuePair<PreparedStatementCacheKey, PreparedStatementCacheEntry>>)_preparedStatementCache)
+                .Remove(new KeyValuePair<PreparedStatementCacheKey, PreparedStatementCacheEntry>(cacheKey, prepareEntry));
+        }
+
+        /// <inheritdoc />
+        void IInternalCluster.InvalidatePreparedStatement(byte[] id)
+        {
+            var generation = Interlocked.Increment(ref _preparedStatementCacheGeneration);
+            InternalRef.PreparedQueries.TryRemove(id, out _);
+
+            foreach (var entry in _preparedStatementCache)
+            {
+                if (!entry.Value.Task.IsValueCreated)
+                {
+                    ((ICollection<KeyValuePair<PreparedStatementCacheKey, PreparedStatementCacheEntry>>)_preparedStatementCache)
+                        .Remove(entry);
+                    continue;
+                }
+
+                var task = entry.Value.Task.Value;
+                if (task.Status != TaskStatus.RanToCompletion)
+                {
+                    continue;
+                }
+
+                if (Cluster.PreparedStatementIdComparer.Equals(task.Result.Id, id))
+                {
+                    ((ICollection<KeyValuePair<PreparedStatementCacheKey, PreparedStatementCacheEntry>>)_preparedStatementCache)
+                        .Remove(entry);
+                    continue;
+                }
+
+                entry.Value.UpdateGeneration(generation);
+            }
         }
 
         /// <inheritdoc />
@@ -694,6 +851,163 @@ namespace Cassandra
                         host.Address,
                         ex);
                 }
+            }
+        }
+
+        private sealed class PreparedStatementPreparationScope
+        {
+            private int _active = 1;
+
+            public PreparedStatementPreparationScope(
+                PreparedStatementCacheKey cacheKey, PreparedStatementPreparationScope parent)
+            {
+                CacheKey = cacheKey;
+                Parent = parent;
+            }
+
+            private PreparedStatementCacheKey CacheKey { get; }
+
+            private PreparedStatementPreparationScope Parent { get; }
+
+            public void Deactivate()
+            {
+                Interlocked.Exchange(ref _active, 0);
+            }
+
+            public static bool Contains(
+                PreparedStatementPreparationScope scope, PreparedStatementCacheKey cacheKey)
+            {
+                while (scope != null)
+                {
+                    if (Volatile.Read(ref scope._active) == 1 && scope.CacheKey.Equals(cacheKey))
+                    {
+                        return true;
+                    }
+                    scope = scope.Parent;
+                }
+                return false;
+            }
+        }
+
+        private sealed class PreparedStatementCacheEntry
+        {
+            public PreparedStatementCacheEntry(long generation, Func<Task<PreparedStatement>> prepare)
+            {
+                _generation = generation;
+                Task = new Lazy<Task<PreparedStatement>>(
+                    prepare, LazyThreadSafetyMode.ExecutionAndPublication);
+            }
+
+            private long _generation;
+
+            public long Generation => Volatile.Read(ref _generation);
+
+            public Lazy<Task<PreparedStatement>> Task { get; }
+
+            public void UpdateGeneration(long generation)
+            {
+                Volatile.Write(ref _generation, generation);
+            }
+        }
+
+        private sealed class PreparedStatementCacheKey : IEquatable<PreparedStatementCacheKey>
+        {
+            private readonly string _cqlQuery;
+            private readonly string _keyspace;
+            private readonly bool _hasCustomPayload;
+            private readonly KeyValuePair<string, byte[]>[] _customPayload;
+
+            public PreparedStatementCacheKey(
+                string cqlQuery, string keyspace, IDictionary<string, byte[]> customPayload)
+            {
+                _cqlQuery = cqlQuery;
+                _keyspace = keyspace;
+                _hasCustomPayload = customPayload != null;
+                _customPayload = customPayload == null
+                    ? Array.Empty<KeyValuePair<string, byte[]>>()
+                    : customPayload
+                      .OrderBy(item => item.Key, StringComparer.Ordinal)
+                      .Select(item => new KeyValuePair<string, byte[]>(item.Key, item.Value?.ToArray()))
+                      .ToArray();
+            }
+
+            public bool Equals(PreparedStatementCacheKey other)
+            {
+                if (ReferenceEquals(other, null)
+                    || !string.Equals(_cqlQuery, other._cqlQuery, StringComparison.Ordinal)
+                    || !string.Equals(_keyspace, other._keyspace, StringComparison.Ordinal)
+                    || _hasCustomPayload != other._hasCustomPayload
+                    || _customPayload.Length != other._customPayload.Length)
+                {
+                    return false;
+                }
+
+                for (var i = 0; i < _customPayload.Length; i++)
+                {
+                    if (!string.Equals(_customPayload[i].Key, other._customPayload[i].Key, StringComparison.Ordinal)
+                        || !ByteArraysEqual(_customPayload[i].Value, other._customPayload[i].Value))
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+
+            public override bool Equals(object obj)
+            {
+                return Equals(obj as PreparedStatementCacheKey);
+            }
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    var hashCode = _cqlQuery?.GetHashCode() ?? 0;
+                    hashCode = (hashCode * 397) ^ (_keyspace?.GetHashCode() ?? 0);
+                    hashCode = (hashCode * 397) ^ _hasCustomPayload.GetHashCode();
+                    foreach (var item in _customPayload)
+                    {
+                        hashCode = (hashCode * 397) ^ (item.Key?.GetHashCode() ?? 0);
+                        if (item.Value == null)
+                        {
+                            hashCode = (hashCode * 397) ^ -1;
+                            continue;
+                        }
+                        foreach (var value in item.Value)
+                        {
+                            hashCode = (hashCode * 397) ^ value;
+                        }
+                    }
+                    return hashCode;
+                }
+            }
+
+            public IDictionary<string, byte[]> GetCustomPayload()
+            {
+                return !_hasCustomPayload
+                    ? null
+                    : _customPayload.ToDictionary(item => item.Key, item => item.Value, StringComparer.Ordinal);
+            }
+
+            private static bool ByteArraysEqual(byte[] first, byte[] second)
+            {
+                if (ReferenceEquals(first, second))
+                {
+                    return true;
+                }
+                if (first == null || second == null || first.Length != second.Length)
+                {
+                    return false;
+                }
+                for (var i = 0; i < first.Length; i++)
+                {
+                    if (first[i] != second[i])
+                    {
+                        return false;
+                    }
+                }
+                return true;
             }
         }
     }

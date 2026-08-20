@@ -434,17 +434,39 @@ namespace Cassandra.Requests
         internal static Task<IConnection> GetConnectionFromHostAsync(
             Host host, HostDistance distance, IInternalSession session, IDictionary<IPEndPoint, Exception> triedHosts, RoutingKey routingKey = null, int shardID = -1)
         {
-            return GetConnectionFromHostInternalAsync(host, distance, session, triedHosts, true, routingKey, shardID);
+            return GetConnectionFromHostInternalAsync(
+                host, distance, session, triedHosts, true, () => session.Keyspace, routingKey, shardID);
+        }
+
+        internal static Task<IConnection> GetConnectionFromHostWithKeyspaceAsync(
+            Host host,
+            HostDistance distance,
+            IInternalSession session,
+            IDictionary<IPEndPoint, Exception> triedHosts,
+            string keyspace,
+            RoutingKey routingKey = null,
+            int shardID = -1)
+        {
+            return GetConnectionFromHostInternalAsync(
+                host, distance, session, triedHosts, true, () => keyspace, routingKey, shardID);
         }
 
         private static async Task<IConnection> GetConnectionFromHostInternalAsync(
-            Host host, HostDistance distance, IInternalSession session, IDictionary<IPEndPoint, Exception> triedHosts, bool retry, RoutingKey routingKey, int shardID = -1)
+            Host host,
+            HostDistance distance,
+            IInternalSession session,
+            IDictionary<IPEndPoint, Exception> triedHosts,
+            bool retry,
+            Func<string> getKeyspaceFunc,
+            RoutingKey routingKey,
+            int shardID = -1)
         {
             var hostPool = session.GetOrCreateConnectionPool(host, distance);
 
             try
             {
-                return await hostPool.GetConnectionFromHostAsync(triedHosts, () => session.Keyspace, routingKey, shardID).ConfigureAwait(false);
+                return await hostPool.GetConnectionFromHostAsync(
+                    triedHosts, getKeyspaceFunc, routingKey, shardID).ConfigureAwait(false);
             }
             catch (SocketException)
             {
@@ -452,7 +474,8 @@ namespace Cassandra.Requests
                 {
                     // A socket exception on the current connection does not mean that all the pool is closed:
                     // Retry on the same host
-                    return await RequestHandler.GetConnectionFromHostInternalAsync(host, distance, session, triedHosts, false, routingKey).ConfigureAwait(false);
+                    return await RequestHandler.GetConnectionFromHostInternalAsync(
+                        host, distance, session, triedHosts, false, getKeyspaceFunc, routingKey, shardID).ConfigureAwait(false);
                 }
 
                 throw;
