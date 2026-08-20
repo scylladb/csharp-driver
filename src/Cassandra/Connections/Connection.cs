@@ -67,7 +67,7 @@ namespace Cassandra.Connections
         private ConcurrentQueue<OperationState> _writeQueue;
 
         private volatile string _keyspace;
-        private TaskCompletionSource<bool> _keyspaceSwitchTcs;
+        private readonly SemaphoreSlim _keyspaceSwitchLock = new SemaphoreSlim(1, 1);
 
         /// <summary>
         /// Small buffer (less than 8 bytes) that is used when the next received message is smaller than 8 bytes,
@@ -817,6 +817,12 @@ namespace Cassandra.Connections
                         plainTextStream.Position = 0;
                     }
                     response = FrameParser.Parse(new Frame(header, plainTextStream, serializer, resultMetadata));
+                    if (response is ResultResponse resultResponse && resultResponse.Output is OutputSetKeyspace keyspace)
+                    {
+                        // USE changes server-side connection state. Keep the local state authoritative even when
+                        // the query was sent directly instead of through SetKeyspace().
+                        _keyspace = keyspace.Value;
+                    }
                 }
                 catch (Exception caughtException)
                 {
@@ -890,6 +896,61 @@ namespace Cassandra.Connections
         public Task<Response> Send(IRequest request)
         {
             return Send(request, Configuration.DefaultRequestOptions.ReadTimeoutMillis);
+        }
+
+        /// <inheritdoc />
+        public async Task<Response> SendWithKeyspace(IRequest request, string keyspace)
+        {
+            await _keyspaceSwitchLock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                await SetKeyspaceCore(keyspace).ConfigureAwait(false);
+                return await Send(request).ConfigureAwait(false);
+            }
+            finally
+            {
+                _keyspaceSwitchLock.Release();
+            }
+        }
+
+        /// <inheritdoc />
+        public async Task<OperationState> SendWithKeyspace(
+            IRequest request,
+            string keyspace,
+            Func<IRequestError, Response, Task> callback,
+            int timeoutMillis)
+        {
+            await _keyspaceSwitchLock.WaitAsync().ConfigureAwait(false);
+            var lockReleased = 0;
+            Action releaseLock = () =>
+            {
+                if (Interlocked.Exchange(ref lockReleased, 1) == 0)
+                {
+                    _keyspaceSwitchLock.Release();
+                }
+            };
+
+            try
+            {
+                await SetKeyspaceCore(keyspace).ConfigureAwait(false);
+                var operation = Send(
+                    request,
+                    async (error, response) =>
+                    {
+                        // Response parsing has already updated _keyspace for USE. Let the next keyspace-sensitive
+                        // operation proceed before invoking request handling, which can itself retry.
+                        releaseLock();
+                        await callback(error, response).ConfigureAwait(false);
+                    },
+                    timeoutMillis);
+                operation?.SetCancellationHandler(releaseLock);
+                return operation;
+            }
+            catch
+            {
+                releaseLock();
+                throw;
+            }
         }
 
         /// <inheritdoc />
@@ -1073,53 +1134,28 @@ namespace Cassandra.Connections
         /// </summary>
         public async Task<bool> SetKeyspace(string value)
         {
-            if (string.IsNullOrEmpty(value))
+            await _keyspaceSwitchLock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                return await SetKeyspaceCore(value).ConfigureAwait(false);
+            }
+            finally
+            {
+                _keyspaceSwitchLock.Release();
+            }
+        }
+
+        private async Task<bool> SetKeyspaceCore(string value)
+        {
+            if (string.IsNullOrEmpty(value) || _keyspace == value)
             {
                 return true;
             }
-            while (_keyspace != value)
-            {
-                var switchTcs = Volatile.Read(ref _keyspaceSwitchTcs);
-                if (switchTcs != null)
-                {
-                    // Is already switching
-                    await switchTcs.Task.ConfigureAwait(false);
-                    continue;
-                }
 
-                var tcs = new TaskCompletionSource<bool>();
-                switchTcs = Interlocked.CompareExchange(ref _keyspaceSwitchTcs, tcs, null);
-                if (switchTcs != null)
-                {
-                    // Is already switching
-                    await switchTcs.Task.ConfigureAwait(false);
-                    continue;
-                }
-
-                Exception sendException = null;
-
-                // CAS operation won, this is the only thread changing the keyspace
-                // but another thread might have changed it in the meantime
-                if (_keyspace != value)
-                {
-                    Connection.Logger.Info("Connection to host {0} switching to keyspace {1}", EndPoint.EndpointFriendlyName, value);
-                    var request = new QueryRequest(Serializer, $"USE \"{value}\"", QueryProtocolOptions.Default, false, null);
-                    try
-                    {
-                        await Send(request).ConfigureAwait(false);
-                        _keyspace = value;
-                    }
-                    catch (Exception ex)
-                    {
-                        sendException = ex;
-                    }
-                }
-
-                // Set the reference to null before setting the result
-                Interlocked.Exchange(ref _keyspaceSwitchTcs, null);
-                tcs.TrySet(sendException, true);
-                return await tcs.Task.ConfigureAwait(false);
-            }
+            Connection.Logger.Info("Connection to host {0} switching to keyspace {1}", EndPoint.EndpointFriendlyName, value);
+            var request = new QueryRequest(Serializer, $"USE \"{value}\"", QueryProtocolOptions.Default, false, null);
+            await Send(request).ConfigureAwait(false);
+            _keyspace = value;
             return true;
         }
 

@@ -182,7 +182,19 @@ namespace Cassandra.Requests
 
             try
             {
-                _operation = _connection.Send(request, (error, response) => callback(error, response, nodeRequestInfo), timeoutMillis);
+                if (_parent.Statement is SimpleStatement statement && statement.IsKeyspaceSwitch)
+                {
+                    _operation = await _connection.SendWithKeyspace(
+                        request,
+                        _sessionRequestInfo.SessionKeyspace,
+                        (error, response) => callback(error, response, nodeRequestInfo),
+                        timeoutMillis).ConfigureAwait(false);
+                }
+                else
+                {
+                    _operation = _connection.Send(
+                        request, (error, response) => callback(error, response, nodeRequestInfo), timeoutMillis);
+                }
             }
             catch (Exception ex)
             {
@@ -664,6 +676,7 @@ namespace Cassandra.Requests
 
                     if (!outputPrepared.QueryId.SequenceEqual(originalError.UnknownId))
                     {
+                        _session.InternalCluster.InvalidatePreparedStatement(originalError.UnknownId);
                         var ex = new PreparedStatementIdMismatchException(originalError.UnknownId, outputPrepared.QueryId);
                         if (_parent.SetNodeExecutionCompleted(nodeRequestInfo.ExecutionId))
                         {

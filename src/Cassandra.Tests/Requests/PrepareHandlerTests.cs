@@ -61,12 +61,13 @@ namespace Cassandra.Tests.Requests
                         new AtomicMonotonicTimestampGenerator(),
                         null);
                 });
+            mockResult.Session.Keyspace = "ks1";
             // mock connection send
             mockResult.ConnectionFactory.OnCreate += connection =>
             {
                 Mock.Get(connection)
-                    .Setup(c => c.Send(It.IsAny<IRequest>()))
-                    .Returns<IRequest>(async req =>
+                    .Setup(c => c.SendWithKeyspace(It.IsAny<IRequest>(), It.IsAny<string>()))
+                    .Returns<IRequest, string>(async (req, _) =>
                     {
                         mockResult.SendResults.Enqueue(new ConnectionSendResult { Connection = connection, Request = req });
                         await Task.Delay(1).ConfigureAwait(false);
@@ -90,7 +91,8 @@ namespace Cassandra.Tests.Requests
             await mockResult.PrepareHandler.Prepare(
                 request,
                 mockResult.Session,
-                queryPlan.GetEnumerator()).ConfigureAwait(false);
+                queryPlan.GetEnumerator(),
+                mockResult.Session.Keyspace).ConfigureAwait(false);
 
             var results = mockResult.SendResults.ToArray();
 
@@ -107,7 +109,7 @@ namespace Cassandra.Tests.Requests
             Assert.AreEqual(2, poolConnections.Count);
             foreach (var pool in poolConnections)
             {
-                Mock.Get(pool.Single()).Verify(c => c.Send(request), Times.Once);
+                Mock.Get(pool.Single()).Verify(c => c.SendWithKeyspace(request, "ks1"), Times.Once);
             }
         }
 
@@ -136,8 +138,8 @@ namespace Cassandra.Tests.Requests
             mockResult.ConnectionFactory.OnCreate += connection =>
             {
                 Mock.Get(connection)
-                    .Setup(c => c.Send(It.IsAny<IRequest>()))
-                    .Returns<IRequest>(async req =>
+                    .Setup(c => c.SendWithKeyspace(It.IsAny<IRequest>(), It.IsAny<string>()))
+                    .Returns<IRequest, string>(async (req, _) =>
                     {
                         mockResult.SendResults.Enqueue(new ConnectionSendResult { Connection = connection, Request = req });
                         await Task.Delay(1).ConfigureAwait(false);
@@ -162,7 +164,8 @@ namespace Cassandra.Tests.Requests
             await mockResult.PrepareHandler.Prepare(
                 request,
                 mockResult.Session,
-                queryPlan.GetEnumerator()).ConfigureAwait(false);
+                queryPlan.GetEnumerator(),
+                mockResult.Session.Keyspace).ConfigureAwait(false);
 
             var results = mockResult.SendResults.ToArray();
 
@@ -179,7 +182,7 @@ namespace Cassandra.Tests.Requests
             Assert.AreEqual(2, poolConnections.Count);
             foreach (var pool in poolConnections)
             {
-                Mock.Get(pool.Single()).Verify(c => c.Send(request), Times.Once);
+                Mock.Get(pool.Single()).Verify(c => c.SendWithKeyspace(request, It.IsAny<string>()), Times.Once);
             }
         }
 
@@ -208,8 +211,8 @@ namespace Cassandra.Tests.Requests
             mockResult.ConnectionFactory.OnCreate += connection =>
             {
                 Mock.Get(connection)
-                    .Setup(c => c.Send(It.IsAny<IRequest>()))
-                    .Returns<IRequest>(async req =>
+                    .Setup(c => c.SendWithKeyspace(It.IsAny<IRequest>(), It.IsAny<string>()))
+                    .Returns<IRequest, string>(async (req, _) =>
                     {
                         mockResult.SendResults.Enqueue(new ConnectionSendResult { Connection = connection, Request = req });
                         await Task.Delay(1).ConfigureAwait(false);
@@ -235,7 +238,8 @@ namespace Cassandra.Tests.Requests
             await mockResult.PrepareHandler.Prepare(
                 request,
                 mockResult.Session,
-                queryPlan.GetEnumerator()).ConfigureAwait(false);
+                queryPlan.GetEnumerator(),
+                mockResult.Session.Keyspace).ConfigureAwait(false);
 
             var results = mockResult.SendResults.ToArray();
 
@@ -253,7 +257,7 @@ namespace Cassandra.Tests.Requests
             Assert.AreEqual(3, poolConnections.Count);
             foreach (var pool in poolConnections)
             {
-                Mock.Get(pool.Single()).Verify(c => c.Send(request), Times.Once);
+                Mock.Get(pool.Single()).Verify(c => c.SendWithKeyspace(request, It.IsAny<string>()), Times.Once);
             }
         }
 
@@ -282,8 +286,8 @@ namespace Cassandra.Tests.Requests
             mockResult.ConnectionFactory.OnCreate += connection =>
             {
                 Mock.Get(connection)
-                    .Setup(c => c.Send(It.IsAny<IRequest>()))
-                    .Returns<IRequest>(async req =>
+                    .Setup(c => c.SendWithKeyspace(It.IsAny<IRequest>(), It.IsAny<string>()))
+                    .Returns<IRequest, string>(async (req, _) =>
                     {
                         mockResult.SendResults.Enqueue(new ConnectionSendResult { Connection = connection, Request = req });
                         await Task.Delay(1).ConfigureAwait(false);
@@ -307,7 +311,8 @@ namespace Cassandra.Tests.Requests
             await mockResult.PrepareHandler.Prepare(
                 request,
                 mockResult.Session,
-                queryPlan.GetEnumerator()).ConfigureAwait(false);
+                queryPlan.GetEnumerator(),
+                mockResult.Session.Keyspace).ConfigureAwait(false);
 
             var results = mockResult.SendResults.ToArray();
 
@@ -325,7 +330,7 @@ namespace Cassandra.Tests.Requests
             Assert.AreEqual(3, poolConnections.Count);
             foreach (var pool in poolConnections)
             {
-                Mock.Get(pool.Single()).Verify(c => c.Send(request), Times.Once);
+                Mock.Get(pool.Single()).Verify(c => c.SendWithKeyspace(request, It.IsAny<string>()), Times.Once);
             }
         }
 
@@ -354,8 +359,8 @@ namespace Cassandra.Tests.Requests
             mockResult.ConnectionFactory.OnCreate += connection =>
             {
                 Mock.Get(connection)
-                    .Setup(c => c.Send(It.IsAny<IRequest>()))
-                    .Returns<IRequest>(async req =>
+                    .Setup(c => c.SendWithKeyspace(It.IsAny<IRequest>(), It.IsAny<string>()))
+                    .Returns<IRequest, string>(async (req, _) =>
                     {
                         mockResult.SendResults.Enqueue(new ConnectionSendResult { Connection = connection, Request = req });
                         await Task.Delay(1).ConfigureAwait(false);
@@ -379,7 +384,8 @@ namespace Cassandra.Tests.Requests
             await mockResult.PrepareHandler.Prepare(
                 request,
                 mockResult.Session,
-                queryPlan.GetEnumerator()).ConfigureAwait(false);
+                queryPlan.GetEnumerator(),
+                mockResult.Session.Keyspace).ConfigureAwait(false);
 
             var results = mockResult.SendResults.ToArray();
 
@@ -397,7 +403,7 @@ namespace Cassandra.Tests.Requests
             Assert.AreEqual(3, poolConnections.Count);
             foreach (var pool in poolConnections)
             {
-                Mock.Get(pool.Single()).Verify(c => c.Send(request), Times.Once);
+                Mock.Get(pool.Single()).Verify(c => c.SendWithKeyspace(request, It.IsAny<string>()), Times.Once);
             }
         }
 
@@ -427,8 +433,8 @@ namespace Cassandra.Tests.Requests
             mockResult.ConnectionFactory.OnCreate += connection =>
             {
                 Mock.Get(connection)
-                    .Setup(c => c.Send(It.IsAny<IRequest>()))
-                    .Returns<IRequest>(async req =>
+                    .Setup(c => c.SendWithKeyspace(It.IsAny<IRequest>(), It.IsAny<string>()))
+                    .Returns<IRequest, string>(async (req, _) =>
                     {
                         mockResult.SendResults.Enqueue(new ConnectionSendResult { Connection = connection, Request = req });
                         await Task.Delay(1).ConfigureAwait(false);
@@ -452,7 +458,8 @@ namespace Cassandra.Tests.Requests
             await mockResult.PrepareHandler.Prepare(
                 request,
                 mockResult.Session,
-                queryPlan.GetEnumerator()).ConfigureAwait(false);
+                queryPlan.GetEnumerator(),
+                mockResult.Session.Keyspace).ConfigureAwait(false);
 
             var results = mockResult.SendResults.ToArray();
 
@@ -474,7 +481,7 @@ namespace Cassandra.Tests.Requests
             Assert.AreEqual(1, poolConnections.Count);
             foreach (var pool in poolConnections)
             {
-                Mock.Get(pool.Single()).Verify(c => c.Send(request), Times.Once);
+                Mock.Get(pool.Single()).Verify(c => c.SendWithKeyspace(request, It.IsAny<string>()), Times.Once);
             }
         }
 
