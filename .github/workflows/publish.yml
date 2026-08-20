@@ -24,11 +24,6 @@ on:
         type: boolean
         default: false
 
-env:
-  SKIP_DUPLICATE: ${{ inputs.skip-duplicate }}
-  NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
-  SNK_FILE: ${{ secrets.SNK_KEY }}
-
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -61,8 +56,16 @@ jobs:
 
     - name: Publish to NuGet (Dry Run)
       if: ${{ inputs.dry-run == true }}
+      env:
+        SKIP_DUPLICATE: ${{ inputs.skip-duplicate }}
+        NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        SNK_FILE: ${{ secrets.SNK_KEY }}
       run: make publish-nuget-dry-run
 
     - name: Publish to NuGet (Production)
       if: ${{ inputs.dry-run == false }}
+      env:
+        SKIP_DUPLICATE: ${{ inputs.skip-duplicate }}
+        NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        SNK_FILE: ${{ secrets.SNK_KEY }}
       run: make publish-nuget
