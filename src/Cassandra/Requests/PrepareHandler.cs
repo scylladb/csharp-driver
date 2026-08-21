@@ -44,14 +44,18 @@ namespace Cassandra.Requests
         }
 
         public async Task<PreparedStatement> Prepare(
-            InternalPrepareRequest request, IInternalSession session, IEnumerator<HostShard> queryPlan)
+            InternalPrepareRequest request,
+            IInternalSession session,
+            IEnumerator<HostShard> queryPlan,
+            string sessionKeyspace)
         {
-            var infoAndObs = await CreateRequestObserverAsync(session, request).ConfigureAwait(false);
+            var infoAndObs = await CreateRequestObserverAsync(session, request, sessionKeyspace).ConfigureAwait(false);
             var observer = infoAndObs.Item2;
             var requestTrackingInfo = infoAndObs.Item1;
             try
             {
-                var prepareResult = await SendRequestToOneNode(session, queryPlan, request, observer, requestTrackingInfo).ConfigureAwait(false);
+                var prepareResult = await SendRequestToOneNode(
+                    session, queryPlan, request, observer, requestTrackingInfo, sessionKeyspace).ConfigureAwait(false);
 
                 if (session.Cluster.Configuration.QueryOptions.IsPrepareOnAllHosts())
                 {
@@ -68,23 +72,30 @@ namespace Cassandra.Requests
             }
         }
 
-        public static async Task<Tuple<SessionRequestInfo, IRequestObserver>> CreateRequestObserverAsync(IInternalSession session, InternalPrepareRequest request)
+        public static async Task<Tuple<SessionRequestInfo, IRequestObserver>> CreateRequestObserverAsync(
+            IInternalSession session, InternalPrepareRequest request, string sessionKeyspace)
         {
-            var requestTrackingInfo = new SessionRequestInfo(request, session.Keyspace);
+            var requestTrackingInfo = new SessionRequestInfo(request, sessionKeyspace);
             var observer = session.ObserverFactory.CreateRequestObserver();
             await observer.OnRequestStartAsync(requestTrackingInfo).ConfigureAwait(false);
             return new Tuple<SessionRequestInfo, IRequestObserver>(requestTrackingInfo, observer);
         }
 
         private async Task<PrepareResult> SendRequestToOneNode(
-            IInternalSession session, IEnumerator<HostShard> queryPlan, InternalPrepareRequest request, IRequestObserver observer, SessionRequestInfo info)
+            IInternalSession session,
+            IEnumerator<HostShard> queryPlan,
+            InternalPrepareRequest request,
+            IRequestObserver observer,
+            SessionRequestInfo info,
+            string sessionKeyspace)
         {
             var triedHosts = new Dictionary<IPEndPoint, Exception>();
 
             while (true)
             {
                 // It may throw a NoHostAvailableException which we should yield to the caller
-                var hostConnectionTuple = await GetNextConnection(session, queryPlan, triedHosts).ConfigureAwait(false);
+                var hostConnectionTuple = await GetNextConnection(
+                    session, queryPlan, triedHosts, sessionKeyspace).ConfigureAwait(false);
                 var connection = hostConnectionTuple.Item2;
                 var host = hostConnectionTuple.Item1;
                 var nodeRequestInfo = new NodeRequestInfo(host, info.PrepareRequest ?? new PrepareRequest(request.Query, request.Keyspace));
@@ -132,12 +143,16 @@ namespace Cassandra.Requests
         }
 
         private async Task<Tuple<Host, IConnection>> GetNextConnection(
-            IInternalSession session, IEnumerator<HostShard> queryPlan, Dictionary<IPEndPoint, Exception> triedHosts)
+            IInternalSession session,
+            IEnumerator<HostShard> queryPlan,
+            Dictionary<IPEndPoint, Exception> triedHosts,
+            string sessionKeyspace)
         {
             Host host;
             while ((host = GetNextHost(queryPlan, out HostDistance distance)) != null)
             {
-                var connection = await RequestHandler.GetConnectionFromHostAsync(host, distance, session, triedHosts).ConfigureAwait(false);
+                var connection = await RequestHandler.GetConnectionFromHostWithKeyspaceAsync(
+                    host, distance, session, triedHosts, sessionKeyspace).ConfigureAwait(false);
                 if (connection != null)
                 {
                     return Tuple.Create(host, connection);

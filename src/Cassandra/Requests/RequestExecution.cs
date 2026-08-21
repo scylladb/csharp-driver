@@ -664,6 +664,7 @@ namespace Cassandra.Requests
 
                     if (!outputPrepared.QueryId.SequenceEqual(originalError.UnknownId))
                     {
+                        _session.InternalCluster.InvalidatePreparedStatement(originalError.UnknownId);
                         var ex = new PreparedStatementIdMismatchException(originalError.UnknownId, outputPrepared.QueryId);
                         if (_parent.SetNodeExecutionCompleted(nodeRequestInfo.ExecutionId))
                         {

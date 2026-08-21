@@ -107,5 +107,33 @@ namespace Cassandra.IntegrationTests.Core
             CollectionAssert.AreEqual(outgoing["k1-prep"], prepared.IncomingPayload["k1-prep"]);
             CollectionAssert.AreEqual(outgoing["k2-prep"], prepared.IncomingPayload["k2-prep"]);
         }
+
+        [Test, TestCassandraVersion(2, 2)]
+        public void Prepare_Different_Payloads_With_Same_Id_Test()
+        {
+            const string query = "SELECT key as payload_variant FROM system.local WHERE key = ?";
+            var firstOutgoing = new Dictionary<string, byte[]>
+            {
+                { "payload", Encoding.UTF8.GetBytes("first") }
+            };
+            var secondOutgoing = new Dictionary<string, byte[]>
+            {
+                { "payload", Encoding.UTF8.GetBytes("second") }
+            };
+
+            var first = Session.Prepare(query, firstOutgoing);
+            var second = Session.Prepare(query, secondOutgoing);
+
+            CollectionAssert.AreEqual(first.Id, second.Id);
+            Assert.AreNotSame(first, second);
+            CollectionAssert.AreEqual(firstOutgoing["payload"], first.IncomingPayload["payload"]);
+            CollectionAssert.AreEqual(secondOutgoing["payload"], second.IncomingPayload["payload"]);
+            var repeatedFirst = Session.Prepare(query, firstOutgoing);
+            var repeatedSecond = Session.Prepare(query, secondOutgoing);
+            Assert.AreNotSame(first, repeatedFirst);
+            Assert.AreNotSame(second, repeatedSecond);
+            CollectionAssert.AreEqual(firstOutgoing["payload"], repeatedFirst.IncomingPayload["payload"]);
+            CollectionAssert.AreEqual(secondOutgoing["payload"], repeatedSecond.IncomingPayload["payload"]);
+        }
     }
 }

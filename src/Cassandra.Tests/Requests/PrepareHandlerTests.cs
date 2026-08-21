@@ -90,7 +90,8 @@ namespace Cassandra.Tests.Requests
             await mockResult.PrepareHandler.Prepare(
                 request,
                 mockResult.Session,
-                queryPlan.GetEnumerator()).ConfigureAwait(false);
+                queryPlan.GetEnumerator(),
+                mockResult.Session.Keyspace).ConfigureAwait(false);
 
             var results = mockResult.SendResults.ToArray();
 
@@ -162,7 +163,8 @@ namespace Cassandra.Tests.Requests
             await mockResult.PrepareHandler.Prepare(
                 request,
                 mockResult.Session,
-                queryPlan.GetEnumerator()).ConfigureAwait(false);
+                queryPlan.GetEnumerator(),
+                mockResult.Session.Keyspace).ConfigureAwait(false);
 
             var results = mockResult.SendResults.ToArray();
 
@@ -235,7 +237,8 @@ namespace Cassandra.Tests.Requests
             await mockResult.PrepareHandler.Prepare(
                 request,
                 mockResult.Session,
-                queryPlan.GetEnumerator()).ConfigureAwait(false);
+                queryPlan.GetEnumerator(),
+                mockResult.Session.Keyspace).ConfigureAwait(false);
 
             var results = mockResult.SendResults.ToArray();
 
@@ -307,7 +310,8 @@ namespace Cassandra.Tests.Requests
             await mockResult.PrepareHandler.Prepare(
                 request,
                 mockResult.Session,
-                queryPlan.GetEnumerator()).ConfigureAwait(false);
+                queryPlan.GetEnumerator(),
+                mockResult.Session.Keyspace).ConfigureAwait(false);
 
             var results = mockResult.SendResults.ToArray();
 
@@ -379,7 +383,8 @@ namespace Cassandra.Tests.Requests
             await mockResult.PrepareHandler.Prepare(
                 request,
                 mockResult.Session,
-                queryPlan.GetEnumerator()).ConfigureAwait(false);
+                queryPlan.GetEnumerator(),
+                mockResult.Session.Keyspace).ConfigureAwait(false);
 
             var results = mockResult.SendResults.ToArray();
 
@@ -452,7 +457,8 @@ namespace Cassandra.Tests.Requests
             await mockResult.PrepareHandler.Prepare(
                 request,
                 mockResult.Session,
-                queryPlan.GetEnumerator()).ConfigureAwait(false);
+                queryPlan.GetEnumerator(),
+                mockResult.Session.Keyspace).ConfigureAwait(false);
 
             var results = mockResult.SendResults.ToArray();
 
