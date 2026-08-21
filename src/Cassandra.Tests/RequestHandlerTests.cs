@@ -1,4 +1,4 @@
-//
+﻿//
 //      Copyright (C) DataStax Inc.
 //
 //   Licensed under the Apache License, Version 2.0 (the "License");
@@ -37,6 +37,18 @@ namespace Cassandra.Tests
     {
         private static readonly ISerializerManager SerializerManager = new SerializerManager(ProtocolVersion.MaxSupported);
         private static readonly ISerializer Serializer = new SerializerManager(ProtocolVersion.MaxSupported).GetCurrentSerializer();
+
+        /// <summary>
+        /// How a connection that did not negotiate <c>SCYLLA_USE_METADATA_ID</c> resolves
+        /// <see cref="Cassandra.Connections.IConnection.UseMetadataId"/>: from the protocol version alone.
+        /// <para>
+        /// False for as long as <see cref="ProtocolVersion.MaxSupported"/> is v4, so the id-carrying frame
+        /// layout is <b>not</b> exercised here - <c>ResultMetadataIdTests</c> covers that, driving the flag
+        /// both ways explicitly. This exists so that the byte offsets below survive a bump of
+        /// <c>MaxSupported</c> to v5, which would start writing the field and shift them.
+        /// </para>
+        /// </summary>
+        private static readonly bool UseMetadataId = ProtocolVersion.MaxSupported.SupportsResultMetadataId();
 
         private static Configuration GetConfig(QueryOptions queryOptions = null, Cassandra.Policies policies = null, PoolingOptions poolingOptions = null)
         {
@@ -149,17 +161,23 @@ namespace Cassandra.Tests
             var stmt = ps.Bind();
             var queryOptions = new QueryOptions();
             var request = (ExecuteRequest)RequestHandler.GetRequest(stmt, serializerManager.GetCurrentSerializer(), GetRequestOptions(queryOptions));
-            Assert.IsFalse(request.SkipMetadata);
+            Assert.IsFalse(request.StatementSkipMetadata);
         }
 
+        /// <summary>
+        /// The request is built before a host is chosen, and one instance is reused across hosts, retries
+        /// and speculative executions, so a statement never carries a skip-metadata intent of its own.
+        /// Whether the frame ends up asking the server to skip depends on the connection it is written to;
+        /// that rule lives in <see cref="ExecuteRequest.ShouldSkipResultMetadata"/> and is covered by
+        /// <c>ResultMetadataIdTests</c>.
+        /// </summary>
         [Test]
-        [TestCase(ProtocolVersion.V5, true)]
-        [TestCase(ProtocolVersion.V4, false)]
-        [TestCase(ProtocolVersion.V3, false)]
-        [TestCase(ProtocolVersion.V2, false)]
-        [TestCase(ProtocolVersion.V1, false)]
-        public void Should_SkipMetadata_When_BoundStatementContainsColumnDefinitionsAndProtocolSupportsNewResultMetadataId(
-            ProtocolVersion version, bool isSet)
+        [TestCase(ProtocolVersion.V5)]
+        [TestCase(ProtocolVersion.V4)]
+        [TestCase(ProtocolVersion.V3)]
+        [TestCase(ProtocolVersion.V2)]
+        [TestCase(ProtocolVersion.V1)]
+        public void Should_NotDecideSkipMetadataWhenBuildingTheRequest(ProtocolVersion version)
         {
             var serializerManager = new SerializerManager(version);
             var rsMetadata = new RowSetMetadata { Columns = new[] { new CqlColumn() } };
@@ -167,7 +185,28 @@ namespace Cassandra.Tests
             var stmt = ps.Bind();
             var queryOptions = new QueryOptions();
             var request = (ExecuteRequest)RequestHandler.GetRequest(stmt, serializerManager.GetCurrentSerializer(), GetRequestOptions(queryOptions));
-            Assert.AreEqual(isSet, request.SkipMetadata);
+            Assert.IsFalse(request.StatementSkipMetadata);
+        }
+
+        /// <summary>
+        /// The cached result metadata reaches the row decoder through the request
+        /// (<see cref="IRequest.ResultMetadata"/> to <see cref="OperationState.ResultMetadata"/>), so it
+        /// has to be carried on every protocol version, not only those that exchange ids: without it a
+        /// response that skipped its metadata would have no columns to decode against.
+        /// </summary>
+        [Test]
+        [TestCase(ProtocolVersion.V5)]
+        [TestCase(ProtocolVersion.V4)]
+        [TestCase(ProtocolVersion.V3)]
+        public void Should_CarryTheCachedResultMetadata_OnEveryProtocolVersion(ProtocolVersion version)
+        {
+            var serializerManager = new SerializerManager(version);
+            var rsMetadata = new RowSetMetadata { Columns = new[] { new CqlColumn() } };
+            var ps = GetPrepared(new byte[16], serializerManager, rsMetadata);
+            var request = RequestHandler.GetRequest(
+                ps.Bind(), serializerManager.GetCurrentSerializer(), GetRequestOptions(new QueryOptions()));
+
+            Assert.AreSame(ps.ResultMetadata, request.ResultMetadata);
         }
 
         [Test]
@@ -559,9 +598,9 @@ namespace Cassandra.Tests
             // <query_id><consistency><flags><result_page_size><paging_state><serial_consistency><timestamp>
             // Skip the queryid and consistency (2)
             var offset = 2 + ps.Id.Length + 2;
-            if (Serializer.ProtocolVersion.SupportsResultMetadataId())
+            if (RequestHandlerTests.UseMetadataId)
             {
-                // Short bytes: 2 + 16
+                // Unreachable while MaxSupported is v4; see the field. Short bytes: 2 + 16.
                 offset += 18;
             }
             var flags = GetQueryFlags(bodyBuffer, ref offset);
@@ -589,9 +628,9 @@ namespace Cassandra.Tests
             // <query_id><consistency><flags><result_page_size><paging_state><serial_consistency><timestamp>
             // Skip the queryid and consistency (2)
             var offset = 2 + ps.Id.Length + 2;
-            if (Serializer.ProtocolVersion.SupportsResultMetadataId())
+            if (RequestHandlerTests.UseMetadataId)
             {
-                // Short bytes: 2 + 16
+                // Unreachable while MaxSupported is v4; see the field. Short bytes: 2 + 16.
                 offset += 18;
             }
             var flags = GetQueryFlags(bodyBuffer, ref offset);
@@ -716,7 +755,7 @@ namespace Cassandra.Tests
             }
 
             var stream = new MemoryStream();
-            request.WriteFrame(1, stream, serializer);
+            request.WriteFrame(1, stream, serializer, RequestHandlerTests.UseMetadataId);
             var headerSize = serializer.ProtocolVersion.GetHeaderSize();
             var bodyBuffer = new byte[stream.Length - headerSize];
             stream.Position = headerSize;

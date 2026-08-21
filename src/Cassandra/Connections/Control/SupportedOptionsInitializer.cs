@@ -1,4 +1,4 @@
-//
+﻿//
 //       Copyright (C) DataStax Inc.
 //
 //    Licensed under the Apache License, Version 2.0 (the "License");
@@ -40,6 +40,7 @@ namespace Cassandra.Connections.Control
         private TabletInfo _tabletInfo;
 
         private LwtInfo _lwtInfo;
+        private bool _metadataIdNegotiated;
 
         public SupportedOptionsInitializer(Metadata metadata)
         {
@@ -51,10 +52,10 @@ namespace Cassandra.Connections.Control
             var request = new OptionsRequest();
             var response = await connection.Send(request).ConfigureAwait(false);
 
-            ApplySupportedFromResponse(response);
+            ApplySupportedFromResponse(response, connection.Serializer.ProtocolVersion);
         }
 
-        public void ApplySupportedFromResponse(Response response)
+        public void ApplySupportedFromResponse(Response response, ProtocolVersion protocolVersion)
         {
             if (response == null)
             {
@@ -70,6 +71,7 @@ namespace Cassandra.Connections.Control
             ApplyScyllaShardingOption(supportedResponse.Output.Options);
             ApplyScyllaTabletOption(supportedResponse.Output.Options);
             ApplyScyllaLwtOption(supportedResponse.Output.Options);
+            ApplyScyllaMetadataIdOption(supportedResponse.Output.Options, protocolVersion);
         }
 
         public ShardingInfo GetShardingInfo()
@@ -85,6 +87,11 @@ namespace Cassandra.Connections.Control
         public LwtInfo GetLwtInfo()
         {
             return _lwtInfo;
+        }
+
+        public bool IsMetadataIdNegotiated()
+        {
+            return _metadataIdNegotiated;
         }
 
         private void ApplyProductTypeOption(IDictionary<string, string[]> options)
@@ -180,6 +187,11 @@ namespace Cassandra.Connections.Control
         private void ApplyScyllaLwtOption(IDictionary<string, string[]> options)
         {
             _lwtInfo = LwtInfo.ParseLwtInfo(options);
+        }
+
+        private void ApplyScyllaMetadataIdOption(IDictionary<string, string[]> options, ProtocolVersion protocolVersion)
+        {
+            _metadataIdNegotiated = MetadataIdSupport.IsNegotiated(options, protocolVersion);
         }
     }
 }

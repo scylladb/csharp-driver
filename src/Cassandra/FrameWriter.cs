@@ -1,4 +1,4 @@
-//
+﻿//
 //      Copyright (C) DataStax Inc.
 //
 //   Licensed under the Apache License, Version 2.0 (the "License");
@@ -43,6 +43,14 @@ namespace Cassandra
         }
 
         /// <summary>
+        /// Whether the connection this frame is being written to exchanges result metadata ids, i.e.
+        /// whether it speaks CQL v5 or negotiated <c>SCYLLA_USE_METADATA_ID</c>. EXECUTE carries a
+        /// <c>[short bytes]</c> result metadata id only then, and only then is it safe to ask the server
+        /// to skip result metadata. See <see cref="Connections.IConnection.UseMetadataId"/>.
+        /// </summary>
+        internal bool UseMetadataId { get; }
+
+        /// <summary>
         /// For testing purposes
         /// </summary>
         internal byte[] GetBuffer()
@@ -53,12 +61,13 @@ namespace Cassandra
             return buffer;
         }
 
-        public FrameWriter(MemoryStream stream, ISerializer serializer)
+        public FrameWriter(MemoryStream stream, ISerializer serializer, bool useMetadataId)
         {
             _stream = stream;
             _serializer = serializer;
             _offset = stream.Position;
             _version = serializer.ProtocolVersion;
+            UseMetadataId = useMetadataId;
         }
 
         public void WriteByte(byte value)
@@ -158,10 +167,17 @@ namespace Cassandra
         }
 
         /// <summary>
-        /// Writes protocol <c>short bytes</c> (length + bytes)
+        /// Writes protocol <c>short bytes</c> (length + bytes). A null buffer is written as zero length,
+        /// which the protocol does not distinguish from an empty one.
         /// </summary>
         public void WriteShortBytes(byte[] buffer)
         {
+            if (buffer == null)
+            {
+                WriteUInt16(0);
+                return;
+            }
+
             WriteUInt16((ushort)buffer.Length);
             Write(buffer);
         }

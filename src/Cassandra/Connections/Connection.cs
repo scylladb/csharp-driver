@@ -1,4 +1,4 @@
-//
+﻿//
 //      Copyright (C) DataStax Inc.
 //
 //   Licensed under the Apache License, Version 2.0 (the "License");
@@ -168,6 +168,15 @@ namespace Cassandra.Connections
 
         public int ShardID { get; set; }
         private int _requestedShardID { get; set; }
+
+        /// <summary>
+        /// Set once during <see cref="DoOpen"/>, before any request other than OPTIONS/STARTUP can be
+        /// written, and read afterwards from the IO threads that encode and decode frames.
+        /// </summary>
+        private volatile bool _useMetadataId;
+
+        /// <inheritdoc />
+        public bool UseMetadataId => _useMetadataId;
 
         internal Connection(
             ISerializer serializer,
@@ -545,7 +554,13 @@ namespace Cassandra.Connections
                 }
                 throw;
             }
-            _supportedOptionsInitializer.ApplySupportedFromResponse(optionsResponse);
+            _supportedOptionsInitializer.ApplySupportedFromResponse(optionsResponse, Serializer.ProtocolVersion);
+
+            // Has to be resolved before STARTUP, which is where the extension is opted into, so that the
+            // frames written and parsed from here on agree with what the server was told.
+            _useMetadataId = Serializer.ProtocolVersion.SupportsResultMetadataId()
+                             || _supportedOptionsInitializer.IsMetadataIdNegotiated();
+
             if (_supportedOptionsInitializer.GetShardingInfo() != null)
             {
                 ShardID = _supportedOptionsInitializer.GetShardingInfo().ScyllaShard;
@@ -802,6 +817,7 @@ namespace Cassandra.Connections
             ResultMetadata resultMetadata, ISerializer serializer, FrameHeader header, Func<IRequestError, Response, long, Task> callback)
         {
             var compressor = Compressor;
+            var useMetadataId = UseMetadataId;
 
             Task DeserializeResponseStream(MemoryStream stream, long timestamp)
             {
@@ -816,7 +832,8 @@ namespace Cassandra.Connections
                         plainTextStream = compressor.Decompress(new WrappedStream(stream, header.BodyLength));
                         plainTextStream.Position = 0;
                     }
-                    response = FrameParser.Parse(new Frame(header, plainTextStream, serializer, resultMetadata));
+                    response = FrameParser.Parse(
+                        new Frame(header, plainTextStream, serializer, resultMetadata, useMetadataId));
                 }
                 catch (Exception caughtException)
                 {
@@ -1009,7 +1026,7 @@ namespace Cassandra.Connections
                 {
                     //lazy initialize the stream
                     stream = stream ?? (RecyclableMemoryStream)Configuration.BufferPool.GetStream(Connection.StreamWriteTag);
-                    var frameLength = state.WriteFrame(streamId, stream, Serializer, timestamp);
+                    var frameLength = state.WriteFrame(streamId, stream, Serializer, UseMetadataId, timestamp);
                     _connectionObserver.OnBytesSent(frameLength);
                     totalLength += frameLength;
                 }

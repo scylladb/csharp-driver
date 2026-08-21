@@ -1,4 +1,4 @@
-//
+﻿//
 //      Copyright (C) DataStax Inc.
 //
 //   Licensed under the Apache License, Version 2.0 (the "License");
@@ -59,6 +59,15 @@ namespace Cassandra.Responses
                     Output = outputRows;
                     if (outputRows.ResultRowsMetadata.HasNewResultMetadataId())
                     {
+                        // Caches this response's whole RowSetMetadata, so it keeps that response's flags
+                        // and paging state alongside the columns. Neither is ever read back from it -
+                        // OutputRows takes the paging state from the live response, and the only read of
+                        // RowSetMetadata.Flags is against the variables metadata, which this never replaces.
+                        //
+                        // Trimming it to "just the columns" is not the simplification it looks like: the row
+                        // decoder also reads ColumnIndexes, for name lookup on Row, and Keyspace, as the
+                        // fallback when a column carries none and values have to be decrypted. Those are
+                        // private-set on a public type, so a trimmed copy would mean widening them too.
                         NewResultMetadata = new ResultMetadata(
                             outputRows.ResultRowsMetadata.NewResultMetadataId, outputRows.ResultRowsMetadata);
                     }

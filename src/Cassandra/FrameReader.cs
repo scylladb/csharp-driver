@@ -1,4 +1,4 @@
-//
+﻿//
 //      Copyright (C) DataStax Inc.
 //
 //   Licensed under the Apache License, Version 2.0 (the "License");
@@ -40,10 +40,18 @@ namespace Cassandra
             get { return _serializer; }
         }
 
-        public FrameReader(Stream stream, ISerializer serializer)
+        /// <summary>
+        /// Whether the frame being read carries result metadata ids, i.e. whether the connection it
+        /// came from speaks CQL v5 or negotiated <c>SCYLLA_USE_METADATA_ID</c>. The bodies of
+        /// RESULT/Prepared and RESULT/Rows differ accordingly, so this cannot be derived from the bytes.
+        /// </summary>
+        internal bool UseMetadataId { get; }
+
+        public FrameReader(Stream stream, ISerializer serializer, bool useMetadataId)
         {
             _stream = stream;
             _serializer = serializer;
+            UseMetadataId = useMetadataId;
         }
 
         public byte ReadByte()

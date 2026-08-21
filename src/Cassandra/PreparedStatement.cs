@@ -1,4 +1,4 @@
-//
+﻿//
 //      Copyright (C) DataStax Inc.
 //
 //   Licensed under the Apache License, Version 2.0 (the "License");
@@ -135,9 +135,42 @@ namespace Cassandra
             _isLwt = isLwt;
         }
 
+        /// <summary>
+        /// Publishes result metadata obtained either from a RESULT/Rows that reported
+        /// <see cref="RowSetMetadataFlags.MetadataChanged"/>, or from repreparing after an
+        /// <c>UNPREPARED</c> error.
+        /// </summary>
+        /// <remarks>
+        /// A result metadata id is a deterministic hash of the metadata it identifies, so an unchanged
+        /// non-empty id means unchanged metadata and there is nothing to publish. Empty ids carry no such
+        /// information - the connection did not exchange them - so those always update.
+        /// <para>
+        /// That means a reprepare on a connection without the extension replaces a valid id with none,
+        /// reachable during a rolling upgrade, after which the statement asks for metadata again until the
+        /// server hands it a fresh id. Keeping the previous id while taking the new columns would avoid
+        /// that, and is deliberately not done: it would pair an id from one response with columns from
+        /// another, and if the two nodes disagree on the schema for a moment - the very window this
+        /// mechanism exists to close - a node that still matches the kept id would skip metadata and the
+        /// rows would be decoded against the wrong columns. The id and the columns it describes are only
+        /// ever taken from the same response, so what is lost is response size, not correctness.
+        /// </para>
+        /// </remarks>
         internal void UpdateResultMetadata(ResultMetadata resultMetadata)
         {
+            var current = _resultMetadata;
+            if (PreparedStatement.HasResultMetadataId(current)
+                && PreparedStatement.HasResultMetadataId(resultMetadata)
+                && current.ResultMetadataId.SequenceEqual(resultMetadata.ResultMetadataId))
+            {
+                return;
+            }
+
             _resultMetadata = resultMetadata;
+        }
+
+        private static bool HasResultMetadataId(ResultMetadata resultMetadata)
+        {
+            return resultMetadata?.ResultMetadataId != null && resultMetadata.ResultMetadataId.Length > 0;
         }
 
         /// <summary>

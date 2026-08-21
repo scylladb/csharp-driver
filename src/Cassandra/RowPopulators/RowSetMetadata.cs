@@ -331,9 +331,28 @@ namespace Cassandra
                 PagingState = reader.ReadBytes();
             }
 
-            if ((flags & RowSetMetadataFlags.MetadataChanged) == RowSetMetadataFlags.MetadataChanged)
+            // Only read after the paging state, matching the CQL v5 spec and Cassandra's encoder
+            // (ResultSet$ResultMetadata$Codec.encode). Gated on the connection rather than on the flag
+            // alone so that a server which does not exchange result metadata ids cannot desynchronise
+            // the parse by setting the bit, whatever it may come to mean there.
+            if (reader.UseMetadataId
+                && (flags & RowSetMetadataFlags.MetadataChanged) == RowSetMetadataFlags.MetadataChanged)
             {
                 NewResultMetadataId = reader.ReadShortBytes();
+
+                if ((flags & RowSetMetadataFlags.NoMetadata) == RowSetMetadataFlags.NoMetadata)
+                {
+                    // MetadataChanged obliges the server to include the new metadata, so this response is
+                    // malformed and there is no safe way to continue. Adopting the new id while keeping the
+                    // cached columns would be unrecoverable: the server would match the id from then on and
+                    // stop sending metadata, leaving the driver decoding rows against stale columns
+                    // indefinitely. Decoding this response against those columns is no better, since the
+                    // server has just declared them stale. Failing leaves the old id cached, so a retry
+                    // gives the server another chance to send the metadata it owes.
+                    throw new DriverInternalError(
+                        "Server reported changed result metadata but sent no column metadata: the RESULT/Rows " +
+                        "metadata has both the METADATA_CHANGED and the NO_METADATA flag set.");
+                }
             }
 
             if ((flags & RowSetMetadataFlags.NoMetadata) == RowSetMetadataFlags.NoMetadata)

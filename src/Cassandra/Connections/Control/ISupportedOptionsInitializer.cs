@@ -1,4 +1,4 @@
-//
+﻿//
 //       Copyright (C) DataStax Inc.
 //
 //    Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,9 +21,21 @@ namespace Cassandra.Connections.Control
     internal interface ISupportedOptionsInitializer
     {
         Task ApplySupportedOptionsAsync(IConnection connection);
-        void ApplySupportedFromResponse(Response response);
+
+        /// <param name="response">The SUPPORTED response to parse.</param>
+        /// <param name="protocolVersion">
+        /// The protocol version of the connection the response came from. Some extensions change the
+        /// wire format, so whether they can be used at all depends on it.
+        /// </param>
+        void ApplySupportedFromResponse(Response response, ProtocolVersion protocolVersion);
+
         ShardingInfo GetShardingInfo();
         TabletInfo GetTabletInfo();
         LwtInfo GetLwtInfo();
+
+        /// <summary>
+        /// Whether the <c>SCYLLA_USE_METADATA_ID</c> extension was negotiated on the connection.
+        /// </summary>
+        bool IsMetadataIdNegotiated();
     }
 }

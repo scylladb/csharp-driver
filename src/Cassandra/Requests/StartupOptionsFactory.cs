@@ -1,4 +1,4 @@
-//
+﻿//
 //      Copyright (C) DataStax Inc.
 //
 //   Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Generic;
 using Cassandra.Helpers;
+using Cassandra.Connections;
 using Cassandra.Connections.Control;
 
 namespace Cassandra.Requests
@@ -48,6 +49,16 @@ namespace Cassandra.Requests
 
         public const string TabletsRoutingV1Option = "TABLETS_ROUTING_V1";
         public const string LwtOption = "SCYLLA_LWT_ADD_METADATA_MARK";
+
+        /// <summary>
+        /// Opts the connection into the <c>SCYLLA_USE_METADATA_ID</c> extension. The option carries no
+        /// value; the key alone is the opt-in, matching the other ScyllaDB drivers.
+        /// </summary>
+        /// <remarks>
+        /// Deliberately the same constant the <c>SUPPORTED</c> side parses, so the two halves of the
+        /// negotiation cannot drift apart. See <see cref="MetadataIdSupport.Key"/> for what drift would cost.
+        /// </remarks>
+        public const string UseMetadataIdOption = MetadataIdSupport.Key;
 
         public const string CqlVersion = "3.0.0";
         public const string SnappyCompression = "snappy";
@@ -120,6 +131,11 @@ namespace Cassandra.Requests
             if (lwtInfo != null)
             {
                 startupOptions.Add(StartupOptionsFactory.LwtOption, lwtInfo.GetMask().ToString());
+            }
+
+            if (supportedOptionsInitializer?.IsMetadataIdNegotiated() == true)
+            {
+                startupOptions.Add(StartupOptionsFactory.UseMetadataIdOption, string.Empty);
             }
 
             startupOptions.Add(StartupOptionsFactory.DriverNameOption, AssemblyHelpers.GetAssemblyTitle(typeof(StartupOptionsFactory)));
