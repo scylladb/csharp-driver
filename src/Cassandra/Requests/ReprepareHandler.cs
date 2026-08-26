@@ -127,7 +127,7 @@ namespace Cassandra.Requests
 
                 if (connection != null)
                 {
-                    await connection.Send(request).ConfigureAwait(false);
+                    await connection.SendWithKeyspace(request, ps.Keyspace).ConfigureAwait(false);
                     if (observer != null)
                     {
                         await observer.OnNodeSuccessAsync(sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);

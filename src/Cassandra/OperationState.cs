@@ -46,6 +46,7 @@ namespace Cassandra
         private volatile bool _timeoutCallbackSet;
         private int _state = StateInit;
         private volatile HashedWheelTimer.ITimeout _timeout;
+        private Action _cancellationHandler;
 
         /// <summary>
         /// See docs for <see cref="IRequest.ResultMetadata"/>.
@@ -122,6 +123,7 @@ namespace Cassandra
             Func<IRequestError, Response, long, Task> callback;
             if (previousState == StateInit)
             {
+                Interlocked.Exchange(ref _cancellationHandler, null);
                 callback = Interlocked.Exchange(ref _callback, Noop);
                 var timeout = _timeout;
                 if (timeout != null)
@@ -196,6 +198,24 @@ namespace Cassandra
                 //Cancel it if it hasn't expired
                 //We should not worry about yielding OperationTimedOutExceptions when this is cancelled.
                 timeout.Cancel();
+            }
+            Interlocked.Exchange(ref _cancellationHandler, null)?.Invoke();
+        }
+
+        internal void SetCancellationHandler(Action handler)
+        {
+            if (Interlocked.CompareExchange(ref _cancellationHandler, handler, null) != null)
+            {
+                throw new InvalidOperationException("A cancellation handler has already been set.");
+            }
+            var state = Volatile.Read(ref _state);
+            if (state != StateInit)
+            {
+                var registeredHandler = Interlocked.Exchange(ref _cancellationHandler, null);
+                if (state == StateCancelled)
+                {
+                    registeredHandler?.Invoke();
+                }
             }
         }
 

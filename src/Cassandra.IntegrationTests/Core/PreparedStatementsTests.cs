@@ -1187,7 +1187,8 @@ namespace Cassandra.IntegrationTests.Core
             {
                 var session = cluster.Connect();
                 session.Execute($"CREATE TABLE {KeyspaceName}.{tableName} (a int PRIMARY KEY, b int, c int)");
-                var ps = session.Prepare($"SELECT * FROM {KeyspaceName}.{tableName} WHERE a = ?");
+                var query = $"SELECT * FROM {KeyspaceName}.{tableName} WHERE a = ?";
+                var ps = session.Prepare(query);
                 session.ChangeKeyspace(KeyspaceName);
                 session.Execute($"DROP TABLE {tableName}");
                 session.Execute($"CREATE TABLE {tableName} (a int PRIMARY KEY, b int, c int)");
@@ -1196,6 +1197,10 @@ namespace Cassandra.IntegrationTests.Core
                 Assert.IsTrue(ex.Id.SequenceEqual(ps.Id));
                 Assert.IsTrue(ex.Message.Contains("ID mismatch while trying to reprepare"));
                 Assert.IsTrue(ex.Message.Contains($"expected {BitConverter.ToString(ps.Id).Replace("-", "")}"));
+
+                var reprepared = session.Prepare(query);
+                Assert.IsFalse(reprepared.Id.SequenceEqual(ps.Id));
+                Assert.DoesNotThrow(() => session.Execute(reprepared.Bind(1)));
             }
         }
 

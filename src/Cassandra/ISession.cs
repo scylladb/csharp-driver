@@ -200,6 +200,10 @@ namespace Cassandra
         /// Prepares the provided query string.
         /// </summary>
         /// <param name="cqlQuery">cql query to prepare</param>
+        /// <remarks>
+        /// Prepared statements are cached per cluster using the query and effective keyspace. Concurrent calls
+        /// for the same statement share a single preparation attempt; failed attempts are not cached.
+        /// </remarks>
         PreparedStatement Prepare(string cqlQuery);
 
         /// <summary>
@@ -207,6 +211,9 @@ namespace Cassandra
         /// </summary>
         /// <param name="cqlQuery">cql query to prepare</param>
         /// <param name="customPayload">Custom outgoing payload to send with the prepare request</param>
+        /// <remarks>
+        /// Prepared statements with custom payloads are not cached; each call sends a separate prepare request.
+        /// </remarks>
         PreparedStatement Prepare(string cqlQuery, IDictionary<string, byte[]> customPayload);
 
         /// <summary>
@@ -214,7 +221,11 @@ namespace Cassandra
         /// </summary>
         /// <param name="cqlQuery">Cql query to prepare</param>
         /// <param name="keyspace">The keyspace to prepare this query with</param>
-        /// <remarks>Setting the keyspace parameter is only available with protocol v5 (not supported by the driver yet).</remarks>
+        /// <remarks>
+        /// Setting the keyspace parameter is only available with protocol v5 (not supported by the driver yet).
+        /// Prepared statements are cached per cluster using the query and effective keyspace. Concurrent calls
+        /// for the same statement share a single preparation attempt; failed attempts are not cached.
+        /// </remarks>
         PreparedStatement Prepare(string cqlQuery, string keyspace);
 
         /// <summary>
@@ -224,13 +235,20 @@ namespace Cassandra
         /// <param name="cqlQuery">Cql query to prepare</param>
         /// <param name="keyspace">The keyspace to prepare this query with</param>
         /// <param name="customPayload">Custom outgoing payload to send with the prepare request</param>
-        /// <remarks>Setting the keyspace parameter is only available with protocol v5 (not supported by the driver yet).</remarks>
+        /// <remarks>
+        /// Setting the keyspace parameter is only available with protocol v5 (not supported by the driver yet).
+        /// Prepared statements with custom payloads are not cached; each call sends a separate prepare request.
+        /// </remarks>
         PreparedStatement Prepare(string cqlQuery, string keyspace, IDictionary<string, byte[]> customPayload);
 
         /// <summary>
         /// Prepares the provided query string asynchronously.
         /// </summary>
         /// <param name="cqlQuery">cql query to prepare</param>
+        /// <remarks>
+        /// Prepared statements are cached per cluster using the query and effective keyspace. Concurrent calls
+        /// for the same statement share a single preparation attempt; failed attempts are not cached.
+        /// </remarks>
         Task<PreparedStatement> PrepareAsync(string cqlQuery);
 
         /// <summary>
@@ -238,6 +256,9 @@ namespace Cassandra
         /// </summary>
         /// <param name="cqlQuery">cql query to prepare</param>
         /// <param name="customPayload">Custom outgoing payload to send with the prepare request</param>
+        /// <remarks>
+        /// Prepared statements with custom payloads are not cached; each call sends a separate prepare request.
+        /// </remarks>
         Task<PreparedStatement> PrepareAsync(string cqlQuery, IDictionary<string, byte[]> customPayload);
 
         /// <summary>
@@ -245,7 +266,11 @@ namespace Cassandra
         /// </summary>
         /// <param name="cqlQuery">Cql query to prepare</param>
         /// <param name="keyspace">The keyspace to prepare this query with</param>
-        /// <remarks>Setting the keyspace parameter is only available with protocol v5 (not supported by the driver yet).</remarks>
+        /// <remarks>
+        /// Setting the keyspace parameter is only available with protocol v5 (not supported by the driver yet).
+        /// Prepared statements are cached per cluster using the query and effective keyspace. Concurrent calls
+        /// for the same statement share a single preparation attempt; failed attempts are not cached.
+        /// </remarks>
         Task<PreparedStatement> PrepareAsync(string cqlQuery, string keyspace);
 
         /// <summary>
@@ -255,7 +280,10 @@ namespace Cassandra
         /// <param name="cqlQuery">Cql query to prepare</param>
         /// <param name="keyspace">The keyspace to prepare this query with</param>
         /// <param name="customPayload">Custom outgoing payload to send with the prepare request</param>
-        /// <remarks>Setting the keyspace parameter is only available with protocol v5 (not supported by the driver yet).</remarks>
+        /// <remarks>
+        /// Setting the keyspace parameter is only available with protocol v5 (not supported by the driver yet).
+        /// Prepared statements with custom payloads are not cached; each call sends a separate prepare request.
+        /// </remarks>
         Task<PreparedStatement> PrepareAsync(string cqlQuery, string keyspace, IDictionary<string, byte[]> customPayload);
 
         /// <summary>

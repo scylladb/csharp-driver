@@ -125,6 +125,27 @@ namespace Cassandra.Tests
             Assert.AreEqual(0, clientCallbackCounter);
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public void OperationState_Cancel_Should_Invoke_Cancellation_Handler_Once(bool cancelFirst)
+        {
+            var cancellationCount = 0;
+            var state = OperationStateExtensions.CreateMock((_, __) => { });
+
+            if (cancelFirst)
+            {
+                state.Cancel();
+            }
+            state.SetCancellationHandler(() => Interlocked.Increment(ref cancellationCount));
+            if (!cancelFirst)
+            {
+                state.Cancel();
+            }
+            state.Cancel();
+
+            Assert.AreEqual(1, cancellationCount);
+        }
+
         [Test]
         public void BeBinaryWriter_Close_Sets_Frame_Body_Length()
         {

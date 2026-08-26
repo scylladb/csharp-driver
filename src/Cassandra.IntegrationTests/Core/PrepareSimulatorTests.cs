@@ -122,7 +122,11 @@ namespace Cassandra.IntegrationTests.Core
                 simulacronCluster.Prime(QueryPrime());
                 var ps = session.Prepare(Query);
                 Assert.NotNull(ps);
+                Assert.AreEqual(3, simulacronCluster.GetQueries(Query, QueryType.Prepare).Count);
                 Assert.AreSame(ps, session.Prepare(Query));
+                Assert.AreEqual(3, simulacronCluster.GetQueries(Query, QueryType.Prepare).Count);
+                Assert.AreSame(ps, cluster.Connect().Prepare(Query));
+                Assert.AreEqual(3, simulacronCluster.GetQueries(Query, QueryType.Prepare).Count);
                 Assert.AreNotSame(ps, session.Prepare("SELECT * FROM system.local WHERE key='local'"));
             }
         }

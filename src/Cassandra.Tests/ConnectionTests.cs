@@ -339,6 +339,28 @@ namespace Cassandra.Tests
             Assert.AreEqual(3, responses.Count);
         }
 
+        [Test]
+        public void ReadParse_Should_Update_Connection_Keyspace_From_SetKeyspace_Response()
+        {
+            var serializer = new SerializerManager(ProtocolVersion.V4);
+            var connectionMock = GetConnectionMock(null, serializer);
+            connectionMock
+                .Setup(c => c.RemoveFromPending(It.IsAny<short>()))
+                .Returns(() => OperationStateExtensions.CreateMock((_, __) => { }));
+            var buffer = new byte[]
+            {
+                // v4 response header: stream 1, RESULT opcode, body length 9
+                0x84, 0, 0, 1, ResultResponse.OpCode, 0, 0, 0, 9,
+                // SET_KEYSPACE result followed by the string "ks1"
+                0, 0, 0, 3, 0, 3, (byte)'k', (byte)'s', (byte)'1'
+            };
+
+            connectionMock.Object.ReadParse(buffer, buffer.Length);
+
+            TestHelper.WaitUntil(() => connectionMock.Object.Keyspace == "ks1");
+            Assert.AreEqual("ks1", connectionMock.Object.Keyspace);
+        }
+
         /// <summary>
         /// Gets a buffer containing 8 bytes for header and 4 bytes for the body.
         /// For result + void response message  (protocol v2)

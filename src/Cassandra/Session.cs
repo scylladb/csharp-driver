@@ -139,7 +139,7 @@ namespace Cassandra
         {
             if (Keyspace != keyspace)
             {
-                Execute(new SimpleStatement(CqlQueryTools.GetUseKeyspaceCql(keyspace)));
+                Execute(new SimpleStatement(CqlQueryTools.GetUseKeyspaceCql(keyspace)).SetKeyspaceSwitch());
                 Keyspace = keyspace;
             }
         }

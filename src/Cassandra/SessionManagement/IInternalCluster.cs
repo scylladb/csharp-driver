@@ -35,7 +35,7 @@ namespace Cassandra.SessionManagement
         IControlConnection GetControlConnection();
 
         /// <summary>
-        /// Gets the the prepared statements cache
+        /// Gets the prepared statements indexed by server-side ID for prepare-on-up.
         /// </summary>
         ConcurrentDictionary<byte[], PreparedStatement> PreparedQueries { get; }
 
@@ -43,9 +43,14 @@ namespace Cassandra.SessionManagement
         /// Executes the prepare request on the first host selected by the load balancing policy.
         /// When <see cref="QueryOptions.IsPrepareOnAllHosts"/> is enabled, it prepares on the rest of the hosts in
         /// parallel.
-        /// In case the statement was already in the prepared statements cache, logs an warning but prepares it anyway.
+        /// In case the statement is already in the prepared statements cache, returns the cached instance.
         /// </summary>
         Task<PreparedStatement> Prepare(IInternalSession session, ISerializerManager serializerManager, InternalPrepareRequest request);
+
+        /// <summary>
+        /// Removes all cached client-side prepared statements with the provided server-side ID.
+        /// </summary>
+        void InvalidatePreparedStatement(byte[] id);
 
         IReadOnlyDictionary<IContactPoint, IEnumerable<IConnectionEndPoint>> GetResolvedEndpoints();
 
