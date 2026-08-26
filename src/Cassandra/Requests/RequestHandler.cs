@@ -193,12 +193,12 @@ namespace Cassandra.Requests
 
             if (statement is BoundStatement s2)
             {
-                // set skip metadata only when result metadata id is supported because of CASSANDRA-10786
-                var skipMetadata =
-                    serializer.ProtocolVersion.SupportsResultMetadataId()
-                    && s2.PreparedStatement.ResultMetadata.ContainsColumnDefinitions();
-
-                var options = QueryProtocolOptions.CreateFromQuery(serializer.ProtocolVersion, s2, requestOptions, skipMetadata, s2.PreparedStatement.Variables);
+                // Whether to skip result metadata depends on the connection, which is not chosen yet: this
+                // one request instance is reused across hosts, retries and speculative executions, and
+                // during a rolling upgrade they will not all exchange result metadata ids. The decision is
+                // therefore deferred to ExecuteRequest.WriteBody, and only the statement-level intent is
+                // carried here.
+                var options = QueryProtocolOptions.CreateFromQuery(serializer.ProtocolVersion, s2, requestOptions, null, s2.PreparedStatement.Variables);
                 request = new ExecuteRequest(
                     serializer,
                     s2.PreparedStatement.Id,

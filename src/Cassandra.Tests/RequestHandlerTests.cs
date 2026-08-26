@@ -148,38 +148,25 @@ namespace Cassandra.Tests
             Assert.AreEqual(QueryOptions.DefaultSerialConsistencyLevel, request.SerialConsistency);
         }
 
+        /// <summary>
+        /// The cached result metadata reaches the row decoder through the request
+        /// (<see cref="IRequest.ResultMetadata"/> to <see cref="OperationState.ResultMetadata"/>), so it
+        /// has to be carried on every protocol version, not only those that exchange ids: without it a
+        /// response that skipped its metadata would have no columns to decode against.
+        /// </summary>
         [Test]
         [TestCase(ProtocolVersion.V5)]
         [TestCase(ProtocolVersion.V4)]
         [TestCase(ProtocolVersion.V3)]
-        [TestCase(ProtocolVersion.V2)]
-        [TestCase(ProtocolVersion.V1)]
-        public void Should_NotSkipMetadata_When_BoundStatementDoesNotContainColumnDefinitions(ProtocolVersion version)
-        {
-            var serializerManager = new SerializerManager(version);
-            var ps = GetPrepared(serializerManager: serializerManager);
-            var stmt = ps.Bind();
-            var queryOptions = new QueryOptions();
-            var request = (ExecuteRequest)RequestHandler.GetRequest(stmt, serializerManager.GetCurrentSerializer(), GetRequestOptions(queryOptions));
-            Assert.IsFalse(request.SkipMetadata);
-        }
-
-        [Test]
-        [TestCase(ProtocolVersion.V5, true)]
-        [TestCase(ProtocolVersion.V4, false)]
-        [TestCase(ProtocolVersion.V3, false)]
-        [TestCase(ProtocolVersion.V2, false)]
-        [TestCase(ProtocolVersion.V1, false)]
-        public void Should_SkipMetadata_When_BoundStatementContainsColumnDefinitionsAndProtocolSupportsNewResultMetadataId(
-            ProtocolVersion version, bool isSet)
+        public void Should_CarryTheCachedResultMetadata_OnEveryProtocolVersion(ProtocolVersion version)
         {
             var serializerManager = new SerializerManager(version);
             var rsMetadata = new RowSetMetadata { Columns = new[] { new CqlColumn() } };
             var ps = GetPrepared(new byte[16], serializerManager, rsMetadata);
-            var stmt = ps.Bind();
-            var queryOptions = new QueryOptions();
-            var request = (ExecuteRequest)RequestHandler.GetRequest(stmt, serializerManager.GetCurrentSerializer(), GetRequestOptions(queryOptions));
-            Assert.AreEqual(isSet, request.SkipMetadata);
+            var request = RequestHandler.GetRequest(
+                ps.Bind(), serializerManager.GetCurrentSerializer(), GetRequestOptions(new QueryOptions()));
+
+            Assert.AreSame(ps.ResultMetadata, request.ResultMetadata);
         }
 
         /// <remarks>
