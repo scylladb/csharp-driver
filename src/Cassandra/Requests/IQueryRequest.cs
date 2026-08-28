@@ -27,11 +27,6 @@ namespace Cassandra.Requests
         byte[] PagingState { get; set; }
 
         /// <summary>
-        /// Whether the skip_metadata flag is set for this request.
-        /// </summary>
-        bool SkipMetadata { get; }
-
-        /// <summary>
         /// Method used by the batch to build each individual request
         /// </summary>
         void WriteToBatch(FrameWriter writer);

@@ -18,14 +18,43 @@ namespace Cassandra.Requests
     internal class ResultMetadata
     {
         public ResultMetadata(byte[] resultMetadataId, RowSetMetadata rowSetMetadata)
+            : this(resultMetadataId, rowSetMetadata, true)
+        {
+        }
+
+        private ResultMetadata(byte[] resultMetadataId, RowSetMetadata rowSetMetadata, bool idDescribesColumns)
         {
             ResultMetadataId = resultMetadataId;
             RowSetMetadata = rowSetMetadata;
+            IdDescribesColumns = idDescribesColumns;
         }
 
         public byte[] ResultMetadataId { get; }
 
         public RowSetMetadata RowSetMetadata { get; }
+
+        /// <summary>
+        /// Whether <see cref="ResultMetadataId"/> is the server's hash of <see cref="RowSetMetadata"/>,
+        /// and so whether the server will issue a different id once these columns stop being what the
+        /// statement returns.
+        /// </summary>
+        /// <remarks>
+        /// True for metadata that arrived as one piece, which is the normal case. It is false for a
+        /// statement whose RESULT/Prepared reported no result metadata: the id it was handed hashes that
+        /// emptiness, and the server keeps issuing the same id once the real columns arrive by
+        /// METADATA_CHANGED, so it has no id left to change when the shape does. Skipping result metadata
+        /// on such a statement would be unchecked - see
+        /// <see cref="ExecuteRequest.ShouldSkipResultMetadata"/> and scylladb/scylla-rust-driver#1575.
+        /// </remarks>
+        public bool IdDescribesColumns { get; }
+
+        /// <summary>
+        /// Returns this metadata with <see cref="IdDescribesColumns"/> cleared.
+        /// </summary>
+        public ResultMetadata WithIdNotDescribingColumns()
+        {
+            return new ResultMetadata(ResultMetadataId, RowSetMetadata, false);
+        }
 
         public bool ContainsColumnDefinitions()
         {
@@ -35,6 +64,16 @@ namespace Cassandra.Requests
             }
 
             return RowSetMetadata.Columns != null && RowSetMetadata.Columns.Length > 0;
+        }
+
+        /// <summary>
+        /// Whether the server issued an id for this metadata. An empty id is the sentinel the driver sends
+        /// when it has none, so it is not one: a connection that did not exchange ids leaves it empty, and
+        /// so does a statement prepared before the extension was available.
+        /// </summary>
+        public bool ContainsResultMetadataId()
+        {
+            return ResultMetadataId != null && ResultMetadataId.Length > 0;
         }
     }
 }

@@ -185,9 +185,13 @@ namespace Cassandra.Requests
             }
             var prepared = (OutputPrepared)output;
             var ps = new PreparedStatement(
+                // The variables metadata is kept whole: its flags carry the LWT mark read below. Only the
+                // result metadata outlives this response as the statement's cache, so only it is copied.
                 prepared.VariablesRowsMetadata,
                 prepared.QueryId,
-                new ResultMetadata(prepared.ResultMetadataId, prepared.ResultRowsMetadata),
+                new ResultMetadata(
+                    prepared.ResultMetadataId,
+                    RowSetMetadata.CopyForCachedResultMetadata(prepared.ResultRowsMetadata)),
                 request.Query,
                 keyspace,
                 _serializerManager,

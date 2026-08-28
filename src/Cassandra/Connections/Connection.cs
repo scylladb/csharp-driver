@@ -169,6 +169,39 @@ namespace Cassandra.Connections
         public int ShardID { get; set; }
         private int _requestedShardID { get; set; }
 
+        /// <summary>
+        /// Set once during <see cref="DoOpen"/>, before any request other than OPTIONS/STARTUP can be
+        /// written, and read afterwards from the IO threads that encode and decode frames.
+        /// </summary>
+        private volatile bool _useMetadataId;
+
+        /// <inheritdoc />
+        public bool UseMetadataId => _useMetadataId;
+
+        /// <summary>
+        /// Decides whether this connection exchanges result metadata ids, and so how its frames are
+        /// encoded and decoded: native protocol v5 and above make the field mandatory, so it is used
+        /// there regardless; below that it is used only when <c>SCYLLA_USE_METADATA_ID</c> was negotiated.
+        /// </summary>
+        /// <param name="version">The native protocol version this connection settled on.</param>
+        /// <param name="extensionNegotiated">
+        /// Already gated on the protocol version by
+        /// <see cref="Control.SupportedOptionsInitializer.ShouldUseMetadataId"/>, which is where that gate
+        /// belongs and has to stay: the same decision is read a second time, by
+        /// <see cref="Requests.StartupOptionsFactory"/>, to choose whether to ask the server for the
+        /// extension at all. Only one of those two may own the version rule. Were the gate moved or copied
+        /// here, the opt-in and the frame codec could disagree, and either direction desynchronises the
+        /// connection - the driver asking for a field it will not read, or reading one it never asked for.
+        /// </param>
+        /// <remarks>
+        /// Extracted so the decision can be tested without opening a connection, since inverting it would
+        /// be silent - the driver would read a field the server never wrote, or ignore one it did.
+        /// </remarks>
+        internal static bool ResolveUseMetadataId(ProtocolVersion version, bool extensionNegotiated)
+        {
+            return version.SupportsResultMetadataId() || extensionNegotiated;
+        }
+
         internal Connection(
             ISerializer serializer,
             IConnectionEndPoint endPoint,
@@ -545,7 +578,14 @@ namespace Cassandra.Connections
                 }
                 throw;
             }
-            _supportedOptionsInitializer.ApplySupportedFromResponse(optionsResponse);
+            _supportedOptionsInitializer.ApplySupportedFromResponse(optionsResponse, Serializer.ProtocolVersion);
+
+            // Resolved here because this is where the SUPPORTED response has just been applied. No frame in
+            // the rest of the handshake consults it - only EXECUTE and the RESULT bodies do - so it is the
+            // value that matters from the first prepare onwards, not the position of this line.
+            _useMetadataId = Connection.ResolveUseMetadataId(
+                Serializer.ProtocolVersion, _supportedOptionsInitializer.ShouldUseMetadataId());
+
             if (_supportedOptionsInitializer.GetShardingInfo() != null)
             {
                 ShardID = _supportedOptionsInitializer.GetShardingInfo().ScyllaShard;
@@ -802,6 +842,7 @@ namespace Cassandra.Connections
             ResultMetadata resultMetadata, ISerializer serializer, FrameHeader header, Func<IRequestError, Response, long, Task> callback)
         {
             var compressor = Compressor;
+            var useMetadataId = UseMetadataId;
 
             Task DeserializeResponseStream(MemoryStream stream, long timestamp)
             {
@@ -816,7 +857,8 @@ namespace Cassandra.Connections
                         plainTextStream = compressor.Decompress(new WrappedStream(stream, header.BodyLength));
                         plainTextStream.Position = 0;
                     }
-                    response = FrameParser.Parse(new Frame(header, plainTextStream, serializer, resultMetadata));
+                    response = FrameParser.Parse(
+                        new Frame(header, plainTextStream, serializer, resultMetadata, useMetadataId));
                 }
                 catch (Exception caughtException)
                 {
@@ -1009,7 +1051,7 @@ namespace Cassandra.Connections
                 {
                     //lazy initialize the stream
                     stream = stream ?? (RecyclableMemoryStream)Configuration.BufferPool.GetStream(Connection.StreamWriteTag);
-                    var frameLength = state.WriteFrame(streamId, stream, Serializer, timestamp);
+                    var frameLength = state.WriteFrame(streamId, stream, Serializer, UseMetadataId, timestamp);
                     _connectionObserver.OnBytesSent(frameLength);
                     totalLength += frameLength;
                 }
