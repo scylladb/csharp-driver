@@ -541,6 +541,12 @@ namespace Cassandra.Connections.Control
                 var _ = Interlocked.Exchange(ref _reconnectTask, null);
                 tcs.TrySetResult(oldConnection);
                 ControlConnection.Logger.Info("ControlConnection reconnected to host {0}", _host.Address);
+
+                // Schedule a delayed node list refresh to catch topology changes
+                // (e.g. node decommission) that may have been missed during the
+                // reconnection window — the TOPOLOGY_CHANGE event could have been
+                // sent before we registered for events on the new connection.
+                await ScheduleHostsRefreshAsync().ConfigureAwait(false);
             }
             catch (Exception ex)
             {
