@@ -46,6 +46,8 @@ namespace Cassandra
         private volatile bool _timeoutCallbackSet;
         private int _state = StateInit;
         private volatile HashedWheelTimer.ITimeout _timeout;
+        private Action _wireCompletionHandler;
+        private int _wireCompleted;
 
         /// <summary>
         /// See docs for <see cref="IRequest.ResultMetadata"/>.
@@ -109,15 +111,15 @@ namespace Cassandra
 
         /// <summary>
         /// Marks this operation as completed and returns the callback.
-        /// Note that the returned callback might be a reference to <see cref="Noop"/>, as the original callback
-        /// might be already called.
+        /// The returned callback also signals that the operation is no longer active on the wire.
+        /// It might invoke no user code when the original callback was already called.
         /// </summary>
         public Func<IRequestError, Response, long, Task> SetCompleted()
         {
             var previousState = Interlocked.CompareExchange(ref _state, StateCompleted, StateInit);
             if (previousState == StateCancelled || previousState == StateCompleted)
             {
-                return Noop;
+                return InvokeAfterWireCompletion(Noop);
             }
             Func<IRequestError, Response, long, Task> callback;
             if (previousState == StateInit)
@@ -129,7 +131,7 @@ namespace Cassandra
                     //Cancel it if it hasn't expired
                     timeout.Cancel();
                 }
-                return callback;
+                return InvokeAfterWireCompletion(callback);
             }
             //Operation has timed out
             var spin = new SpinWait();
@@ -139,7 +141,7 @@ namespace Cassandra
                 spin.SpinOnce();
             }
             callback = Interlocked.Exchange(ref _callback, Noop);
-            return callback;
+            return InvokeAfterWireCompletion(callback);
         }
 
         /// <summary>
@@ -149,10 +151,6 @@ namespace Cassandra
         public void InvokeCallback(IRequestError error, long timestamp)
         {
             var callback = SetCompleted();
-            if (callback == Noop)
-            {
-                return;
-            }
             //Invoke the callback in a new thread in the thread pool
             //This way we don't let the user block on a thread used by the Connection
             Task.Run(() => callback(error, null, timestamp), CancellationToken.None);
@@ -196,6 +194,42 @@ namespace Cassandra
                 //Cancel it if it hasn't expired
                 //We should not worry about yielding OperationTimedOutExceptions when this is cancelled.
                 timeout.Cancel();
+            }
+        }
+
+        internal void SetWireCompletionHandler(Action handler)
+        {
+            if (Interlocked.CompareExchange(ref _wireCompletionHandler, handler, null) != null)
+            {
+                throw new InvalidOperationException("A wire completion handler has already been set.");
+            }
+
+            if (Volatile.Read(ref _wireCompleted) != 0)
+            {
+                Interlocked.Exchange(ref _wireCompletionHandler, null)?.Invoke();
+            }
+        }
+
+        internal void CompleteWithoutWire()
+        {
+            CompleteWire();
+        }
+
+        private Func<IRequestError, Response, long, Task> InvokeAfterWireCompletion(
+            Func<IRequestError, Response, long, Task> callback)
+        {
+            return async (error, response, timestamp) =>
+            {
+                CompleteWire();
+                await callback(error, response, timestamp).ConfigureAwait(false);
+            };
+        }
+
+        private void CompleteWire()
+        {
+            if (Interlocked.Exchange(ref _wireCompleted, 1) == 0)
+            {
+                Interlocked.Exchange(ref _wireCompletionHandler, null)?.Invoke();
             }
         }
 

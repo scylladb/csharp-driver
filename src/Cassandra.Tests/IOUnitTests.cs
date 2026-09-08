@@ -22,6 +22,7 @@ using CollectionAssert = NUnit.Framework.Legacy.CollectionAssert;
 using System.Linq;
 using System.Net;
 using System.Threading;
+using System.Threading.Tasks;
 using Cassandra.Compression;
 using Cassandra.Responses;
 using Cassandra.Serialization;
@@ -123,6 +124,58 @@ namespace Cassandra.Tests
             //Allow callbacks to be called using the default scheduler
             Thread.Sleep(20);
             Assert.AreEqual(0, clientCallbackCounter);
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void OperationState_Cancel_Should_Keep_Wire_Handler_Until_Operation_Is_Terminal(bool cancelFirst)
+        {
+            var completionCount = 0;
+            var state = OperationStateExtensions.CreateMock((_, __) => { });
+
+            if (cancelFirst)
+            {
+                state.Cancel();
+            }
+            state.SetWireCompletionHandler(() => Interlocked.Increment(ref completionCount));
+            if (!cancelFirst)
+            {
+                state.Cancel();
+            }
+            state.Cancel();
+
+            Assert.AreEqual(0, completionCount);
+            state.CompleteWithoutWire();
+            state.CompleteWithoutWire();
+            Assert.AreEqual(1, completionCount);
+        }
+
+        [Test]
+        public async Task OperationState_Timeout_Should_Keep_Wire_Handler_Until_Response_Is_Received()
+        {
+            var clientCallbackCount = 0;
+            var lateResponseCount = 0;
+            var wireCompletionCount = 0;
+            var state = OperationStateExtensions.CreateMock(
+                (_, __) => Interlocked.Increment(ref clientCallbackCount));
+            state.SetWireCompletionHandler(() => Interlocked.Increment(ref wireCompletionCount));
+
+            Assert.IsTrue(state.MarkAsTimedOut(
+                new OperationTimedOutException(new IPEndPoint(0, 1), 200),
+                () =>
+                {
+                    Interlocked.Increment(ref lateResponseCount);
+                    return TaskHelper.Completed;
+                },
+                0));
+            TestHelper.WaitUntil(() => Volatile.Read(ref clientCallbackCount) == 1);
+
+            Assert.AreEqual(0, wireCompletionCount);
+            var responseCallback = state.SetCompleted();
+            await responseCallback(null, null, 0).ConfigureAwait(false);
+
+            Assert.AreEqual(1, wireCompletionCount);
+            Assert.AreEqual(1, lateResponseCount);
         }
 
         [Test]

@@ -33,6 +33,8 @@ namespace Cassandra
         private object[] _routingValues;
         private string _keyspace;
 
+        internal bool IsKeyspaceSwitch { get; private set; }
+
         /// <summary>
         ///  Gets the query string.
         /// </summary>
@@ -236,6 +238,12 @@ namespace Cassandra
         public SimpleStatement SetKeyspace(string name)
         {
             _keyspace = name;
+            return this;
+        }
+
+        internal SimpleStatement SetKeyspaceSwitch()
+        {
+            IsKeyspaceSwitch = true;
             return this;
         }
 
