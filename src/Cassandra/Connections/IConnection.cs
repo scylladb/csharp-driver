@@ -134,6 +134,23 @@ namespace Cassandra.Connections
         Task<Response> Send(IRequest request);
 
         /// <summary>
+        /// Sends the request while pinning the connection to the provided keyspace.
+        /// Requests pinned to the same keyspace can execute concurrently.
+        /// </summary>
+        Task<Response> SendWithKeyspace(IRequest request, string keyspace);
+
+        /// <summary>
+        /// Sends the request while pinning the connection to the provided keyspace.
+        /// A keyspace-switch request is executed exclusively.
+        /// </summary>
+        Task<OperationState> SendWithKeyspace(
+            IRequest request,
+            string keyspace,
+            Func<IRequestError, Response, Task> callback,
+            int timeoutMillis,
+            bool isKeyspaceSwitch = false);
+
+        /// <summary>
         /// Sends a new request if possible and executes the callback when the response is parsed with the default timeout. If it is not possible it queues it up.
         /// </summary>
         OperationState Send(IRequest request, Func<IRequestError, Response, Task> callback);

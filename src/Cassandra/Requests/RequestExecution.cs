@@ -182,7 +182,20 @@ namespace Cassandra.Requests
 
             try
             {
-                _operation = _connection.Send(request, (error, response) => callback(error, response, nodeRequestInfo), timeoutMillis);
+                var isKeyspaceSwitch =
+                    _parent.Statement is SimpleStatement statement && statement.IsKeyspaceSwitch;
+                var keyspace = _sessionRequestInfo.SessionKeyspace;
+                if (request is InternalPrepareRequest prepareRequest
+                    && !_parent.Serializer.ProtocolVersion.SupportsKeyspaceInRequest())
+                {
+                    keyspace = prepareRequest.Keyspace ?? keyspace;
+                }
+                _operation = await _connection.SendWithKeyspace(
+                    request,
+                    keyspace,
+                    (error, response) => callback(error, response, nodeRequestInfo),
+                    timeoutMillis,
+                    isKeyspaceSwitch).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -613,20 +626,13 @@ namespace Cassandra.Requests
             var preparedKeyspace = boundStatement.PreparedStatement.Keyspace;
             var request = new InternalPrepareRequest(_parent.Serializer, boundStatement.PreparedStatement.Cql, preparedKeyspace, null);
 
-            if (!_parent.Serializer.ProtocolVersion.SupportsKeyspaceInRequest() &&
-                preparedKeyspace != null && _session.Keyspace != preparedKeyspace)
+            if (!_parent.Serializer.ProtocolVersion.SupportsKeyspaceInRequest()
+                && preparedKeyspace != null
+                && _session.Keyspace != preparedKeyspace)
             {
                 Logger.Warning(string.Format("The statement was prepared using another keyspace, changing the keyspace temporarily to" +
                                               " {0} and back to {1}. Use keyspace and table identifiers in your queries and avoid switching keyspaces.",
                     preparedKeyspace, _session.Keyspace));
-
-                var c = _connection;
-                Task.Run(async () =>
-                {
-                    await c.SetKeyspace(preparedKeyspace).ConfigureAwait(false);
-                    await SendAsync(request, nodeRequestInfo.Host, NewReprepareResponseHandler(ex)).ConfigureAwait(false);
-                }).Forget();
-                return;
             }
             await SendAsync(request, nodeRequestInfo.Host, NewReprepareResponseHandler(ex)).ConfigureAwait(false);
         }

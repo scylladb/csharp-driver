@@ -107,7 +107,7 @@ namespace Cassandra.Tests
             var mockSession = Mock.Of<IInternalSession>();
             var requestHandlerFactory = Mock.Of<IRequestHandlerFactory>();
             var mockStatement = Mock.Of<IStatement>();
-            var requestTrackingInfo = new SessionRequestInfo(mockStatement, null);
+            var requestTrackingInfo = new SessionRequestInfo(mockStatement, "ks1");
             Mock.Get(requestHandlerFactory)
                 .Setup(r => r.CreateAsync(
                     It.IsAny<IInternalSession>(),
@@ -139,6 +139,14 @@ namespace Cassandra.Tests
             Mock.Get(mockParent)
                 .Setup(m => m.RequestOptions)
                 .Returns(config.DefaultRequestOptions);
+            Mock.Get(connection)
+                .Setup(c => c.SendWithKeyspace(
+                    It.IsAny<IRequest>(),
+                    It.IsAny<string>(),
+                    It.IsAny<Func<IRequestError, Response, Task>>(),
+                    It.IsAny<int>(),
+                    It.IsAny<bool>()))
+                .ReturnsAsync((OperationState)null);
             var sut = new RequestExecution(mockParent, mockSession, mockRequest, NullRequestObserver.Instance, requestTrackingInfo);
 
             sut.Start(currentHostRetry);
@@ -147,7 +155,12 @@ namespace Cassandra.Tests
                 {
                     Mock.Get(connection)
                         .Verify(
-                            c => c.Send(mockRequest, It.IsAny<Func<IRequestError, Response, Task>>(), It.IsAny<int>()),
+                            c => c.SendWithKeyspace(
+                                mockRequest,
+                                "ks1",
+                                It.IsAny<Func<IRequestError, Response, Task>>(),
+                                It.IsAny<int>(),
+                                false),
                             Times.Once);
                 });
         }
@@ -220,6 +233,14 @@ namespace Cassandra.Tests
             Mock.Get(mockParent)
                 .Setup(m => m.RequestOptions)
                 .Returns(config.DefaultRequestOptions);
+            Mock.Get(connection)
+                .Setup(c => c.SendWithKeyspace(
+                    It.IsAny<IRequest>(),
+                    It.IsAny<string>(),
+                    It.IsAny<Func<IRequestError, Response, Task>>(),
+                    It.IsAny<int>(),
+                    It.IsAny<bool>()))
+                .ReturnsAsync((OperationState)null);
 
             var sut = new RequestExecution(mockParent, mockSession, mockRequest, NullRequestObserver.Instance, requestTrackingInfo);
             sut.Start(false);
@@ -229,7 +250,12 @@ namespace Cassandra.Tests
                 () =>
                 {
                     Mock.Get(connection).Verify(
-                        c => c.Send(mockRequest, It.IsAny<Func<IRequestError, Response, Task>>(), It.IsAny<int>()),
+                        c => c.SendWithKeyspace(
+                            mockRequest,
+                            null,
+                            It.IsAny<Func<IRequestError, Response, Task>>(),
+                            It.IsAny<int>(),
+                            false),
                         Times.Once);
                 });
 
