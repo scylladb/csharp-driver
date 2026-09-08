@@ -67,7 +67,10 @@ namespace Cassandra.Connections
         private ConcurrentQueue<OperationState> _writeQueue;
 
         private volatile string _keyspace;
-        private TaskCompletionSource<bool> _keyspaceSwitchTcs;
+        private readonly SemaphoreSlim _keyspaceSwitchLock = new SemaphoreSlim(1, 1);
+        private readonly object _keyspaceOperationsLock = new object();
+        private TaskCompletionSource<bool> _keyspaceOperationsDrained;
+        private int _keyspaceOperationCount;
 
         /// <summary>
         /// Small buffer (less than 8 bytes) that is used when the next received message is smaller than 8 bytes,
@@ -817,6 +820,12 @@ namespace Cassandra.Connections
                         plainTextStream.Position = 0;
                     }
                     response = FrameParser.Parse(new Frame(header, plainTextStream, serializer, resultMetadata));
+                    if (response is ResultResponse resultResponse && resultResponse.Output is OutputSetKeyspace keyspace)
+                    {
+                        // USE changes server-side connection state. Keep the local state authoritative even when
+                        // the query was sent directly instead of through SetKeyspace().
+                        _keyspace = keyspace.Value;
+                    }
                 }
                 catch (Exception caughtException)
                 {
@@ -890,6 +899,182 @@ namespace Cassandra.Connections
         public Task<Response> Send(IRequest request)
         {
             return Send(request, Configuration.DefaultRequestOptions.ReadTimeoutMillis);
+        }
+
+        /// <inheritdoc />
+        public async Task<Response> SendWithKeyspace(IRequest request, string keyspace)
+        {
+            var releaseKeyspace = await AcquireKeyspaceAsync(keyspace).ConfigureAwait(false);
+            Task<Response> responseTask;
+            try
+            {
+                var responseCompletion = new TaskCompletionSource<Response>();
+                var operation = Send(
+                    request,
+                    responseCompletion.TrySetRequestErrorAsync,
+                    Configuration.DefaultRequestOptions.ReadTimeoutMillis);
+                if (operation == null)
+                {
+                    releaseKeyspace();
+                }
+                else
+                {
+                    operation.SetWireCompletionHandler(releaseKeyspace);
+                }
+                responseTask = responseCompletion.Task;
+            }
+            catch
+            {
+                releaseKeyspace();
+                throw;
+            }
+
+            // A client timeout completes this task before the stream is removed from the pending map. The wire
+            // completion handler above deliberately retains the keyspace lease until the late response or close.
+            return await responseTask.ConfigureAwait(false);
+        }
+
+        /// <inheritdoc />
+        public async Task<OperationState> SendWithKeyspace(
+            IRequest request,
+            string keyspace,
+            Func<IRequestError, Response, Task> callback,
+            int timeoutMillis,
+            bool isKeyspaceSwitch = false)
+        {
+            if (isKeyspaceSwitch)
+            {
+                return await SendKeyspaceSwitch(
+                    request, keyspace, callback, timeoutMillis).ConfigureAwait(false);
+            }
+
+            var releaseKeyspace = await AcquireKeyspaceAsync(keyspace).ConfigureAwait(false);
+            try
+            {
+                var operation = Send(
+                    request,
+                    callback,
+                    timeoutMillis);
+                if (operation == null)
+                {
+                    releaseKeyspace();
+                }
+                else
+                {
+                    operation.SetWireCompletionHandler(releaseKeyspace);
+                }
+                return operation;
+            }
+            catch
+            {
+                releaseKeyspace();
+                throw;
+            }
+        }
+
+        private async Task<OperationState> SendKeyspaceSwitch(
+            IRequest request,
+            string keyspace,
+            Func<IRequestError, Response, Task> callback,
+            int timeoutMillis)
+        {
+            await _keyspaceSwitchLock.WaitAsync().ConfigureAwait(false);
+            var lockReleased = 0;
+            Action releaseLock = () =>
+            {
+                if (Interlocked.Exchange(ref lockReleased, 1) == 0)
+                {
+                    _keyspaceSwitchLock.Release();
+                }
+            };
+
+            try
+            {
+                await WaitForKeyspaceOperationsToDrainAsync().ConfigureAwait(false);
+                await SetKeyspaceCore(keyspace).ConfigureAwait(false);
+                var operation = Send(
+                    request,
+                    async (error, response) =>
+                    {
+                        if (error?.Exception is OperationTimedOutException)
+                        {
+                            // The USE request can still be executing after the client timeout. Retire this
+                            // connection so its late response can not corrupt a subsequent keyspace switch.
+                            Close();
+                            releaseLock();
+                        }
+                        await callback(error, response).ConfigureAwait(false);
+                    },
+                    timeoutMillis);
+                if (operation == null)
+                {
+                    releaseLock();
+                }
+                else
+                {
+                    operation.SetWireCompletionHandler(releaseLock);
+                }
+                return operation;
+            }
+            catch
+            {
+                releaseLock();
+                throw;
+            }
+        }
+
+        private async Task<Action> AcquireKeyspaceAsync(string keyspace)
+        {
+            await _keyspaceSwitchLock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (!string.Equals(_keyspace, keyspace, StringComparison.Ordinal))
+                {
+                    await WaitForKeyspaceOperationsToDrainAsync().ConfigureAwait(false);
+                    await SetKeyspaceCore(keyspace).ConfigureAwait(false);
+                }
+
+                lock (_keyspaceOperationsLock)
+                {
+                    if (_keyspaceOperationCount++ == 0)
+                    {
+                        _keyspaceOperationsDrained =
+                            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    }
+                }
+            }
+            finally
+            {
+                _keyspaceSwitchLock.Release();
+            }
+
+            var released = 0;
+            return () =>
+            {
+                if (Interlocked.Exchange(ref released, 1) != 0)
+                {
+                    return;
+                }
+
+                TaskCompletionSource<bool> operationsDrained = null;
+                lock (_keyspaceOperationsLock)
+                {
+                    if (--_keyspaceOperationCount == 0)
+                    {
+                        operationsDrained = _keyspaceOperationsDrained;
+                        _keyspaceOperationsDrained = null;
+                    }
+                }
+                operationsDrained?.TrySetResult(true);
+            };
+        }
+
+        private Task WaitForKeyspaceOperationsToDrainAsync()
+        {
+            lock (_keyspaceOperationsLock)
+            {
+                return _keyspaceOperationsDrained?.Task ?? TaskHelper.Completed;
+            }
         }
 
         /// <inheritdoc />
@@ -980,6 +1165,7 @@ namespace Cassandra.Connections
                     }
 
                     DecrementInFlight();
+                    tempState.CompleteWithoutWire();
                 }
 
                 if (state == null)
@@ -1073,53 +1259,44 @@ namespace Cassandra.Connections
         /// </summary>
         public async Task<bool> SetKeyspace(string value)
         {
-            if (string.IsNullOrEmpty(value))
+            await _keyspaceSwitchLock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (string.Equals(_keyspace, value, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+
+                await WaitForKeyspaceOperationsToDrainAsync().ConfigureAwait(false);
+                return await SetKeyspaceCore(value).ConfigureAwait(false);
+            }
+            finally
+            {
+                _keyspaceSwitchLock.Release();
+            }
+        }
+
+        private async Task<bool> SetKeyspaceCore(string value)
+        {
+            if (string.IsNullOrEmpty(value) || _keyspace == value)
             {
                 return true;
             }
-            while (_keyspace != value)
+
+            Connection.Logger.Info("Connection to host {0} switching to keyspace {1}", EndPoint.EndpointFriendlyName, value);
+            var request = new QueryRequest(Serializer, $"USE \"{value}\"", QueryProtocolOptions.Default, false, null);
+            try
             {
-                var switchTcs = Volatile.Read(ref _keyspaceSwitchTcs);
-                if (switchTcs != null)
-                {
-                    // Is already switching
-                    await switchTcs.Task.ConfigureAwait(false);
-                    continue;
-                }
-
-                var tcs = new TaskCompletionSource<bool>();
-                switchTcs = Interlocked.CompareExchange(ref _keyspaceSwitchTcs, tcs, null);
-                if (switchTcs != null)
-                {
-                    // Is already switching
-                    await switchTcs.Task.ConfigureAwait(false);
-                    continue;
-                }
-
-                Exception sendException = null;
-
-                // CAS operation won, this is the only thread changing the keyspace
-                // but another thread might have changed it in the meantime
-                if (_keyspace != value)
-                {
-                    Connection.Logger.Info("Connection to host {0} switching to keyspace {1}", EndPoint.EndpointFriendlyName, value);
-                    var request = new QueryRequest(Serializer, $"USE \"{value}\"", QueryProtocolOptions.Default, false, null);
-                    try
-                    {
-                        await Send(request).ConfigureAwait(false);
-                        _keyspace = value;
-                    }
-                    catch (Exception ex)
-                    {
-                        sendException = ex;
-                    }
-                }
-
-                // Set the reference to null before setting the result
-                Interlocked.Exchange(ref _keyspaceSwitchTcs, null);
-                tcs.TrySet(sendException, true);
-                return await tcs.Task.ConfigureAwait(false);
+                await Send(request).ConfigureAwait(false);
             }
+            catch (OperationTimedOutException)
+            {
+                // The USE request may still complete on the server. The connection can not safely be used for a
+                // different keyspace once the keyspace-switch lock is released.
+                Close();
+                throw;
+            }
+            _keyspace = value;
             return true;
         }
 

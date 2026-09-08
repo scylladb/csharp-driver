@@ -299,8 +299,13 @@ namespace Cassandra.Tests.ExecutionProfiles
 
             // mock connection send
             Mock.Get(connection)
-                .Setup(c => c.Send(It.IsAny<IRequest>(), It.IsAny<Func<IRequestError, Response, Task>>(), It.IsAny<int>()))
-                .Returns<IRequest, Func<IRequestError, Response, Task>, int>((req, act, timeout) =>
+                .Setup(c => c.SendWithKeyspace(
+                    It.IsAny<IRequest>(),
+                    It.IsAny<string>(),
+                    It.IsAny<Func<IRequestError, Response, Task>>(),
+                    It.IsAny<int>(),
+                    It.IsAny<bool>()))
+                .Returns<IRequest, string, Func<IRequestError, Response, Task>, int, bool>((req, _, act, timeout, __) =>
                 {
                     mockResult.SendResults.Enqueue(new ConnectionSendResult { Request = req, TimeoutMillis = timeout });
                     Task.Run(async () =>
@@ -325,7 +330,7 @@ namespace Cassandra.Tests.ExecutionProfiles
                             }
                         }
                     });
-                    return new OperationState(act, req, timeout, NullOperationObserver.Instance);
+                    return Task.FromResult(new OperationState(act, req, timeout, NullOperationObserver.Instance));
                 });
             Mock.Get(connection)
                 .SetupGet(c => c.EndPoint)
