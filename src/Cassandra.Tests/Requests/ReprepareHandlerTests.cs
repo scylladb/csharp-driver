@@ -148,6 +148,27 @@ namespace Cassandra.Tests.Requests
             }
         }
 
+        [Test]
+        public async Task ReprepareOnSingleNodeAsync_Should_Pin_The_Prepared_Keyspace()
+        {
+            var context = CreateContext(new byte[] { 1 });
+
+            using (var semaphore = new SemaphoreSlim(0, 1))
+            {
+                await new ReprepareHandler().ReprepareOnSingleNodeAsync(
+                    context.Cluster.Object,
+                    context.Pool,
+                    context.PreparedStatement,
+                    context.Request,
+                    semaphore,
+                    true).ConfigureAwait(false);
+
+                context.Connection.Verify(value => value.SendWithKeyspace(
+                    context.Request, ReprepareHandlerTests.Keyspace), Times.Once);
+                Assert.AreEqual(1, semaphore.CurrentCount);
+            }
+        }
+
         private static ReprepareContext CreateContext(
             byte[] responseId = null,
             ProtocolVersion protocolVersion = ProtocolVersion.V4,
