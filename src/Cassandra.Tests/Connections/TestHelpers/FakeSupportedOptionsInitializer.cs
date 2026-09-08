@@ -35,7 +35,7 @@ namespace Cassandra.Tests.Connections.TestHelpers
             return TaskHelper.Completed;
         }
 
-        public void ApplySupportedFromResponse(Response response)
+        public void ApplySupportedFromResponse(Response response, ProtocolVersion protocolVersion)
         {
         }
 
@@ -53,6 +53,11 @@ namespace Cassandra.Tests.Connections.TestHelpers
         public LwtInfo GetLwtInfo()
         {
             return null;
+        }
+
+        public bool ShouldUseMetadataId()
+        {
+            return false;
         }
     }
 }

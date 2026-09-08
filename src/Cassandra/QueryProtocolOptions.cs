@@ -150,14 +150,14 @@ namespace Cassandra
                 ConsistencyLevel.One, statement.QueryValues, false, 0, null, ConsistencyLevel.Serial, null, null, variablesMetadata);
         }
 
-        private QueryFlags GetFlags(ProtocolVersion protocolVersion, bool isPrepared)
+        private QueryFlags GetFlags(ProtocolVersion protocolVersion, bool isPrepared, bool? skipMetadataOverride)
         {
             QueryFlags flags = 0;
             if (Values != null && Values.Length > 0)
             {
                 flags |= QueryFlags.Values;
             }
-            if (SkipMetadata)
+            if (skipMetadataOverride ?? SkipMetadata)
             {
                 flags |= QueryFlags.SkipMetadata;
             }
@@ -192,13 +192,19 @@ namespace Cassandra
             return flags;
         }
 
-        internal void Write(FrameWriter wb, bool isPrepared)
+        /// <remarks>
+        /// <c>skipMetadataOverride</c>, when set, replaces <see cref="SkipMetadata"/> for this frame.
+        /// EXECUTE requests decide whether to skip result metadata from the connection they are being
+        /// written to, which is not known when this instance is built.
+        /// See <see cref="Requests.ExecuteRequest.ShouldSkipResultMetadata"/>.
+        /// </remarks>
+        internal void Write(FrameWriter wb, bool isPrepared, bool? skipMetadataOverride = null)
         {
             //protocol v1: <query><n><value_1>....<value_n><consistency>
             //protocol v2: <query><consistency><flags>[<n><value_1>...<value_n>][<result_page_size>][<paging_state>][<serial_consistency>]
             //protocol v3: <query><consistency><flags>[<n>[name_1]<value_1>...[name_n]<value_n>][<result_page_size>][<paging_state>][<serial_consistency>][<timestamp>]
             var protocolVersion = wb.Serializer.ProtocolVersion;
-            var flags = GetFlags(protocolVersion, isPrepared);
+            var flags = GetFlags(protocolVersion, isPrepared, skipMetadataOverride);
 
             if (protocolVersion != ProtocolVersion.V1)
             {

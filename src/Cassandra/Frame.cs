@@ -43,12 +43,20 @@ namespace Cassandra
         /// </summary>
         public ResultMetadata ResultMetadata { get; }
 
-        public Frame(FrameHeader header, Stream body, ISerializer serializer, ResultMetadata resultMetadata)
+        /// <summary>
+        /// Whether the connection this frame was received on exchanges result metadata ids, which
+        /// determines whether RESULT bodies carry them. See <see cref="Connections.IConnection.UseMetadataId"/>.
+        /// </summary>
+        public bool UseMetadataId { get; }
+
+        public Frame(
+            FrameHeader header, Stream body, ISerializer serializer, ResultMetadata resultMetadata, bool useMetadataId)
         {
             Header = header ?? throw new ArgumentNullException(nameof(header));
             Body = body ?? throw new ArgumentNullException(nameof(body));
             Serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
             ResultMetadata = resultMetadata;
+            UseMetadataId = useMetadataId;
         }
     }
 }

@@ -15,9 +15,13 @@
 //
 
 using System;
+using System.Collections.Generic;
 using System.Reflection;
+using Cassandra.Connections;
+using Cassandra.Connections.Control;
 using Cassandra.Helpers;
 using Cassandra.Requests;
+using Moq;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
@@ -118,6 +122,34 @@ namespace Cassandra.Tests.Requests
 
             Assert.IsTrue(options.ContainsKey("SESSION_ID"));
             Assert.IsFalse(options.ContainsKey("DRIVER_CONFIG"));
+        }
+
+        [Test]
+        public void Should_OptIntoUseMetadataId_When_TheExtensionShouldBeUsed()
+        {
+            var factory = new StartupOptionsFactory(Guid.NewGuid(), null, null, new DriverConfigReporter(new TestConfigurationBuilder().Build()));
+            var supported = Mock.Of<ISupportedOptionsInitializer>(i => i.ShouldUseMetadataId() == true);
+
+            var options = factory.CreateStartupOptions(new ProtocolOptions(), supported, false);
+
+            // The key alone is the opt-in, so the value carries no information and must be empty.
+            Assert.AreEqual(string.Empty, options[StartupOptionsFactory.UseMetadataIdOption]);
+        }
+
+        [Test]
+        public void Should_NotOptIntoUseMetadataId_When_TheExtensionShouldNotBeUsed()
+        {
+            var factory = new StartupOptionsFactory(Guid.NewGuid(), null, null, new DriverConfigReporter(new TestConfigurationBuilder().Build()));
+            var supported = Mock.Of<ISupportedOptionsInitializer>(i => i.ShouldUseMetadataId() == false);
+
+            Assert.IsFalse(
+                factory.CreateStartupOptions(new ProtocolOptions(), supported, false)
+                       .ContainsKey(StartupOptionsFactory.UseMetadataIdOption));
+
+            // A connection with no initializer at all must not opt in either.
+            Assert.IsFalse(
+                factory.CreateStartupOptions(new ProtocolOptions(), null, false)
+                       .ContainsKey(StartupOptionsFactory.UseMetadataIdOption));
         }
     }
 }
