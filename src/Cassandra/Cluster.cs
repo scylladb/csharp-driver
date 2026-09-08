@@ -628,6 +628,15 @@ namespace Cassandra
             var lbp = session.Cluster.Configuration.DefaultRequestOptions.LoadBalancingPolicy;
             var handler = InternalRef.Configuration.PrepareHandlerFactory.CreatePrepareHandler(serializerManager, this, session, request);
             var ps = await handler.Prepare(request, session, lbp.NewQueryPlan(session.Keyspace, null).GetEnumerator()).ConfigureAwait(false);
+
+            if (request.Payload != null)
+            {
+                // The server-side ID does not include the custom payload. Preserve this response because its
+                // payload and metadata can differ from an earlier response that has the same prepared ID.
+                InternalRef.PreparedQueries.TryAdd(ps.Id, ps);
+                return ps;
+            }
+
             var psAdded = InternalRef.PreparedQueries.GetOrAdd(ps.Id, ps);
             if (ps != psAdded)
             {
