@@ -516,6 +516,85 @@ namespace Cassandra.Tests.Requests
         }
 
         /// <summary>
+        /// A sighting bears on the metadata already held, not only on what arrives next. The statement here
+        /// is trusting an id and skipping against it when a response reports it with no columns - a
+        /// reprepare answered by a node that reports none for this statement, in a cluster part way through
+        /// an upgrade. Leaving the trust in place would leave the driver skipping against an id that node
+        /// answers as a match whatever the columns become, and the columns it holds are kept either way, so
+        /// there is nothing to weigh against taking the trust away.
+        /// </summary>
+        [Test]
+        public void UpdateResultMetadata_Should_RevokeTrust_When_ALaterResponseReportsNoColumns()
+        {
+            var ps = ResultMetadataIdTests.PreparedWith(MetadataId, 2);
+            Assert.That(ExecuteRequest.ShouldSkipResultMetadata(true, ps.ResultMetadata), Is.True);
+
+            ps.UpdateResultMetadata(new ResultMetadata(NewMetadataId, ResultMetadataIdTests.RowSetMetadataWith(0)));
+
+            Assert.That(
+                ps.ResultMetadata.RowSetMetadata.Columns.Length, Is.EqualTo(2), "the columns held are kept");
+            Assert.That(ps.ResultMetadata.IdDescribesColumns, Is.False);
+            Assert.That(ExecuteRequest.ShouldSkipResultMetadata(true, ps.ResultMetadata), Is.False);
+        }
+
+        /// <summary>
+        /// And the sighting must survive racing a response that carries columns, which is why it is
+        /// published with the metadata in one step rather than beside it. Held apart, the response with
+        /// columns can read the mark as unset, the response without can set it and find nothing yet to
+        /// take trust from, and the trusted metadata is then published last with nothing left to correct
+        /// it - the mark's own publication may not, columns never being traded for none, and no further
+        /// response is coming, because the server answers the id it issued as a match.
+        /// </summary>
+        /// <remarks>
+        /// Whichever order the two land in, both have been offered by the end of an iteration, so the
+        /// statement must end up with columns and with no trust in the id beside them. That makes the
+        /// assertion independent of the interleaving the run happens to produce, which is what a race this
+        /// narrow needs: it is the invariant that is checked, not a schedule.
+        /// </remarks>
+        [Test]
+        public void UpdateResultMetadata_Should_KeepTheMark_When_ANoColumnResponseRacesOneWithColumns()
+        {
+            var thirdId = Enumerable.Repeat((byte)0xEF, 16).ToArray();
+
+            for (var attempt = 0; attempt < 500; attempt++)
+            {
+                var ps = ResultMetadataIdTests.PreparedWith(MetadataId, 2);
+                var gate = new System.Threading.ManualResetEventSlim(false);
+
+                var withColumns = System.Threading.Tasks.Task.Run(() =>
+                {
+                    gate.Wait();
+                    ps.UpdateResultMetadata(
+                        new ResultMetadata(NewMetadataId, ResultMetadataIdTests.RowSetMetadataWith(3)));
+                });
+                var withoutColumns = System.Threading.Tasks.Task.Run(() =>
+                {
+                    gate.Wait();
+                    ps.UpdateResultMetadata(
+                        new ResultMetadata(thirdId, ResultMetadataIdTests.RowSetMetadataWith(0)));
+                });
+
+                gate.Set();
+                Assert.That(
+                    System.Threading.Tasks.Task.WaitAll(
+                        new[] { withColumns, withoutColumns }, TimeSpan.FromSeconds(30)),
+                    Is.True,
+                    "a publish did not complete");
+
+                Assert.That(
+                    ps.ResultMetadata.ContainsColumnDefinitions(),
+                    Is.True,
+                    "columns were lost under contention");
+                Assert.That(
+                    ps.ResultMetadata.IdDescribesColumns,
+                    Is.False,
+                    "the sighting was published while the response with columns was deciding, and the " +
+                    "statement went on trusting an id the server hashed from no columns at all");
+                Assert.That(ExecuteRequest.ShouldSkipResultMetadata(true, ps.ResultMetadata), Is.False);
+            }
+        }
+
+        /// <summary>
         /// Concurrent publishes must not lose one another: the decision reads the current value first, so a
         /// plain assignment would let two responses decide against the same stale value and let the later
         /// write win, discarding columns the other had just published. Every winner here must be a value

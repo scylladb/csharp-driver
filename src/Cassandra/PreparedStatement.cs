@@ -37,11 +37,14 @@ namespace Cassandra
         private string[] _routingNames;
         private volatile int[] _routingIndexes;
         /// <summary>
-        /// Deliberately not <c>volatile</c>: <see cref="UpdateResultMetadata"/> has to publish with
-        /// <see cref="Interlocked.CompareExchange(ref object, object, object)"/>, and a reference to a
-        /// volatile field cannot be passed by reference.
+        /// This statement's result metadata and the history that decides whether the ids it carries can be
+        /// trusted, held as one value - see <see cref="MetadataState"/>.
         /// </summary>
         /// <remarks>
+        /// Deliberately not <c>volatile</c>: <see cref="UpdateResultMetadata"/> has to publish with
+        /// <see cref="Interlocked.CompareExchange{T}(ref T, T, T)"/>, and a reference to a volatile field
+        /// cannot be passed by reference.
+        /// <para>
         /// The modifier is replaced rather than dropped, so that every access still carries the ordering it
         /// gave: reads through <see cref="Volatile.Read{T}(ref T)"/>, the publication through the exchange
         /// above, and the one write outside it - the constructor's - through
@@ -49,15 +52,9 @@ namespace Cassandra
         /// through the prepared statement cache or an awaited task, both of which order it, so the
         /// constructor's write is belt and braces; it is written that way to keep the field's rule uniform
         /// rather than one to be reasoned about per site.
+        /// </para>
         /// </remarks>
-        private ResultMetadata _resultMetadata;
-
-        /// <summary>
-        /// Whether the server has ever reported this statement's result metadata with no columns in it,
-        /// which makes every id the statement carries from then on unfit to detect a change. Monotone:
-        /// only ever set.
-        /// </summary>
-        private volatile bool _seenWithoutColumns;
+        private MetadataState _state;
         private volatile bool _isLwt;
 
         /// <summary>
@@ -99,7 +96,7 @@ namespace Cassandra
         /// </summary>
         internal ResultMetadata ResultMetadata
         {
-            get { return Volatile.Read(ref _resultMetadata); }
+            get { return Volatile.Read(ref _state).Metadata; }
         }
 
         /// <summary>
@@ -143,14 +140,16 @@ namespace Cassandra
         public PreparedStatement()
         {
             //Default constructor for client test and mocking frameworks
+            // The state is never null, so that reading the result metadata off a mocked statement answers
+            // null the way it did when the metadata was the field itself.
+            Volatile.Write(ref _state, MetadataState.ForPreparedResponse(null));
         }
 
         internal PreparedStatement(RowSetMetadata variablesRowsMetadata, byte[] id, ResultMetadata resultMetadata, string cql,
                                    string keyspace, ISerializerManager serializer, bool isLwt)
         {
             _variablesRowsMetadata = variablesRowsMetadata;
-            Volatile.Write(ref _resultMetadata, resultMetadata);
-            NoteIfTheIdCannotDescribeColumns(resultMetadata);
+            Volatile.Write(ref _state, MetadataState.ForPreparedResponse(resultMetadata));
             Id = id;
             Cql = cql;
             Keyspace = keyspace;
@@ -180,123 +179,27 @@ namespace Cassandra
         /// </remarks>
         internal void UpdateResultMetadata(ResultMetadata resultMetadata)
         {
-            NoteIfTheIdCannotDescribeColumns(resultMetadata);
-
-            // Deciding whether to publish means reading the current value first, so the decision and the
-            // write have to be one step. Two responses for the same statement can arrive on different
-            // connections at once - a METADATA_CHANGED and a reprepare after UNPREPARED - and a plain
-            // assignment would let both decide against the same stale value and let the later write win,
-            // which can discard columns the other had just published.
+            // Deciding what to publish means reading the current state first, so the decision and the write
+            // have to be one step. Two responses for the same statement can arrive on different connections
+            // at once - a METADATA_CHANGED and a reprepare after UNPREPARED - and a plain assignment would
+            // let both decide against the same stale value and let the later write win, which can discard
+            // columns the other had just published, or the mark that says its id cannot be trusted.
             while (true)
             {
-                var current = Volatile.Read(ref _resultMetadata);
-                var toPublish = ResolvePublication(current, resultMetadata);
-                if (toPublish == null)
+                var current = Volatile.Read(ref _state);
+                var next = current.WithResponse(resultMetadata);
+                if (next == null)
                 {
                     return;
                 }
 
-                if (ReferenceEquals(
-                        Interlocked.CompareExchange(ref _resultMetadata, toPublish, current), current))
+                if (ReferenceEquals(Interlocked.CompareExchange(ref _state, next, current), current))
                 {
                     return;
                 }
 
                 // Someone published between the read and the exchange; decide again against what they left.
             }
-        }
-
-        /// <summary>
-        /// Records that this statement's ids cannot be trusted to describe its columns, if the metadata it
-        /// is given shows as much: the server reported no columns for it, so any id it hands out for the
-        /// statement is a hash of that emptiness, and it goes on answering that id once the real columns
-        /// arrive.
-        /// </summary>
-        /// <remarks>
-        /// Kept per statement rather than per id on purpose. Which id is held at any moment depends on the
-        /// order responses happen to arrive in - during a rolling upgrade one node issues a hash of empty
-        /// metadata and another a hash of the real columns, and either may land last - so a rule that
-        /// re-derived trust from the id in hand would restore it whenever a differing id arrived late. One
-        /// sighting is enough to settle the question for good.
-        /// <para>
-        /// The absence of columns is what is recorded, and whether an id came with them is deliberately not
-        /// part of it. A statement first prepared on a connection that did not exchange ids arrives with
-        /// neither, and requiring the id here would leave that sighting unrecorded: the statement would go
-        /// on to acquire columns from a METADATA_CHANGED paired with an id the server hashed from the empty
-        /// metadata it still holds, and nothing would say that id cannot report the next change. Reachable
-        /// during a rolling upgrade, since a prepared statement outlives the connection it was prepared on.
-        /// </para>
-        /// <para>
-        /// The cost falls only on statements the server reports no result metadata for, which pay for the
-        /// full column set on every execution. That is what they cost before this mechanism existed, and
-        /// what they already cost for as long as they hold the empty-metadata id. It is paid for the life of
-        /// the statement, so a statement whose metadata a later server version would report - the ids being
-        /// version-dependent for the likes of an LWT or <c>LIST ROLES OF</c> - keeps paying it past the
-        /// upgrade that would have settled it, until it is prepared afresh. Deliberate: the driver cannot
-        /// tell that id from an empty-metadata hash by looking at it, and the alternative is skipping
-        /// metadata against an id that will never move.
-        /// </para>
-        /// <para>
-        /// What is already published is left alone; the mark bears on what is published from then on. That
-        /// is not a gap: an id and the columns beside it are only ever taken from the same response, so
-        /// metadata standing as trustworthy holds an id some node hashed from exactly those columns, and a
-        /// node that would hash them differently answers the id with METADATA_CHANGED rather than a match.
-        /// </para>
-        /// <para>
-        /// Null metadata says nothing either way and is not a sighting - it is what a caller passes when
-        /// there is nothing to publish, not something a server reported.
-        /// </para>
-        /// </remarks>
-        private void NoteIfTheIdCannotDescribeColumns(ResultMetadata metadata)
-        {
-            if (metadata != null && !metadata.ContainsColumnDefinitions())
-            {
-                _seenWithoutColumns = true;
-            }
-        }
-
-        /// <summary>
-        /// The metadata to publish over <paramref name="current"/>, or null to keep what is there.
-        /// </summary>
-        /// <remarks>
-        /// Returns the incoming instance unchanged except when this statement's ids are known not to
-        /// describe its columns, in which case what is published records that - see
-        /// <see cref="ResultMetadata.IdDescribesColumns"/> and
-        /// <see cref="NoteIfTheIdCannotDescribeColumns"/>.
-        /// </remarks>
-        private ResultMetadata ResolvePublication(ResultMetadata current, ResultMetadata incoming)
-        {
-            var currentHasColumns = current?.ContainsColumnDefinitions() == true;
-            var incomingHasColumns = incoming?.ContainsColumnDefinitions() == true;
-
-            if (currentHasColumns && !incomingHasColumns)
-            {
-                // Never trade columns for none. A reprepare can answer with no result metadata at all - on
-                // a connection without the extension, or for a statement the server reports none for - and
-                // adopting that would leave nothing to decode with and nothing to skip on.
-                return null;
-            }
-
-            var idUnchanged = current?.ContainsResultMetadataId() == true
-                              && incoming?.ContainsResultMetadataId() == true
-                              && current.ResultMetadataId.SequenceEqual(incoming.ResultMetadataId);
-
-            if (!incomingHasColumns)
-            {
-                // Neither side has columns. Only a moved id is news; anything else says nothing.
-                return idUnchanged ? null : incoming;
-            }
-
-            if (currentHasColumns && idUnchanged && current.IdDescribesColumns)
-            {
-                // An unchanged non-empty id that does describe the columns means unchanged metadata.
-                return null;
-            }
-
-            // Otherwise take the columns - either the statement has none, or its id cannot vouch for the
-            // ones it has - and record whether the id that comes with them can be trusted to move when
-            // they go stale.
-            return _seenWithoutColumns ? incoming.WithIdNotDescribingColumns() : incoming;
         }
 
         /// <summary>
@@ -471,6 +374,170 @@ namespace Cassandra
         public override string ToString()
         {
             return QueryString;
+        }
+
+        /// <summary>
+        /// This statement's result metadata together with whether the server has ever reported that
+        /// metadata with no columns in it, as one immutable value.
+        /// </summary>
+        /// <remarks>
+        /// The two are one value because the second decides how the first may be published, and both move
+        /// in answer to the same thing - a response from the server - so publishing them separately leaves
+        /// a window between them. Two responses for one statement can be in flight at once, a
+        /// METADATA_CHANGED and a reprepare after UNPREPARED on different connections: a response with no
+        /// columns could set the mark just after a response bearing columns had read it as unset, and that
+        /// one would then publish its id as describing its columns with nothing left to correct it. The
+        /// mark's own publication cannot, bound by the rule that columns are never traded for none, and no
+        /// further response is coming, because the server answers the id it issued as a match. Held as one
+        /// value, the loser of that race decides again against the winner's state - see
+        /// <see cref="UpdateResultMetadata"/>.
+        /// <para>
+        /// Invariant: while <see cref="SeenWithoutColumns"/> is set, <see cref="Metadata"/> does not claim
+        /// its id describes its columns.
+        /// </para>
+        /// </remarks>
+        private sealed class MetadataState
+        {
+            private MetadataState(ResultMetadata metadata, bool seenWithoutColumns)
+            {
+                Metadata = metadata;
+                SeenWithoutColumns = seenWithoutColumns;
+            }
+
+            /// <summary>
+            /// The metadata to execute against: the columns a skipped response is decoded with, and the id
+            /// to send.
+            /// </summary>
+            public ResultMetadata Metadata { get; }
+
+            /// <summary>
+            /// Whether the server has ever reported this statement's result metadata with no columns in it,
+            /// which makes every id the statement carries from then on unfit to detect a change. Monotone:
+            /// no state derived from one that carries it clears it.
+            /// </summary>
+            /// <remarks>
+            /// An id with no columns beside it is the server's hash of that emptiness, and the server goes
+            /// on answering that id once the real columns arrive, so it has none left to issue when the
+            /// shape changes.
+            /// <para>
+            /// Kept per statement rather than per id on purpose. Which id is held at any moment depends on
+            /// the order responses happen to arrive in - during a rolling upgrade one node issues a hash of
+            /// empty metadata and another a hash of the real columns, and either may land last - so a rule
+            /// that re-derived trust from the id in hand would restore it whenever a differing id arrived
+            /// late. One sighting is enough to settle the question for good.
+            /// </para>
+            /// <para>
+            /// The absence of columns is what is recorded, and whether an id came with them is deliberately
+            /// not part of it. A statement first prepared on a connection that did not exchange ids arrives
+            /// with neither, and requiring the id would leave that sighting unrecorded: the statement would
+            /// go on to acquire columns from a METADATA_CHANGED paired with an id the server hashed from the
+            /// empty metadata it still holds, and nothing would say that id cannot report the next change.
+            /// Reachable during a rolling upgrade, since a prepared statement outlives the connection it
+            /// was prepared on.
+            /// </para>
+            /// <para>
+            /// The cost falls only on statements the server reports no result metadata for, which pay for
+            /// the full column set on every execution. That is what they cost before this mechanism
+            /// existed, and what they already cost for as long as they hold the empty-metadata id. It is
+            /// paid for the life of the statement, so a statement whose metadata a later server version
+            /// would report - the ids being version-dependent for the likes of an LWT or
+            /// <c>LIST ROLES OF</c> - keeps paying it past the upgrade that would have settled it, until it
+            /// is prepared afresh. Deliberate: the driver cannot tell that id from an empty-metadata hash
+            /// by looking at it, and the alternative is skipping metadata against an id that will never
+            /// move.
+            /// </para>
+            /// <para>
+            /// Null metadata says nothing either way and is not a sighting - it is what a caller passes
+            /// when there is nothing to publish, not something a server reported.
+            /// </para>
+            /// </remarks>
+            public bool SeenWithoutColumns { get; }
+
+            /// <summary>
+            /// The state a statement starts in, from the metadata its RESULT/Prepared carried.
+            /// </summary>
+            public static MetadataState ForPreparedResponse(ResultMetadata metadata)
+            {
+                var seenWithoutColumns = MetadataState.ShowsNoColumns(metadata);
+                return new MetadataState(
+                    MetadataState.Sanitized(metadata, seenWithoutColumns), seenWithoutColumns);
+            }
+
+            /// <summary>
+            /// The state this one becomes on the statement being handed <paramref name="incoming"/>, or
+            /// null when it stays as it is and there is nothing to publish.
+            /// </summary>
+            public MetadataState WithResponse(ResultMetadata incoming)
+            {
+                var seenWithoutColumns = SeenWithoutColumns || MetadataState.ShowsNoColumns(incoming);
+                var metadata = MetadataState.Sanitized(ResolvePublication(incoming), seenWithoutColumns);
+
+                // Nothing to publish only if neither half moved. The metadata can be a new instance while
+                // the winner is the metadata already held - that is the mark taking trust away from it -
+                // and that has to reach the field like any other change.
+                return seenWithoutColumns == SeenWithoutColumns && ReferenceEquals(metadata, Metadata)
+                    ? null
+                    : new MetadataState(metadata, seenWithoutColumns);
+            }
+
+            /// <summary>
+            /// Whether <paramref name="metadata"/> is the server reporting this statement with no columns.
+            /// </summary>
+            private static bool ShowsNoColumns(ResultMetadata metadata)
+            {
+                return metadata != null && !metadata.ContainsColumnDefinitions();
+            }
+
+            /// <summary>
+            /// <paramref name="metadata"/> as a state may hold it, which is the invariant above: an id a
+            /// statement of this history carries is not the hash of the columns beside it, whatever the
+            /// response it came in said - see <see cref="ResultMetadata.IdDescribesColumns"/>.
+            /// </summary>
+            private static ResultMetadata Sanitized(ResultMetadata metadata, bool seenWithoutColumns)
+            {
+                return seenWithoutColumns && metadata?.IdDescribesColumns == true
+                    ? metadata.WithIdNotDescribingColumns()
+                    : metadata;
+            }
+
+            /// <summary>
+            /// Which of the metadata held and <paramref name="incoming"/> the statement goes on with.
+            /// Whether the winner's id may be trusted is not decided here, but by
+            /// <see cref="Sanitized"/> from the statement's history.
+            /// </summary>
+            private ResultMetadata ResolvePublication(ResultMetadata incoming)
+            {
+                var heldHasColumns = Metadata?.ContainsColumnDefinitions() == true;
+                var incomingHasColumns = incoming?.ContainsColumnDefinitions() == true;
+
+                if (heldHasColumns && !incomingHasColumns)
+                {
+                    // Never trade columns for none. A reprepare can answer with no result metadata at all -
+                    // on a connection without the extension, or for a statement the server reports none
+                    // for - and adopting that would leave nothing to decode with and nothing to skip on.
+                    return Metadata;
+                }
+
+                var idUnchanged = Metadata?.ContainsResultMetadataId() == true
+                                  && incoming?.ContainsResultMetadataId() == true
+                                  && Metadata.ResultMetadataId.SequenceEqual(incoming.ResultMetadataId);
+
+                if (!incomingHasColumns)
+                {
+                    // Neither side has columns. Only a moved id is news; anything else says nothing.
+                    return idUnchanged ? Metadata : incoming;
+                }
+
+                if (heldHasColumns && idUnchanged && Metadata.IdDescribesColumns)
+                {
+                    // An unchanged non-empty id that does describe the columns means unchanged metadata.
+                    return Metadata;
+                }
+
+                // Otherwise take the columns - either the statement has none, or its id cannot vouch for
+                // the ones it has.
+                return incoming;
+            }
         }
     }
 }
