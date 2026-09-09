@@ -53,10 +53,11 @@ namespace Cassandra
         private ResultMetadata _resultMetadata;
 
         /// <summary>
-        /// Whether this statement has ever been seen holding a result metadata id with no columns, which
-        /// makes every id it carries from then on unfit to detect a change. Monotone: only ever set.
+        /// Whether the server has ever reported this statement's result metadata with no columns in it,
+        /// which makes every id the statement carries from then on unfit to detect a change. Monotone:
+        /// only ever set.
         /// </summary>
-        private volatile bool _idSeenWithoutColumns;
+        private volatile bool _seenWithoutColumns;
         private volatile bool _isLwt;
 
         /// <summary>
@@ -207,8 +208,9 @@ namespace Cassandra
 
         /// <summary>
         /// Records that this statement's ids cannot be trusted to describe its columns, if the metadata it
-        /// is given shows as much: an id with no columns beside it is a hash of that emptiness, and the
-        /// server goes on answering it once the real columns arrive.
+        /// is given shows as much: the server reported no columns for it, so any id it hands out for the
+        /// statement is a hash of that emptiness, and it goes on answering that id once the real columns
+        /// arrive.
         /// </summary>
         /// <remarks>
         /// Kept per statement rather than per id on purpose. Which id is held at any moment depends on the
@@ -217,16 +219,39 @@ namespace Cassandra
         /// re-derived trust from the id in hand would restore it whenever a differing id arrived late. One
         /// sighting is enough to settle the question for good.
         /// <para>
+        /// The absence of columns is what is recorded, and whether an id came with them is deliberately not
+        /// part of it. A statement first prepared on a connection that did not exchange ids arrives with
+        /// neither, and requiring the id here would leave that sighting unrecorded: the statement would go
+        /// on to acquire columns from a METADATA_CHANGED paired with an id the server hashed from the empty
+        /// metadata it still holds, and nothing would say that id cannot report the next change. Reachable
+        /// during a rolling upgrade, since a prepared statement outlives the connection it was prepared on.
+        /// </para>
+        /// <para>
         /// The cost falls only on statements the server reports no result metadata for, which pay for the
         /// full column set on every execution. That is what they cost before this mechanism existed, and
-        /// what they already cost for as long as they hold the empty-metadata id.
+        /// what they already cost for as long as they hold the empty-metadata id. It is paid for the life of
+        /// the statement, so a statement whose metadata a later server version would report - the ids being
+        /// version-dependent for the likes of an LWT or <c>LIST ROLES OF</c> - keeps paying it past the
+        /// upgrade that would have settled it, until it is prepared afresh. Deliberate: the driver cannot
+        /// tell that id from an empty-metadata hash by looking at it, and the alternative is skipping
+        /// metadata against an id that will never move.
+        /// </para>
+        /// <para>
+        /// What is already published is left alone; the mark bears on what is published from then on. That
+        /// is not a gap: an id and the columns beside it are only ever taken from the same response, so
+        /// metadata standing as trustworthy holds an id some node hashed from exactly those columns, and a
+        /// node that would hash them differently answers the id with METADATA_CHANGED rather than a match.
+        /// </para>
+        /// <para>
+        /// Null metadata says nothing either way and is not a sighting - it is what a caller passes when
+        /// there is nothing to publish, not something a server reported.
         /// </para>
         /// </remarks>
         private void NoteIfTheIdCannotDescribeColumns(ResultMetadata metadata)
         {
-            if (metadata?.ContainsResultMetadataId() == true && !metadata.ContainsColumnDefinitions())
+            if (metadata != null && !metadata.ContainsColumnDefinitions())
             {
-                _idSeenWithoutColumns = true;
+                _seenWithoutColumns = true;
             }
         }
 
@@ -271,7 +296,7 @@ namespace Cassandra
             // Otherwise take the columns - either the statement has none, or its id cannot vouch for the
             // ones it has - and record whether the id that comes with them can be trusted to move when
             // they go stale.
-            return _idSeenWithoutColumns ? incoming.WithIdNotDescribingColumns() : incoming;
+            return _seenWithoutColumns ? incoming.WithIdNotDescribingColumns() : incoming;
         }
 
         /// <summary>

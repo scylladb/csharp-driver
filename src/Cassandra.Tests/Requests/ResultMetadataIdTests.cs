@@ -341,6 +341,80 @@ namespace Cassandra.Tests.Requests
         }
 
         /// <summary>
+        /// Trust is withheld the same way for a statement that arrived with no id either, prepared on a
+        /// connection that did not exchange them - which a prepared statement reaches by outliving the
+        /// connection it was prepared on, during a rolling upgrade. What has to be recorded is the absence
+        /// of columns; an id beside it would say no more, and requiring one would let this statement pair
+        /// the columns it later acquires with the empty-metadata hash they come under and treat that hash
+        /// as describing them. See scylladb/csharp-driver#287.
+        /// </summary>
+        [Test]
+        [TestCase(null, TestName = "the prepared response carried no id field at all")]
+        [TestCase(new byte[0], TestName = "it carried an empty id")]
+        public void UpdateResultMetadata_Should_NotTrustTheId_When_ThePrepareCarriedNeitherIdNorColumns(
+            byte[] preparedId)
+        {
+            var ps = ResultMetadataIdTests.PreparedWith(preparedId, 0);
+
+            // The upgraded node answers the empty id with a fresh one and the real columns - and that id is
+            // still the hash of the empty metadata the server holds for this statement, so it will not move
+            // when the columns do.
+            ps.UpdateResultMetadata(new ResultMetadata(MetadataId, ResultMetadataIdTests.RowSetMetadataWith(2)));
+
+            Assert.That(ps.ResultMetadata.RowSetMetadata.Columns.Length, Is.EqualTo(2), "the columns are taken");
+            Assert.That(ps.ResultMetadata.IdDescribesColumns, Is.False);
+            Assert.That(
+                ExecuteRequest.ShouldSkipResultMetadata(true, ps.ResultMetadata),
+                Is.False,
+                "the statement was prepared without columns, so the id it has now hashes that emptiness " +
+                "and the server will answer it as a match whatever the columns become");
+        }
+
+        /// <summary>
+        /// And the sighting counts wherever it arrives, not only at prepare time: a reprepare after
+        /// UNPREPARED can be the response that reports no result metadata, on a connection that exchanges
+        /// no ids. The columns held are kept - never traded for none - and the statement stops trusting the
+        /// ids it is handed from then on.
+        /// </summary>
+        [Test]
+        public void UpdateResultMetadata_Should_NotTrustTheId_When_AReprepareAnsweredWithNeitherIdNorColumns()
+        {
+            var ps = ResultMetadataIdTests.PreparedWith(MetadataId, 2);
+            Assert.That(ExecuteRequest.ShouldSkipResultMetadata(true, ps.ResultMetadata), Is.True);
+
+            ps.UpdateResultMetadata(new ResultMetadata(null, ResultMetadataIdTests.RowSetMetadataWith(0)));
+            Assert.That(
+                ps.ResultMetadata.RowSetMetadata.Columns.Length, Is.EqualTo(2), "the columns held are kept");
+
+            ps.UpdateResultMetadata(new ResultMetadata(NewMetadataId, ResultMetadataIdTests.RowSetMetadataWith(3)));
+
+            Assert.That(ps.ResultMetadata.RowSetMetadata.Columns.Length, Is.EqualTo(3));
+            Assert.That(ps.ResultMetadata.IdDescribesColumns, Is.False);
+            Assert.That(ExecuteRequest.ShouldSkipResultMetadata(true, ps.ResultMetadata), Is.False);
+        }
+
+        /// <summary>
+        /// A missing id on its own is not a sighting, and this is the case that says so: the ordinary
+        /// statement prepared on a connection without the extension reports its columns, and the id it earns
+        /// from its first execution is a hash of those columns like any other. Distrusting every statement
+        /// that ever lacked an id would give up metadata skipping for the whole of a rolling upgrade.
+        /// </summary>
+        [Test]
+        public void UpdateResultMetadata_Should_TrustTheId_When_ThePrepareReportedColumnsButNoId()
+        {
+            var ps = ResultMetadataIdTests.PreparedWith(null, 2);
+            Assert.That(
+                ExecuteRequest.ShouldSkipResultMetadata(true, ps.ResultMetadata),
+                Is.False,
+                "the premise: nothing to skip against yet, for want of an id");
+
+            ps.UpdateResultMetadata(new ResultMetadata(MetadataId, ResultMetadataIdTests.RowSetMetadataWith(2)));
+
+            Assert.That(ps.ResultMetadata.IdDescribesColumns, Is.True);
+            Assert.That(ExecuteRequest.ShouldSkipResultMetadata(true, ps.ResultMetadata), Is.True);
+        }
+
+        /// <summary>
         /// A statement the server did report result metadata for keeps its trust when the id later moves -
         /// that is the ordinary schema-change path, and nothing about it is in doubt. Without this the rule
         /// above could be satisfied by never trusting any id at all.
