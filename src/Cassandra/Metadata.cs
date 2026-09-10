@@ -274,21 +274,53 @@ namespace Cassandra
         }
 
         /// <summary>
-        /// Get the replicas for a given partition key and keyspace
+        /// Get the replicas for a given partition key, keyspace and table.
         /// </summary>
-        public ICollection<HostShard> GetReplicas(string keyspaceName, byte[] partitionKey)
+        /// <param name="keyspaceName">The keyspace name.</param>
+        /// <param name="tableName">The table name.</param>
+        /// <param name="partitionKey">Byte array representing the partition key.</param>
+        /// <returns>
+        /// A collection of replicas resolved using tablet metadata when available for the provided
+        /// keyspace and table, falling back to token-map resolution otherwise.
+        /// </returns>
+        public ICollection<HostShard> GetReplicas(string keyspaceName, string tableName, byte[] partitionKey)
         {
             if (_tokenMap == null)
             {
                 Metadata.Logger.Warning("Metadata.GetReplicas was called but there was no token map.");
                 return new HostShard[0];
             }
-            return _tokenMap.GetReplicas(keyspaceName, _tokenMap.Factory.Hash(partitionKey));
+
+            var token = _tokenMap.Factory.Hash(partitionKey);
+            if (!string.IsNullOrEmpty(keyspaceName) && !string.IsNullOrEmpty(tableName))
+            {
+                var tabletReplicas = TabletMap.GetReplicas(keyspaceName, tableName, token);
+                if (tabletReplicas != null && tabletReplicas.Count > 0)
+                {
+                    if (tabletReplicas is ICollection<HostShard> collection)
+                    {
+                        return collection;
+                    }
+                    return tabletReplicas.ToList();
+                }
+            }
+
+            return _tokenMap.GetReplicas(keyspaceName, token);
         }
 
+        /// <summary>
+        /// Get the replicas for a given partition key and keyspace.
+        /// </summary>
+        [Obsolete("Use GetReplicas(string keyspaceName, string tableName, byte[] partitionKey) for tablet-aware replica resolution.")]
+        public ICollection<HostShard> GetReplicas(string keyspaceName, byte[] partitionKey)
+        {
+            return GetReplicas(keyspaceName, null, partitionKey);
+        }
+
+        [Obsolete("Use GetReplicas(string keyspaceName, string tableName, byte[] partitionKey) for tablet-aware replica resolution.")]
         public ICollection<HostShard> GetReplicas(byte[] partitionKey)
         {
-            return GetReplicas(null, partitionKey);
+            return GetReplicas(null, null, partitionKey);
         }
 
         /// <summary>

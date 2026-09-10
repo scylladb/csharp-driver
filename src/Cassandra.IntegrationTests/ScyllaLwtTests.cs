@@ -71,7 +71,7 @@ namespace Cassandra.IntegrationTests
         {
             var routingKey = new RoutingKey();
             routingKey.RawRoutingKey = PkBytes;
-            var replicas = _cluster.GetReplicas("lwt_test", routingKey.RawRoutingKey);
+            var replicas = _cluster.GetReplicas("lwt_test", "foo", routingKey.RawRoutingKey);
             return replicas.First().Host;
         }
 
