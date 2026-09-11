@@ -22,6 +22,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Connections;
 using Cassandra.Observers.Abstractions;
+using Cassandra.Responses;
 using Cassandra.SessionManagement;
 
 namespace Cassandra.Requests
@@ -65,7 +66,15 @@ namespace Cassandra.Requests
                     }
 
                     await semaphore.WaitAsync().ConfigureAwait(false);
-                    tasks.Add(ReprepareOnSingleNodeAsync(observer, sessionRequestInfo, poolKvp, prepareResult.PreparedStatement, request, semaphore, false));
+                    tasks.Add(ReprepareOnSingleNodeAsync(
+                        session.InternalCluster,
+                        observer,
+                        sessionRequestInfo,
+                        poolKvp,
+                        prepareResult.PreparedStatement,
+                        request,
+                        semaphore,
+                        false));
                 }
 
                 await Task.WhenAll(tasks).ConfigureAwait(false);
@@ -73,17 +82,26 @@ namespace Cassandra.Requests
         }
 
         private static Task<IConnection> GetConnectionFromHostAsync(
-            IHostConnectionPool pool, PreparedStatement ps, IDictionary<IPEndPoint, Exception> triedHosts)
+            IHostConnectionPool pool,
+            PreparedStatement ps,
+            IDictionary<IPEndPoint, Exception> triedHosts,
+            string connectionKeyspace)
         {
-            return GetConnectionFromHostInternalAsync(pool, ps, triedHosts, true);
+            return GetConnectionFromHostInternalAsync(
+                pool, ps, triedHosts, connectionKeyspace, true);
         }
 
         private static async Task<IConnection> GetConnectionFromHostInternalAsync(
-            IHostConnectionPool pool, PreparedStatement ps, IDictionary<IPEndPoint, Exception> triedHosts, bool retry)
+            IHostConnectionPool pool,
+            PreparedStatement ps,
+            IDictionary<IPEndPoint, Exception> triedHosts,
+            string connectionKeyspace,
+            bool retry)
         {
             try
             {
-                return await pool.GetExistingConnectionFromHostAsync(triedHosts, () => ps.Keyspace, ps.RoutingKey, -1).ConfigureAwait(false);
+                return await pool.GetExistingConnectionFromHostAsync(
+                    triedHosts, () => connectionKeyspace, ps.RoutingKey, -1).ConfigureAwait(false);
             }
             catch (SocketException)
             {
@@ -91,7 +109,8 @@ namespace Cassandra.Requests
                 {
                     // A socket exception on the current connection does not mean that all the pool is closed:
                     // Retry on the same pool
-                    return await ReprepareHandler.GetConnectionFromHostInternalAsync(pool, ps, triedHosts, false).ConfigureAwait(false);
+                    return await ReprepareHandler.GetConnectionFromHostInternalAsync(
+                        pool, ps, triedHosts, connectionKeyspace, false).ConfigureAwait(false);
                 }
 
                 throw;
@@ -99,12 +118,19 @@ namespace Cassandra.Requests
         }
 
         public Task ReprepareOnSingleNodeAsync(
-            KeyValuePair<Host, IHostConnectionPool> poolKvp, PreparedStatement ps, IRequest request, SemaphoreSlim sem, bool throwException)
+            IInternalCluster cluster,
+            KeyValuePair<Host, IHostConnectionPool> poolKvp,
+            PreparedStatement ps,
+            IRequest request,
+            SemaphoreSlim sem,
+            bool throwException)
         {
-            return ReprepareOnSingleNodeAsync(null, null, poolKvp, ps, request, sem, throwException);
+            return ReprepareOnSingleNodeAsync(
+                cluster, null, null, poolKvp, ps, request, sem, throwException);
         }
 
         public async Task ReprepareOnSingleNodeAsync(
+            IInternalCluster cluster,
             IRequestObserver observer,
             SessionRequestInfo sessionRequestInfo,
             KeyValuePair<Host, IHostConnectionPool> poolKvp,
@@ -123,11 +149,24 @@ namespace Cassandra.Requests
             try
             {
                 var triedHosts = new Dictionary<IPEndPoint, Exception>();
-                var connection = await ReprepareHandler.GetConnectionFromHostAsync(poolKvp.Value, ps, triedHosts).ConfigureAwait(false);
+                // Initial prepare fan-out carries a SessionRequestInfo and must preserve the snapshotted
+                // session connection keyspace. Background reprepares have no request info and continue using
+                // the prepared statement's keyspace.
+                var connectionKeyspace = sessionRequestInfo == null
+                    ? ps.Keyspace
+                    : sessionRequestInfo.SessionKeyspace;
+                var connection = await ReprepareHandler.GetConnectionFromHostAsync(
+                    poolKvp.Value, ps, triedHosts, connectionKeyspace).ConfigureAwait(false);
 
                 if (connection != null)
                 {
-                    await connection.Send(request).ConfigureAwait(false);
+                    var response = await connection.Send(request).ConfigureAwait(false);
+                    var outputPrepared = ReprepareHandler.ValidatePreparedResponse(response);
+                    if (!outputPrepared.QueryId.SequenceEqual(ps.Id))
+                    {
+                        throw new PreparedStatementIdMismatchException(
+                            (byte[])ps.Id.Clone(), outputPrepared.QueryId);
+                    }
                     if (observer != null)
                     {
                         await observer.OnNodeSuccessAsync(sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
@@ -166,6 +205,38 @@ namespace Cassandra.Requests
                         nodeRequestInfo).ConfigureAwait(false);
                 }
             }
+            catch (PreparedStatementIdMismatchException ex)
+            {
+                cluster.InvalidatePreparedStatement(ps.Id, ps.Cql, ps.Keyspace);
+                if (observer != null)
+                {
+                    await observer.OnNodeRequestErrorAsync(
+                        RequestError.CreateClientError(ex, false),
+                        sessionRequestInfo,
+                        nodeRequestInfo).ConfigureAwait(false);
+                }
+                // A successful PREPARE with a different ID proves that the statement supplied to this
+                // operation can not be used on this node. Unlike ordinary prepare-on-all failures, this must
+                // fail the outer prepare after invalidation; otherwise its cache retry could loop forever
+                // while nodes permanently disagree on the ID.
+                throw;
+            }
+            catch (InvalidReprepareResponseException ex)
+            {
+                if (observer != null)
+                {
+                    await observer.OnNodeRequestErrorAsync(
+                        RequestError.CreateClientError(ex, false),
+                        sessionRequestInfo,
+                        nodeRequestInfo).ConfigureAwait(false);
+                }
+                LogOrThrow(
+                    throwException,
+                    ex,
+                    $"An invalid response was returned while attempting to prepare query on {{0}}:{Environment.NewLine}{{1}}",
+                    poolKvp.Key,
+                    ex);
+            }
             catch (Exception ex)
             {
                 if (observer != null)
@@ -188,6 +259,23 @@ namespace Cassandra.Requests
             }
         }
 
+        private static OutputPrepared ValidatePreparedResponse(Response response)
+        {
+            if (!(response is ResultResponse resultResponse))
+            {
+                throw new InvalidReprepareResponseException(
+                    $"Expected ResultResponse, obtained {response?.GetType().FullName ?? "null"}");
+            }
+
+            if (!(resultResponse.Output is OutputPrepared outputPrepared))
+            {
+                throw new InvalidReprepareResponseException(
+                    $"Expected prepared response, obtained {resultResponse.Output?.GetType().FullName ?? "null"}");
+            }
+
+            return outputPrepared;
+        }
+
         private void LogOrThrow(bool throwException, Exception ex, string msg, params object[] args)
         {
             if (throwException)
@@ -201,6 +289,13 @@ namespace Cassandra.Requests
             }
 
             PrepareHandler.Logger.Warning(msg, args);
+        }
+
+        private sealed class InvalidReprepareResponseException : DriverInternalError
+        {
+            public InvalidReprepareResponseException(string message) : base(message)
+            {
+            }
         }
     }
 }

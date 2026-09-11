@@ -82,6 +82,10 @@ namespace Cassandra
         /// <summary>
         /// Begins asynchronous prepare operation
         /// </summary>
+        /// <remarks>
+        /// Prepared statements are cached per cluster using the query and effective keyspace. Concurrent calls
+        /// for the same statement share a single preparation attempt; failed attempts are not cached.
+        /// </remarks>
         IAsyncResult BeginPrepare(string cqlQuery, AsyncCallback callback, object state);
 
         /// <summary>
@@ -142,6 +146,12 @@ namespace Cassandra
         /// <summary>
         /// Ends asynchronous prepare operation
         /// </summary>
+        /// <exception cref="PreparedStatementIdMismatchException">
+        /// When different hosts return different IDs for the prepared statement.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// When the statement is invalidated while preparation is in progress.
+        /// </exception>
         PreparedStatement EndPrepare(IAsyncResult ar);
 
         /// <summary>
@@ -200,6 +210,16 @@ namespace Cassandra
         /// Prepares the provided query string.
         /// </summary>
         /// <param name="cqlQuery">cql query to prepare</param>
+        /// <exception cref="PreparedStatementIdMismatchException">
+        /// When different hosts return different IDs for the prepared statement.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// When the statement is invalidated while preparation is in progress.
+        /// </exception>
+        /// <remarks>
+        /// Prepared statements are cached per cluster using the query and effective keyspace. Concurrent calls
+        /// for the same statement share a single preparation attempt; failed attempts are not cached.
+        /// </remarks>
         PreparedStatement Prepare(string cqlQuery);
 
         /// <summary>
@@ -207,6 +227,17 @@ namespace Cassandra
         /// </summary>
         /// <param name="cqlQuery">cql query to prepare</param>
         /// <param name="customPayload">Custom outgoing payload to send with the prepare request</param>
+        /// <exception cref="PreparedStatementIdMismatchException">
+        /// When different hosts return different IDs for the prepared statement.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// When the statement is invalidated while preparation is in progress.
+        /// </exception>
+        /// <remarks>
+        /// Prepared statements with custom payloads bypass the query-and-keyspace cache, so each call sends a
+        /// separate prepare request. Existing server-side-ID tracking for prepare-on-up can still cause the call
+        /// to return a previously prepared instance.
+        /// </remarks>
         PreparedStatement Prepare(string cqlQuery, IDictionary<string, byte[]> customPayload);
 
         /// <summary>
@@ -214,7 +245,17 @@ namespace Cassandra
         /// </summary>
         /// <param name="cqlQuery">Cql query to prepare</param>
         /// <param name="keyspace">The keyspace to prepare this query with</param>
-        /// <remarks>Setting the keyspace parameter is only available with protocol v5 (not supported by the driver yet).</remarks>
+        /// <exception cref="PreparedStatementIdMismatchException">
+        /// When different hosts return different IDs for the prepared statement.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// When the statement is invalidated while preparation is in progress.
+        /// </exception>
+        /// <remarks>
+        /// Setting the keyspace parameter is only available with protocol v5 (not supported by the driver yet).
+        /// Prepared statements are cached per cluster using the query and effective keyspace. Concurrent calls
+        /// for the same statement share a single preparation attempt; failed attempts are not cached.
+        /// </remarks>
         PreparedStatement Prepare(string cqlQuery, string keyspace);
 
         /// <summary>
@@ -224,13 +265,34 @@ namespace Cassandra
         /// <param name="cqlQuery">Cql query to prepare</param>
         /// <param name="keyspace">The keyspace to prepare this query with</param>
         /// <param name="customPayload">Custom outgoing payload to send with the prepare request</param>
-        /// <remarks>Setting the keyspace parameter is only available with protocol v5 (not supported by the driver yet).</remarks>
+        /// <exception cref="PreparedStatementIdMismatchException">
+        /// When different hosts return different IDs for the prepared statement.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// When the statement is invalidated while preparation is in progress.
+        /// </exception>
+        /// <remarks>
+        /// Setting the keyspace parameter is only available with protocol v5 (not supported by the driver yet).
+        /// Prepared statements with custom payloads bypass the query-and-keyspace cache, so each call sends a
+        /// separate prepare request. Existing server-side-ID tracking for prepare-on-up can still cause the call
+        /// to return a previously prepared instance.
+        /// </remarks>
         PreparedStatement Prepare(string cqlQuery, string keyspace, IDictionary<string, byte[]> customPayload);
 
         /// <summary>
         /// Prepares the provided query string asynchronously.
         /// </summary>
         /// <param name="cqlQuery">cql query to prepare</param>
+        /// <exception cref="PreparedStatementIdMismatchException">
+        /// When different hosts return different IDs for the prepared statement.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// When the statement is invalidated while preparation is in progress.
+        /// </exception>
+        /// <remarks>
+        /// Prepared statements are cached per cluster using the query and effective keyspace. Concurrent calls
+        /// for the same statement share a single preparation attempt; failed attempts are not cached.
+        /// </remarks>
         Task<PreparedStatement> PrepareAsync(string cqlQuery);
 
         /// <summary>
@@ -238,6 +300,17 @@ namespace Cassandra
         /// </summary>
         /// <param name="cqlQuery">cql query to prepare</param>
         /// <param name="customPayload">Custom outgoing payload to send with the prepare request</param>
+        /// <exception cref="PreparedStatementIdMismatchException">
+        /// When different hosts return different IDs for the prepared statement.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// When the statement is invalidated while preparation is in progress.
+        /// </exception>
+        /// <remarks>
+        /// Prepared statements with custom payloads bypass the query-and-keyspace cache, so each call sends a
+        /// separate prepare request. Existing server-side-ID tracking for prepare-on-up can still cause the call
+        /// to return a previously prepared instance.
+        /// </remarks>
         Task<PreparedStatement> PrepareAsync(string cqlQuery, IDictionary<string, byte[]> customPayload);
 
         /// <summary>
@@ -245,7 +318,17 @@ namespace Cassandra
         /// </summary>
         /// <param name="cqlQuery">Cql query to prepare</param>
         /// <param name="keyspace">The keyspace to prepare this query with</param>
-        /// <remarks>Setting the keyspace parameter is only available with protocol v5 (not supported by the driver yet).</remarks>
+        /// <exception cref="PreparedStatementIdMismatchException">
+        /// When different hosts return different IDs for the prepared statement.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// When the statement is invalidated while preparation is in progress.
+        /// </exception>
+        /// <remarks>
+        /// Setting the keyspace parameter is only available with protocol v5 (not supported by the driver yet).
+        /// Prepared statements are cached per cluster using the query and effective keyspace. Concurrent calls
+        /// for the same statement share a single preparation attempt; failed attempts are not cached.
+        /// </remarks>
         Task<PreparedStatement> PrepareAsync(string cqlQuery, string keyspace);
 
         /// <summary>
@@ -255,7 +338,18 @@ namespace Cassandra
         /// <param name="cqlQuery">Cql query to prepare</param>
         /// <param name="keyspace">The keyspace to prepare this query with</param>
         /// <param name="customPayload">Custom outgoing payload to send with the prepare request</param>
-        /// <remarks>Setting the keyspace parameter is only available with protocol v5 (not supported by the driver yet).</remarks>
+        /// <exception cref="PreparedStatementIdMismatchException">
+        /// When different hosts return different IDs for the prepared statement.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// When the statement is invalidated while preparation is in progress.
+        /// </exception>
+        /// <remarks>
+        /// Setting the keyspace parameter is only available with protocol v5 (not supported by the driver yet).
+        /// Prepared statements with custom payloads bypass the query-and-keyspace cache, so each call sends a
+        /// separate prepare request. Existing server-side-ID tracking for prepare-on-up can still cause the call
+        /// to return a previously prepared instance.
+        /// </remarks>
         Task<PreparedStatement> PrepareAsync(string cqlQuery, string keyspace, IDictionary<string, byte[]> customPayload);
 
         /// <summary>
