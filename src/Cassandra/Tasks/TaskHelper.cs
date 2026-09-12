@@ -44,7 +44,14 @@ namespace Cassandra.Tasks
             {
                 if (callback != null)
                 {
-                    task.ContinueWith(t => callback(t), TaskContinuationOptions.ExecuteSynchronously);
+                    // Task implements IAsyncResult.CompletedSynchronously as false. Do not invoke an APM callback
+                    // inline for an already-completed task while reporting that the operation completed
+                    // asynchronously. This is especially common for operations satisfied from a cache.
+                    task.ContinueWith(
+                        t => callback(t),
+                        CancellationToken.None,
+                        TaskContinuationOptions.None,
+                        TaskScheduler.Default);
                 }
                 return task;
             }
@@ -66,9 +73,18 @@ namespace Cassandra.Tasks
                     tcs.TrySetResult(task.Result);
                 }
 
-                callback?.Invoke(tcs.Task);
-
-            }, TaskContinuationOptions.ExecuteSynchronously);
+            }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            if (callback != null)
+            {
+                // Keep callback invocation asynchronous without delaying the IAsyncResult's completion. In
+                // particular, a completed source with a caller-provided state must remain completed when this
+                // method returns instead of depending on a ThreadPool work item to copy its result.
+                tcs.Task.ContinueWith(
+                    t => callback(t),
+                    CancellationToken.None,
+                    TaskContinuationOptions.None,
+                    TaskScheduler.Default);
+            }
             return tcs.Task;
         }
 

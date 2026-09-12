@@ -15,11 +15,10 @@
 //
 
 using System;
+using System.Collections.Concurrent;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-
-using Cassandra.Collections;
 
 namespace Cassandra.Mapping.Statements
 {
@@ -28,16 +27,23 @@ namespace Cassandra.Mapping.Statements
     /// </summary>
     internal class StatementFactory
     {
-        private readonly IThreadSafeDictionary<CacheKey, Task<PreparedStatement>> _statementCache;
-        private static readonly Logger Logger = new Logger(typeof(StatementFactory));
+        private static readonly Logger DefaultLogger = new Logger(typeof(StatementFactory));
+        private readonly ConcurrentDictionary<CacheKey, byte> _preparedStatementKeys;
+        private readonly Logger _logger;
         private int _statementCacheCount;
 
         public int MaxPreparedStatementsThreshold { get; set; }
 
         public StatementFactory()
+            : this(DefaultLogger)
         {
+        }
+
+        internal StatementFactory(Logger logger)
+        {
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             MaxPreparedStatementsThreshold = 500;
-            _statementCache = new CopyOnWriteDictionary<CacheKey, Task<PreparedStatement>>();
+            _preparedStatementKeys = new ConcurrentDictionary<CacheKey, byte>();
         }
 
         /// <summary>
@@ -57,45 +63,22 @@ namespace Cassandra.Mapping.Statements
                 return statement;
             }
 
-            var wasPreviouslyCached = true;
-
             var psCacheKey = new CacheKey(cql.Statement, session);
-            var query = cql.Statement;
+            // Prepared-statement lifetime, coalescing and failure eviction are owned by the cluster cache.
+            // Retaining a PreparedStatement here would prevent cluster invalidation from replacing it.
+            var ps = await session.PrepareAsync(cql.Statement).ConfigureAwait(false);
 
-            var prepareTask = _statementCache.GetOrAdd(psCacheKey, _ =>
-            {
-                wasPreviouslyCached = false;
-
-                // Use Task.Run to spend as little time as possible inside the collection lock
-                return Task.Run(() => session.PrepareAsync(query));
-            });
-
-            PreparedStatement ps;
-            try
-            {
-                ps = await prepareTask.ConfigureAwait(false);
-            }
-            catch (Exception) when (wasPreviouslyCached)
-            {
-                // The exception was caused from awaiting upon a Task that was previously cached
-                // It's possible that the schema or topology changed making this query preparation to succeed
-                // in a new attempt
-                prepareTask = _statementCache.CompareAndUpdate(
-                    psCacheKey,
-                    (k, v) => object.ReferenceEquals(v, prepareTask),
-                    (k, v) => Task.Run(() => session.PrepareAsync(query)));
-                ps = await prepareTask.ConfigureAwait(false);
-            }
-
-            if (!wasPreviouslyCached)
+            // Keep only the historical Mapper/LINQ query accounting used by
+            // MappingConfiguration.MaxPreparedStatementsThreshold.
+            if (_preparedStatementKeys.TryAdd(psCacheKey, 0))
             {
                 var count = Interlocked.Increment(ref _statementCacheCount);
                 if (count > MaxPreparedStatementsThreshold)
                 {
-                    Logger.Warning("The prepared statement cache contains {0} queries. This issue is probably due " +
-                                   "to misuse of the driver, you should use parameter markers for queries. You can " +
-                                   "configure this warning threshold using " +
-                                   "MappingConfiguration.SetMaxStatementPreparedThreshold() method.", count);
+                    _logger.Warning("The prepared statement cache contains {0} queries. This issue is probably due " +
+                                    "to misuse of the driver, you should use parameter markers for queries. You can " +
+                                    "configure this warning threshold using " +
+                                    "MappingConfiguration.SetMaxStatementPreparedThreshold() method.", count);
                 }
             }
 

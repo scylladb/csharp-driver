@@ -21,10 +21,12 @@ using System.Threading.Tasks;
 using Cassandra.Connections;
 using Cassandra.ExecutionProfiles;
 using Cassandra.Observers.Null;
+using Cassandra.Observers.RequestTracker;
 using Cassandra.Requests;
 using Cassandra.Responses;
 using Cassandra.Serialization;
 using Cassandra.SessionManagement;
+using Cassandra.Tests.Requests;
 using Moq;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
@@ -240,6 +242,116 @@ namespace Cassandra.Tests
             Mock.Get(mockParent).Verify(
                 m => m.ValidateHostAndGetConnectionAsync(new HostShard(validHost.Host, -1), It.IsAny<Dictionary<IPEndPoint, Exception>>()),
                 Times.Once);
+        }
+
+        [Test]
+        public async Task Should_Snapshot_Unprepared_Id_Before_Invoking_Request_Tracker()
+        {
+            var serializerManager = new SerializerManager(ProtocolVersion.V4);
+            var serializer = serializerManager.GetCurrentSerializer();
+            var originalId = new byte[] { 1 };
+            var preparedStatement = new PreparedStatement(
+                null, originalId, null, "SELECT * FROM table1", null, serializerManager, false);
+            var boundStatement = preparedStatement.Bind();
+            var request = Mock.Of<IRequest>();
+            var host = new Host(
+                new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9047),
+                new ConstantReconnectionPolicy(1));
+            var validHost = ValidHost.New(host, HostDistance.Local);
+
+            var executeSent =
+                new TaskCompletionSource<Func<IRequestError, Response, Task>>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+            var reprepareSent =
+                new TaskCompletionSource<Func<IRequestError, Response, Task>>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+            var connection = new Mock<IConnection>();
+            var connectionEndPoint = new Mock<IConnectionEndPoint>();
+            connectionEndPoint.SetupGet(value => value.EndpointFriendlyName).Returns("test-node");
+            connection.SetupGet(value => value.EndPoint).Returns(connectionEndPoint.Object);
+            connection
+                .Setup(value => value.Send(
+                    It.IsAny<IRequest>(), It.IsAny<Func<IRequestError, Response, Task>>(), It.IsAny<int>()))
+                .Returns<IRequest, Func<IRequestError, Response, Task>, int>((sentRequest, callback, _) =>
+                {
+                    if (sentRequest is InternalPrepareRequest)
+                    {
+                        reprepareSent.SetResult(callback);
+                    }
+                    else
+                    {
+                        executeSent.SetResult(callback);
+                    }
+                    return null;
+                });
+
+            byte[] invalidatedId = null;
+            var cluster = new Mock<IInternalCluster>();
+            cluster
+                .Setup(value => value.InvalidatePreparedStatement(
+                    It.IsAny<byte[]>(), preparedStatement.Cql, preparedStatement.Keyspace))
+                .Callback<byte[], string, string>((id, _, __) => invalidatedId = id);
+
+            var session = new Mock<IInternalSession>();
+            session.SetupGet(value => value.InternalCluster).Returns(cluster.Object);
+            session.SetupGet(value => value.Keyspace).Returns((string)null);
+
+            Exception completedException = null;
+            var parent = new Mock<IRequestHandler>();
+            parent.SetupGet(value => value.Serializer).Returns(serializer);
+            parent.SetupGet(value => value.Statement).Returns(boundStatement);
+            parent.SetupGet(value => value.RequestOptions).Returns(new TestConfigurationBuilder().Build().DefaultRequestOptions);
+            parent
+                .Setup(value => value.GetNextValidHost(It.IsAny<Dictionary<IPEndPoint, Exception>>()))
+                .Returns(validHost);
+            parent
+                .Setup(value => value.GetConnectionToValidHostAsync(
+                    validHost, It.IsAny<IDictionary<IPEndPoint, Exception>>(), It.IsAny<int>()))
+                .ReturnsAsync(connection.Object);
+            parent.Setup(value => value.SetNodeExecutionCompleted(It.IsAny<Guid>())).Returns(true);
+            parent
+                .Setup(value => value.SetCompletedAsync(It.IsAny<Exception>(), It.IsAny<RowSet>()))
+                .Callback<Exception, RowSet>((ex, _) => completedException = ex)
+                .ReturnsAsync(true);
+
+            var requestTracker = new Mock<IRequestTracker>();
+            requestTracker
+                .Setup(value => value.OnNodeErrorAsync(
+                    It.IsAny<SessionRequestInfo>(), It.IsAny<NodeRequestInfo>(), It.IsAny<Exception>()))
+                .Returns<SessionRequestInfo, NodeRequestInfo, Exception>((_, __, ex) =>
+                {
+                    if (ex is PreparedQueryNotFoundException preparedQueryNotFound)
+                    {
+                        // Public request trackers can mutate the exception's byte[] property.
+                        preparedQueryNotFound.UnknownId[0] = 9;
+                    }
+                    return Task.CompletedTask;
+                });
+            var observer = new RequestTrackerObserver(requestTracker.Object);
+            var requestTrackingInfo = new SessionRequestInfo(boundStatement, null);
+            var execution = new RequestExecution(
+                parent.Object, session.Object, request, observer, requestTrackingInfo);
+
+            execution.Start(false);
+            var executeCallback = await executeSent.Task.ConfigureAwait(false);
+            var protocolException = new PreparedQueryNotFoundException(
+                "not prepared", new byte[] { 1 });
+            await executeCallback(
+                RequestError.CreateServerError(protocolException), null).ConfigureAwait(false);
+
+            var reprepareCallback = await reprepareSent.Task.ConfigureAwait(false);
+            var response = new ProxyResultResponse(
+                ResultResponse.ResultResponseKind.Prepared,
+                new OutputPrepared(
+                    new byte[] { 2 },
+                    new RowSetMetadata { Columns = Array.Empty<CqlColumn>() },
+                    new RowSetMetadata { Columns = Array.Empty<CqlColumn>() }));
+            await reprepareCallback(null, response).ConfigureAwait(false);
+
+            Assert.IsNotNull(invalidatedId);
+            Assert.AreEqual(1, invalidatedId[0]);
+            Assert.IsInstanceOf<PreparedStatementIdMismatchException>(completedException);
+            Assert.AreEqual(1, ((PreparedStatementIdMismatchException)completedException).Id[0]);
         }
     }
 }

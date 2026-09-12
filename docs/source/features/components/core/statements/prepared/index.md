@@ -66,7 +66,7 @@ If you have a unique query that is executed only once, a [simple statement](../s
 
 `Session.Prepare()` accepts a plain query string.
 
-We recommend avoiding repeated calls to `Prepare()` because the driver does not cache prepared statements so there could be performance issues if the same query is prepared multiple times.
+Successful prepares without a custom payload are cached per cluster by query string and effective keyspace. Repeated and concurrent equivalent calls share one preparation attempt, while failed attempts can be retried. Prepares with a custom payload are not coalesced or retained in this cache, so every call sends a new `PREPARE` request. Existing server-side-ID tracking for prepare-on-up can still cause the call to return a previously prepared instance.
 
 ## Parameters and binding
 
