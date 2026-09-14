@@ -31,6 +31,57 @@ namespace Cassandra.Tests
     [TestFixture]
     public class TaskTests
     {
+        [TestCase(false)]
+        [TestCase(true)]
+        public void TaskHelper_ToApm_Does_Not_Invoke_Callback_Inline_For_A_Completed_Task(
+            bool useNonNullState)
+        {
+            var source = Task.FromResult(42);
+            var state = useNonNullState ? new object() : null;
+            var callbackLock = new object();
+            IAsyncResult callbackResult = null;
+            using (var callbackCompleted = new ManualResetEventSlim())
+            {
+                Task<int> apmTask;
+                lock (callbackLock)
+                {
+                    apmTask = source.ToApm(
+                        ar =>
+                        {
+                            // A callback scheduled on another thread blocks here until ToApm returns from the
+                            // lock. An inline callback can re-enter the monitor and expose itself deterministically.
+                            lock (callbackLock)
+                            {
+                                callbackResult = ar;
+                                callbackCompleted.Set();
+                            }
+                        },
+                        state);
+
+                    Assert.IsFalse(callbackCompleted.IsSet, "The callback was invoked inline");
+                }
+
+                Assert.IsTrue(callbackCompleted.Wait(TimeSpan.FromSeconds(2)), "The callback was not invoked");
+                Assert.AreSame(apmTask, callbackResult);
+                Assert.IsFalse(callbackResult.CompletedSynchronously);
+                Assert.AreSame(state, callbackResult.AsyncState);
+                Assert.AreEqual(42, apmTask.Result);
+            }
+        }
+
+        [Test]
+        public void TaskHelper_ToApm_Preserves_Completed_Source_With_NonNull_State()
+        {
+            var state = new object();
+
+            var apmTask = Task.FromResult(42).ToApm(null, state);
+
+            Assert.IsTrue(apmTask.IsCompleted, "The completed operation was delayed by APM state wrapping");
+            Assert.AreEqual(TaskStatus.RanToCompletion, apmTask.Status);
+            Assert.AreSame(state, apmTask.AsyncState);
+            Assert.AreEqual(42, apmTask.Result);
+        }
+
         [Test]
         public void TaskHelper_Then_Continues_Completed_Tasks()
         {
