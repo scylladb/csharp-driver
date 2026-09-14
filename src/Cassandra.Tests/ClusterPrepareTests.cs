@@ -367,6 +367,51 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public async Task MappingStatementFactory_Should_Use_Cluster_Cache_And_Observe_Invalidation()
+        {
+            const string query = "SELECT * FROM table1";
+            var serializerManager = new SerializerManager(ProtocolVersion.V4);
+            var attempts = 0;
+            var handlerMock = new Mock<IPrepareHandler>();
+            handlerMock
+                .Setup(handler => handler.Prepare(
+                    It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
+                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
+                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<HostShard>, string, string>(
+                    (request, _, __, sessionKeyspace, effectiveKeyspace) => Task.FromResult(CreatePreparedStatement(
+                        serializerManager,
+                        (byte)Interlocked.Increment(ref attempts),
+                        request.Query,
+                        sessionKeyspace)));
+
+            using (var cluster = CreateCluster(handlerMock.Object))
+            using (var session = CreateSession(cluster, serializerManager, "ks1"))
+            {
+                var statementFactory = new Cassandra.Mapping.Statements.StatementFactory();
+                var cql = Cassandra.Mapping.Cql.New(query);
+
+                var first = (BoundStatement)await statementFactory
+                    .GetStatementAsync(session, cql).ConfigureAwait(false);
+                var cached = (BoundStatement)await statementFactory
+                    .GetStatementAsync(session, cql).ConfigureAwait(false);
+
+                Assert.AreSame(first.PreparedStatement, cached.PreparedStatement);
+                Assert.AreEqual(1, attempts);
+
+                cluster.InternalRef.InvalidatePreparedStatement(
+                    first.PreparedStatement.Id,
+                    first.PreparedStatement.Cql,
+                    first.PreparedStatement.Keyspace);
+
+                var replacement = (BoundStatement)await statementFactory
+                    .GetStatementAsync(session, cql).ConfigureAwait(false);
+
+                Assert.AreNotSame(first.PreparedStatement, replacement.PreparedStatement);
+                Assert.AreEqual(2, attempts);
+            }
+        }
+
+        [Test]
         public void PrepareAsync_Should_Unregister_Preparation_When_Handler_Creation_Fails()
         {
             var serializerManager = new SerializerManager(ProtocolVersion.V4);

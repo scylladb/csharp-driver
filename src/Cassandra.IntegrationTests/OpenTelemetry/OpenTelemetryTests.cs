@@ -725,11 +725,12 @@ namespace Cassandra.IntegrationTests.OpenTelemetry
             var firstMethodName = "FirstMethod";
             var secondMethodName = "SecondMethod";
 
-            // create + change keyspace + simple + 2xlinq(prepare+create+bound) + 2xmapper(prepare+create+bound) + PREPAREs
-            RetryUntilActivities(_testStartDateTime, SessionActivityName, 7 + 2, displayNameStartsWith: true);
+            // create + change keyspace + simple + linq(prepare+create+bound) + mapper(create+bound)
+            RetryUntilActivities(_testStartDateTime, SessionActivityName, 7 + 1, displayNameStartsWith: true);
 
-            var prepareNodeRequestCount = 2 * this.AmountOfNodes; // 2 * because Mapper + LINQ, AmountOfNodes because PREPARE goes to every node by default
-            // create + change keyspace + simple + 2xlinq(prepare+create+bound) + 2xmapper(prepare+create+bound) + PREPAREs
+            // Mapper and LINQ use the same query, so the cluster cache sends PREPARE only once.
+            var prepareNodeRequestCount = this.AmountOfNodes;
+            // create + change keyspace + simple + linq(prepare+create+bound) + mapper(create+bound)
             RetryUntilActivities(_testStartDateTime, NodeActivityName, 7 + prepareNodeRequestCount, displayNameStartsWith: true);
             RetryUntilActivities(_testStartDateTime, secondMethodName, 1);
             RetryUntilActivities(_testStartDateTime, firstMethodName, 1);
@@ -740,8 +741,8 @@ namespace Cassandra.IntegrationTests.OpenTelemetry
             var sessionActivities = activities.Where(x => x.DisplayName.StartsWith(SessionActivityName)).ToList();
             var nodeActivities = activities.Where(x => x.DisplayName.StartsWith(NodeActivityName)).ToList();
 
-            // create + change keyspace + simple + 2xlinq(prepare+create+bound) + 2xmapper(prepare+create+bound) + PREPAREs
-            Assert.AreEqual(7 + 2, sessionActivities.Count);
+            // create + change keyspace + simple + linq(prepare+create+bound) + mapper(create+bound)
+            Assert.AreEqual(7 + 1, sessionActivities.Count);
             Assert.AreEqual(7 + prepareNodeRequestCount, nodeActivities.Count);
 
             sessionActivities.ForEach(act =>
@@ -758,7 +759,7 @@ namespace Cassandra.IntegrationTests.OpenTelemetry
             var nodePrepareActivities =
                 nodeActivities.Where(x => x.DisplayName == $"{NodeActivityName}({nameof(PrepareRequest)}) {keyspace}").ToList();
 
-            Assert.AreEqual(2, sessionPrepareActivities.Count);
+            Assert.AreEqual(1, sessionPrepareActivities.Count);
             Assert.AreEqual(prepareNodeRequestCount, nodePrepareActivities.Count);
             sessionPrepareActivities.ForEach(act =>
             {
