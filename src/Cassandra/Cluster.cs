@@ -963,6 +963,7 @@ namespace Cassandra
                     var request = new InternalPrepareRequest(serializer, ps.Cql, ps.Keyspace, null);
                     await semaphore.WaitAsync().ConfigureAwait(false);
                     tasks.Add(Task.Run(() => handler.ReprepareOnSingleNodeAsync(
+                        this,
                         new KeyValuePair<Host, IHostConnectionPool>(host, pool),
                         ps,
                         request,
