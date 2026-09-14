@@ -35,31 +35,51 @@ namespace Cassandra.Requests
         private readonly ISerializerManager _serializerManager;
         private readonly IInternalCluster _cluster;
         private readonly IReprepareHandler _reprepareHandler;
+        private readonly Func<PreparedStatement, PreparedStatement> _acceptPreparedStatement;
 
-        public PrepareHandler(ISerializerManager serializerManager, IInternalCluster cluster, IReprepareHandler reprepareHandler)
+        public PrepareHandler(
+            ISerializerManager serializerManager,
+            IInternalCluster cluster,
+            IReprepareHandler reprepareHandler,
+            Func<PreparedStatement, PreparedStatement> acceptPreparedStatement = null)
         {
             _serializerManager = serializerManager;
             _cluster = cluster;
             _reprepareHandler = reprepareHandler;
+            _acceptPreparedStatement = acceptPreparedStatement;
         }
 
         public async Task<PreparedStatement> Prepare(
-            InternalPrepareRequest request, IInternalSession session, IEnumerator<HostShard> queryPlan)
+            InternalPrepareRequest request,
+            IInternalSession session,
+            IEnumerator<HostShard> queryPlan,
+            string sessionKeyspace,
+            string effectiveKeyspace)
         {
-            var infoAndObs = await CreateRequestObserverAsync(session, request).ConfigureAwait(false);
+            var infoAndObs = await CreateRequestObserverAsync(session, request, sessionKeyspace).ConfigureAwait(false);
             var observer = infoAndObs.Item2;
             var requestTrackingInfo = infoAndObs.Item1;
             try
             {
-                var prepareResult = await SendRequestToOneNode(session, queryPlan, request, observer, requestTrackingInfo).ConfigureAwait(false);
+                var prepareResult = await SendRequestToOneNode(
+                    session,
+                    queryPlan,
+                    request,
+                    observer,
+                    requestTrackingInfo,
+                    sessionKeyspace,
+                    effectiveKeyspace).ConfigureAwait(false);
 
                 if (session.Cluster.Configuration.QueryOptions.IsPrepareOnAllHosts())
                 {
                     await _reprepareHandler.ReprepareOnAllNodesWithExistingConnections(session, request, prepareResult, observer, requestTrackingInfo).ConfigureAwait(false);
                 }
 
+                var preparedStatement = _acceptPreparedStatement == null
+                    ? prepareResult.PreparedStatement
+                    : _acceptPreparedStatement(prepareResult.PreparedStatement);
                 await observer.OnRequestSuccessAsync(requestTrackingInfo).ConfigureAwait(false);
-                return prepareResult.PreparedStatement;
+                return preparedStatement;
             }
             catch (Exception ex)
             {
@@ -68,23 +88,45 @@ namespace Cassandra.Requests
             }
         }
 
-        public static async Task<Tuple<SessionRequestInfo, IRequestObserver>> CreateRequestObserverAsync(IInternalSession session, InternalPrepareRequest request)
+        internal static void ValidatePreparedStatementKeyspace(
+            PreparedStatement preparedStatement, string expectedKeyspace)
         {
-            var requestTrackingInfo = new SessionRequestInfo(request, session.Keyspace);
+            if (string.Equals(preparedStatement.Keyspace, expectedKeyspace, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            throw new PreparedStatementKeyspaceMismatchException(
+                "The connection keyspace does not match the keyspace this prepare was issued for. " +
+                $"Expected '{expectedKeyspace}', " +
+                $"but the statement was prepared with '{preparedStatement.Keyspace}'. Retry the prepare operation.");
+        }
+
+        public static async Task<Tuple<SessionRequestInfo, IRequestObserver>> CreateRequestObserverAsync(
+            IInternalSession session, InternalPrepareRequest request, string sessionKeyspace)
+        {
+            var requestTrackingInfo = new SessionRequestInfo(request, sessionKeyspace);
             var observer = session.ObserverFactory.CreateRequestObserver();
             await observer.OnRequestStartAsync(requestTrackingInfo).ConfigureAwait(false);
             return new Tuple<SessionRequestInfo, IRequestObserver>(requestTrackingInfo, observer);
         }
 
         private async Task<PrepareResult> SendRequestToOneNode(
-            IInternalSession session, IEnumerator<HostShard> queryPlan, InternalPrepareRequest request, IRequestObserver observer, SessionRequestInfo info)
+            IInternalSession session,
+            IEnumerator<HostShard> queryPlan,
+            InternalPrepareRequest request,
+            IRequestObserver observer,
+            SessionRequestInfo info,
+            string connectionKeyspace,
+            string effectiveKeyspace)
         {
             var triedHosts = new Dictionary<IPEndPoint, Exception>();
 
             while (true)
             {
                 // It may throw a NoHostAvailableException which we should yield to the caller
-                var hostConnectionTuple = await GetNextConnection(session, queryPlan, triedHosts).ConfigureAwait(false);
+                var hostConnectionTuple = await GetNextConnection(
+                    session, queryPlan, triedHosts, connectionKeyspace).ConfigureAwait(false);
                 var connection = hostConnectionTuple.Item2;
                 var host = hostConnectionTuple.Item1;
                 var nodeRequestInfo = new NodeRequestInfo(host, info.PrepareRequest ?? new PrepareRequest(request.Query, request.Keyspace));
@@ -94,9 +136,17 @@ namespace Cassandra.Requests
                     await observer.OnNodeStartAsync(info, nodeRequestInfo).ConfigureAwait(false);
                     var result = await connection.Send(request).ConfigureAwait(false);
                     responseReceived = true;
+                    var preparedStatement = await GetPreparedStatement(
+                        result,
+                        request,
+                        request.Keyspace ?? connection.Keyspace,
+                        session.Cluster,
+                        connection.LwtInfo()).ConfigureAwait(false);
+                    PrepareHandler.ValidatePreparedStatementKeyspace(
+                        preparedStatement, effectiveKeyspace);
                     var prepareResult = new PrepareResult
                     {
-                        PreparedStatement = await GetPreparedStatement(result, request, request.Keyspace ?? connection.Keyspace, session.Cluster, connection.LwtInfo()).ConfigureAwait(false),
+                        PreparedStatement = preparedStatement,
                         TriedHosts = triedHosts,
                         HostAddress = host.Address
                     };
@@ -128,16 +178,21 @@ namespace Cassandra.Requests
         private static bool CanBeRetried(Exception ex)
         {
             return ex is SocketException || ex is OperationTimedOutException || ex is IsBootstrappingException ||
-                   ex is OverloadedException || ex is QueryExecutionException;
+                   ex is OverloadedException || ex is QueryExecutionException ||
+                   ex is PreparedStatementKeyspaceMismatchException;
         }
 
         private async Task<Tuple<Host, IConnection>> GetNextConnection(
-            IInternalSession session, IEnumerator<HostShard> queryPlan, Dictionary<IPEndPoint, Exception> triedHosts)
+            IInternalSession session,
+            IEnumerator<HostShard> queryPlan,
+            Dictionary<IPEndPoint, Exception> triedHosts,
+            string connectionKeyspace)
         {
             Host host;
             while ((host = GetNextHost(queryPlan, out HostDistance distance)) != null)
             {
-                var connection = await RequestHandler.GetConnectionFromHostAsync(host, distance, session, triedHosts).ConfigureAwait(false);
+                var connection = await RequestHandler.GetConnectionFromHostWithKeyspaceAsync(
+                    host, distance, session, triedHosts, connectionKeyspace).ConfigureAwait(false);
                 if (connection != null)
                 {
                     return Tuple.Create(host, connection);
@@ -242,6 +297,14 @@ namespace Cassandra.Requests
             {
                 Logger.Error("There was an error while trying to retrieve table metadata for {0}.{1}. {2}",
                     column.Keyspace, column.Table, ex.InnerException);
+            }
+        }
+
+        private sealed class PreparedStatementKeyspaceMismatchException : InvalidOperationException
+        {
+            public PreparedStatementKeyspaceMismatchException(string message)
+                : base(message)
+            {
             }
         }
     }

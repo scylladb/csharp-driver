@@ -14,6 +14,8 @@
 //   limitations under the License.
 //
 
+using System;
+
 using Cassandra.Serialization;
 using Cassandra.SessionManagement;
 
@@ -22,9 +24,17 @@ namespace Cassandra.Requests
     internal class PrepareHandlerFactory : IPrepareHandlerFactory
     {
         public IPrepareHandler CreatePrepareHandler(
-            ISerializerManager serializerManager, IInternalCluster cluster, IInternalSession session, InternalPrepareRequest request)
+            ISerializerManager serializerManager,
+            IInternalCluster cluster,
+            IInternalSession session,
+            InternalPrepareRequest request,
+            Func<PreparedStatement, PreparedStatement> acceptPreparedStatement)
         {
-            return new PrepareHandler(serializerManager, cluster, CreateReprepareHandler());
+            return new PrepareHandler(
+                serializerManager,
+                cluster,
+                CreateReprepareHandler(),
+                acceptPreparedStatement);
         }
 
         public IReprepareHandler CreateReprepareHandler()

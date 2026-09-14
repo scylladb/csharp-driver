@@ -111,6 +111,8 @@ namespace Cassandra.Tests
 
         public IProtocolVersionNegotiator ProtocolVersionNegotiator { get; set; } = new ProtocolVersionNegotiator();
 
+        public IRequestTracker RequestTracker { get; set; }
+
         public MonitorReportingOptions MonitorReportingOptions { get; set; } = new MonitorReportingOptions();
 
         public TypeSerializerDefinitions TypeSerializerDefinitions { get; set; } = new TypeSerializerDefinitions();
@@ -159,6 +161,7 @@ namespace Cassandra.Tests
                 SupportedOptionsInitializerFactory,
                 ProtocolVersionNegotiator,
                 ServerEventsSubscriber,
+                RequestTracker,
                 driverConfigReportingEnabled: DriverConfigReportingEnabled);
         }
     }
