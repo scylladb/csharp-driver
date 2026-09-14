@@ -58,7 +58,7 @@ namespace Cassandra.Tests.Mapping
         }
 
         [Test]
-        public void FetchAsync_Pocos_Prepares_Just_Once()
+        public void FetchAsync_Pocos_Delegates_Prepare_To_Session()
         {
             const int times = 100;
             var users = TestDataHelper.GetUserList();
@@ -83,9 +83,9 @@ namespace Cassandra.Tests.Mapping
             Task.WaitAll(taskList.Select(t => (Task)t).ToArray(), 5000);
             Assert.True(taskList.All(t => t.Result.Count() == 10));
             sessionMock.Verify();
-            //Prepare should be called just once
+            // Prepared-statement caching is owned by the session/cluster, not the mapping layer.
             sessionMock
-                .Verify(s => s.PrepareAsync(It.IsAny<string>()), Times.Once());
+                .Verify(s => s.PrepareAsync(It.IsAny<string>()), Times.Exactly(times));
             //ExecuteAsync should be called the exact number of times
             sessionMock
                 .Verify(s => s.ExecuteAsync(It.IsAny<BoundStatement>()), Times.Exactly(times));

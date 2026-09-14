@@ -395,16 +395,19 @@ namespace Cassandra.Requests
             if (ex is PreparedQueryNotFoundException foundException &&
                 (_parent.Statement is BoundStatement || _parent.Statement is BatchStatement))
             {
+                // Request observers receive the protocol exception below, and its byte[] property is mutable.
+                // Keep a private snapshot for bound-statement selection and the entire recovery exchange.
+                var unknownId = (byte[])foundException.UnknownId.Clone();
                 RequestExecution.Logger.Info(
                     "Query {0} is not prepared on {1}, preparing before retrying the request.",
-                    BitConverter.ToString(foundException.UnknownId),
+                    BitConverter.ToString(unknownId),
                     _connection.EndPoint.EndpointFriendlyName);
                 if (_parent.SetNodeExecutionCompleted(nodeRequestInfo.ExecutionId))
                 {
                     await _requestObserver.OnNodeRequestErrorAsync(error, _sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
                 }
 
-                await PrepareAndRetryAsync(foundException, nodeRequestInfo).ConfigureAwait(false);
+                await PrepareAndRetryAsync(unknownId, nodeRequestInfo).ConfigureAwait(false);
                 return;
             }
 
@@ -592,7 +595,7 @@ namespace Cassandra.Requests
         /// <summary>
         /// Sends a prepare request before retrying the statement
         /// </summary>
-        private async Task PrepareAndRetryAsync(PreparedQueryNotFoundException ex, NodeRequestInfo nodeRequestInfo)
+        private async Task PrepareAndRetryAsync(byte[] unknownId, NodeRequestInfo nodeRequestInfo)
         {
             BoundStatement boundStatement = null;
             if (_parent.Statement is BoundStatement statement1)
@@ -602,7 +605,7 @@ namespace Cassandra.Requests
             else if (_parent.Statement is BatchStatement batch)
             {
                 bool SearchBoundStatement(Statement s) =>
-                    s is BoundStatement statement && statement.PreparedStatement.Id.SequenceEqual(ex.UnknownId);
+                    s is BoundStatement statement && statement.PreparedStatement.Id.SequenceEqual(unknownId);
                 boundStatement = (BoundStatement)batch.Queries.FirstOrDefault(SearchBoundStatement);
             }
             if (boundStatement == null)
@@ -624,18 +627,24 @@ namespace Cassandra.Requests
                 Task.Run(async () =>
                 {
                     await c.SetKeyspace(preparedKeyspace).ConfigureAwait(false);
-                    await SendAsync(request, nodeRequestInfo.Host, NewReprepareResponseHandler(ex)).ConfigureAwait(false);
+                    await SendAsync(
+                        request,
+                        nodeRequestInfo.Host,
+                        NewReprepareResponseHandler(unknownId, boundStatement.PreparedStatement)).ConfigureAwait(false);
                 }).Forget();
                 return;
             }
-            await SendAsync(request, nodeRequestInfo.Host, NewReprepareResponseHandler(ex)).ConfigureAwait(false);
+            await SendAsync(
+                request,
+                nodeRequestInfo.Host,
+                NewReprepareResponseHandler(unknownId, boundStatement.PreparedStatement)).ConfigureAwait(false);
         }
 
         /// <summary>
         /// Handles the response of a (re)prepare request and retries to execute on the same connection
         /// </summary>
         private Func<IRequestError, Response, NodeRequestInfo, Task> NewReprepareResponseHandler(
-            PreparedQueryNotFoundException originalError)
+            byte[] originalId, PreparedStatement preparedStatement)
         {
             async Task ResponseHandler(IRequestError error, Response response, NodeRequestInfo nodeRequestInfo)
             {
@@ -662,9 +671,11 @@ namespace Cassandra.Requests
                         return;
                     }
 
-                    if (!outputPrepared.QueryId.SequenceEqual(originalError.UnknownId))
+                    if (!outputPrepared.QueryId.SequenceEqual(originalId))
                     {
-                        var ex = new PreparedStatementIdMismatchException(originalError.UnknownId, outputPrepared.QueryId);
+                        _session.InternalCluster.InvalidatePreparedStatement(
+                            originalId, preparedStatement.Cql, preparedStatement.Keyspace);
+                        var ex = new PreparedStatementIdMismatchException(originalId, outputPrepared.QueryId);
                         if (_parent.SetNodeExecutionCompleted(nodeRequestInfo.ExecutionId))
                         {
                             await _requestObserver.OnNodeRequestErrorAsync(

@@ -41,6 +41,335 @@ namespace Cassandra.Tests.Requests
         private readonly ISerializer _serializer = new SerializerManager(ProtocolVersion.V3).GetCurrentSerializer();
 
         [Test]
+        public async Task Should_Retry_Wrong_Keyspace_On_Next_Host_Before_FanOut()
+        {
+            const string expectedKeyspace = "ks1";
+            const string actualKeyspace = "ks2";
+            var requestTracker = new Mock<IRequestTracker>();
+            requestTracker
+                .Setup(tracker => tracker.OnStartAsync(It.IsAny<SessionRequestInfo>()))
+                .Returns(Task.CompletedTask);
+            requestTracker
+                .Setup(tracker => tracker.OnNodeStartAsync(
+                    It.IsAny<SessionRequestInfo>(), It.IsAny<NodeRequestInfo>()))
+                .Returns(Task.CompletedTask);
+            requestTracker
+                .Setup(tracker => tracker.OnNodeErrorAsync(
+                    It.IsAny<SessionRequestInfo>(), It.IsAny<NodeRequestInfo>(), It.IsAny<Exception>()))
+                .Returns(Task.CompletedTask);
+            requestTracker
+                .Setup(tracker => tracker.OnNodeSuccessAsync(
+                    It.IsAny<SessionRequestInfo>(), It.IsAny<NodeRequestInfo>()))
+                .Returns(Task.CompletedTask);
+            requestTracker
+                .Setup(tracker => tracker.OnSuccessAsync(It.IsAny<SessionRequestInfo>()))
+                .Returns(Task.CompletedTask);
+            var reprepareHandler = new Mock<IReprepareHandler>();
+            reprepareHandler
+                .Setup(handler => handler.ReprepareOnAllNodesWithExistingConnections(
+                    It.IsAny<IInternalSession>(),
+                    It.IsAny<InternalPrepareRequest>(),
+                    It.IsAny<PrepareResult>(),
+                    It.IsAny<Cassandra.Observers.Abstractions.IRequestObserver>(),
+                    It.IsAny<SessionRequestInfo>()))
+                .Returns(Task.CompletedTask);
+            var mockResult = BuildPrepareHandler(
+                builder => builder.RequestTracker = requestTracker.Object,
+                reprepareHandler.Object);
+            mockResult.Session.Keyspace = expectedKeyspace;
+            var queryPlan = mockResult.Session.InternalCluster
+                                      .GetResolvedEndpoints()
+                                      .Select(x => new HostShard(
+                                          new Host(x.Value.First().GetHostIpEndPointWithFallback(), contactPoint: null),
+                                          -1))
+                                      .Take(2)
+                                      .ToList();
+            mockResult.ConnectionFactory.OnCreate += connection =>
+            {
+                Mock.Get(connection)
+                    .Setup(c => c.SetKeyspace(It.IsAny<string>()))
+                    .ReturnsAsync(true);
+                Mock.Get(connection)
+                    .SetupGet(c => c.Keyspace)
+                    .Returns(connection.EndPoint.GetHostIpEndPointWithFallback().Equals(queryPlan[0].Host.Address)
+                        ? actualKeyspace
+                        : expectedKeyspace);
+                Mock.Get(connection)
+                    .Setup(c => c.Send(It.IsAny<IRequest>()))
+                    .ReturnsAsync(new ProxyResultResponse(
+                        ResultResponse.ResultResponseKind.Void,
+                        new OutputPrepared(
+                            new byte[0],
+                            new RowSetMetadata { Columns = new CqlColumn[0] },
+                            new RowSetMetadata { Columns = new CqlColumn[0] })));
+            };
+            foreach (var hostShard in queryPlan)
+            {
+                await mockResult.Session
+                                .GetOrCreateConnectionPool(hostShard.Host, HostDistance.Local)
+                                .Warmup()
+                                .ConfigureAwait(false);
+            }
+            var request = new InternalPrepareRequest(_serializer, "TEST", null, null);
+
+            var preparedStatement = await mockResult.PrepareHandler.Prepare(
+                request,
+                mockResult.Session,
+                queryPlan.GetEnumerator(),
+                expectedKeyspace,
+                expectedKeyspace).ConfigureAwait(false);
+
+            Assert.AreEqual(expectedKeyspace, preparedStatement.Keyspace);
+            reprepareHandler.Verify(handler => handler.ReprepareOnAllNodesWithExistingConnections(
+                It.IsAny<IInternalSession>(),
+                It.IsAny<InternalPrepareRequest>(),
+                It.IsAny<PrepareResult>(),
+                It.IsAny<Cassandra.Observers.Abstractions.IRequestObserver>(),
+                It.IsAny<SessionRequestInfo>()), Times.Once);
+            requestTracker.Verify(
+                tracker => tracker.OnNodeSuccessAsync(
+                    It.IsAny<SessionRequestInfo>(), It.IsAny<NodeRequestInfo>()), Times.Once);
+            requestTracker.Verify(
+                tracker => tracker.OnSuccessAsync(It.IsAny<SessionRequestInfo>()), Times.Once);
+            requestTracker.Verify(
+                tracker => tracker.OnNodeErrorAsync(
+                    It.IsAny<SessionRequestInfo>(),
+                    It.IsAny<NodeRequestInfo>(),
+                    It.Is<InvalidOperationException>(ex =>
+                        ex.Message == "The connection keyspace does not match the keyspace this prepare was issued for. " +
+                        $"Expected '{expectedKeyspace}', but the statement was prepared with '{actualKeyspace}'. " +
+                        "Retry the prepare operation.")), Times.Once);
+            requestTracker.Verify(
+                tracker => tracker.OnErrorAsync(
+                    It.IsAny<SessionRequestInfo>(), It.IsAny<Exception>()), Times.Never);
+        }
+
+        [Test]
+        public async Task Should_Report_Result_Acceptance_Failure_Instead_Of_Success()
+        {
+            const string keyspace = "ks1";
+            var acceptanceException = new InvalidOperationException("prepared statement was invalidated");
+            var requestTracker = new Mock<IRequestTracker>();
+            requestTracker
+                .Setup(tracker => tracker.OnStartAsync(It.IsAny<SessionRequestInfo>()))
+                .Returns(Task.CompletedTask);
+            requestTracker
+                .Setup(tracker => tracker.OnNodeStartAsync(
+                    It.IsAny<SessionRequestInfo>(), It.IsAny<NodeRequestInfo>()))
+                .Returns(Task.CompletedTask);
+            requestTracker
+                .Setup(tracker => tracker.OnNodeSuccessAsync(
+                    It.IsAny<SessionRequestInfo>(), It.IsAny<NodeRequestInfo>()))
+                .Returns(Task.CompletedTask);
+            requestTracker
+                .Setup(tracker => tracker.OnErrorAsync(
+                    It.IsAny<SessionRequestInfo>(), It.IsAny<Exception>()))
+                .Returns(Task.CompletedTask);
+            var mockResult = BuildPrepareHandler(
+                builder =>
+                {
+                    builder.QueryOptions = new QueryOptions().SetPrepareOnAllHosts(false);
+                    builder.RequestTracker = requestTracker.Object;
+                },
+                acceptPreparedStatement: _ => throw acceptanceException);
+            mockResult.Session.Keyspace = keyspace;
+            mockResult.ConnectionFactory.OnCreate += connection =>
+            {
+                Mock.Get(connection)
+                    .Setup(c => c.SetKeyspace(It.IsAny<string>()))
+                    .ReturnsAsync(true);
+                Mock.Get(connection)
+                    .SetupGet(c => c.Keyspace)
+                    .Returns(keyspace);
+                Mock.Get(connection)
+                    .Setup(c => c.Send(It.IsAny<IRequest>()))
+                    .ReturnsAsync(new ProxyResultResponse(
+                        ResultResponse.ResultResponseKind.Void,
+                        new OutputPrepared(
+                            new byte[] { 1 },
+                            new RowSetMetadata { Columns = new CqlColumn[0] },
+                            new RowSetMetadata { Columns = new CqlColumn[0] })));
+            };
+            var queryPlan = mockResult.Session.InternalCluster
+                                      .GetResolvedEndpoints()
+                                      .Select(x => new HostShard(
+                                          new Host(x.Value.First().GetHostIpEndPointWithFallback(), contactPoint: null),
+                                          -1))
+                                      .Take(1)
+                                      .ToList();
+            await mockResult.Session
+                            .GetOrCreateConnectionPool(queryPlan[0].Host, HostDistance.Local)
+                            .Warmup()
+                            .ConfigureAwait(false);
+            var request = new InternalPrepareRequest(_serializer, "TEST", null, null);
+
+            var ex = Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await mockResult.PrepareHandler.Prepare(
+                    request,
+                    mockResult.Session,
+                    queryPlan.GetEnumerator(),
+                    keyspace,
+                    keyspace).ConfigureAwait(false));
+
+            Assert.AreSame(acceptanceException, ex);
+            requestTracker.Verify(
+                tracker => tracker.OnNodeSuccessAsync(
+                    It.IsAny<SessionRequestInfo>(), It.IsAny<NodeRequestInfo>()), Times.Once);
+            requestTracker.Verify(
+                tracker => tracker.OnSuccessAsync(It.IsAny<SessionRequestInfo>()), Times.Never);
+            requestTracker.Verify(
+                tracker => tracker.OnErrorAsync(It.IsAny<SessionRequestInfo>(), acceptanceException), Times.Once);
+        }
+
+        [Test]
+        public async Task Should_Use_Session_Keyspace_For_Connection_And_Request_Keyspace_For_Prepare()
+        {
+            const string sessionKeyspace = "ks1";
+            const string requestKeyspace = "ks2";
+            SessionRequestInfo trackedRequest = null;
+            var requestTracker = new Mock<IRequestTracker>(MockBehavior.Strict);
+            requestTracker
+                .Setup(tracker => tracker.OnStartAsync(It.IsAny<SessionRequestInfo>()))
+                .Callback<SessionRequestInfo>(info => trackedRequest = info)
+                .Returns(Task.CompletedTask);
+            requestTracker
+                .Setup(tracker => tracker.OnNodeStartAsync(
+                    It.IsAny<SessionRequestInfo>(), It.IsAny<NodeRequestInfo>()))
+                .Returns(Task.CompletedTask);
+            requestTracker
+                .Setup(tracker => tracker.OnNodeSuccessAsync(
+                    It.IsAny<SessionRequestInfo>(), It.IsAny<NodeRequestInfo>()))
+                .Returns(Task.CompletedTask);
+            requestTracker
+                .Setup(tracker => tracker.OnSuccessAsync(It.IsAny<SessionRequestInfo>()))
+                .Returns(Task.CompletedTask);
+            var mockResult = BuildPrepareHandler(builder =>
+            {
+                builder.QueryOptions = new QueryOptions().SetPrepareOnAllHosts(false);
+                builder.RequestTracker = requestTracker.Object;
+            });
+            mockResult.Session.Keyspace = sessionKeyspace;
+            var selectedKeyspaces = new ConcurrentQueue<string>();
+            mockResult.ConnectionFactory.OnCreate += connection =>
+            {
+                Mock.Get(connection)
+                    .Setup(c => c.SetKeyspace(It.IsAny<string>()))
+                    .Callback<string>(selectedKeyspaces.Enqueue)
+                    .Returns<string>(keyspace => keyspace == sessionKeyspace
+                        ? Task.FromResult(true)
+                        : Task.FromException<bool>(new InvalidQueryException(
+                            $"Unexpected connection keyspace '{keyspace}'")));
+                Mock.Get(connection)
+                    .Setup(c => c.Send(It.IsAny<IRequest>()))
+                    .ReturnsAsync(new ProxyResultResponse(
+                        ResultResponse.ResultResponseKind.Void,
+                        new OutputPrepared(
+                            new byte[0],
+                            new RowSetMetadata { Columns = new CqlColumn[0] },
+                            new RowSetMetadata { Columns = new CqlColumn[0] })));
+            };
+            var queryPlan = mockResult.Session.InternalCluster
+                                      .GetResolvedEndpoints()
+                                      .Select(x => new HostShard(
+                                          new Host(x.Value.First().GetHostIpEndPointWithFallback(), contactPoint: null),
+                                          -1))
+                                      .Take(1)
+                                      .ToList();
+            await mockResult.Session
+                            .GetOrCreateConnectionPool(queryPlan[0].Host, HostDistance.Local)
+                            .Warmup()
+                            .ConfigureAwait(false);
+            var request = new InternalPrepareRequest(
+                new SerializerManager(ProtocolVersion.V5).GetCurrentSerializer(),
+                "TEST",
+                requestKeyspace,
+                null);
+
+            var preparedStatement = await mockResult.PrepareHandler.Prepare(
+                request,
+                mockResult.Session,
+                queryPlan.GetEnumerator(),
+                sessionKeyspace,
+                requestKeyspace).ConfigureAwait(false);
+
+            Assert.AreEqual(requestKeyspace, preparedStatement.Keyspace);
+            Assert.AreEqual(new[] { sessionKeyspace }, selectedKeyspaces.ToArray());
+            Assert.IsNotNull(trackedRequest);
+            Assert.AreEqual(sessionKeyspace, trackedRequest.SessionKeyspace);
+            Assert.AreEqual(requestKeyspace, trackedRequest.PrepareRequest.Keyspace);
+        }
+
+        [Test]
+        public async Task Should_Not_Leave_Explicit_Request_Keyspace_On_A_Keyspace_Less_Session_Connection()
+        {
+            const string requestKeyspace = "ks1";
+            const string nullKeyspaceMarker = "<null>";
+            var mockResult = BuildPrepareHandler(builder =>
+                builder.QueryOptions = new QueryOptions().SetPrepareOnAllHosts(false));
+            mockResult.Session.Keyspace = null;
+            var connectionKeyspace = (string)null;
+            var selectedKeyspaces = new ConcurrentQueue<string>();
+            mockResult.ConnectionFactory.OnCreate += connection =>
+            {
+                Mock.Get(connection)
+                    .SetupGet(c => c.Keyspace)
+                    .Returns(() => connectionKeyspace);
+                Mock.Get(connection)
+                    .Setup(c => c.SetKeyspace(It.IsAny<string>()))
+                    .Callback<string>(keyspace =>
+                    {
+                        selectedKeyspaces.Enqueue(keyspace ?? nullKeyspaceMarker);
+                        if (!string.IsNullOrEmpty(keyspace))
+                        {
+                            connectionKeyspace = keyspace;
+                        }
+                    })
+                    .ReturnsAsync(true);
+                Mock.Get(connection)
+                    .Setup(c => c.Send(It.IsAny<IRequest>()))
+                    .ReturnsAsync(new ProxyResultResponse(
+                        ResultResponse.ResultResponseKind.Void,
+                        new OutputPrepared(
+                            new byte[0],
+                            new RowSetMetadata { Columns = new CqlColumn[0] },
+                            new RowSetMetadata { Columns = new CqlColumn[0] })));
+            };
+            var queryPlan = mockResult.Session.InternalCluster
+                                      .GetResolvedEndpoints()
+                                      .Select(x => new HostShard(
+                                          new Host(x.Value.First().GetHostIpEndPointWithFallback(), contactPoint: null),
+                                          -1))
+                                      .Take(1)
+                                      .ToList();
+            await mockResult.Session
+                            .GetOrCreateConnectionPool(queryPlan[0].Host, HostDistance.Local)
+                            .Warmup()
+                            .ConfigureAwait(false);
+            var serializer = new SerializerManager(ProtocolVersion.V5).GetCurrentSerializer();
+
+            var explicitKeyspaceStatement = await mockResult.PrepareHandler.Prepare(
+                new InternalPrepareRequest(
+                    serializer, "SELECT * FROM table1", requestKeyspace, null),
+                mockResult.Session,
+                queryPlan.GetEnumerator(),
+                null,
+                requestKeyspace).ConfigureAwait(false);
+            var implicitKeyspaceStatement = await mockResult.PrepareHandler.Prepare(
+                new InternalPrepareRequest(
+                    serializer, "SELECT * FROM ks1.table1", null, null),
+                mockResult.Session,
+                queryPlan.GetEnumerator(),
+                null,
+                null).ConfigureAwait(false);
+
+            Assert.AreEqual(requestKeyspace, explicitKeyspaceStatement.Keyspace);
+            Assert.IsNull(implicitKeyspaceStatement.Keyspace);
+            Assert.AreEqual(
+                new[] { nullKeyspaceMarker, nullKeyspaceMarker },
+                selectedKeyspaces.ToArray());
+        }
+
+        [Test]
         public async Task Should_NotSendRequestToSecondHost_When_SecondHostDoesntHavePool()
         {
             var lbpCluster = new FakeLoadBalancingPolicy();
@@ -90,7 +419,9 @@ namespace Cassandra.Tests.Requests
             await mockResult.PrepareHandler.Prepare(
                 request,
                 mockResult.Session,
-                queryPlan.GetEnumerator()).ConfigureAwait(false);
+                queryPlan.GetEnumerator(),
+                mockResult.Session.Keyspace,
+                mockResult.Session.Keyspace).ConfigureAwait(false);
 
             var results = mockResult.SendResults.ToArray();
 
@@ -162,7 +493,9 @@ namespace Cassandra.Tests.Requests
             await mockResult.PrepareHandler.Prepare(
                 request,
                 mockResult.Session,
-                queryPlan.GetEnumerator()).ConfigureAwait(false);
+                queryPlan.GetEnumerator(),
+                mockResult.Session.Keyspace,
+                mockResult.Session.Keyspace).ConfigureAwait(false);
 
             var results = mockResult.SendResults.ToArray();
 
@@ -235,7 +568,9 @@ namespace Cassandra.Tests.Requests
             await mockResult.PrepareHandler.Prepare(
                 request,
                 mockResult.Session,
-                queryPlan.GetEnumerator()).ConfigureAwait(false);
+                queryPlan.GetEnumerator(),
+                mockResult.Session.Keyspace,
+                mockResult.Session.Keyspace).ConfigureAwait(false);
 
             var results = mockResult.SendResults.ToArray();
 
@@ -307,7 +642,9 @@ namespace Cassandra.Tests.Requests
             await mockResult.PrepareHandler.Prepare(
                 request,
                 mockResult.Session,
-                queryPlan.GetEnumerator()).ConfigureAwait(false);
+                queryPlan.GetEnumerator(),
+                mockResult.Session.Keyspace,
+                mockResult.Session.Keyspace).ConfigureAwait(false);
 
             var results = mockResult.SendResults.ToArray();
 
@@ -379,7 +716,9 @@ namespace Cassandra.Tests.Requests
             await mockResult.PrepareHandler.Prepare(
                 request,
                 mockResult.Session,
-                queryPlan.GetEnumerator()).ConfigureAwait(false);
+                queryPlan.GetEnumerator(),
+                mockResult.Session.Keyspace,
+                mockResult.Session.Keyspace).ConfigureAwait(false);
 
             var results = mockResult.SendResults.ToArray();
 
@@ -452,7 +791,9 @@ namespace Cassandra.Tests.Requests
             await mockResult.PrepareHandler.Prepare(
                 request,
                 mockResult.Session,
-                queryPlan.GetEnumerator()).ConfigureAwait(false);
+                queryPlan.GetEnumerator(),
+                mockResult.Session.Keyspace,
+                mockResult.Session.Keyspace).ConfigureAwait(false);
 
             var results = mockResult.SendResults.ToArray();
 
@@ -478,7 +819,10 @@ namespace Cassandra.Tests.Requests
             }
         }
 
-        private PrepareHandlerMockResult BuildPrepareHandler(Action<TestConfigurationBuilder> configBuilderAct)
+        private PrepareHandlerMockResult BuildPrepareHandler(
+            Action<TestConfigurationBuilder> configBuilderAct,
+            IReprepareHandler reprepareHandler = null,
+            Func<PreparedStatement, PreparedStatement> acceptPreparedStatement = null)
         {
             var factory = new FakeConnectionFactory(MockConnection);
 
@@ -510,7 +854,11 @@ namespace Cassandra.Tests.Requests
             var session = new Session(cluster, config, null, SerializerManager.Default, null);
 
             // create prepare handler
-            var prepareHandler = new PrepareHandler(new SerializerManager(ProtocolVersion.V3), cluster, new ReprepareHandler());
+            var prepareHandler = new PrepareHandler(
+                new SerializerManager(ProtocolVersion.V3),
+                cluster,
+                reprepareHandler ?? new ReprepareHandler(),
+                acceptPreparedStatement);
 
             // create mock result object
             var mockResult = new PrepareHandlerMockResult(prepareHandler, session, factory);

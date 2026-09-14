@@ -44,8 +44,23 @@ namespace Cassandra
 
         private static ProtocolVersion _maxProtocolVersion = ProtocolVersion.MaxSupported;
         internal static readonly Logger Logger = new Logger(typeof(Cluster));
+        private static readonly IEqualityComparer<byte[]> PreparedStatementIdComparer = new ByteArrayComparer();
         private readonly CopyOnWriteList<IInternalSession> _connectedSessions = new CopyOnWriteList<IInternalSession>();
         private readonly IControlConnection _controlConnection;
+        private readonly ConcurrentDictionary<PreparedStatementCacheKey, PreparedStatementCacheEntry> _preparedStatementCache =
+            new ConcurrentDictionary<PreparedStatementCacheKey, PreparedStatementCacheEntry>();
+        // Serializes generation publication with cache insertion, slow-path hit validation, and invalidation.
+        // When both prepared-statement locks are needed, this lock is always acquired before the tracking lock.
+        private readonly object _preparedStatementCacheLock = new object();
+        private readonly object _preparedStatementTrackingLock = new object();
+        private readonly HashSet<PreparedStatementPreparation> _activePreparedStatementPreparations =
+            new HashSet<PreparedStatementPreparation>();
+        // Entries move from this set to the active-preparation set atomically with invalidation. An entry can
+        // be removed from the cache while its original caller still retains its unstarted Lazy.
+        private readonly ConcurrentDictionary<PreparedStatementCacheEntry, byte>
+            _unstartedPreparedStatementCacheEntries =
+                new ConcurrentDictionary<PreparedStatementCacheEntry, byte>();
+        private long _preparedStatementCacheGeneration;
         private volatile bool _initialized;
         private volatile Exception _initException;
         private readonly SemaphoreSlim _initLock = new SemaphoreSlim(1, 1);
@@ -77,7 +92,7 @@ namespace Cassandra
 
         /// <inheritdoc />
         ConcurrentDictionary<byte[], PreparedStatement> IInternalCluster.PreparedQueries { get; }
-            = new ConcurrentDictionary<byte[], PreparedStatement>(new ByteArrayComparer());
+            = new ConcurrentDictionary<byte[], PreparedStatement>(Cluster.PreparedStatementIdComparer);
 
         /// <summary>
         ///  Build a new cluster based on the provided initializer. <p> Note that for
@@ -554,6 +569,8 @@ namespace Cassandra
         {
             if (!_initialized)
             {
+                _preparedStatementCache.Clear();
+                _unstartedPreparedStatementCacheEntries.Clear();
                 _metadata.ShutDown(timeoutMs);
                 _controlConnection.Dispose();
                 await _protocolEventDebouncer.ShutdownAsync().ConfigureAwait(false);
@@ -581,6 +598,8 @@ namespace Cassandra
                 }
                 throw;
             }
+            _preparedStatementCache.Clear();
+            _unstartedPreparedStatementCacheEntries.Clear();
             _metadata.ShutDown(timeoutMs);
             _controlConnection.Dispose();
             await _protocolEventDebouncer.ShutdownAsync().ConfigureAwait(false);
@@ -625,18 +644,288 @@ namespace Cassandra
         async Task<PreparedStatement> IInternalCluster.Prepare(
             IInternalSession session, ISerializerManager serializerManager, InternalPrepareRequest request)
         {
-            var lbp = session.Cluster.Configuration.DefaultRequestOptions.LoadBalancingPolicy;
-            var handler = InternalRef.Configuration.PrepareHandlerFactory.CreatePrepareHandler(serializerManager, this, session, request);
-            var ps = await handler.Prepare(request, session, lbp.NewQueryPlan(session.Keyspace, null).GetEnumerator()).ConfigureAwait(false);
-            var psAdded = InternalRef.PreparedQueries.GetOrAdd(ps.Id, ps);
-            if (ps != psAdded)
+            var serializer = serializerManager.GetCurrentSerializer();
+            var currentSessionKeyspace = session.Keyspace;
+            var sessionKeyspace = string.IsNullOrEmpty(currentSessionKeyspace) ? null : currentSessionKeyspace;
+            var requestKeyspace = serializer.ProtocolVersion.SupportsKeyspaceInRequest()
+                ? request.Keyspace
+                : null;
+            var effectiveKeyspace = requestKeyspace ?? sessionKeyspace;
+
+            if (request.Payload != null)
             {
-                PrepareHandler.Logger.Warning("Re-preparing already prepared query is generally an anti-pattern and will likely " +
-                               "affect performance. Consider preparing the statement only once. Query='{0}'", ps.Cql);
-                ps = psAdded;
+                // Custom payload semantics are request-specific. Preserve the existing uncached behavior.
+                return await PrepareAsync(
+                    session,
+                    serializerManager,
+                    new InternalPrepareRequest(serializer, request.Query, requestKeyspace, request.Payload),
+                    sessionKeyspace,
+                    effectiveKeyspace,
+                    true).ConfigureAwait(false);
             }
 
-            return ps;
+            var cacheKey = new PreparedStatementCacheKey(request.Query, effectiveKeyspace);
+            var fastPathGeneration = Volatile.Read(ref _preparedStatementCacheGeneration);
+            if (_preparedStatementCache.TryGetValue(cacheKey, out var completedEntry)
+                && completedEntry.TryGetCompletedTask(fastPathGeneration, out var completedTask)
+                && Volatile.Read(ref _preparedStatementCacheGeneration) == fastPathGeneration)
+            {
+                return completedTask.Result;
+            }
+
+            PreparedStatementCacheEntry prepareEntry;
+            lock (_preparedStatementCacheLock)
+            {
+                var cacheGeneration = _preparedStatementCacheGeneration;
+                if (_preparedStatementCache.TryGetValue(cacheKey, out prepareEntry)
+                    && !prepareEntry.TryPrepareForJoin(cacheGeneration))
+                {
+                    // An invalidation observed this entry before its ID was known. Callers that begin after
+                    // that invalidation must not join the old work: it may still produce the invalidated ID.
+                    RemovePreparedStatementCacheEntry(cacheKey, prepareEntry);
+                    prepareEntry = null;
+                }
+
+                if (prepareEntry == null)
+                {
+                    var newEntry = new PreparedStatementCacheEntry(
+                        cacheGeneration,
+                        entry => PrepareAsync(
+                            session,
+                            serializerManager,
+                            new InternalPrepareRequest(
+                                serializer, request.Query, requestKeyspace, null),
+                            sessionKeyspace,
+                            effectiveKeyspace,
+                            false,
+                            entry));
+                    prepareEntry = _preparedStatementCache.GetOrAdd(cacheKey, newEntry);
+                    if (ReferenceEquals(prepareEntry, newEntry))
+                    {
+                        _unstartedPreparedStatementCacheEntries.TryAdd(prepareEntry, 0);
+                    }
+                }
+            }
+
+            try
+            {
+                return await prepareEntry.Task.Value.ConfigureAwait(false);
+            }
+            catch
+            {
+                // A failed prepare must not poison the cache. Remove only this exact value: another caller may
+                // have already removed it and started a new attempt.
+                lock (_preparedStatementCacheLock)
+                {
+                    RemovePreparedStatementCacheEntry(cacheKey, prepareEntry);
+                }
+                throw;
+            }
+        }
+
+        private async Task<PreparedStatement> PrepareAsync(
+            IInternalSession session,
+            ISerializerManager serializerManager,
+            InternalPrepareRequest request,
+            string sessionKeyspace,
+            string effectiveKeyspace,
+            bool returnTrackedStatement,
+            PreparedStatementCacheEntry cacheEntry = null)
+        {
+            var preparation = new PreparedStatementPreparation();
+            lock (_preparedStatementTrackingLock)
+            {
+                _activePreparedStatementPreparations.Add(preparation);
+                if (cacheEntry != null)
+                {
+                    // Invalidation owns the cache lock before taking this lock, so it observes this entry in
+                    // the unstarted set before the transition or this preparation in the active set after it.
+                    _unstartedPreparedStatementCacheEntries.TryRemove(cacheEntry, out _);
+                }
+            }
+
+            try
+            {
+                var lbp = session.Cluster.Configuration.DefaultRequestOptions.LoadBalancingPolicy;
+                var handler = InternalRef.Configuration.PrepareHandlerFactory.CreatePrepareHandler(
+                    serializerManager,
+                    this,
+                    session,
+                    request,
+                    ps => AcceptPreparedStatement(
+                        ps,
+                        returnTrackedStatement,
+                        cacheEntry,
+                        preparation));
+                return await handler.Prepare(
+                    request,
+                    session,
+                    lbp.NewQueryPlan(effectiveKeyspace, null).GetEnumerator(),
+                    sessionKeyspace,
+                    effectiveKeyspace).ConfigureAwait(false);
+            }
+            finally
+            {
+                lock (_preparedStatementTrackingLock)
+                {
+                    _activePreparedStatementPreparations.Remove(preparation);
+                }
+            }
+        }
+
+        private PreparedStatement AcceptPreparedStatement(
+            PreparedStatement ps,
+            bool returnTrackedStatement,
+            PreparedStatementCacheEntry cacheEntry,
+            PreparedStatementPreparation preparation)
+        {
+            // Registration and invalidation are serialized so invalidating one statement can not suppress
+            // prepare-on-up tracking for unrelated statements that happen to be preparing concurrently.
+            var result = ps;
+            var logAlreadyPrepared = false;
+            var wasInvalidated = false;
+            if (cacheEntry != null)
+            {
+                // A caller can retain a Lazy after invalidation evicts it and start the preparation later.
+                // Accept the result while the preparation is still tracked, and serialize that acceptance
+                // with invalidation so orphaned work cannot return or restore an invalidated ID.
+                lock (_preparedStatementCacheLock)
+                {
+                    lock (_preparedStatementTrackingLock)
+                    {
+                        wasInvalidated = cacheEntry.WasInvalidated(ps.Id)
+                                         || preparation.WasInvalidated(ps.Id);
+                        if (!wasInvalidated)
+                        {
+                            InternalRef.PreparedQueries.TryAdd(ps.Id, ps);
+                            // Once the result ID is known not to match any invalidation that crossed this
+                            // preparation, that history is obsolete and must not be retained by the cache.
+                            cacheEntry.AdoptGenerationAfterSuccessfulResult(
+                                _preparedStatementCacheGeneration);
+                        }
+                    }
+                }
+            }
+            else
+            {
+                lock (_preparedStatementTrackingLock)
+                {
+                    wasInvalidated = preparation.WasInvalidated(ps.Id);
+                    if (!wasInvalidated)
+                    {
+                        if (returnTrackedStatement)
+                        {
+                            result = InternalRef.PreparedQueries.GetOrAdd(ps.Id, ps);
+                            if (!ReferenceEquals(result, ps))
+                            {
+                                logAlreadyPrepared = true;
+                            }
+                        }
+                        else
+                        {
+                            InternalRef.PreparedQueries.TryAdd(ps.Id, ps);
+                        }
+                    }
+                }
+            }
+            if (wasInvalidated)
+            {
+                throw new InvalidOperationException(
+                    "The prepared statement was invalidated while it was being prepared. " +
+                    "Retry the prepare operation.");
+            }
+            if (logAlreadyPrepared)
+            {
+                PrepareHandler.Logger.Warning(
+                    "Re-preparing already prepared query is generally an anti-pattern and will likely " +
+                    "affect performance. Consider preparing the statement only once. Query='{0}'",
+                    ps.Cql);
+            }
+            return result;
+        }
+
+        private void RemovePreparedStatementCacheEntry(
+            PreparedStatementCacheKey cacheKey, PreparedStatementCacheEntry prepareEntry)
+        {
+            ((ICollection<KeyValuePair<PreparedStatementCacheKey, PreparedStatementCacheEntry>>)_preparedStatementCache)
+                .Remove(new KeyValuePair<PreparedStatementCacheKey, PreparedStatementCacheEntry>(cacheKey, prepareEntry));
+        }
+
+        /// <inheritdoc />
+        void IInternalCluster.InvalidatePreparedStatement(byte[] id, string cqlQuery, string keyspace)
+        {
+            // The protocol exception that owns this array is exposed to request trackers and callers. Keep a
+            // private snapshot because the content comparer used by the dictionaries and marker sets requires
+            // keys to remain immutable after insertion.
+            var invalidatedId = (byte[])id.Clone();
+            lock (_preparedStatementCacheLock)
+            {
+                var generation = Interlocked.Increment(ref _preparedStatementCacheGeneration);
+                var invalidatedCacheKey = new PreparedStatementCacheKey(cqlQuery, keyspace);
+                lock (_preparedStatementTrackingLock)
+                {
+                    foreach (var preparation in _activePreparedStatementPreparations)
+                    {
+                        preparation.Invalidate(invalidatedId);
+                    }
+                    foreach (var entry in _unstartedPreparedStatementCacheEntries.Keys)
+                    {
+                        entry.Invalidate(invalidatedId);
+                    }
+                    InternalRef.PreparedQueries.TryRemove(invalidatedId, out _);
+                }
+
+                // One server-side ID can be retained under multiple query/keyspace cache keys, so every
+                // completed entry must be inspected even though the reported query and keyspace identify one.
+                foreach (var entry in _preparedStatementCache)
+                {
+                    if (!entry.Value.Task.IsValueCreated)
+                    {
+                        // Keep the entry quarantined until its retained caller starts it. A caller that arrives
+                        // after this invalidation will replace it in TryPrepareForJoin(), while a result with an
+                        // unrelated ID can still become the cached value.
+                        entry.Value.Invalidate(invalidatedId);
+                        continue;
+                    }
+
+                    var task = entry.Value.Task.Value;
+                    if (!task.IsCompleted)
+                    {
+                        // Tag pending work rather than detaching it. It remains unjoinable until it proves that
+                        // its eventual ID is unrelated to this invalidation.
+                        entry.Value.Invalidate(invalidatedId);
+                        continue;
+                    }
+
+                    var taskFailed = task.Status != TaskStatus.RanToCompletion;
+                    // The result can be accepted before the request-success observer completes. If an
+                    // invalidation for that result arrives while the cache task is still pending, the entry
+                    // retains the marker even though the task later reaches RanToCompletion.
+                    var resultWasInvalidated = !taskFailed
+                                               && entry.Value.WasInvalidated(task.Result.Id);
+                    var idMatches = !taskFailed
+                                    && Cluster.PreparedStatementIdComparer.Equals(
+                                        task.Result.Id, invalidatedId);
+                    if (resultWasInvalidated
+                        || idMatches
+                        || (taskFailed && entry.Key.Equals(invalidatedCacheKey)))
+                    {
+                        entry.Value.Invalidate(invalidatedId);
+                        RemovePreparedStatementCacheEntry(entry.Key, entry.Value);
+                        continue;
+                    }
+
+                    if (taskFailed)
+                    {
+                        entry.Value.Invalidate(invalidatedId);
+                        continue;
+                    }
+
+                    // No retained invalidation matches this completed result, so the remaining history is
+                    // obsolete and the entry can safely participate in the completed-hit fast path.
+                    entry.Value.AdoptGenerationAfterSuccessfulResult(generation);
+                }
+            }
         }
 
         /// <inheritdoc />
@@ -674,6 +963,7 @@ namespace Cassandra
                     var request = new InternalPrepareRequest(serializer, ps.Cql, ps.Keyspace, null);
                     await semaphore.WaitAsync().ConfigureAwait(false);
                     tasks.Add(Task.Run(() => handler.ReprepareOnSingleNodeAsync(
+                        this,
                         new KeyValuePair<Host, IHostConnectionPool>(host, pool),
                         ps,
                         request,
@@ -693,6 +983,141 @@ namespace Cassandra
                         "Exception: {1}",
                         host.Address,
                         ex);
+                }
+            }
+        }
+
+        private sealed class PreparedStatementPreparation
+        {
+            private readonly HashSet<byte[]> _invalidatedIds =
+                new HashSet<byte[]>(Cluster.PreparedStatementIdComparer);
+
+            public void Invalidate(byte[] id)
+            {
+                _invalidatedIds.Add(id);
+            }
+
+            public bool WasInvalidated(byte[] id)
+            {
+                return _invalidatedIds.Contains(id);
+            }
+        }
+
+        private sealed class PreparedStatementCacheEntry
+        {
+            private readonly HashSet<byte[]> _invalidatedIds =
+                new HashSet<byte[]>(Cluster.PreparedStatementIdComparer);
+
+            public PreparedStatementCacheEntry(
+                long generation, Func<PreparedStatementCacheEntry, Task<PreparedStatement>> prepare)
+            {
+                _generation = generation;
+                Task = new Lazy<Task<PreparedStatement>>(
+                    () => prepare(this), LazyThreadSafetyMode.ExecutionAndPublication);
+            }
+
+            private long _generation;
+
+            public long Generation => Volatile.Read(ref _generation);
+
+            public Lazy<Task<PreparedStatement>> Task { get; }
+
+            public void Invalidate(byte[] id)
+            {
+                _invalidatedIds.Add(id);
+            }
+
+            public bool WasInvalidated(byte[] id)
+            {
+                return _invalidatedIds.Contains(id);
+            }
+
+            public bool TryPrepareForJoin(long generation)
+            {
+                if (Generation == generation && _invalidatedIds.Count == 0)
+                {
+                    return true;
+                }
+
+                if (!Task.IsValueCreated)
+                {
+                    return false;
+                }
+
+                var task = Task.Value;
+                if (task.Status != TaskStatus.RanToCompletion || WasInvalidated(task.Result.Id))
+                {
+                    return false;
+                }
+
+                AdoptGenerationAfterSuccessfulResult(generation);
+                return true;
+            }
+
+            public bool TryGetCompletedTask(long generation, out Task<PreparedStatement> completedTask)
+            {
+                completedTask = null;
+                if (Generation != generation || !Task.IsValueCreated)
+                {
+                    return false;
+                }
+
+                var task = Task.Value;
+                if (task.Status != TaskStatus.RanToCompletion)
+                {
+                    return false;
+                }
+
+                completedTask = task;
+                return true;
+            }
+
+            public void AdoptGenerationAfterSuccessfulResult(long generation)
+            {
+                _invalidatedIds.Clear();
+                UpdateGeneration(generation);
+            }
+
+            public void UpdateGeneration(long generation)
+            {
+                Volatile.Write(ref _generation, generation);
+            }
+        }
+
+        private sealed class PreparedStatementCacheKey : IEquatable<PreparedStatementCacheKey>
+        {
+            private readonly string _cqlQuery;
+            private readonly string _keyspace;
+
+            public PreparedStatementCacheKey(string cqlQuery, string keyspace)
+            {
+                _cqlQuery = cqlQuery;
+                _keyspace = keyspace;
+            }
+
+            public bool Equals(PreparedStatementCacheKey other)
+            {
+                if (ReferenceEquals(other, null)
+                    || !string.Equals(_cqlQuery, other._cqlQuery, StringComparison.Ordinal)
+                    || !string.Equals(_keyspace, other._keyspace, StringComparison.Ordinal))
+                {
+                    return false;
+                }
+                return true;
+            }
+
+            public override bool Equals(object obj)
+            {
+                return Equals(obj as PreparedStatementCacheKey);
+            }
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    var hashCode = _cqlQuery?.GetHashCode() ?? 0;
+                    hashCode = (hashCode * 397) ^ (_keyspace?.GetHashCode() ?? 0);
+                    return hashCode;
                 }
             }
         }
