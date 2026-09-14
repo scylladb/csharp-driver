@@ -78,8 +78,8 @@ namespace Cassandra.IntegrationTests.MetadataTests
                     Assert.AreEqual(3, ClusterObjSync.Metadata.Hosts.Count);
                     Assert.AreEqual(3, ClusterObjNotSync.Metadata.Hosts.Count);
 
-                    replicasSync = ClusterObjSync.Metadata.GetReplicas(keyspaceName, Encoding.UTF8.GetBytes("123"));
-                    replicasNotSync = ClusterObjNotSync.Metadata.GetReplicas(keyspaceName, Encoding.UTF8.GetBytes("123"));
+                    replicasSync = ClusterObjSync.Metadata.GetReplicas(keyspaceName, null, Encoding.UTF8.GetBytes("123"));
+                    replicasNotSync = ClusterObjNotSync.Metadata.GetReplicas(keyspaceName, null, Encoding.UTF8.GetBytes("123"));
 
                     Assert.AreEqual(3, replicasSync.Count);
                     Assert.AreEqual(1, replicasNotSync.Count);
@@ -97,8 +97,8 @@ namespace Cassandra.IntegrationTests.MetadataTests
                     Assert.AreEqual(2, ClusterObjSync.Metadata.Hosts.Count, "ClusterObjSync.Metadata.Hosts.Count");
                     Assert.AreEqual(2, ClusterObjNotSync.Metadata.Hosts.Count, "ClusterObjNotSync.Metadata.Hosts.Count");
 
-                    replicasSync = ClusterObjSync.Metadata.GetReplicas(keyspaceName, Encoding.UTF8.GetBytes("123"));
-                    replicasNotSync = ClusterObjNotSync.Metadata.GetReplicas(keyspaceName, Encoding.UTF8.GetBytes("123"));
+                    replicasSync = ClusterObjSync.Metadata.GetReplicas(keyspaceName, null, Encoding.UTF8.GetBytes("123"));
+                    replicasNotSync = ClusterObjNotSync.Metadata.GetReplicas(keyspaceName, null, Encoding.UTF8.GetBytes("123"));
 
                     Assert.AreEqual(2, replicasSync.Count, "replicasSync.Count");
                     Assert.AreEqual(1, replicasNotSync.Count, "replicasNotSync.Count");
@@ -116,8 +116,8 @@ namespace Cassandra.IntegrationTests.MetadataTests
                     Assert.AreEqual(3, ClusterObjSync.Metadata.Hosts.Count);
                     Assert.AreEqual(3, ClusterObjNotSync.Metadata.Hosts.Count);
 
-                    replicasSync = ClusterObjSync.Metadata.GetReplicas(keyspaceName, Encoding.UTF8.GetBytes("123"));
-                    replicasNotSync = ClusterObjNotSync.Metadata.GetReplicas(keyspaceName, Encoding.UTF8.GetBytes("123"));
+                    replicasSync = ClusterObjSync.Metadata.GetReplicas(keyspaceName, null, Encoding.UTF8.GetBytes("123"));
+                    replicasNotSync = ClusterObjNotSync.Metadata.GetReplicas(keyspaceName, null, Encoding.UTF8.GetBytes("123"));
 
                     Assert.AreEqual(3, replicasSync.Count);
                     Assert.AreEqual(1, replicasNotSync.Count);
