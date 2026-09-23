@@ -39,6 +39,10 @@ namespace Cassandra.Requests
             {
                 _eventTypes.Add("SCHEMA_CHANGE");
             }
+            if ((eventTypes & CassandraEventType.ClientRoutesChange) == CassandraEventType.ClientRoutesChange)
+            {
+                _eventTypes.Add("CLIENT_ROUTES_CHANGE");
+            }
         }
 
         protected override byte OpCode => RegisterForEventRequest.RegisterOpCode;

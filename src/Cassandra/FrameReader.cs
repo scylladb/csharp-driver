@@ -86,7 +86,7 @@ namespace Cassandra
 
         public string ReadString()
         {
-            var length = ReadInt16();
+            var length = ReadUInt16();
             return ReadStringByLength(length);
         }
 
@@ -108,8 +108,8 @@ namespace Cassandra
         /// </summary>
         public string[] ReadStringList()
         {
-            var length = ReadInt16();
-            if (length <= 0)
+            var length = ReadUInt16();
+            if (length == 0)
             {
                 return new string[0];
             }

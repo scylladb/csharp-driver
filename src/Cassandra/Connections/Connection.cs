@@ -451,13 +451,20 @@ namespace Cassandra.Connections
 
         private Task EventHandler(IRequestError error, Response response, long timestamp)
         {
-            if (!(response is EventResponse))
+            if (error?.Exception != null)
             {
-                Connection.Logger.Error("Unexpected response type for event: " + response.GetType().Name);
+                Connection.Logger.Error("Error while parsing server event.", error.Exception);
                 return TaskHelper.Completed;
             }
 
-            CassandraEventResponse?.Invoke(this, ((EventResponse)response).CassandraEventArgs);
+            if (!(response is EventResponse eventResponse))
+            {
+                Connection.Logger.Error(
+                    "Unexpected response type for event: " + (response == null ? "null" : response.GetType().Name));
+                return TaskHelper.Completed;
+            }
+
+            CassandraEventResponse?.Invoke(this, eventResponse.CassandraEventArgs);
             return TaskHelper.Completed;
         }
 
