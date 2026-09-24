@@ -45,7 +45,7 @@
          only where its dependencies support the target framework: see the JSON_SCHEMA_VALIDATOR property above.
          Pinned to the 8.0.x line, the last one published under a plain MIT license: from 9.0.0 the NuGet binaries
          carry an Open Source Maintenance Fee EULA that asks revenue-generating users for a monthly fee. -->
-    <PackageReference Include="JsonSchema.Net" Version="8.0.5"
+    <PackageReference Include="JsonSchema.Net" Version="9.4.0"
                       Condition="'$(TargetFramework)' == 'net8' Or '$(TargetFramework)' == 'net9'" />
     <ProjectReference Include="..\Extensions\Cassandra.OpenTelemetry\Cassandra.OpenTelemetry.csproj">
       <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
