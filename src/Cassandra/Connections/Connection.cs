@@ -468,11 +468,21 @@ namespace Cassandra.Connections
             {
                 CassandraEventResponse?.Invoke(this, eventResponse.CassandraEventArgs);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (!Connection.IsFatalException(ex))
             {
                 Connection.Logger.Error("Error while handling server event.", ex);
             }
             return TaskHelper.Completed;
+        }
+
+        private static bool IsFatalException(Exception ex)
+        {
+            return ex is OutOfMemoryException ||
+                   ex is StackOverflowException ||
+                   ex is ThreadAbortException ||
+                   ex is AccessViolationException ||
+                   ex is AppDomainUnloadedException ||
+                   ex is BadImageFormatException;
         }
 
         /// <summary>
