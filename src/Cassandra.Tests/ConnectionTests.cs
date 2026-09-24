@@ -97,30 +97,68 @@ namespace Cassandra.Tests
         public void ReadParse_Handles_Response_After_Malformed_Event_In_The_Same_Buffer()
         {
             var connectionMock = GetConnectionMock();
-            var responseReceived = new ManualResetEventSlim();
-            Exception requestError = null;
-            Response receivedResponse = null;
-            connectionMock.Setup(c => c.RemoveFromPending(It.IsAny<short>()))
-                .Returns(() => OperationStateExtensions.CreateMock((ex, response) =>
+            using (var responseReceived = new ManualResetEventSlim())
+            {
+                Exception requestError = null;
+                Response receivedResponse = null;
+                connectionMock.Setup(c => c.RemoveFromPending(It.IsAny<short>()))
+                    .Returns(() => OperationStateExtensions.CreateMock((ex, response) =>
+                    {
+                        requestError = ex;
+                        receivedResponse = response;
+                        responseReceived.Set();
+                    }));
+                var connection = connectionMock.Object;
+                var eventCount = 0;
+                connection.CassandraEventResponse += (sender, args) => Interlocked.Increment(ref eventCount);
+
+                var buffer = GetClientRoutesChangeBuffer(true)
+                    .Concat(GetResultBuffer(127, ProtocolVersion.V4))
+                    .ToArray();
+
+                connection.ReadParse(buffer, buffer.Length);
+
+                Assert.IsTrue(responseReceived.Wait(TimeSpan.FromSeconds(5)));
+                Assert.IsNull(requestError);
+                Assert.IsInstanceOf<ResultResponse>(receivedResponse);
+                Assert.AreEqual(0, eventCount);
+            }
+        }
+
+        [Test]
+        public void ReadParse_Handles_Response_After_Event_Handler_Throws_In_The_Same_Buffer()
+        {
+            var connectionMock = GetConnectionMock();
+            using (var responseReceived = new ManualResetEventSlim())
+            {
+                Exception requestError = null;
+                Response receivedResponse = null;
+                connectionMock.Setup(c => c.RemoveFromPending(It.IsAny<short>()))
+                    .Returns(() => OperationStateExtensions.CreateMock((ex, response) =>
+                    {
+                        requestError = ex;
+                        receivedResponse = response;
+                        responseReceived.Set();
+                    }));
+                var connection = connectionMock.Object;
+                var eventCount = 0;
+                connection.CassandraEventResponse += (sender, args) =>
                 {
-                    requestError = ex;
-                    receivedResponse = response;
-                    responseReceived.Set();
-                }));
-            var connection = connectionMock.Object;
-            var eventCount = 0;
-            connection.CassandraEventResponse += (sender, args) => Interlocked.Increment(ref eventCount);
+                    Interlocked.Increment(ref eventCount);
+                    throw new InvalidOperationException("Handler failure");
+                };
 
-            var buffer = GetMalformedClientRoutesChangeBuffer()
-                .Concat(GetResultBuffer(127, ProtocolVersion.V4))
-                .ToArray();
+                var buffer = GetClientRoutesChangeBuffer(false)
+                    .Concat(GetResultBuffer(127, ProtocolVersion.V4))
+                    .ToArray();
 
-            connection.ReadParse(buffer, buffer.Length);
+                connection.ReadParse(buffer, buffer.Length);
 
-            Assert.IsTrue(responseReceived.Wait(TimeSpan.FromSeconds(5)));
-            Assert.IsNull(requestError);
-            Assert.IsInstanceOf<ResultResponse>(receivedResponse);
-            Assert.AreEqual(0, eventCount);
+                Assert.IsTrue(responseReceived.Wait(TimeSpan.FromSeconds(5)));
+                Assert.IsNull(requestError);
+                Assert.IsInstanceOf<ResultResponse>(receivedResponse);
+                Assert.AreEqual(1, eventCount);
+            }
         }
 
         [Test]
@@ -398,7 +436,7 @@ namespace Cassandra.Tests
             };
         }
 
-        private static byte[] GetMalformedClientRoutesChangeBuffer()
+        private static byte[] GetClientRoutesChangeBuffer(bool truncateBody)
         {
             var serializer = new SerializerManager(ProtocolVersion.V4).GetCurrentSerializer();
             var writer = new FrameWriter(new MemoryStream(), serializer, false);
@@ -406,7 +444,8 @@ namespace Cassandra.Tests
             writer.WriteString("UPDATE_NODES");
             writer.WriteStringList(new[] { "connection-a" });
             writer.WriteStringList(new[] { Guid.NewGuid().ToString() });
-            var body = writer.GetBuffer().Take((int)writer.Length - 1).ToArray();
+            var bodyLength = (int)writer.Length - (truncateBody ? 1 : 0);
+            var body = writer.GetBuffer().Take(bodyLength).ToArray();
 
             return new byte[]
                 {

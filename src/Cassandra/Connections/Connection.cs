@@ -464,7 +464,14 @@ namespace Cassandra.Connections
                 return TaskHelper.Completed;
             }
 
-            CassandraEventResponse?.Invoke(this, eventResponse.CassandraEventArgs);
+            try
+            {
+                CassandraEventResponse?.Invoke(this, eventResponse.CassandraEventArgs);
+            }
+            catch (Exception ex)
+            {
+                Connection.Logger.Error("Error while handling server event.", ex);
+            }
             return TaskHelper.Completed;
         }
 

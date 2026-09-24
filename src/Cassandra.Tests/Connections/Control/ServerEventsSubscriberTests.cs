@@ -73,7 +73,9 @@ namespace Cassandra.Tests.Connections.Control
 
             Assert.That(
                 exception.Message,
-                Is.EqualTo("The server does not support the CLIENT_ROUTES_CHANGE event required by client routes."));
+                Is.EqualTo(
+                    "The server may not support the CLIENT_ROUTES_CHANGE event required by client routes. " +
+                    "Server protocol error: Unsupported event"));
             Assert.That(exception.InnerException, Is.SameAs(protocolError));
         }
 

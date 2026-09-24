@@ -15,6 +15,7 @@
 //
 
 using System;
+using System.IO;
 
 namespace Cassandra.Responses
 {
@@ -111,7 +112,7 @@ namespace Cassandra.Responses
             {
                 throw;
             }
-            catch (Exception ex)
+            catch (IOException ex)
             {
                 throw new DriverInternalError("Invalid CLIENT_ROUTES_CHANGE event payload.", ex);
             }

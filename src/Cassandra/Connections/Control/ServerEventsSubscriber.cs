@@ -52,7 +52,8 @@ namespace Cassandra.Connections.Control
             catch (ProtocolErrorException ex) when (_clientRoutesEnabled)
             {
                 throw new NotSupportedException(
-                    "The server does not support the CLIENT_ROUTES_CHANGE event required by client routes.", ex);
+                    "The server may not support the CLIENT_ROUTES_CHANGE event required by client routes. " +
+                    "Server protocol error: " + ex.Message, ex);
             }
             if (!(response is ReadyResponse))
             {
