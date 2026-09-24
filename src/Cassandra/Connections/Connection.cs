@@ -865,10 +865,10 @@ namespace Cassandra.Connections
                 var nextPosition = stream.Position + header.BodyLength;
                 try
                 {
-                    Stream plainTextStream = stream;
+                    Stream plainTextStream = new WrappedStream(stream, header.BodyLength);
                     if (header.Flags.HasFlag(HeaderFlags.Compression))
                     {
-                        plainTextStream = compressor.Decompress(new WrappedStream(stream, header.BodyLength));
+                        plainTextStream = compressor.Decompress(plainTextStream);
                         plainTextStream.Position = 0;
                     }
                     response = FrameParser.Parse(

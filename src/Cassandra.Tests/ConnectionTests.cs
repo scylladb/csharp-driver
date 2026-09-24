@@ -126,6 +126,38 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public void ReadParse_Does_Not_Complete_Malformed_Event_From_Following_Response()
+        {
+            var connectionMock = GetConnectionMock();
+            using (var responseReceived = new ManualResetEventSlim())
+            {
+                Exception requestError = null;
+                Response receivedResponse = null;
+                connectionMock.Setup(c => c.RemoveFromPending(It.IsAny<short>()))
+                    .Returns(() => OperationStateExtensions.CreateMock((ex, response) =>
+                    {
+                        requestError = ex;
+                        receivedResponse = response;
+                        responseReceived.Set();
+                    }));
+                var connection = connectionMock.Object;
+                var eventCount = 0;
+                connection.CassandraEventResponse += (sender, args) => Interlocked.Increment(ref eventCount);
+
+                var buffer = GetClientRoutesChangeBufferWithoutHostIdList()
+                    .Concat(GetResultBuffer(127, ProtocolVersion.V4))
+                    .ToArray();
+
+                connection.ReadParse(buffer, buffer.Length);
+
+                Assert.IsTrue(responseReceived.Wait(TimeSpan.FromSeconds(5)));
+                Assert.IsNull(requestError);
+                Assert.IsInstanceOf<ResultResponse>(receivedResponse);
+                Assert.AreEqual(0, eventCount);
+            }
+        }
+
+        [Test]
         public void ReadParse_Handles_Response_After_Event_Handler_Throws_In_The_Same_Buffer()
         {
             var connectionMock = GetConnectionMock();
@@ -447,6 +479,22 @@ namespace Cassandra.Tests
             var bodyLength = (int)writer.Length - (truncateBody ? 1 : 0);
             var body = writer.GetBuffer().Take(bodyLength).ToArray();
 
+            return GetClientRoutesChangeFrame(body);
+        }
+
+        private static byte[] GetClientRoutesChangeBufferWithoutHostIdList()
+        {
+            var serializer = new SerializerManager(ProtocolVersion.V4).GetCurrentSerializer();
+            var writer = new FrameWriter(new MemoryStream(), serializer, false);
+            writer.WriteString("CLIENT_ROUTES_CHANGE");
+            writer.WriteString("UPDATE_NODES");
+            writer.WriteStringList(new string[0]);
+
+            return GetClientRoutesChangeFrame(writer.GetBuffer());
+        }
+
+        private static byte[] GetClientRoutesChangeFrame(byte[] body)
+        {
             return new byte[]
                 {
                     (byte)(0x80 | (int)ProtocolVersion.V4), 0, 0xff, 0xff, EventResponse.OpCode
