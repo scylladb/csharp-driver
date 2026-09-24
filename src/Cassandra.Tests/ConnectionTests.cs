@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Threading;
@@ -90,6 +91,106 @@ namespace Cassandra.Tests
             CollectionAssert.AreEqual(new short[] { 127, 126 }, streamIds);
             TestHelper.WaitUntil(() => responses.Count == 2);
             Assert.AreEqual(2, responses.Count);
+        }
+
+        [Test]
+        public void ReadParse_Handles_Response_After_Malformed_Event_In_The_Same_Buffer()
+        {
+            var connectionMock = GetConnectionMock();
+            using (var responseReceived = new ManualResetEventSlim())
+            {
+                Exception requestError = null;
+                Response receivedResponse = null;
+                connectionMock.Setup(c => c.RemoveFromPending(It.IsAny<short>()))
+                    .Returns(() => OperationStateExtensions.CreateMock((ex, response) =>
+                    {
+                        requestError = ex;
+                        receivedResponse = response;
+                        responseReceived.Set();
+                    }));
+                var connection = connectionMock.Object;
+                var eventCount = 0;
+                connection.CassandraEventResponse += (sender, args) => Interlocked.Increment(ref eventCount);
+
+                var buffer = GetClientRoutesChangeBuffer(true)
+                    .Concat(GetResultBuffer(127, ProtocolVersion.V4))
+                    .ToArray();
+
+                connection.ReadParse(buffer, buffer.Length);
+
+                Assert.IsTrue(responseReceived.Wait(TimeSpan.FromSeconds(5)));
+                Assert.IsNull(requestError);
+                Assert.IsInstanceOf<ResultResponse>(receivedResponse);
+                Assert.AreEqual(0, eventCount);
+            }
+        }
+
+        [Test]
+        public void ReadParse_Does_Not_Complete_Malformed_Event_From_Following_Response()
+        {
+            var connectionMock = GetConnectionMock();
+            using (var responseReceived = new ManualResetEventSlim())
+            {
+                Exception requestError = null;
+                Response receivedResponse = null;
+                connectionMock.Setup(c => c.RemoveFromPending(It.IsAny<short>()))
+                    .Returns(() => OperationStateExtensions.CreateMock((ex, response) =>
+                    {
+                        requestError = ex;
+                        receivedResponse = response;
+                        responseReceived.Set();
+                    }));
+                var connection = connectionMock.Object;
+                var eventCount = 0;
+                connection.CassandraEventResponse += (sender, args) => Interlocked.Increment(ref eventCount);
+
+                var buffer = GetClientRoutesChangeBufferWithoutHostIdList()
+                    .Concat(GetResultBuffer(127, ProtocolVersion.V4))
+                    .ToArray();
+
+                connection.ReadParse(buffer, buffer.Length);
+
+                Assert.IsTrue(responseReceived.Wait(TimeSpan.FromSeconds(5)));
+                Assert.IsNull(requestError);
+                Assert.IsInstanceOf<ResultResponse>(receivedResponse);
+                Assert.AreEqual(0, eventCount);
+            }
+        }
+
+        [Test]
+        public void ReadParse_Handles_Response_After_Event_Handler_Throws_In_The_Same_Buffer()
+        {
+            var connectionMock = GetConnectionMock();
+            using (var responseReceived = new ManualResetEventSlim())
+            {
+                Exception requestError = null;
+                Response receivedResponse = null;
+                connectionMock.Setup(c => c.RemoveFromPending(It.IsAny<short>()))
+                    .Returns(() => OperationStateExtensions.CreateMock((ex, response) =>
+                    {
+                        requestError = ex;
+                        receivedResponse = response;
+                        responseReceived.Set();
+                    }));
+                var connection = connectionMock.Object;
+                var eventCount = 0;
+                connection.CassandraEventResponse += (sender, args) =>
+                {
+                    Interlocked.Increment(ref eventCount);
+                    throw new InvalidOperationException("Handler failure");
+                };
+
+                var buffer = GetClientRoutesChangeBuffer(false)
+                    .Concat(GetResultBuffer(127, ProtocolVersion.V4))
+                    .ToArray();
+
+                connection.ReadParse(buffer, buffer.Length);
+
+                Assert.IsTrue(responseReceived.Wait(TimeSpan.FromSeconds(5)));
+                Assert.IsNull(requestError);
+                Assert.IsInstanceOf<ResultResponse>(receivedResponse);
+                Assert.AreEqual(1, eventCount);
+            }
         }
 
         [Test]
@@ -365,6 +466,42 @@ namespace Cassandra.Tests
                 //body
                 0, 0, 0, 1
             };
+        }
+
+        private static byte[] GetClientRoutesChangeBuffer(bool truncateBody)
+        {
+            var serializer = new SerializerManager(ProtocolVersion.V4).GetCurrentSerializer();
+            var writer = new FrameWriter(new MemoryStream(), serializer, false);
+            writer.WriteString("CLIENT_ROUTES_CHANGE");
+            writer.WriteString("UPDATE_NODES");
+            writer.WriteStringList(new[] { "connection-a" });
+            writer.WriteStringList(new[] { Guid.NewGuid().ToString() });
+            var bodyLength = (int)writer.Length - (truncateBody ? 1 : 0);
+            var body = writer.GetBuffer().Take(bodyLength).ToArray();
+
+            return GetClientRoutesChangeFrame(body);
+        }
+
+        private static byte[] GetClientRoutesChangeBufferWithoutHostIdList()
+        {
+            var serializer = new SerializerManager(ProtocolVersion.V4).GetCurrentSerializer();
+            var writer = new FrameWriter(new MemoryStream(), serializer, false);
+            writer.WriteString("CLIENT_ROUTES_CHANGE");
+            writer.WriteString("UPDATE_NODES");
+            writer.WriteStringList(new string[0]);
+
+            return GetClientRoutesChangeFrame(writer.GetBuffer());
+        }
+
+        private static byte[] GetClientRoutesChangeFrame(byte[] body)
+        {
+            return new byte[]
+                {
+                    (byte)(0x80 | (int)ProtocolVersion.V4), 0, 0xff, 0xff, EventResponse.OpCode
+                }
+                .Concat(BeConverter.GetBytes(body.Length))
+                .Concat(body)
+                .ToArray();
         }
     }
 }

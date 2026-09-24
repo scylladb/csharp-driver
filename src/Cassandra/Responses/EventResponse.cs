@@ -14,6 +14,9 @@
 //   limitations under the License.
 //
 
+using System;
+using System.IO;
+
 namespace Cassandra.Responses
 {
     internal class EventResponse : Response
@@ -55,10 +58,64 @@ namespace Cassandra.Responses
                 CassandraEventArgs = EventResponse.ParseSchemaChangeBody(frame.Header.Version, Reader);
                 return;
             }
+            if (eventTypeString == "CLIENT_ROUTES_CHANGE")
+            {
+                CassandraEventArgs = EventResponse.ParseClientRoutesChangeBody(Reader);
+                return;
+            }
 
-            var ex = new DriverInternalError("Unknown Event Type");
+            var ex = new DriverInternalError("Unknown event type: " + eventTypeString);
             _logger.Error(ex);
             throw ex;
+        }
+
+        private static ClientRoutesChangeEventArgs ParseClientRoutesChangeBody(FrameReader reader)
+        {
+            try
+            {
+                var changeType = reader.ReadString();
+                if (changeType != "UPDATE_NODES")
+                {
+                    throw new DriverInternalError("Unknown CLIENT_ROUTES_CHANGE change type: " + changeType);
+                }
+
+                var connectionIds = reader.ReadStringList();
+                var hostIdStrings = reader.ReadStringList();
+                if (connectionIds.Length != hostIdStrings.Length)
+                {
+                    throw new DriverInternalError(
+                        "Invalid CLIENT_ROUTES_CHANGE event: connection ID and host ID list lengths differ.");
+                }
+
+                var hostIds = new Guid[hostIdStrings.Length];
+                for (var i = 0; i < hostIdStrings.Length; i++)
+                {
+                    try
+                    {
+                        hostIds[i] = Guid.Parse(hostIdStrings[i]);
+                    }
+                    catch (FormatException ex)
+                    {
+                        throw new DriverInternalError(
+                            "Invalid CLIENT_ROUTES_CHANGE host ID at index " + i + ": " + hostIdStrings[i], ex);
+                    }
+                }
+
+                return new ClientRoutesChangeEventArgs
+                {
+                    What = ClientRoutesChangeEventArgs.Reason.UpdateNodes,
+                    ConnectionIds = connectionIds,
+                    HostIds = hostIds
+                };
+            }
+            catch (DriverInternalError)
+            {
+                throw;
+            }
+            catch (IOException ex)
+            {
+                throw new DriverInternalError("Invalid CLIENT_ROUTES_CHANGE event payload.", ex);
+            }
         }
 
         public static SchemaChangeEventArgs ParseSchemaChangeBody(ProtocolVersion protocolVersion, FrameReader reader)

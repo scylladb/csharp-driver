@@ -451,14 +451,38 @@ namespace Cassandra.Connections
 
         private Task EventHandler(IRequestError error, Response response, long timestamp)
         {
-            if (!(response is EventResponse))
+            if (error?.Exception != null)
             {
-                Connection.Logger.Error("Unexpected response type for event: " + response.GetType().Name);
+                Connection.Logger.Error("Error while parsing server event.", error.Exception);
                 return TaskHelper.Completed;
             }
 
-            CassandraEventResponse?.Invoke(this, ((EventResponse)response).CassandraEventArgs);
+            if (!(response is EventResponse eventResponse))
+            {
+                Connection.Logger.Error(
+                    "Unexpected response type for event: " + (response == null ? "null" : response.GetType().Name));
+                return TaskHelper.Completed;
+            }
+
+            try
+            {
+                CassandraEventResponse?.Invoke(this, eventResponse.CassandraEventArgs);
+            }
+            catch (Exception ex) when (!Connection.IsFatalException(ex))
+            {
+                Connection.Logger.Error("Error while handling server event.", ex);
+            }
             return TaskHelper.Completed;
+        }
+
+        private static bool IsFatalException(Exception ex)
+        {
+            return ex is OutOfMemoryException ||
+                   ex is StackOverflowException ||
+                   ex is ThreadAbortException ||
+                   ex is AccessViolationException ||
+                   ex is AppDomainUnloadedException ||
+                   ex is BadImageFormatException;
         }
 
         /// <summary>
@@ -851,10 +875,10 @@ namespace Cassandra.Connections
                 var nextPosition = stream.Position + header.BodyLength;
                 try
                 {
-                    Stream plainTextStream = stream;
+                    Stream plainTextStream = new WrappedStream(stream, header.BodyLength);
                     if (header.Flags.HasFlag(HeaderFlags.Compression))
                     {
-                        plainTextStream = compressor.Decompress(new WrappedStream(stream, header.BodyLength));
+                        plainTextStream = compressor.Decompress(plainTextStream);
                         plainTextStream.Position = 0;
                     }
                     response = FrameParser.Parse(

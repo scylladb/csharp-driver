@@ -1,5 +1,5 @@
 //
-//      Copyright (C) DataStax Inc.
+//      Copyright (C) ScyllaDB
 //
 //   Licensed under the Apache License, Version 2.0 (the "License");
 //   you may not use this file except in compliance with the License.
@@ -18,12 +18,17 @@ using System;
 
 namespace Cassandra
 {
-    [Flags]
-    internal enum CassandraEventType
+    internal class ClientRoutesChangeEventArgs : CassandraEventArgs
     {
-        TopologyChange = 0x01,
-        StatusChange = 0x02,
-        SchemaChange = 0x03,
-        ClientRoutesChange = 0x04
+        public enum Reason
+        {
+            UpdateNodes
+        }
+
+        public Reason What { get; set; }
+
+        public string[] ConnectionIds { get; set; }
+
+        public Guid[] HostIds { get; set; }
     }
 }
