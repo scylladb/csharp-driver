@@ -138,6 +138,22 @@ namespace Cassandra.Tests.Connections.Control
         }
 
         [Test]
+        public async Task Should_DisablePagingForUnpagedQueries()
+        {
+            const string query = "SELECT * FROM system.client_routes";
+            var requestHandler = new FakeMetadataRequestHandler(
+                new Dictionary<string, IEnumerable<IRow>> { { query, Enumerable.Empty<IRow>() } });
+            var createResult = NewInstance(configBuilderAct: builder => builder.MetadataRequestHandler = requestHandler);
+
+            using (var cc = createResult.ControlConnection)
+            {
+                await cc.QueryUnpagedAsync(query).ConfigureAwait(false);
+            }
+
+            Assert.AreEqual(-1, requestHandler.Requests.Single().QueryProtocolOptions.PageSize);
+        }
+
+        [Test]
         public void Should_NotAttemptDownOrIgnoredHosts()
         {
             var connectionOpenEnabled = true;

@@ -81,11 +81,6 @@ namespace Cassandra.Responses
 
                 var connectionIds = reader.ReadStringList();
                 var hostIdStrings = reader.ReadStringList();
-                if (connectionIds.Length != hostIdStrings.Length)
-                {
-                    throw new DriverInternalError(
-                        "Invalid CLIENT_ROUTES_CHANGE event: connection ID and host ID list lengths differ.");
-                }
 
                 var hostIds = new Guid[hostIdStrings.Length];
                 for (var i = 0; i < hostIdStrings.Length; i++)
