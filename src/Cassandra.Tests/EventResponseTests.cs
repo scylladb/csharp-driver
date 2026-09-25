@@ -125,17 +125,20 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public void Should_RejectUnequalClientRoutesChangeLists()
+        public void Should_ParseClientRoutesChangeListsIndependently()
         {
-            var exception = Assert.Throws<DriverInternalError>(() => EventResponseTests.CreateResponse(writer =>
+            var hostIds = new[] { Guid.NewGuid(), Guid.NewGuid() };
+            var response = EventResponseTests.CreateResponse(writer =>
             {
                 writer.WriteString("CLIENT_ROUTES_CHANGE");
                 writer.WriteString("UPDATE_NODES");
                 writer.WriteStringList(new[] { "connection-a" });
-                writer.WriteStringList(new string[0]);
-            }));
+                writer.WriteStringList(hostIds.Select(hostId => hostId.ToString()).ToArray());
+            });
 
-            Assert.That(exception.Message, Does.Contain("list lengths differ"));
+            var eventArgs = (ClientRoutesChangeEventArgs)response.CassandraEventArgs;
+            Assert.That(eventArgs.ConnectionIds, Is.EqualTo(new[] { "connection-a" }));
+            Assert.That(eventArgs.HostIds, Is.EqualTo(hostIds));
         }
 
         [Test]
