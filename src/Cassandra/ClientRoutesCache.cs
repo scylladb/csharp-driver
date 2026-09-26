@@ -21,6 +21,8 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
+using Cassandra.Tasks;
+
 namespace Cassandra
 {
     /// <summary>
@@ -222,6 +224,9 @@ namespace Cassandra
             completion.TrySetResult(true);
             if (nextCompletion != null)
             {
+                // This completion can be internally owned when no request arrives during the
+                // follow-up refresh, so observe any fatal exception that faults it.
+                nextCompletion.Task.Forget();
                 StartRefresh(nextCompletion);
             }
         }
