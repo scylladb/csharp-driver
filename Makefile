@@ -1,7 +1,7 @@
 SHELL := bash
 
 MAKEFILE_PATH := $(abspath $(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
-SCYLLA_VERSION ?= release:2025.2
+SCYLLA_VERSION ?= release:2025.2.5
 
 CCM_CASSANDRA_REPO ?= github.com/apache/cassandra-ccm
 CCM_CASSANDRA_VERSION ?= d3225ac6565242b231129e0c4f8f0b7a041219cf

@@ -90,7 +90,9 @@ process, which can be either one of:
 - [Simulacron][simulacronrepo]: simulates Cassandra nodes on loopback addresses; your test must "prime" data, i.e. tell the nodes what results to return for pre-determined queries.
 - [CCM][ccmrepo]: launches actual Cassandra nodes locally.
 
-In both cases, the `CASSANDRA_VERSION` environment variable determines which server version is used to create the Cassandra nodes.
+`CASSANDRA_VERSION` determines the Cassandra version. ScyllaDB runs use `SCYLLA_VERSION`;
+release references must identify one build (for example, `release:2025.2.5`) so CCM can reuse
+its downloaded package. Unstable references remain supported unchanged.
 
 ## Building the driver and running tests
 

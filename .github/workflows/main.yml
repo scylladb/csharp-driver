@@ -108,25 +108,42 @@ jobs:
         id: scylla-version
         run: |
           cd get-version
-          if [[ "${{ matrix.scylla-version }}" == "LTS-LATEST" ]]; then
-            echo "SCYLLA_VERSION=release:$(./get-version --source dockerhub-imagetag --repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST.1.LAST" | tr -d '\"')" >> $GITHUB_ENV
-          elif [[ "${{ matrix.scylla-version }}" == "LTS-PRIOR" ]]; then
-            echo "SCYLLA_VERSION=release:$(./get-version --source dockerhub-imagetag --repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST-1.1.LAST" | tr -d '\"')" >> $GITHUB_ENV
-          elif [[ "${{ matrix.scylla-version }}" == "LATEST" ]]; then
-            echo "SCYLLA_VERSION=release:$(./get-version --source dockerhub-imagetag --repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST.LAST.LAST" | tr -d '\"')" >> $GITHUB_ENV
-          elif [[ "${{ matrix.scylla-version }}" == "PRIOR" ]]; then
-            SCYLLA_VERSION=$(./get-version --source dockerhub-imagetag --repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST.LAST.LAST-1" | tr -d '\"')
-            if [[ -z "$SCYLLA_VERSION" ]]; then
+          scylla_version_input="${{ matrix.scylla-version }}"
+          release_version_re='^([0-9]+\.[0-9]+\.[0-9]+|[0-9]+\.[0-9]+(\.[0-9]+)?[-~.](alpha|beta|rc)[0-9]+)(:debug)?$'
+
+          if [[ "$scylla_version_input" == "LTS-LATEST" ]]; then
+            scylla_version="release:$(./get-version --source dockerhub-imagetag --repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST.1.LAST" | tr -d '\"')"
+          elif [[ "$scylla_version_input" == "LTS-PRIOR" ]]; then
+            scylla_version="release:$(./get-version --source dockerhub-imagetag --repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST-1.1.LAST" | tr -d '\"')"
+          elif [[ "$scylla_version_input" == "LATEST" ]]; then
+            scylla_version="release:$(./get-version --source dockerhub-imagetag --repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST.LAST.LAST" | tr -d '\"')"
+          elif [[ "$scylla_version_input" == "PRIOR" ]]; then
+            resolved_version=$(./get-version --source dockerhub-imagetag --repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST.LAST.LAST-1" | tr -d '\"')
+            if [[ -z "$resolved_version" ]]; then
               echo "No PRIOR version found, skipping test"
               echo "SKIP_TEST=true" >> $GITHUB_ENV
             else
-              echo "SCYLLA_VERSION=release:$SCYLLA_VERSION" >> $GITHUB_ENV
+              scylla_version="release:$resolved_version"
             fi
-          elif echo "${{ matrix.scylla-version }}" | grep -P '^[0-9\.]+'; then # If you want to run specific version do just that
-            echo "SCYLLA_VERSION=release:${{ matrix.scylla-version }}" >> $GITHUB_ENV
+          elif [[ "$scylla_version_input" =~ $release_version_re ]]; then
+            scylla_version="release:$scylla_version_input"
+          elif [[ "$scylla_version_input" == release:* ]]; then
+            scylla_version="$scylla_version_input"
+          elif [[ "$scylla_version_input" == unstable/*:* || "$scylla_version_input" == hotfix/*:* ]]; then
+            scylla_version="$scylla_version_input"
           else
-            echo "Unknown scylla version name `${{ matrix.scylla-version }}`"
+            echo "Unknown scylla version name '$scylla_version_input'"
             exit 1
+          fi
+
+          if [[ "$scylla_version" == release:* ]] && [[ ! "${scylla_version#release:}" =~ $release_version_re ]]; then
+            echo "ScyllaDB release '$scylla_version' does not name one build"
+            echo "Use release:MAJOR.MINOR.PATCH or an exact pre-release build; partial releases make CCM query S3 repeatedly"
+            exit 1
+          fi
+
+          if [[ -n "$scylla_version" ]]; then
+            echo "SCYLLA_VERSION=$scylla_version" >> $GITHUB_ENV
           fi
 
       - name: Run unit tests
