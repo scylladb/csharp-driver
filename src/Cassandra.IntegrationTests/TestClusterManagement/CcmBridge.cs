@@ -28,6 +28,10 @@ namespace Cassandra.IntegrationTests.TestClusterManagement
 {
     public class CcmBridge : IDisposable
     {
+        private static readonly Regex FullyQualifiedScyllaReleaseVersion = new Regex(
+            @"^release:(?:[0-9]+\.[0-9]+\.[0-9]+|[0-9]+\.[0-9]+(?:\.[0-9]+)?[-~.][A-Za-z][A-Za-z._~-]*[0-9][A-Za-z0-9._~-]*)(?::debug)?$",
+            RegexOptions.CultureInvariant);
+
         public DirectoryInfo CcmDir { get; private set; }
         public string Name { get; private set; }
         public string Version { get; private set; }
@@ -66,6 +70,7 @@ namespace Cassandra.IntegrationTests.TestClusterManagement
 
             if (TestClusterManager.IsScylla)
             {
+                CcmBridge.ValidateScyllaVersion(Version);
                 ExecuteCcm($"create {Name} --scylla -v {Version} {sslParams}");
             }
             else
@@ -81,6 +86,21 @@ namespace Cassandra.IntegrationTests.TestClusterManagement
                         "create {0} -v {1} {2}", Name, Version, sslParams));
                 }
             }
+        }
+
+        internal static void ValidateScyllaVersion(string version)
+        {
+            if (version == null ||
+                !version.StartsWith("release:", StringComparison.Ordinal) ||
+                CcmBridge.FullyQualifiedScyllaReleaseVersion.IsMatch(version))
+            {
+                return;
+            }
+
+            throw new TestInfrastructureException(
+                $"ScyllaDB release '{version}' does not name one build. " +
+                "Use release:MAJOR.MINOR.PATCH or an exact pre-release build; " +
+                "partial releases make CCM query S3 repeatedly.");
         }
 
         protected string GetHomePath()
