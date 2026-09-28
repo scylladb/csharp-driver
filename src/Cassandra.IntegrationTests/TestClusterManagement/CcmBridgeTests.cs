@@ -54,5 +54,16 @@ namespace Cassandra.IntegrationTests.TestClusterManagement
 
             Assert.That(ex.Message, Does.Contain("does not name one build"));
         }
+
+        [TestCase(null)]
+        [TestCase("")]
+        [TestCase(" ")]
+        [TestCase("\t")]
+        public void ValidateScyllaVersion_ShouldRejectBlankVersion(string version)
+        {
+            var ex = Assert.Throws<TestInfrastructureException>(() => CcmBridge.ValidateScyllaVersion(version));
+
+            Assert.That(ex.Message, Does.Contain("must name a ScyllaDB build"));
+        }
     }
 }

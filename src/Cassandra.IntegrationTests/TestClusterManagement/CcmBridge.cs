@@ -90,8 +90,12 @@ namespace Cassandra.IntegrationTests.TestClusterManagement
 
         internal static void ValidateScyllaVersion(string version)
         {
-            if (version == null ||
-                !version.StartsWith("release:", StringComparison.Ordinal) ||
+            if (string.IsNullOrWhiteSpace(version))
+            {
+                throw new TestInfrastructureException("SCYLLA_VERSION must name a ScyllaDB build.");
+            }
+
+            if (!version.StartsWith("release:", StringComparison.Ordinal) ||
                 CcmBridge.FullyQualifiedScyllaReleaseVersion.IsMatch(version))
             {
                 return;
