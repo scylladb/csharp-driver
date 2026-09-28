@@ -29,7 +29,7 @@ namespace Cassandra.IntegrationTests.TestClusterManagement
     public class CcmBridge : IDisposable
     {
         private static readonly Regex FullyQualifiedScyllaReleaseVersion = new Regex(
-            @"^release:(?:[0-9]+\.[0-9]+\.[0-9]+|[0-9]+\.[0-9]+(?:\.[0-9]+)?[-~.][A-Za-z][A-Za-z._~-]*[0-9][A-Za-z0-9._~-]*)(?::debug)?$",
+            @"^release:(?:[0-9]+\.[0-9]+\.[0-9]+|[0-9]+\.[0-9]+(?:\.[0-9]+)?[-~.](?:alpha|beta|rc)[0-9]+)(?::debug)?$",
             RegexOptions.CultureInvariant);
 
         public DirectoryInfo CcmDir { get; private set; }

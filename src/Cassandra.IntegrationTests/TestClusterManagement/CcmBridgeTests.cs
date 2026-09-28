@@ -27,7 +27,9 @@ namespace Cassandra.IntegrationTests.TestClusterManagement
         [TestCase("release:2022.2.0-rc0")]
         [TestCase("release:4.0-alpha1")]
         [TestCase("release:5.0.rc3")]
-        [TestCase("release:2022.1.3-dev-0.20220922.539a55e35")]
+        [TestCase("release:6.0~beta2")]
+        [TestCase("release:4.0.0-beta1")]
+        [TestCase("release:2022.2.0-rc0:debug")]
         [TestCase("release:2025.2.5:debug")]
         [TestCase("unstable/master:380")]
         [TestCase("unstable/master:latest:debug")]
@@ -42,6 +44,9 @@ namespace Cassandra.IntegrationTests.TestClusterManagement
         [TestCase("release:2026.2:debug")]
         [TestCase("release:2026.2.0-dev")]
         [TestCase("release:2026.2.0~rc")]
+        [TestCase("release:2022.1.3-dev-0.20220922.539a55e35")]
+        [TestCase("release:1.2-anything1")]
+        [TestCase("release:2026.2.0-preview1")]
         [TestCase("release:2026.2.3.9999")]
         public void ValidateScyllaVersion_ShouldRejectVersionThatDoesNotIdentifyOneBuild(string version)
         {

@@ -109,7 +109,7 @@ jobs:
         run: |
           cd get-version
           scylla_version_input="${{ matrix.scylla-version }}"
-          release_version_re='^([0-9]+\.[0-9]+\.[0-9]+|[0-9]+\.[0-9]+(\.[0-9]+)?[-~.][A-Za-z][A-Za-z._~-]*[0-9][A-Za-z0-9._~-]*)(:debug)?$'
+          release_version_re='^([0-9]+\.[0-9]+\.[0-9]+|[0-9]+\.[0-9]+(\.[0-9]+)?[-~.](alpha|beta|rc)[0-9]+)(:debug)?$'
 
           if [[ "$scylla_version_input" == "LTS-LATEST" ]]; then
             scylla_version="release:$(./get-version --source dockerhub-imagetag --repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST.1.LAST" | tr -d '\"')"
