@@ -37,9 +37,9 @@
     <PackageReference Include="Moq" Version="4.21.0" />
     <PackageReference Include="NUnit" Version="4.5.0" />
     <PackageReference Include="NUnit3TestAdapter" Version="6.3.0"
-                      Condition="'$(TargetFramework)' == 'net8' Or '$(TargetFramework)' == 'net9'" />
+                      Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net8.0'))" />
     <PackageReference Include="NUnit3TestAdapter" Version="5.2.0"
-                      Condition="'$(TargetFramework)' == 'net6' Or '$(TargetFramework)' == 'net7'" />
+                      Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net6.0')) And !$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net8.0'))" />
     <PackageReference Include="NunitXml.TestLogger" Version="8.0.0" />
     <PackageReference Include="System.Runtime.InteropServices.RuntimeInformation" Version="4.3.0" />
     <PackageReference Include="XunitXml.TestLogger" Version="8.0.0" />
