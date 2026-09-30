@@ -213,7 +213,7 @@ namespace Cassandra
         {
             var buffer = new byte[stream.Length - position];
             stream.Position = position;
-            ReadExactly(stream, buffer, 0, buffer.Length - position);
+            ReadExactly(stream, buffer, 0, buffer.Length);
             return buffer;
         }
 
