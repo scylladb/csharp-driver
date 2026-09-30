@@ -34,6 +34,28 @@ namespace Cassandra.Tests
     public class IOUnitTests
     {
         [Test]
+        public void FrameReader_Should_HandlePartialReads()
+        {
+            using (var stream = new PartialReadStream(new byte[] { 1, 2, 3, 4 }))
+            {
+                var reader = new FrameReader(stream, null, false);
+
+                Assert.AreEqual(0x01020304, reader.ReadInt32());
+            }
+        }
+
+        [Test]
+        public void FrameReader_Should_ThrowEndOfStreamException_WhenStreamIsTruncated()
+        {
+            using (var stream = new PartialReadStream(new byte[] { 1, 2, 3 }))
+            {
+                var reader = new FrameReader(stream, null, false);
+
+                Assert.Throws<EndOfStreamException>(() => reader.ReadInt32());
+            }
+        }
+
+        [Test]
         public void OperationState_Can_Concurrently_Get_Timeout_And_Response()
         {
             var counter = 0;
@@ -216,6 +238,63 @@ namespace Cassandra.Tests
             read = wrapper.Read(buffer, 0, 100);
             CollectionAssert.AreEqual(new byte[] { 126, 127 }, buffer.Take(read));
 
+        }
+
+        private sealed class PartialReadStream : Stream
+        {
+            private readonly MemoryStream _inner;
+
+            public PartialReadStream(byte[] buffer)
+            {
+                _inner = new MemoryStream(buffer, false);
+            }
+
+            public override bool CanRead => true;
+
+            public override bool CanSeek => false;
+
+            public override bool CanWrite => false;
+
+            public override long Length => _inner.Length;
+
+            public override long Position
+            {
+                get { return _inner.Position; }
+                set { throw new NotSupportedException(); }
+            }
+
+            public override void Flush()
+            {
+            }
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                return _inner.Read(buffer, offset, Math.Min(count, 1));
+            }
+
+            public override long Seek(long offset, SeekOrigin origin)
+            {
+                throw new NotSupportedException();
+            }
+
+            public override void SetLength(long value)
+            {
+                throw new NotSupportedException();
+            }
+
+            public override void Write(byte[] buffer, int offset, int count)
+            {
+                throw new NotSupportedException();
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing)
+                {
+                    _inner.Dispose();
+                }
+                base.Dispose(disposing);
+            }
         }
 
         class LockSynchronisationContext : SynchronizationContext
