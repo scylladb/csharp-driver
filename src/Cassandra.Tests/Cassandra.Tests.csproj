@@ -36,16 +36,19 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.13.0" />
     <PackageReference Include="Moq" Version="4.21.0" />
     <PackageReference Include="NUnit" Version="4.5.0" />
-    <PackageReference Include="NUnit3TestAdapter" Version="6.3.0" />
+    <PackageReference Include="NUnit3TestAdapter" Version="6.3.0"
+                      Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net8.0'))" />
+    <PackageReference Include="NUnit3TestAdapter" Version="5.2.0"
+                      Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net6.0')) And !$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net8.0'))" />
     <PackageReference Include="NunitXml.TestLogger" Version="8.0.0" />
     <PackageReference Include="System.Runtime.InteropServices.RuntimeInformation" Version="4.3.0" />
     <PackageReference Include="XunitXml.TestLogger" Version="8.0.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     <!-- Validates the DRIVER_CONFIG report against the normative v1 schema shipped alongside it. Test only, and
          only where its dependencies support the target framework: see the JSON_SCHEMA_VALIDATOR property above.
-         Pinned to the 8.0.x line, the last one published under a plain MIT license: from 9.0.0 the NuGet binaries
-         carry an Open Source Maintenance Fee EULA that asks revenue-generating users for a monthly fee. -->
-    <PackageReference Include="JsonSchema.Net" Version="8.0.5"
+         Version 9.4.0 carries an Open Source Maintenance Fee EULA that asks revenue-generating users for a monthly
+         fee, so this upgrade requires approval of those license terms before merge. -->
+    <PackageReference Include="JsonSchema.Net" Version="9.4.0"
                       Condition="'$(TargetFramework)' == 'net8' Or '$(TargetFramework)' == 'net9'" />
     <ProjectReference Include="..\Extensions\Cassandra.OpenTelemetry\Cassandra.OpenTelemetry.csproj">
       <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
