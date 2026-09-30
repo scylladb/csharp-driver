@@ -56,7 +56,7 @@ namespace Cassandra
 
         public byte ReadByte()
         {
-            Utils.ReadExactly(_stream, _buffer, 0, 1);
+            _stream.ReadExactly(_buffer, 0, 1);
             return _buffer[0];
         }
 
@@ -65,7 +65,7 @@ namespace Cassandra
         /// </summary>
         public ushort ReadUInt16()
         {
-            Utils.ReadExactly(_stream, _buffer, 0, 2);
+            _stream.ReadExactly(_buffer, 0, 2);
             return BeConverter.ToUInt16(_buffer);
         }
 
@@ -74,13 +74,13 @@ namespace Cassandra
         /// </summary>
         public short ReadInt16()
         {
-            Utils.ReadExactly(_stream, _buffer, 0, 2);
+            _stream.ReadExactly(_buffer, 0, 2);
             return BeConverter.ToInt16(_buffer);
         }
 
         public int ReadInt32()
         {
-            Utils.ReadExactly(_stream, _buffer, 0, 4);
+            _stream.ReadExactly(_buffer, 0, 4);
             return BeConverter.ToInt32(_buffer);
         }
 
@@ -99,7 +99,7 @@ namespace Cassandra
         private string ReadStringByLength(int length)
         {
             var bytes = new byte[length];
-            Utils.ReadExactly(_stream, bytes, 0, length);
+            _stream.ReadExactly(bytes, 0, length);
             return Encoding.UTF8.GetString(bytes);
         }
 
@@ -130,14 +130,14 @@ namespace Cassandra
             IPAddress ip;
             if (length == 4)
             {
-                Utils.ReadExactly(_stream, _buffer, 0, length);
+                _stream.ReadExactly(_buffer, 0, length);
                 ip = new IPAddress(_buffer);
                 return new IPEndPoint(ip, ReadInt32());
             }
             if (length == 16)
             {
                 var buffer = new byte[16];
-                Utils.ReadExactly(_stream, buffer, 0, length);
+                _stream.ReadExactly(buffer, 0, length);
                 ip = new IPAddress(buffer);
                 return new IPEndPoint(ip, ReadInt32());
             }
@@ -192,7 +192,7 @@ namespace Cassandra
 
         public void Read(byte[] buffer, int offset, int count)
         {
-            Utils.ReadExactly(_stream, buffer, offset, count);
+            _stream.ReadExactly(buffer, offset, count);
         }
 
         /// <summary>
@@ -201,7 +201,7 @@ namespace Cassandra
         /// </summary>
         internal object ReadFromBytes(byte[] buffer, int offset, int length, ColumnTypeCode typeCode, IColumnInfo typeInfo)
         {
-            Utils.ReadExactly(_stream, buffer, offset, length);
+            _stream.ReadExactly(buffer, offset, length);
             return _serializer.Deserialize(buffer, 0, length, typeCode, typeInfo);
         }
 
@@ -211,7 +211,7 @@ namespace Cassandra
         /// </summary>
         internal object ReadFromBytesEncrypted(string ks, string table, string column, byte[] buffer, int offset, int length, ColumnTypeCode typeCode, IColumnInfo typeInfo)
         {
-            Utils.ReadExactly(_stream, buffer, offset, length);
+            _stream.ReadExactly(buffer, offset, length);
             return _serializer.DeserializeAndDecrypt(ks, table, column, buffer, 0, length, typeCode, typeInfo);
         }
     }

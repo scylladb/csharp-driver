@@ -168,7 +168,7 @@ namespace Cassandra.Tests
                 () => EventResponseTests.CreateResponse(body.Take(body.Length - 1).ToArray()));
 
             Assert.That(exception.Message, Does.Contain("CLIENT_ROUTES_CHANGE"));
-            Assert.That(exception.InnerException, Is.TypeOf<IOException>());
+            Assert.That(exception.InnerException, Is.TypeOf<EndOfStreamException>());
         }
 
         [Test]
