@@ -13,10 +13,8 @@ on:
       - .github/workflows/docs-pr.yml
       - .github/workflows/publish.yml
       - .gitignore
-      - "*.md"
-      - .gitignore
       - .gitattributes
-      - "*.md"
+      - "**/*.md"
       - "*.json"
       - NOTICE
       - doxyfile
@@ -30,14 +28,28 @@ on:
       - .github/workflows/publish.yml
       - .gitignore
       - .gitattributes
-      - "*.md"
+      - "**/*.md"
       - "*.json"
       - NOTICE
       - doxyfile
       - .nav
+
+# Cancel in-flight runs for the same pull request, so a new push does not wait
+# behind the previous run's build and four cluster jobs. Pull requests share one
+# stable ref, so a new push cancels the old run; non-PR runs (master push) are
+# keyed by SHA instead and are never cancelled, so an intermediate master build
+# cannot be dropped by a later one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  linting-and-basic-unit-tests:
+  # Fast gate: formatting only. The cluster jobs below consume no artifact from
+  # here, so depending on this instead of the full unit suite and examples build
+  # keeps a short critical path while still failing fast on an unlinted tree.
+  lint:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -50,15 +62,64 @@ jobs:
       - name: Run dotnet format (checks formatting)
         run: make check
 
+  # Run every target framework's unit suite once here instead of repeating it in
+  # each integration matrix leg (where net9 was also duplicating this job).
+  # All four SDKs are installed so the net6/7/8 tests have a runtime to execute on.
+  unit-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+          dotnet-version: |
+            9.0.x
+            8.0.x
+            7.0.x
+            6.0.x
+
+      - name: Cache NuGet packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      - name: Run unit tests
+        run: TARGET_FRAMEWORK=all make test-unit
+
+  build-examples:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
       - name: Build examples
         run: make build-examples
 
-      - name: Run unit tests
-        run: TARGET_FRAMEWORK=net9 make test-unit
-
   integration-tests:
-    needs: linting-and-basic-unit-tests
+    needs: [lint]
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     strategy:
       matrix:
         include:
@@ -100,28 +161,61 @@ jobs:
         with:
           python-version: '3.11'
 
+      # Split caches, each with a restore-key, so an edit to one concern (e.g.
+      # the CCM version in the Makefile) falls back to the previous revision of
+      # that cache instead of re-downloading pip, CCM and NuGet together. The
+      # CCM install stamps make the Makefile's `.prepare-scylla-ccm` guard work:
+      # without them it reinstalled CCM from git on every job.
+      - name: Cache pip
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('Makefile') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+
+      - name: Cache CCM install
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.local
+            ~/.ccm/ccm-type
+            ~/.ccm/ccm-version
+          key: ccm-install-scylla-${{ runner.os }}-${{ hashFiles('Makefile') }}
+          restore-keys: |
+            ccm-install-scylla-${{ runner.os }}-
+
+      - name: Cache NuGet packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      # Pinned prebuilt binary instead of cloning and compiling get-version in
+      # every matrix leg (which also pulled the whole Go toolchain).
       - name: Install get-version CLI
         run: |
-          git clone https://github.com/scylladb-actions/get-version.git
-          cd get-version
-          go mod tidy
-          go build -o get-version
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -sSLo /tmp/get-version.zip https://github.com/scylladb-actions/get-version/releases/download/v0.4.5/get-version_0.4.5_linux_amd64v3.zip
+          unzip -o /tmp/get-version.zip get-version -d "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
       - name: Get scylla version
         id: scylla-version
         run: |
-          cd get-version
           scylla_version_input="${{ matrix.scylla-version }}"
           release_version_re='^([0-9]+\.[0-9]+\.[0-9]+|[0-9]+\.[0-9]+(\.[0-9]+)?[-~.](alpha|beta|rc)[0-9]+)(:debug)?$'
 
           if [[ "$scylla_version_input" == "LTS-LATEST" ]]; then
-            scylla_version="release:$(./get-version --source dockerhub-imagetag --repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST.1.LAST" | tr -d '\"')"
+            scylla_version="release:$(get-version --source dockerhub-imagetag --repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST.1.LAST" | tr -d '\"')"
           elif [[ "$scylla_version_input" == "LTS-PRIOR" ]]; then
-            scylla_version="release:$(./get-version --source dockerhub-imagetag --repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST-1.1.LAST" | tr -d '\"')"
+            scylla_version="release:$(get-version --source dockerhub-imagetag --repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST-1.1.LAST" | tr -d '\"')"
           elif [[ "$scylla_version_input" == "LATEST" ]]; then
-            scylla_version="release:$(./get-version --source dockerhub-imagetag --repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST.LAST.LAST" | tr -d '\"')"
+            scylla_version="release:$(get-version --source dockerhub-imagetag --repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST.LAST.LAST" | tr -d '\"')"
           elif [[ "$scylla_version_input" == "PRIOR" ]]; then
-            resolved_version=$(./get-version --source dockerhub-imagetag --repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST.LAST.LAST-1" | tr -d '\"')
+            resolved_version=$(get-version --source dockerhub-imagetag --repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST.LAST.LAST-1" | tr -d '\"')
             if [[ -z "$resolved_version" ]]; then
               echo "No PRIOR version found, skipping test"
               echo "SKIP_TEST=true" >> $GITHUB_ENV
@@ -146,12 +240,27 @@ jobs:
           fi
 
           if [[ -n "$scylla_version" ]]; then
+            echo "value=$scylla_version" >> $GITHUB_OUTPUT
             echo "SCYLLA_VERSION=$scylla_version" >> $GITHUB_ENV
           fi
 
-      - name: Run unit tests
-        run: make test-unit
+      # CCM writes the downloaded relocatable into ~/.ccm/scylla-repository, keyed
+      # by the resolved version, so a version bump still misses and re-downloads.
+      - name: Pull ScyllaDB image from the cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: env.SKIP_TEST != 'true' && steps.scylla-version.outputs.value != ''
+        id: scylla-cache
+        with:
+          path: ~/.ccm/scylla-repository
+          key: ccm-scylla-${{ runner.os }}-${{ steps.scylla-version.outputs.value }}
 
       - name: Run integration tests on Scylla
         if: env.SKIP_TEST != 'true'
         run: make test-integration-scylla
+
+      - name: Save ScyllaDB image into the cache
+        if: env.SKIP_TEST != 'true' && steps.scylla-version.outputs.value != '' && steps.scylla-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.ccm/scylla-repository
+          key: ccm-scylla-${{ runner.os }}-${{ steps.scylla-version.outputs.value }}
