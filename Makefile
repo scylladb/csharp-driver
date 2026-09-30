@@ -54,7 +54,7 @@ fix:
 
 .PHONY: build-examples
 build-examples: .use-development-snk
-	dotnet build examples/examples.sln --configuration Release
+	dotnet build --maxcpucount:1 examples/examples.sln --configuration Release
 
 .PHONY: test-unit
 test-unit: .use-development-snk
