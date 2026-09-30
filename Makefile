@@ -52,6 +52,10 @@ fix:
 	dotnet format --severity warn --verbosity diagnostic src/Cassandra.Tests/Cassandra.Tests.csproj
 	dotnet format --severity warn --verbosity diagnostic src/Cassandra.IntegrationTests/Cassandra.IntegrationTests.csproj
 
+.PHONY: build-examples
+build-examples: .use-development-snk
+	dotnet build examples/examples.sln --configuration Release
+
 .PHONY: test-unit
 test-unit: .use-development-snk
 	dotnet build-server shutdown

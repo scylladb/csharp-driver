@@ -50,6 +50,9 @@ jobs:
       - name: Run dotnet format (checks formatting)
         run: make check
 
+      - name: Build examples
+        run: make build-examples
+
       - name: Run unit tests
         run: TARGET_FRAMEWORK=net9 make test-unit
 
