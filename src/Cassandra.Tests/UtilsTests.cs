@@ -16,6 +16,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using Cassandra.Collections;
 using NUnit.Framework;
@@ -27,6 +28,41 @@ namespace Cassandra.Tests
     [TestFixture]
     public class UtilsTests
     {
+        [Test]
+        public void ReadAllBytes_Should_ReadFromNonzeroPosition()
+        {
+            using (var stream = new MemoryStream(new byte[] { 0, 1, 2, 3, 4, 5 }))
+            {
+                var result = Utils.ReadAllBytes(stream, 2);
+
+                Assert.AreEqual(4, result.Length);
+                Assert.AreEqual(stream.Length, stream.Position);
+            }
+        }
+
+        [Test]
+        public void ReadAllBytes_Should_ReturnEmptyArray_WhenPositionIsAtEndOfStream()
+        {
+            using (var stream = new MemoryStream(new byte[] { 0, 1, 2 }))
+            {
+                var result = Utils.ReadAllBytes(stream, (int)stream.Length);
+
+                CollectionAssert.IsEmpty(result);
+                Assert.AreEqual(stream.Length, stream.Position);
+            }
+        }
+
+        [Test]
+        public void ReadAllBytes_Should_ReturnExactBytes()
+        {
+            using (var stream = new MemoryStream(new byte[] { 10, 20, 30, 40, 50 }))
+            {
+                var result = Utils.ReadAllBytes(stream, 2);
+
+                CollectionAssert.AreEqual(new byte[] { 30, 40, 50 }, result);
+            }
+        }
+
         [Test]
         public void ParseJsonStringMap_Should_Parse_Json_Maps()
         {
