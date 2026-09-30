@@ -44,6 +44,11 @@ namespace Cassandra
 
         Task<IEnumerable<IRow>> QueryAsync(string cqlQuery, bool retry = false);
 
+        /// <summary>
+        /// Executes a metadata query without server-side paging.
+        /// </summary>
+        Task<IEnumerable<IRow>> QueryUnpagedAsync(string cqlQuery, bool retry = false);
+
         Task<Response> SendQueryRequestAsync(string cqlQuery, bool retry, QueryProtocolOptions queryProtocolOptions);
 
         /// <summary>

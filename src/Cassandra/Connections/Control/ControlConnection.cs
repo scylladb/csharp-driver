@@ -802,8 +802,32 @@ namespace Cassandra.Connections.Control
 
         public async Task<IEnumerable<IRow>> QueryAsync(string cqlQuery, bool retry = false)
         {
+            return await QueryAsync(cqlQuery, retry, QueryProtocolOptions.Default).ConfigureAwait(false);
+        }
+
+        public async Task<IEnumerable<IRow>> QueryUnpagedAsync(string cqlQuery, bool retry = false)
+        {
+            // QueryProtocolOptions maps int.MaxValue to -1, which omits the result page size.
+            var queryProtocolOptions = new QueryProtocolOptions(
+                ConsistencyLevel.One,
+                null,
+                false,
+                int.MaxValue,
+                null,
+                ConsistencyLevel.Any,
+                null,
+                null,
+                null);
+            return await QueryAsync(cqlQuery, retry, queryProtocolOptions).ConfigureAwait(false);
+        }
+
+        private async Task<IEnumerable<IRow>> QueryAsync(
+            string cqlQuery,
+            bool retry,
+            QueryProtocolOptions queryProtocolOptions)
+        {
             return _config.MetadataRequestHandler.GetRowSet(
-                await SendQueryRequestAsync(cqlQuery, retry, QueryProtocolOptions.Default).ConfigureAwait(false));
+                await SendQueryRequestAsync(cqlQuery, retry, queryProtocolOptions).ConfigureAwait(false));
         }
 
         public async Task<Response> SendQueryRequestAsync(string cqlQuery, bool retry, QueryProtocolOptions queryProtocolOptions)
