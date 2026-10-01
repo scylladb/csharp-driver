@@ -50,7 +50,7 @@ namespace SslTwoWayAuth
         {
             // validator that accepts certificates with an untrusted root CA, as long as that CA matches the one we provide
             var serverCertificateValidator = new CustomRootCaCertificateValidator(
-                new X509Certificate2(LoadingCertificateManuallyExample.CertificateAuthorityPath));
+                X509CertificateLoader.LoadCertificateFromFile(LoadingCertificateManuallyExample.CertificateAuthorityPath));
 
             var cluster = Cluster.Builder()
                 .AddContactPoints(LoadingCertificateManuallyExample.ContactPoints)
@@ -58,12 +58,13 @@ namespace SslTwoWayAuth
                     // set client certificate collection
                     .SetCertificateCollection(new X509Certificate2Collection
                     {
-                        // use the following constructor if the certificate is password protected
-                        new X509Certificate2(
+                        // use the following loader call if the certificate is password protected
+                        X509CertificateLoader.LoadPkcs12FromFile(
                             LoadingCertificateManuallyExample.ClientCertificatePath,
                             LoadingCertificateManuallyExample.ClientCertificatePassword),
-                        // use the following constructor if the certificate is not password protected
-                        //new X509Certificate2(LoadingCertificateManuallyExample.CertificatePath)
+                        // use the following loader call if the certificate is not password protected
+                        //X509CertificateLoader.LoadPkcs12FromFile(
+                        //    LoadingCertificateManuallyExample.ClientCertificatePath, null)
                     })
                     // Set server certificate validator for server auth
                     .SetRemoteCertValidationCallback(

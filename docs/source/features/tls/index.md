@@ -20,7 +20,7 @@ var cluster = Cluster.Builder()
     .Build();
 ```
 
-`Builder.WithSSL()` and `Builder.WithSSL(new SSLOptions())` enable TLS/SSL with the default configuration. The default configuration includes a `RemoteCertificateValidationCallback` that logs any errors returned by .NET's SSL API.
+`Builder.WithSSL()` and `Builder.WithSSL(new SSLOptions())` enable TLS/SSL with the default configuration. The parameterless `SSLOptions` uses `SslProtocols.None`, which lets the operating system select the best available TLS protocol and apply its security policy. The default configuration also includes a `RemoteCertificateValidationCallback` that logs any errors returned by .NET's SSL API.
 
 To customize this configuration check out the several SSL options available on the `SSLOptions` class:
 
@@ -58,7 +58,8 @@ Here is an example (`CustomValidator` here is a class that you would have to imp
 
 ```csharp
 // custom validator
-var certificateValidator = new CustomValidator(new X509Certificate2(@"C:\path\to\ca.crt"));
+var rootCertificate = X509CertificateLoader.LoadCertificateFromFile(@"C:\path\to\ca.crt");
+var certificateValidator = new CustomValidator(rootCertificate);
 
 var cluster = Cluster.Builder()
     .AddContactPoints("...")
@@ -74,19 +75,19 @@ The examples on the [driver's repository][Github repository] have a basic custom
 To enable client authentication, you need to provide the driver with the client certificate(s):
 
 ```csharp
+var clientCertificate = X509CertificateLoader.LoadPkcs12FromFile(
+    @"C:\path\to\client_cert.pfx",
+    "cert_password");
+
+// For a PKCS#12 file without a password, pass null instead.
 var cluster = Cluster.Builder()
     .AddContactPoints("...")
     .WithSSL(new SSLOptions()
         // set client certificate collection
         .SetCertificateCollection(new X509Certificate2Collection
         {
-            // use the following constructor if the certificate is password protected
-            new X509Certificate2(@"C:\path\to\client_cert.pfx", "cert_password"),
-
-            // use the following constructor if the certificate is not password protected
-            //new X509Certificate2(@"C:\path\to\client_cert.pfx")
-        )
-    )
+            clientCertificate
+        }))
     .Build();
 ```
 

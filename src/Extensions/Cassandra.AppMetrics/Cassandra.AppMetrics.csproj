@@ -3,10 +3,10 @@
   <PropertyGroup>
     <Description>This package builds on the ScyllaDB C# Driver for Scylla, adding a metrics provider implementation using App Metrics.</Description>
     <Copyright>Copyright © by DataStax and ScyllaDB</Copyright>
-    <AssemblyVersion>3.99.0.0</AssemblyVersion>
-    <FileVersion>3.22.0.4</FileVersion>
+    <AssemblyVersion>4.99.0.0</AssemblyVersion>
+    <FileVersion>4.0.0.0</FileVersion>
     <Authors>DataStax and ScyllaDB</Authors>
-    <TargetFramework>netstandard2.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <Authors>DataStax and ScyllaDB</Authors>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
@@ -15,7 +15,7 @@
     <AssemblyOriginatorKeyFile>../../../build/scylladb.snk</AssemblyOriginatorKeyFile>
     <SignAssembly>true</SignAssembly>
     <PackageId>ScyllaDBCSharpDriver.AppMetrics</PackageId>
-    <Version>3.22.0.4</Version>
+    <Version>4.0.0.0</Version>
     <Title>ScyllaDB C# Drivers App Metrics Extension</Title>
     <PackageTags>scylladb;scylla;driver;client;metrics;appmetricsdatabase;nosql;dotnet;netcore;db</PackageTags>
     <PackageLicenseFile>LICENSE.md</PackageLicenseFile>
@@ -35,8 +35,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="App.Metrics.Abstractions" Version="3.*" />
-    <PackageReference Include="App.Metrics.Concurrency" Version="4.*" />
+    <PackageReference Include="App.Metrics.Abstractions" Version="3.2.0" />
+    <PackageReference Include="App.Metrics.Concurrency" Version="4.3.0" />
   </ItemGroup>
 
   <ItemGroup>

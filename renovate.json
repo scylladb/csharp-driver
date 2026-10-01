@@ -3,9 +3,6 @@
   "extends": [
     "config:recommended"
   ],
-  "ignoreDeps": [
-    "Microsoft.NET.Test.Sdk"
-  ],
   "packageRules": [
     {
       "matchManagers": ["github-actions"],

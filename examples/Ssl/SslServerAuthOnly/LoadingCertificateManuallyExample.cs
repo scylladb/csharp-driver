@@ -35,7 +35,7 @@ namespace SslServerAuthOnly
         {
             // validator that accepts certificates with an untrusted root CA, as long as that CA matches the one we provide
             var certificateValidator = new CustomRootCaCertificateValidator(
-                new X509Certificate2(LoadingCertificateManuallyExample.CertificateAuthorityPath));
+                X509CertificateLoader.LoadCertificateFromFile(LoadingCertificateManuallyExample.CertificateAuthorityPath));
 
             var cluster = Cluster.Builder()
                 .AddContactPoints(LoadingCertificateManuallyExample.ContactPoints)

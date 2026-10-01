@@ -1,12 +1,14 @@
 # How to build the C# Driver API Docs
 
-1. Download and install [DocFX](https://dotnet.github.io/docfx/)
-    - On linux you need `mono` because DocFX v2 runs on .NET Framework. DocFX will support .NET Core in v3.
-2. `cd docs/source/api-docs`
-3. run `docfx`
+1. Install the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0).
+   The repository's `global.json` pins SDK version `10.0.401`.
+2. Install [DocFX](https://dotnet.github.io/docfx/) with
+   `dotnet tool update --global docfx`.
+3. `cd docs/source/api-docs`
+4. Run `docfx`.
     - The static files of the website will be generated in a new subdirectory called `api-docs`.
     - You might see some warnings about not being able to resolve base documentation depending on the version of DocFX that you use. Unfortunately this is expected and it's because [DocFX doesn't have full support for `inheritdoc`](https://github.com/dotnet/docfx/issues/3699#issuecomment-444039674).
-4. To preview the website you can **either**:
+5. To preview the website you can **either**:
     - Open `/api-docs/index.html` on your browser
     - Or you can run `docfx serve api-docs` which will spin up a web server on the `localhost`.
 

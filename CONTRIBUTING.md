@@ -96,15 +96,18 @@ its downloaded package. Unstable references remain supported unchanged.
 
 ## Building the driver and running tests
 
-DataStax C# drivers target .NET Standard 2.0. The test projects target .NET 6, 7 and 8. To run the code analyzers you need the .NET 8 SDK.
+The driver, extension, example, and test projects target .NET 10 (`net10.0`). The
+repository's `global.json` pins SDK version `10.0.401`; use that SDK for local
+builds and tests.
 
 ### Prerequisites
 
-- [.NET 8 SDK][dotnetsdk]
+- [.NET 10 SDK 10.0.401][dotnetsdk]
 
 ### IDE Support
 
-You can build and run tests on Visual Studio 2022+ and JetBrains Rider by opening the solution file `Cassandra.sln` with any of those applications.
+You can build and run tests in an IDE that supports .NET 10, such as Visual
+Studio or JetBrains Rider, by opening the solution file `Cassandra.sln`.
 
 To run the code analyzers you need to update these IDEs to a version that supports `.editorconfig` because the code analysis settings are set on that file. In the case of Visual Studio, old versions don't support nested `.editorconfig` files and we have a couple of these on the codebase.
 
@@ -117,34 +120,26 @@ dotnet restore src
 dotnet build src/Cassandra.sln
 ```
 
-The command `dotnet build src/Cassandra.sln` should succeed. Otherwise, you need to specify a .NET target framework in order to successfully build the project.
-
-You can build specific projects against specific target frameworks on any platform like this:
+The command `dotnet build src/Cassandra.sln` should succeed. You can also build
+specific projects explicitly for .NET 10:
 
 ```bash
-dotnet build src/Cassandra/Cassandra.csproj -f netstandard2.0
-dotnet build src/Cassandra.Tests/Cassandra.Tests.csproj -f net8
-dotnet build src/Cassandra.IntegrationTests/Cassandra.IntegrationTests.csproj -f net8
+dotnet build src/Cassandra/Cassandra.csproj -f net10.0
+dotnet build src/Cassandra.Tests/Cassandra.Tests.csproj -f net10.0
+dotnet build src/Cassandra.IntegrationTests/Cassandra.IntegrationTests.csproj -f net10.0
 ```
-
-Alternatively you can set the `BuildCoreOnly` environment variable which will cause the projects to support .NET Core / .NET Standard targets only (you can see the conditions on the `.csproj` files).
 
 ### Running Unit Tests
 
 ```bash
-dotnet test src/Cassandra.Tests/Cassandra.Tests.csproj -f net8
+dotnet test src/Cassandra.Tests/Cassandra.Tests.csproj -f net10.0
 ```
 
-The target framework supported by the test projects is `net8` (by default). If you set the `BuildAllTargets` environment variable, the test projects will support these targets:
-
-- `net6` 
-- `net7`(not LTS, might be removed at some point)
-- `net8`
-
-Running the unit tests for a single target should take no more than 5 minutes (usually less):
+The test projects support `net10.0`. Running the unit tests should take no more
+than 5 minutes (usually less):
 
 ```bash
-dotnet test src/Cassandra.Tests/Cassandra.Tests.csproj -c Release -f net8 -l "console;verbosity=detailed"
+dotnet test src/Cassandra.Tests/Cassandra.Tests.csproj -c Release -f net10.0 -l "console;verbosity=detailed"
 ```
 
 ### Running Integration Tests
@@ -185,17 +180,17 @@ Integration tests are tagged with one or more categories. You can see the list o
 CCM tests usually take a bit longer to run so if you want a quick validation you might prefer to run the simulacron tests only. You can do this by running the tests that don't have the `realcluster` or `realclusterlong` categories:
 
 ```bash
-dotnet test src/Cassandra.IntegrationTests/Cassandra.IntegrationTests.csproj -c Release -f net8 --filter "(TestCategory!=realcluster)&(TestCategory!=realclusterlong)" -l "console;verbosity=detailed"
+dotnet test src/Cassandra.IntegrationTests/Cassandra.IntegrationTests.csproj -c Release -f net10.0 --filter "(TestCategory!=realcluster)&(TestCategory!=realclusterlong)" -l "console;verbosity=detailed"
 ```
 
 This currently takes less than 10 minutes.
 
 If you get this error: `Simulacron start error: java.net.BindException: Address already in use: bind` then you need to manually kill the `java` process. This happens when the test runner is interrupted (it doesn't terminate the simulacron process).
 
-To run the integration tests suite that the **per commit** schedule builds use on Appveyor and Jenkins, do this:
+To run the integration test suite used by **per commit** CI, do this:
 
 ```bash
-dotnet test src/Cassandra.IntegrationTests/Cassandra.IntegrationTests.csproj -c Release -f net8 --filter "(TestCategory!=realclusterlong)" -l "console;verbosity=detailed"
+dotnet test src/Cassandra.IntegrationTests/Cassandra.IntegrationTests.csproj -c Release -f net10.0 --filter "(TestCategory!=realclusterlong)" -l "console;verbosity=detailed"
 ```
 
 This test suite contains all simulacron tests and most ccm tests. This currently takes less than 30 minutes for Apache Cassandra 3.11.x (which is the current default server version). You can change this by setting the `CASSANDRA_VERSION` environment variable or changing the default value of the `TestClusterManager.CassandraVersionString` property (don't commit this change).
@@ -203,7 +198,7 @@ This test suite contains all simulacron tests and most ccm tests. This currently
 To run all the integration tests (those that run on the **weekly** and **nightly** schedules), don't specify any filter:
 
 ```bash
-dotnet test src/Cassandra.IntegrationTests/Cassandra.IntegrationTests.csproj -c Release -f net8 -l "console;verbosity=detailed"
+dotnet test src/Cassandra.IntegrationTests/Cassandra.IntegrationTests.csproj -c Release -f net10.0 -l "console;verbosity=detailed"
 ```
 
 This currently takes less than 45 minutes for Apache Cassandra 3.11.x.
@@ -254,5 +249,6 @@ If you need new stuff from the base branch, it's fine to rebase and force-push, 
 [ccmrepo]: https://github.com/riptano/ccm
 [simulacronrepo]: https://github.com/datastax/simulacron
 [simulacronreleases]: https://github.com/datastax/simulacron/releases
+[dotnetsdk]: https://dotnet.microsoft.com/download/dotnet/10.0
 [dotnetcoresdk]: https://www.microsoft.com/net/download/core
 [scylla-slack]: https://scylladb-users.slack.com

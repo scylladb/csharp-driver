@@ -49,6 +49,31 @@ Example: `3.4.1`
 
 These releases only contain bug fixes so they will never contain changes to the driver's public API.
 
+## 4.0.0.0 - .NET 10 requirement
+
+Version 4 targets .NET 10 (`net10.0`) exclusively. This minimum applies to the
+core driver and both extension packages:
+
+- `ScyllaDBCSharpDriver`
+- `ScyllaDBCSharpDriver.AppMetrics`
+- `ScyllaDBCSharpDriver.OpenTelemetry`
+
+Applications must target `net10.0` or a compatible later target framework to use
+version 4. Applications that cannot move to .NET 10 should remain on version
+`3.22.0.4` of every driver package they use.
+
+The target-framework transition does not remove any public API signatures from
+the `3.22.0.4` assemblies. This includes the protected exception-serialization
+constructors, which remain available for binary and source compatibility.
+
+### TLS protocol selection
+
+The parameterless `SSLOptions` now uses `SslProtocols.None` instead of explicitly
+selecting TLS 1.0. As a result, `Builder.WithSSL()` and
+`Builder.WithSSL(new SSLOptions())` delegate protocol negotiation and security
+policy to the operating system. Applications that construct `SSLOptions` with an
+explicit `SslProtocols` value continue to use that configured value.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.

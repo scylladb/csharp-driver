@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 
 # Check if docfx is available
 if ! command -v docfx &> /dev/null; then
@@ -37,4 +38,3 @@ if [ -d "api-docs" ]; then
 else
     echo "Warning: api-docs directory not found after docfx build"
 fi
-

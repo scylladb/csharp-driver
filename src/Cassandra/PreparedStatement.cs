@@ -46,7 +46,7 @@ namespace Cassandra
         /// cannot be passed by reference.
         /// <para>
         /// The modifier is replaced rather than dropped, so that every access still carries the ordering it
-        /// gave: reads through <see cref="Volatile.Read{T}(ref T)"/>, the publication through the exchange
+        /// gave: reads through <see cref="Volatile.Read{T}"/>, the publication through the exchange
         /// above, and the one write outside it - the constructor's - through
         /// <see cref="Volatile.Write{T}(ref T, T)"/>. The reference itself only reaches another thread
         /// through the prepared statement cache or an awaited task, both of which order it, so the

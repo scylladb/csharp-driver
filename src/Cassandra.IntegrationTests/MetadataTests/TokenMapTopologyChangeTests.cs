@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Text;
 
 using Cassandra.IntegrationTests.TestBase;
@@ -88,7 +89,14 @@ namespace Cassandra.IntegrationTests.MetadataTests
                 var oldTokenMapNotSync = ClusterObjNotSync.Metadata.TokenToReplicasMap;
                 var oldTokenMapSync = ClusterObjSync.Metadata.TokenToReplicasMap;
 
-                this.TestCluster.DecommissionNode(1);
+                if (TestClusterManager.SupportsDecommissionForcefully())
+                {
+                    this.TestCluster.DecommissionNodeForcefully(1);
+                }
+                else
+                {
+                    this.TestCluster.DecommissionNode(1);
+                }
 
                 this.TestCluster.Stop(1);
 
@@ -110,7 +118,7 @@ namespace Cassandra.IntegrationTests.MetadataTests
                 oldTokenMapNotSync = ClusterObjNotSync.Metadata.TokenToReplicasMap;
                 oldTokenMapSync = ClusterObjSync.Metadata.TokenToReplicasMap;
 
-                this.TestCluster.BootstrapNode(4);
+                this.TestCluster.BootstrapNode(4, ClusterObjSync.AllHosts().First().Datacenter);
                 TestHelper.RetryAssert(() =>
                 {
                     Assert.AreEqual(3, ClusterObjSync.Metadata.Hosts.Count);
