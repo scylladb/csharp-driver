@@ -41,7 +41,7 @@ namespace Cassandra.IntegrationTests
         {
             // this method is executed once after all the fixtures have completed execution
             TestClusterManager.TryRemove();
-            SimulacronManager.DefaultInstance.Stop();
+            SimulacronManager.StopAll();
             TestCloudClusterManager.TryRemove();
             Trace.Flush();
         }

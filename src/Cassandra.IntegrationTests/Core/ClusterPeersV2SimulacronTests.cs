@@ -23,7 +23,9 @@ using Assert = NUnit.Framework.Legacy.ClassicAssert;
 
 namespace Cassandra.IntegrationTests.Core
 {
-    [TestFixture, Category(TestCategory.Short)]
+    // Uses the single shared InstancePeersV2Tests manager, so it must not run while
+    // another worker is using that same simulacron JVM.
+    [TestFixture, Category(TestCategory.Short), NonParallelizable]
     public class ClusterPeersV2SimulacronTests : SimulacronTest
     {
         public ClusterPeersV2SimulacronTests() : base(
