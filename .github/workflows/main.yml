@@ -15,7 +15,9 @@ on:
       - .gitignore
       - .gitattributes
       - "**/*.md"
-      - "*.json"
+      # Only renovate's own config. global.json is the SDK compatibility pin
+      # (see AGENTS.md), so changes to it must still run CI.
+      - renovate.json
       - NOTICE
       - doxyfile
       - .nav
@@ -29,7 +31,9 @@ on:
       - .gitignore
       - .gitattributes
       - "**/*.md"
-      - "*.json"
+      # Only renovate's own config. global.json is the SDK compatibility pin
+      # (see AGENTS.md), so changes to it must still run CI.
+      - renovate.json
       - NOTICE
       - doxyfile
       - .nav
@@ -139,6 +143,11 @@ jobs:
 
     env:
       TARGET_FRAMEWORK: ${{ matrix.target-framework }}
+      # Install the CCM pip package into ~/.local (not the toolcache Python,
+      # which is not cached) so the "Cache CCM install" entry below can restore
+      # it and the Makefile's .prepare-scylla-ccm guard can actually skip the
+      # from-git reinstall. ~/.local/bin is put on PATH right after setup-python.
+      PIP_USER: "1"
 
     steps:
       - name: Checkout repository
@@ -157,15 +166,22 @@ jobs:
           distribution: 'temurin'
 
       - name: Setup Python 3
+        id: python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.11'
+
+      - name: Put user-installed Python scripts on PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       # Split caches, each with a restore-key, so an edit to one concern (e.g.
       # the CCM version in the Makefile) falls back to the previous revision of
       # that cache instead of re-downloading pip, CCM and NuGet together. The
       # CCM install stamps make the Makefile's `.prepare-scylla-ccm` guard work:
-      # without them it reinstalled CCM from git on every job.
+      # without them it reinstalled CCM from git on every job. The CCM key is
+      # scoped to the Python version because the cached `ccm` console script's
+      # shebang points at the toolcache interpreter, so a patch bump must miss.
+      # (With PIP_USER=1, ccm lands in ~/.local, not the interpreter's own bin.)
       - name: Cache pip
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -181,9 +197,9 @@ jobs:
             ~/.local
             ~/.ccm/ccm-type
             ~/.ccm/ccm-version
-          key: ccm-install-scylla-${{ runner.os }}-${{ hashFiles('Makefile') }}
+          key: ccm-install-scylla-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('Makefile') }}
           restore-keys: |
-            ccm-install-scylla-${{ runner.os }}-
+            ccm-install-scylla-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-
 
       - name: Cache NuGet packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -198,7 +214,7 @@ jobs:
       - name: Install get-version CLI
         run: |
           mkdir -p "$RUNNER_TEMP/bin"
-          curl -sSLo /tmp/get-version.zip https://github.com/scylladb-actions/get-version/releases/download/v0.4.5/get-version_0.4.5_linux_amd64v3.zip
+          curl -fsSLo /tmp/get-version.zip https://github.com/scylladb-actions/get-version/releases/download/v0.4.5/get-version_0.4.5_linux_amd64v3.zip
           unzip -o /tmp/get-version.zip get-version -d "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
