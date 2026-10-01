@@ -44,7 +44,7 @@
     <PackageReference Include="NUnit" Version="4.5.0" />
     <PackageReference Include="NUnit3TestAdapter" Version="6.3.0"
                       Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net8.0'))" />
-    <PackageReference Include="NUnit3TestAdapter" Version="5.2.0"
+    <PackageReference Include="NUnit3TestAdapter" Version="6.3.0"
                       Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net6.0')) And !$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net8.0'))" />
     <PackageReference Include="NunitXml.TestLogger" Version="8.0.0" />
     <PackageReference Include="System.Runtime.InteropServices.RuntimeInformation" Version="4.3.0" />
