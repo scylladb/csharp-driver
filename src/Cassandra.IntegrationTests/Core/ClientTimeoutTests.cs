@@ -166,19 +166,21 @@ namespace Cassandra.IntegrationTests.Core
             using (var simulacronCluster = SimulacronCluster.CreateNew(3))
             {
                 const string cql = IdleQuery;
+                // A zero read timeout means "wait indefinitely"; the delay must outlast
+                // the 12s default read timeout.
                 simulacronCluster.PrimeFluent(
                     b => b.WhenQuery(cql)
                           .ThenRowsSuccess(new[] { ("key", DataType.Ascii) }, rows => rows.WithRow("123"))
-                          .WithDelayInMs(30000));
+                          .WithDelayInMs(14000));
 
                 using (var cluster = ClusterBuilder().AddContactPoint(simulacronCluster.InitialContactPoint).WithSocketOptions(socketOptions).Build())
                 {
                     var session = cluster.Connect();
                     var query = new SimpleStatement(cql);
                     var task = session.ExecuteAsync(query);
-                    Thread.Sleep(15000);
+                    Thread.Sleep(13000);
                     Assert.AreEqual(TaskStatus.WaitingForActivation, task.Status);
-                    Thread.Sleep(15000);
+                    Thread.Sleep(2000);
                     TestHelper.RetryAssert(
                         () => { Assert.AreEqual(TaskStatus.RanToCompletion, task.Status, task.Exception?.ToString() ?? "no exception"); },
                         100,
