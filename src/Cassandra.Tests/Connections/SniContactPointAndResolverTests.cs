@@ -132,11 +132,11 @@ namespace Cassandra.Tests.Connections
             var host = CreateHost("127.0.0.1", SniContactPointAndResolverTests.Port);
             Mock.Get(result.DnsResolver).Verify(x => x.GetHostEntryAsync("proxy"), Times.Never);
 
-            await target.GetConnectionEndPointAsync(host, false).ConfigureAwait(false);
+            await ResolveHostAsync(target, host, false).ConfigureAwait(false);
 
             Mock.Get(result.DnsResolver).Verify(x => x.GetHostEntryAsync("proxy"), Times.Once);
 
-            await target.GetConnectionEndPointAsync(host, true).ConfigureAwait(false);
+            await ResolveHostAsync(target, host, true).ConfigureAwait(false);
 
             Mock.Get(result.DnsResolver).Verify(x => x.GetHostEntryAsync("proxy"), Times.Exactly(2));
         }
@@ -149,11 +149,11 @@ namespace Cassandra.Tests.Connections
             var host = CreateHost("127.0.0.1", SniContactPointAndResolverTests.Port);
             Mock.Get(result.DnsResolver).Verify(x => x.GetHostEntryAsync("proxy"), Times.Never);
 
-            await target.GetConnectionEndPointAsync(host, false).ConfigureAwait(false);
+            await ResolveHostAsync(target, host, false).ConfigureAwait(false);
 
             Mock.Get(result.DnsResolver).Verify(x => x.GetHostEntryAsync("proxy"), Times.Once);
 
-            await target.GetConnectionEndPointAsync(host, false).ConfigureAwait(false);
+            await ResolveHostAsync(target, host, false).ConfigureAwait(false);
 
             Mock.Get(result.DnsResolver).Verify(x => x.GetHostEntryAsync("proxy"), Times.Once);
         }
@@ -197,7 +197,7 @@ namespace Cassandra.Tests.Connections
             var target = result.EndPointResolver;
             var host = CreateHost("163.10.10.10", SniContactPointAndResolverTests.Port);
 
-            await target.GetConnectionEndPointAsync(host, false).ConfigureAwait(false);
+            await ResolveHostAsync(target, host, false).ConfigureAwait(false);
 
             Mock.Get(result.DnsResolver).Verify(x => x.GetHostEntryAsync(It.IsAny<string>()), Times.Never);
         }
@@ -209,7 +209,7 @@ namespace Cassandra.Tests.Connections
             var target = result.EndPointResolver;
             var host = CreateHost("163.10.10.10", SniContactPointAndResolverTests.Port);
 
-            var resolved = await target.GetConnectionEndPointAsync(host, false).ConfigureAwait(false);
+            var resolved = await ResolveHostAsync(target, host, false).ConfigureAwait(false);
 
             Assert.AreEqual(host.HostId.ToString("D"), await resolved.GetServerNameAsync().ConfigureAwait(false));
             Assert.AreEqual(host.Address, resolved.GetHostIpEndPointWithFallback());
@@ -223,11 +223,51 @@ namespace Cassandra.Tests.Connections
             var target = result.EndPointResolver;
             var host = CreateHost("163.10.10.10", SniContactPointAndResolverTests.Port);
 
-            var resolved = await target.GetConnectionEndPointAsync(host, false).ConfigureAwait(false);
+            var resolved = await ResolveHostAsync(target, host, false).ConfigureAwait(false);
 
             Assert.AreEqual(host.HostId.ToString("D"), await resolved.GetServerNameAsync().ConfigureAwait(false));
             Assert.AreEqual(host.Address, resolved.GetHostIpEndPointWithFallback());
             Assert.AreEqual(_proxyResolvedEndPoint, resolved.SocketIpEndPoint);
+        }
+
+        [Test]
+        public async Task Should_ReturnSingletonWithShardAwareMetadataPort_When_ResolvingHost()
+        {
+            var result = Create(_proxyEndPoint.Address);
+            var target = result.EndPointResolver;
+            var host = CreateHost("163.10.10.10", SniContactPointAndResolverTests.Port);
+
+            var candidates = await target
+                .GetConnectionShardAwareEndPointsAsync(host, false, 19042)
+                .ConfigureAwait(false);
+            var resolved = candidates.Single();
+
+            Assert.AreEqual(1, candidates.Count);
+            Assert.AreEqual(host.HostId.ToString("D"), await resolved.GetServerNameAsync().ConfigureAwait(false));
+            Assert.AreEqual(new IPEndPoint(host.Address.Address, 19042), resolved.GetHostIpEndPointWithFallback());
+            Assert.AreEqual(_proxyEndPoint, resolved.SocketIpEndPoint);
+        }
+
+        [TestCase("2001:db8::20")]
+        [TestCase("fe80::2%4")]
+        public async Task Should_ReturnIpv6HostAddressWithShardAwarePort_When_ResolvingShardAwareHost(string address)
+        {
+            var result = Create(_proxyEndPoint.Address);
+            var target = result.EndPointResolver;
+            var hostAddress = IPAddress.Parse(address);
+            var host = new Host(new IPEndPoint(hostAddress, SniContactPointAndResolverTests.Port), contactPoint: null);
+            host.SetInfo(BuildRow(Guid.NewGuid()));
+            var expected = new IPEndPoint(hostAddress, 19042);
+
+            var candidates = await target
+                .GetConnectionShardAwareEndPointsAsync(host, false, 19042)
+                .ConfigureAwait(false);
+            var resolved = candidates.Single();
+
+            Assert.AreEqual(host.HostId.ToString("D"), await resolved.GetServerNameAsync().ConfigureAwait(false));
+            Assert.AreEqual(expected, resolved.GetHostIpEndPointWithFallback());
+            Assert.AreEqual(hostAddress.ScopeId, resolved.GetHostIpEndPointWithFallback().Address.ScopeId);
+            Assert.AreEqual(_proxyEndPoint, resolved.SocketIpEndPoint);
         }
 
         [Test]
@@ -239,10 +279,10 @@ namespace Cassandra.Tests.Connections
 
             var resolvedCollection = new[]
             {
-                await target.GetConnectionEndPointAsync(host, false).ConfigureAwait(false),
-                await target.GetConnectionEndPointAsync(host, false).ConfigureAwait(false),
-                await target.GetConnectionEndPointAsync(host, false).ConfigureAwait(false),
-                await target.GetConnectionEndPointAsync(host, false).ConfigureAwait(false)
+                await ResolveHostAsync(target, host, false).ConfigureAwait(false),
+                await ResolveHostAsync(target, host, false).ConfigureAwait(false),
+                await ResolveHostAsync(target, host, false).ConfigureAwait(false),
+                await ResolveHostAsync(target, host, false).ConfigureAwait(false)
             };
 
             async Task AssertResolved(IConnectionEndPoint endPoint, string proxyAddress)
@@ -272,9 +312,9 @@ namespace Cassandra.Tests.Connections
             var host = CreateHost("163.10.10.10", SniContactPointAndResolverTests.Port);
             Mock.Get(result.DnsResolver).Verify(x => x.GetHostEntryAsync(It.IsAny<string>()), Times.Never);
 
-            await target.GetConnectionEndPointAsync(host, false).ConfigureAwait(false);
-            await target.GetConnectionEndPointAsync(host, false).ConfigureAwait(false);
-            await target.GetConnectionEndPointAsync(host, false).ConfigureAwait(false);
+            await ResolveHostAsync(target, host, false).ConfigureAwait(false);
+            await ResolveHostAsync(target, host, false).ConfigureAwait(false);
+            await ResolveHostAsync(target, host, false).ConfigureAwait(false);
 
             Mock.Get(result.DnsResolver).Verify(x => x.GetHostEntryAsync(It.IsAny<string>()), Times.Once);
             Mock.Get(result.DnsResolver).Verify(x => x.GetHostEntryAsync("proxyMultiple"), Times.Once);
@@ -295,18 +335,18 @@ namespace Cassandra.Tests.Connections
 
                 var resolvedCollection = new List<IConnectionEndPoint>();
 
-                resolvedCollection.Add(await target.GetConnectionEndPointAsync(host, false).ConfigureAwait(false));
-                resolvedCollection.Add(await target.GetConnectionEndPointAsync(host, false).ConfigureAwait(false));
+                resolvedCollection.Add(await ResolveHostAsync(target, host, false).ConfigureAwait(false));
+                resolvedCollection.Add(await ResolveHostAsync(target, host, false).ConfigureAwait(false));
 
                 Mock.Get(result.DnsResolver).Verify(m => m.GetHostEntryAsync(It.IsAny<string>()), Times.Once);
 
-                resolvedCollection.Add(await target.GetConnectionEndPointAsync(host, true).ConfigureAwait(false));
+                resolvedCollection.Add(await ResolveHostAsync(target, host, true).ConfigureAwait(false));
 
                 Mock.Get(result.DnsResolver).Verify(m => m.GetHostEntryAsync(It.IsAny<string>()), Times.Exactly(2));
                 Assert.AreEqual(0, listener.Queue.Count);
 
-                resolvedCollection.Add(await target.GetConnectionEndPointAsync(host, false).ConfigureAwait(false));
-                resolvedCollection.Add(await target.GetConnectionEndPointAsync(host, false).ConfigureAwait(false));
+                resolvedCollection.Add(await ResolveHostAsync(target, host, false).ConfigureAwait(false));
+                resolvedCollection.Add(await ResolveHostAsync(target, host, false).ConfigureAwait(false));
 
                 Assert.AreNotSame(resolvedCollection[0].SocketIpEndPoint, resolvedCollection[2].SocketIpEndPoint);
                 Assert.AreNotSame(resolvedCollection[0].SocketIpEndPoint, resolvedCollection[3].SocketIpEndPoint);
@@ -335,23 +375,23 @@ namespace Cassandra.Tests.Connections
 
                 var resolvedCollection = new List<IConnectionEndPoint>
                 {
-                    await target.GetConnectionEndPointAsync(host, false).ConfigureAwait(false),
-                    await target.GetConnectionEndPointAsync(host, false).ConfigureAwait(false)
+                    await ResolveHostAsync(target, host, false).ConfigureAwait(false),
+                    await ResolveHostAsync(target, host, false).ConfigureAwait(false)
                 };
 
                 Assert.AreEqual(0, listener.Queue.Count);
                 Mock.Get(result.DnsResolver).Verify(m => m.GetHostEntryAsync(It.IsAny<string>()), Times.Once);
                 Mock.Get(result.DnsResolver).Setup(m => m.GetHostEntryAsync("proxyMultiple")).ThrowsAsync(new Exception());
 
-                resolvedCollection.Add(await target.GetConnectionEndPointAsync(host, true).ConfigureAwait(false));
+                resolvedCollection.Add(await ResolveHostAsync(target, host, true).ConfigureAwait(false));
 
                 Mock.Get(result.DnsResolver).Verify(m => m.GetHostEntryAsync(It.IsAny<string>()), Times.Exactly(2));
                 Assert.AreEqual(1, listener.Queue.Count);
                 Assert.IsTrue(listener.Queue.ToArray()[0].Contains(
                     "Could not resolve endpoint \"proxyMultiple\". Falling back to the result of the previous DNS resolution."));
 
-                resolvedCollection.Add(await target.GetConnectionEndPointAsync(host, false).ConfigureAwait(false));
-                resolvedCollection.Add(await target.GetConnectionEndPointAsync(host, false).ConfigureAwait(false));
+                resolvedCollection.Add(await ResolveHostAsync(target, host, false).ConfigureAwait(false));
+                resolvedCollection.Add(await ResolveHostAsync(target, host, false).ConfigureAwait(false));
 
                 Assert.AreSame(resolvedCollection[0].SocketIpEndPoint, resolvedCollection[2].SocketIpEndPoint);
                 Assert.AreSame(resolvedCollection[1].SocketIpEndPoint, resolvedCollection[3].SocketIpEndPoint);
@@ -376,7 +416,7 @@ namespace Cassandra.Tests.Connections
                 .Select(i => Task.Run(async () =>
                 {
                     await Task.Delay(1).ConfigureAwait(false);
-                    resolvedCollection.Enqueue(await target.GetConnectionEndPointAsync(host, false).ConfigureAwait(false));
+                    resolvedCollection.Enqueue(await ResolveHostAsync(target, host, false).ConfigureAwait(false));
                 }))
                 .ToList();
 
@@ -406,7 +446,7 @@ namespace Cassandra.Tests.Connections
                               foreach (var j in Enumerable.Range(0, 10000))
                               {
                                   resolvedCollection.Enqueue(
-                                      await target.GetConnectionEndPointAsync(host, (i + j) % 2 == 0).ConfigureAwait(false));
+                                      await ResolveHostAsync(target, host, (i + j) % 2 == 0).ConfigureAwait(false));
                               }
                           })).ToList();
 
@@ -462,6 +502,16 @@ namespace Cassandra.Tests.Connections
                 EndPointResolver = sniResolver,
                 SniContactPoint = new SniContactPoint(sniResolver)
             };
+        }
+
+        private static async Task<IConnectionEndPoint> ResolveHostAsync(
+            IEndPointResolver resolver,
+            Host host,
+            bool refreshCache)
+        {
+            var candidates = await resolver.GetConnectionEndPointsAsync(host, refreshCache).ConfigureAwait(false);
+            Assert.AreEqual(1, candidates.Count);
+            return candidates.Single();
         }
 
         private Host CreateHost(string ipAddress, int port, Guid? nullableHostId = null)

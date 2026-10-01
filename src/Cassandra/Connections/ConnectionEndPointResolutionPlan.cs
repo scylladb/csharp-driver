@@ -1,0 +1,86 @@
+//
+//      Copyright (C) ScyllaDB
+//
+//   Licensed under the Apache License, Version 2.0 (the "License");
+//   you may not use this file except in compliance with the License.
+//   You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+//   Unless required by applicable law or agreed to in writing, software
+//   distributed under the License is distributed on an "AS IS" BASIS,
+//   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+//   See the License for the specific language governing permissions and
+//   limitations under the License.
+//
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace Cassandra.Connections
+{
+    /// <summary>
+    /// A cold, ordered sequence of endpoint-resolution steps. Each step is invoked only after the
+    /// caller asks for the next group, allowing all endpoints in one group to be tried before any
+    /// potentially slower fallback resolution begins.
+    /// </summary>
+    internal sealed class ConnectionEndPointResolutionPlan
+    {
+        private readonly IReadOnlyList<Func<Task<IReadOnlyList<IConnectionEndPoint>>>> _steps;
+        private readonly Func<IReadOnlyList<Exception>, Exception> _noEndPointsExceptionFactory;
+        private readonly List<Exception> _resolutionErrors = new List<Exception>();
+        private int _nextStep;
+        private bool _resolvedAnyEndPoints;
+
+        public ConnectionEndPointResolutionPlan(
+            IEnumerable<Func<Task<IReadOnlyList<IConnectionEndPoint>>>> steps,
+            Func<IReadOnlyList<Exception>, Exception> noEndPointsExceptionFactory = null)
+        {
+            if (steps == null)
+            {
+                throw new ArgumentNullException(nameof(steps));
+            }
+
+            _steps = steps.ToArray();
+            _noEndPointsExceptionFactory = noEndPointsExceptionFactory;
+        }
+
+        /// <summary>
+        /// Returns the endpoints of the next step (possibly empty), or null when the plan is exhausted.
+        /// When a failure factory is configured, steps that fail with non-fatal errors are skipped;
+        /// the errors are surfaced together only if no step produced any endpoints.
+        /// </summary>
+        public async Task<IReadOnlyList<IConnectionEndPoint>> ResolveNextAsync()
+        {
+            while (_nextStep < _steps.Count)
+            {
+                var step = _steps[_nextStep++];
+                try
+                {
+                    var endPoints = await step().ConfigureAwait(false);
+                    if (endPoints.Count > 0)
+                    {
+                        _resolvedAnyEndPoints = true;
+                    }
+                    return endPoints;
+                }
+                catch (Exception ex) when (
+                    _noEndPointsExceptionFactory != null &&
+                    !Utils.IsFatalException(ex))
+                {
+                    _resolutionErrors.Add(ex);
+                }
+            }
+
+            if (_noEndPointsExceptionFactory != null && !_resolvedAnyEndPoints)
+            {
+                throw _noEndPointsExceptionFactory(_resolutionErrors.ToArray());
+            }
+
+            return null;
+        }
+    }
+}

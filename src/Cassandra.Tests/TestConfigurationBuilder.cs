@@ -93,6 +93,8 @@ namespace Cassandra.Tests
 
         public bool? DriverConfigReportingEnabled { get; set; }
 
+        public ClientRoutesOptions ClientRoutesOptions { get; set; }
+
         public IContactPointParser ContactPointParser { get; set; }
 
         public IServerNameResolver ServerNameResolver { get; set; }
@@ -162,7 +164,8 @@ namespace Cassandra.Tests
                 ProtocolVersionNegotiator,
                 ServerEventsSubscriber,
                 RequestTracker,
-                driverConfigReportingEnabled: DriverConfigReportingEnabled);
+                driverConfigReportingEnabled: DriverConfigReportingEnabled,
+                clientRoutesOptions: ClientRoutesOptions);
         }
     }
 }

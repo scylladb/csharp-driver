@@ -49,6 +49,16 @@ namespace Cassandra
         }
 
         /// <summary>
+        /// Creates a new instance of NoHostAvailableException with the tried hosts and an inner exception
+        /// describing failures that happened before any host could be tried.
+        /// </summary>
+        internal NoHostAvailableException(Dictionary<IPEndPoint, Exception> errors, string detail, Exception innerException)
+            : base(CreateMessage(errors) + " " + detail, innerException)
+        {
+            Errors = errors;
+        }
+
+        /// <summary>
         /// Creates a new instance of NoHostAvailableException with a custom message and an empty error dictionary. 
         /// </summary>
         internal NoHostAvailableException(string message) : base(message)

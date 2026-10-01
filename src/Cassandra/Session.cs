@@ -18,6 +18,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -40,6 +41,7 @@ namespace Cassandra
         private readonly ISerializerManager _serializerManager;
         private static readonly Logger Logger = new Logger(typeof(Session));
         private readonly IThreadSafeDictionary<IPEndPoint, IHostConnectionPool> _connectionPool;
+        private readonly object _connectionPoolLifecycleLock = new object();
         private readonly IInternalCluster _cluster;
         private int _disposed;
         private long _initialized;
@@ -192,10 +194,16 @@ namespace Cassandra
         /// <inheritdoc />
         public Task ShutdownAsync()
         {
-            //Only dispose once
-            if (Interlocked.Increment(ref _disposed) != 1)
+            KeyValuePair<IPEndPoint, IHostConnectionPool>[] pools;
+            lock (_connectionPoolLifecycleLock)
             {
-                return Task.FromResult<object>(null);
+                // Only dispose once, and exclude pool publication from the shutdown snapshot.
+                if (Interlocked.Increment(ref _disposed) != 1)
+                {
+                    return Task.FromResult<object>(null);
+                }
+                pools = _connectionPool.ToArray();
+                _connectionPool.Clear();
             }
 
             if (Interlocked.Read(ref _initialized) == 1)
@@ -207,7 +215,6 @@ namespace Cassandra
 
             _cluster.HostRemoved -= OnHostRemoved;
 
-            var pools = _connectionPool.ToArray();
             foreach (var pool in pools)
             {
                 pool.Value.Dispose();
@@ -247,9 +254,7 @@ namespace Cassandra
             var tasks = new Task[hosts.Length];
             for (var i = 0; i < hosts.Length; i++)
             {
-                var host = hosts[i];
-                var pool = InternalRef.GetOrCreateConnectionPool(host, HostDistance.Local);
-                tasks[i] = pool.Warmup();
+                tasks[i] = WarmupHost(hosts[i]);
             }
 
             try
@@ -267,6 +272,12 @@ namespace Cassandra
                 // Log and continue as the ControlConnection is connected
                 Session.Logger.Error($"Connection pools for {hosts.Length} host(s) failed to be warmed up");
             }
+        }
+
+        private async Task WarmupHost(Host host)
+        {
+            var pool = InternalRef.GetOrCreateConnectionPool(host, HostDistance.Local);
+            await pool.Warmup().ConfigureAwait(false);
         }
 
         /// <inheritdoc />
@@ -345,16 +356,64 @@ namespace Cassandra
         /// <inheritdoc />
         IHostConnectionPool IInternalSession.GetOrCreateConnectionPool(Host host, HostDistance distance)
         {
-            var hostPool = _connectionPool.GetOrAdd(host.Address, address =>
+            // Lock-free fast path for the common case on the request path: an eligible host whose
+            // pool already exists and whose identity has not been replaced in metadata.
+            if (!IsDisposed &&
+                distance != HostDistance.Ignored &&
+                host.IsUp &&
+                _connectionPool.TryGetValue(host.Address, out var pool) &&
+                !IsReplacedHost(host, _cluster.Metadata.GetHost(host.Address)))
             {
+                return pool;
+            }
+
+            lock (_connectionPoolLifecycleLock)
+            {
+                if (IsDisposed)
+                {
+                    throw new ObjectDisposedException(nameof(Session));
+                }
+                var currentHost = _cluster.Metadata.GetHost(host.Address);
+                if (IsReplacedHost(host, currentHost))
+                {
+                    host = currentHost;
+                    distance = _cluster.RetrieveAndSetDistance(host);
+                }
+
+                if (distance == HostDistance.Ignored || !host.IsUp)
+                {
+                    // A replacement can remove the old Host between query-plan selection and
+                    // pool lookup. Do not recreate a pool for a replaced identity or create
+                    // one for a host that is not eligible for requests. RequestHandler treats
+                    // the SocketException as a per-host failure and moves to the next host.
+                    Session.Logger.Verbose(
+                        "Not creating a connection pool for host {0}: it is {1}.",
+                        host.Address,
+                        distance == HostDistance.Ignored ? "ignored" : "down");
+                    throw new SocketException((int)SocketError.NotConnected);
+                }
+
+                if (_connectionPool.TryGetValue(host.Address, out var existingPool))
+                {
+                    return existingPool;
+                }
+
                 var newPool = Configuration.HostConnectionPoolFactory.Create(
                     host, Configuration, _serializerManager, _observerFactory, Cluster.Metadata.GetTokenFactory());
                 newPool.AllConnectionClosed += InternalRef.OnAllConnectionClosed;
                 newPool.SetDistance(distance);
                 _metricsManager.GetOrCreateNodeMetrics(host).InitializePoolGauges(newPool);
+                _connectionPool.Add(host.Address, newPool);
                 return newPool;
-            });
-            return hostPool;
+            }
+        }
+
+        private static bool IsReplacedHost(Host host, Host currentHost)
+        {
+            return currentHost != null &&
+                   host.HostId != Guid.Empty &&
+                   currentHost.HostId != Guid.Empty &&
+                   currentHost.HostId != host.HostId;
         }
 
         /// <inheritdoc />
@@ -497,11 +556,14 @@ namespace Cassandra
 
         private void OnHostRemoved(Host host)
         {
-            _metricsManager.RemoveNodeMetrics(host);
-            if (_connectionPool.TryRemove(host.Address, out var pool))
+            lock (_connectionPoolLifecycleLock)
             {
-                pool.OnHostRemoved();
-                pool.Dispose();
+                _metricsManager.RemoveNodeMetrics(host);
+                if (_connectionPool.TryRemove(host.Address, out var pool))
+                {
+                    pool.OnHostRemoved();
+                    pool.Dispose();
+                }
             }
         }
     }

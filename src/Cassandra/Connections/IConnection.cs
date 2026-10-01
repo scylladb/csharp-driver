@@ -89,6 +89,11 @@ namespace Cassandra.Connections
         bool IsDisposed { get; }
 
         /// <summary>
+        /// Determines whether the socket connection has closed, including closes that happen before disposal.
+        /// </summary>
+        bool IsClosed { get; }
+
+        /// <summary>
         /// Gets the current keyspace.
         /// </summary>
         string Keyspace { get; }

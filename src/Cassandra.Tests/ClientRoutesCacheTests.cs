@@ -21,6 +21,8 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
+using Cassandra.Tasks;
+
 using Moq;
 
 using NUnit.Framework;
@@ -191,6 +193,184 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public async Task Should_RequeryFailedTargetedHostsWithNextTargetedRefresh()
+        {
+            var firstHostId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+            var secondHostId = Guid.Parse("00000000-0000-0000-0000-000000000002");
+            var queries = new ConcurrentQueue<string>();
+            var responses = new Queue<Func<Task<IEnumerable<IRow>>>>(new Func<Task<IEnumerable<IRow>>>[]
+            {
+                () => Task.FromResult(Rows(
+                    Route(firstHostId, "10.0.0.1", 9042, 9142, ConnectionA),
+                    Route(secondHostId, "10.0.0.2", 9042, 9142, ConnectionA))),
+                () => Task.FromException<IEnumerable<IRow>>(new InvalidOperationException("query failed")),
+                () => Task.FromResult(Rows(
+                    Route(firstHostId, "10.0.0.11", 9043, 9143, ConnectionA),
+                    Route(secondHostId, "10.0.0.22", 9043, 9143, ConnectionA)))
+            });
+            var provider = CreateProvider((query, _) =>
+            {
+                queries.Enqueue(query);
+                return responses.Dequeue()();
+            });
+            var cache = CreateCache(provider.Object);
+            await cache.RefreshAsync().ConfigureAwait(false);
+
+            await cache.RefreshAsync(Change((ConnectionA, firstHostId))).ConfigureAwait(false);
+            AssertEndpoint(cache.Routes[firstHostId], ConnectionA, "10.0.0.1", 9042);
+
+            await cache.RefreshAsync(Change((ConnectionA, secondHostId))).ConfigureAwait(false);
+
+            Assert.That(
+                queries.Last(),
+                Does.EndWith("AND host_id IN (" + firstHostId + ", " + secondHostId + ")"));
+            AssertEndpoint(cache.Routes[firstHostId], ConnectionA, "10.0.0.11", 9043);
+            AssertEndpoint(cache.Routes[secondHostId], ConnectionA, "10.0.0.22", 9043);
+        }
+
+        [Test]
+        public async Task Should_RetryFailedTargetedRefreshInBackground()
+        {
+            var hostId = Guid.NewGuid();
+            var queryCount = 0;
+            var provider = CreateProvider((_, __) =>
+            {
+                switch (Interlocked.Increment(ref queryCount))
+                {
+                    case 1:
+                        return Task.FromResult(Rows(Route(hostId, "10.0.0.1", 9042, 9142, ConnectionA)));
+                    case 2:
+                        return Task.FromException<IEnumerable<IRow>>(new InvalidOperationException("query failed"));
+                    default:
+                        return Task.FromResult(Rows(Route(hostId, "10.0.0.11", 9043, 9143, ConnectionA)));
+                }
+            });
+            var cache = CreateCache(provider.Object, failedRefreshRetryDelay: TimeSpan.FromMilliseconds(20));
+            await cache.RefreshAsync().ConfigureAwait(false);
+
+            await cache.RefreshAsync(Change((ConnectionA, hostId))).ConfigureAwait(false);
+
+            await TestHelper.WaitUntilAsync(
+                    () => cache.Routes[hostId][0].Address == "10.0.0.11",
+                    50,
+                    200)
+                .ConfigureAwait(false);
+            AssertEndpoint(cache.Routes[hostId], ConnectionA, "10.0.0.11", 9043);
+            Assert.That(Volatile.Read(ref queryCount), Is.EqualTo(3));
+            cache.Shutdown();
+        }
+
+        [Test]
+        public async Task Should_RetryFailedFullRefreshInBackgroundAfterSuccessfulSnapshot()
+        {
+            var hostId = Guid.NewGuid();
+            var queryCount = 0;
+            var provider = CreateProvider((_, __) =>
+            {
+                switch (Interlocked.Increment(ref queryCount))
+                {
+                    case 1:
+                        return Task.FromResult(Rows(Route(hostId, "10.0.0.1", 9042, 9142, ConnectionA)));
+                    case 2:
+                    case 3:
+                        return Task.FromException<IEnumerable<IRow>>(new InvalidOperationException("query failed"));
+                    default:
+                        return Task.FromResult(Rows(Route(hostId, "10.0.0.11", 9043, 9143, ConnectionA)));
+                }
+            });
+            var cache = CreateCache(provider.Object, failedRefreshRetryDelay: TimeSpan.FromMilliseconds(20));
+            await cache.FullRefreshBarrierAsync().ConfigureAwait(false);
+
+            // The barrier completes with the previous snapshot; the reload is retried with backoff.
+            await cache.FullRefreshBarrierAsync().ConfigureAwait(false);
+            AssertEndpoint(cache.Routes[hostId], ConnectionA, "10.0.0.1", 9042);
+
+            await TestHelper.WaitUntilAsync(
+                    () => cache.Routes[hostId][0].Address == "10.0.0.11",
+                    50,
+                    200)
+                .ConfigureAwait(false);
+            AssertEndpoint(cache.Routes[hostId], ConnectionA, "10.0.0.11", 9043);
+            Assert.That(Volatile.Read(ref queryCount), Is.EqualTo(4));
+            cache.Shutdown();
+        }
+
+        [Test]
+        public async Task Should_NotRetryFailedRefreshAfterShutdown()
+        {
+            var queryCount = 0;
+            var provider = CreateProvider((_, __) =>
+            {
+                Interlocked.Increment(ref queryCount);
+                return Task.FromException<IEnumerable<IRow>>(new InvalidOperationException("query failed"));
+            });
+            var cache = CreateCache(provider.Object, failedRefreshRetryDelay: TimeSpan.FromMilliseconds(50));
+            await cache.RefreshAsync().ConfigureAwait(false);
+
+            cache.Shutdown();
+            await Task.Delay(200).ConfigureAwait(false);
+
+            Assert.That(Volatile.Read(ref queryCount), Is.EqualTo(1));
+        }
+
+        [TestCase(0)]
+        [TestCase(-5)]
+        public void Should_RejectNonPositiveFailedRefreshRetryDelay(int milliseconds)
+        {
+            var provider = CreateProvider((_, __) => Task.FromResult(EmptyRows()));
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                CreateCache(provider.Object, failedRefreshRetryDelay: TimeSpan.FromMilliseconds(milliseconds)));
+        }
+
+        [Test]
+        public async Task Should_DropFailedTargetedHostsOnceFullRefreshCoversThem()
+        {
+            var firstHostId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+            var secondHostId = Guid.Parse("00000000-0000-0000-0000-000000000002");
+            var queries = new ConcurrentQueue<string>();
+            var queryCount = 0;
+            var provider = CreateProvider((query, _) =>
+            {
+                queries.Enqueue(query);
+                return Interlocked.Increment(ref queryCount) == 2
+                    ? Task.FromException<IEnumerable<IRow>>(new InvalidOperationException("query failed"))
+                    : Task.FromResult(EmptyRows());
+            });
+            var cache = CreateCache(provider.Object);
+            await cache.RefreshAsync().ConfigureAwait(false);
+            await cache.RefreshAsync(Change((ConnectionA, firstHostId))).ConfigureAwait(false);
+
+            await cache.RefreshAsync().ConfigureAwait(false);
+            await cache.RefreshAsync(Change((ConnectionA, secondHostId))).ConfigureAwait(false);
+
+            Assert.That(queries.Last(), Does.EndWith("AND host_id IN (" + secondHostId + ")"));
+        }
+
+        [Test]
+        public async Task Should_LogEachIgnoredEmptyFullRefreshAndTheFinalClear()
+        {
+            var hostId = Guid.NewGuid();
+            var queryCount = 0;
+            var provider = CreateProvider((_, __) => Task.FromResult(
+                Interlocked.Increment(ref queryCount) == 1
+                    ? Rows(Route(hostId, "10.0.0.1", 9042, 9142, ConnectionA))
+                    : EmptyRows()));
+            var handler = new RecordingLoggerHandler();
+            var cache = CreateCache(provider.Object, logger: new Logger(handler));
+            await cache.RefreshAsync().ConfigureAwait(false);
+
+            await cache.RefreshAsync().ConfigureAwait(false);
+            await cache.RefreshAsync().ConfigureAwait(false);
+            Assert.That(handler.Warnings.Count(message => message.Contains("returned no rows")), Is.EqualTo(2));
+            Assert.That(handler.Errors, Is.Empty);
+
+            await cache.RefreshAsync().ConfigureAwait(false);
+
+            Assert.That(cache.Routes, Is.Empty);
+            Assert.That(handler.Errors.Single(), Does.Contain("Removing all 1 cached route(s)"));
+        }
+
+        [Test]
         public async Task Should_BuildExactFullQueryEscapeConnectionIdsAndUseOneUnpagedRetry()
         {
             const string quotedConnectionId = "customer's route";
@@ -251,12 +431,39 @@ namespace Cassandra.Tests
                 .Select(invocation => (string)invocation.Arguments[0])
                 .ToArray();
             Assert.That(queries, Has.Length.EqualTo(2));
-            Assert.That(queries[0], Does.Contain("host_id IN (" + firstHostId + ")"));
+            Assert.That(queries[0], Does.Contain(firstHostId.ToString()));
+            Assert.That(queries[0], Does.Not.Contain(secondHostId.ToString()));
             Assert.That(queries[0], Does.Not.Contain("ALLOW FILTERING"));
             Assert.That(queries[1], Does.Contain(Guid.Empty.ToString()));
             Assert.That(queries[1], Does.Contain(firstHostId.ToString()));
             Assert.That(queries[1], Does.Contain(secondHostId.ToString()));
             Assert.That(queries[1], Does.Not.Contain("ALLOW FILTERING"));
+        }
+
+        [Test]
+        public async Task Should_RefreshNamedHostsForUnscopedEventAndReplaceStaleRoute()
+        {
+            var hostId = Guid.NewGuid();
+            var responses = new Queue<IEnumerable<IRow>>(new[]
+            {
+                Rows(Route(hostId, "old.example.com", 9042, 9142, ConnectionA)),
+                Rows(Route(hostId, "new.example.com", 9043, 9143, ConnectionA))
+            });
+            var provider = CreateProvider((_, __) => Task.FromResult(responses.Dequeue()));
+            var cache = CreateCache(provider.Object, new[] { ConnectionA, ConnectionB });
+            await cache.RefreshAsync().ConfigureAwait(false);
+
+            await cache.RefreshAsync(new ClientRoutesChangeEventArgs
+            {
+                ConnectionIds = Array.Empty<string>(),
+                HostIds = new[] { hostId }
+            }).ConfigureAwait(false);
+
+            AssertEndpoint(cache.Routes[hostId], ConnectionA, "new.example.com", 9043);
+            var refreshQuery = (string)provider.Invocations[1].Arguments[0];
+            Assert.That(refreshQuery, Does.Contain("connection_id IN ('connection-a', 'connection-b')"));
+            Assert.That(refreshQuery, Does.Contain("host_id IN (" + hostId + ")"));
+            Assert.That(refreshQuery, Does.Not.Contain("ALLOW FILTERING"));
         }
 
         [Test]
@@ -1027,6 +1234,81 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public async Task Should_RequireSuccessfulFullSnapshotBeforeBarrierCanIgnoreQueryFailures()
+        {
+            var hostId = Guid.NewGuid();
+            var coldStartFailure = new InvalidOperationException("cold-start query failed");
+            var laterFailure = new InvalidOperationException("later query failed");
+            var queryCount = 0;
+            var provider = CreateProvider((_, __) =>
+            {
+                switch (Interlocked.Increment(ref queryCount))
+                {
+                    case 1:
+                        return Task.FromException<IEnumerable<IRow>>(coldStartFailure);
+                    case 2:
+                        return Task.FromResult(Rows(Route(
+                            hostId,
+                            "proxy.example.com",
+                            9042,
+                            9142,
+                            ConnectionA)));
+                    default:
+                        return Task.FromException<IEnumerable<IRow>>(laterFailure);
+                }
+            });
+            var cache = CreateCache(provider.Object);
+
+            var thrown = Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await cache.FullRefreshBarrierAsync().ConfigureAwait(false));
+            Assert.That(thrown, Is.SameAs(coldStartFailure));
+            Assert.That(cache.Routes, Is.Empty);
+
+            await cache.FullRefreshBarrierAsync().ConfigureAwait(false);
+            var establishedSnapshot = cache.Routes;
+
+            await cache.FullRefreshBarrierAsync().ConfigureAwait(false);
+
+            Assert.That(queryCount, Is.EqualTo(3));
+            Assert.That(cache.Routes, Is.SameAs(establishedSnapshot));
+            AssertEndpoint(cache.Routes[hostId], ConnectionA, "proxy.example.com", 9042);
+        }
+
+        [Test]
+        public async Task Should_NotTreatIgnoredEmptyFullRefreshAsAnEstablishedSnapshot()
+        {
+            var hostId = Guid.NewGuid();
+            var confirmationFailure = new InvalidOperationException("confirmation query failed");
+            var queryCount = 0;
+            var provider = CreateProvider((_, __) =>
+            {
+                switch (Interlocked.Increment(ref queryCount))
+                {
+                    case 1:
+                        return Task.FromResult(Rows(Route(
+                            hostId,
+                            "proxy.example.com",
+                            9042,
+                            9142,
+                            ConnectionA)));
+                    case 2:
+                        return Task.FromResult(EmptyRows());
+                    default:
+                        return Task.FromException<IEnumerable<IRow>>(confirmationFailure);
+                }
+            });
+            var cache = CreateCache(provider.Object);
+            await cache.RefreshAsync(Change((ConnectionA, hostId))).ConfigureAwait(false);
+
+            var thrown = Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await cache.FullRefreshBarrierAsync(confirmIgnoredEmptyResults: true).ConfigureAwait(false));
+
+            Assert.That(thrown, Is.SameAs(confirmationFailure));
+            Assert.That(queryCount, Is.EqualTo(3));
+            AssertEndpoint(cache.Routes[hostId], ConnectionA, "proxy.example.com", 9042);
+        }
+
+        [Test]
         public async Task Should_ReleaseRefreshSlotAfterSynchronousOrdinaryQueryFailure()
         {
             var hostId = Guid.NewGuid();
@@ -1167,6 +1449,24 @@ namespace Cassandra.Tests
             await cache.RefreshAsync().ConfigureAwait(false);
             Assert.That(cache.Routes.ContainsKey(hostId), Is.True);
             await cache.RefreshAsync().ConfigureAwait(false);
+            Assert.That(cache.Routes, Is.Empty);
+        }
+
+        [Test]
+        public async Task Should_ConfirmIgnoredEmptyFullRefreshesBeforeCompletingBarrier()
+        {
+            var hostId = Guid.NewGuid();
+            var queryCount = 0;
+            var provider = CreateProvider((_, __) => Task.FromResult(
+                Interlocked.Increment(ref queryCount) == 1
+                    ? Rows(Route(hostId, "10.0.0.1", 9042, 9142, ConnectionA))
+                    : EmptyRows()));
+            var cache = CreateCache(provider.Object);
+            await cache.RefreshAsync().ConfigureAwait(false);
+
+            await cache.FullRefreshBarrierAsync(confirmIgnoredEmptyResults: true).ConfigureAwait(false);
+
+            Assert.That(queryCount, Is.EqualTo(4));
             Assert.That(cache.Routes, Is.Empty);
         }
 
@@ -1373,7 +1673,7 @@ namespace Cassandra.Tests
             try
             {
                 activeRefresh = cache.RefreshAsync(Change((ConnectionA, activeHostId)));
-                await firstStarted.Task.ConfigureAwait(false);
+                await firstStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
                 secondRefresh = cache.RefreshAsync(Change((ConnectionA, secondHostId)));
                 thirdRefresh = cache.RefreshAsync(Change(
                     (ConnectionA, thirdHostId),
@@ -1383,7 +1683,7 @@ namespace Cassandra.Tests
 
                 releaseFirst.TrySetResult(true);
                 await activeRefresh.ConfigureAwait(false);
-                await secondStarted.Task.ConfigureAwait(false);
+                await secondStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
 
                 Assert.That(queryCount, Is.EqualTo(2));
                 Assert.That(maximumActiveQueries, Is.EqualTo(1));
@@ -1443,7 +1743,7 @@ namespace Cassandra.Tests
             try
             {
                 activeRefresh = cache.RefreshAsync(Change((ConnectionA, activeHostId)));
-                await firstStarted.Task.ConfigureAwait(false);
+                await firstStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
                 targetedRefresh = cache.RefreshAsync(Change((ConnectionA, pendingHostId)));
                 fullRefresh = cache.RefreshAsync();
                 Assert.That(targetedRefresh, Is.SameAs(activeRefresh));
@@ -1451,7 +1751,7 @@ namespace Cassandra.Tests
 
                 releaseFirst.TrySetResult(true);
                 await activeRefresh.ConfigureAwait(false);
-                await secondStarted.Task.ConfigureAwait(false);
+                await secondStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
 
                 Assert.That(targetedRefresh.IsCompleted, Is.True);
                 Assert.That(fullRefresh.IsCompleted, Is.True);
@@ -1504,7 +1804,7 @@ namespace Cassandra.Tests
             try
             {
                 activeRefresh = cache.RefreshAsync();
-                await firstStarted.Task.ConfigureAwait(false);
+                await firstStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
                 secondRefresh = cache.RefreshAsync();
                 thirdRefresh = cache.RefreshAsync();
                 Assert.That(secondRefresh, Is.SameAs(activeRefresh));
@@ -1512,7 +1812,7 @@ namespace Cassandra.Tests
 
                 releaseFirst.TrySetResult(true);
                 await activeRefresh.ConfigureAwait(false);
-                await secondStarted.Task.ConfigureAwait(false);
+                await secondStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
 
                 Assert.That(queryCount, Is.EqualTo(2));
                 Assert.That(secondRefresh.IsCompleted, Is.True);
@@ -1563,13 +1863,13 @@ namespace Cassandra.Tests
             try
             {
                 activeRefresh = cache.RefreshAsync(Change((ConnectionA, activeHostId)));
-                await firstStarted.Task.ConfigureAwait(false);
+                await firstStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
                 pendingRefresh = cache.RefreshAsync(Change((ConnectionA, pendingHostId)));
                 Assert.That(pendingRefresh, Is.SameAs(activeRefresh));
 
                 releaseFirst.TrySetResult(true);
                 await activeRefresh.ConfigureAwait(false);
-                await secondStarted.Task.ConfigureAwait(false);
+                await secondStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
 
                 Assert.That(pendingRefresh.IsCompleted, Is.True);
 
@@ -1590,19 +1890,388 @@ namespace Cassandra.Tests
             AssertEndpoint(cache.Routes[pendingHostId], ConnectionA, "pending.example.com", 9043);
         }
 
+        [Test]
+        public async Task Should_CompleteFullRefreshBarrierOnlyAfterRequestedFullPass()
+        {
+            var firstStarted = NewSignal();
+            var releaseFirst = NewSignal();
+            var secondStarted = NewSignal();
+            var releaseSecond = NewSignal();
+            var queries = new ConcurrentQueue<string>();
+            var queryCount = 0;
+            var provider = CreateProvider(async (query, _) =>
+            {
+                queries.Enqueue(query);
+                var currentQuery = Interlocked.Increment(ref queryCount);
+                if (currentQuery == 1)
+                {
+                    firstStarted.TrySetResult(true);
+                    await releaseFirst.Task.ConfigureAwait(false);
+                }
+                else if (currentQuery == 2)
+                {
+                    secondStarted.TrySetResult(true);
+                    await releaseSecond.Task.ConfigureAwait(false);
+                }
+                return EmptyRows();
+            });
+            var cache = CreateCache(provider.Object);
+
+            Task activeRefresh = null;
+            Task barrier = null;
+            try
+            {
+                activeRefresh = cache.RefreshAsync();
+                await firstStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                barrier = cache.FullRefreshBarrierAsync();
+                Assert.That(barrier.IsCompleted, Is.False);
+
+                releaseFirst.TrySetResult(true);
+                await activeRefresh.ConfigureAwait(false);
+                await secondStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.That(barrier.IsCompleted, Is.False);
+
+                releaseSecond.TrySetResult(true);
+                await barrier.ConfigureAwait(false);
+            }
+            finally
+            {
+                releaseFirst.TrySetResult(true);
+                releaseSecond.TrySetResult(true);
+            }
+
+            var queryArray = queries.ToArray();
+            Assert.That(queryArray, Has.Length.EqualTo(2));
+            Assert.That(queryArray[0], Does.Not.Contain("host_id IN"));
+            Assert.That(queryArray[1], Does.Not.Contain("host_id IN"));
+        }
+
+        [Test]
+        public async Task Should_CoalescePendingFullRefreshBarriersIntoOneFullPass()
+        {
+            var activeHostId = Guid.NewGuid();
+            var firstStarted = NewSignal();
+            var releaseFirst = NewSignal();
+            var secondStarted = NewSignal();
+            var releaseSecond = NewSignal();
+            var queryCount = 0;
+            var provider = CreateProvider(async (_, __) =>
+            {
+                var currentQuery = Interlocked.Increment(ref queryCount);
+                if (currentQuery == 1)
+                {
+                    firstStarted.TrySetResult(true);
+                    await releaseFirst.Task.ConfigureAwait(false);
+                }
+                else if (currentQuery == 2)
+                {
+                    secondStarted.TrySetResult(true);
+                    await releaseSecond.Task.ConfigureAwait(false);
+                }
+                return EmptyRows();
+            });
+            var cache = CreateCache(provider.Object);
+
+            try
+            {
+                var activeRefresh = cache.RefreshAsync(Change((ConnectionA, activeHostId)));
+                await firstStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                var firstBarrier = cache.FullRefreshBarrierAsync();
+                var secondBarrier = cache.FullRefreshBarrierAsync();
+
+                releaseFirst.TrySetResult(true);
+                await activeRefresh.ConfigureAwait(false);
+                await secondStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.That(firstBarrier.IsCompleted, Is.False);
+                Assert.That(secondBarrier.IsCompleted, Is.False);
+
+                releaseSecond.TrySetResult(true);
+                await Task.WhenAll(firstBarrier, secondBarrier).ConfigureAwait(false);
+            }
+            finally
+            {
+                releaseFirst.TrySetResult(true);
+                releaseSecond.TrySetResult(true);
+            }
+
+            Assert.That(queryCount, Is.EqualTo(2));
+        }
+
+        [Test]
+        public async Task Should_StopEmptyConfirmationAndRetainSnapshotWhenBarrierQueryFails()
+        {
+            var hostId = Guid.NewGuid();
+            var queryCount = 0;
+            var provider = CreateProvider((_, retry) =>
+            {
+                Assert.That(retry, Is.False);
+                switch (Interlocked.Increment(ref queryCount))
+                {
+                    case 1:
+                        return Task.FromResult(Rows(Route(
+                            hostId,
+                            "proxy.example.com",
+                            9042,
+                            9142,
+                            ConnectionA)));
+                    case 2:
+                        return Task.FromResult(EmptyRows());
+                    default:
+                        return Task.FromException<IEnumerable<IRow>>(new InvalidOperationException("query failed"));
+                }
+            });
+            var cache = CreateCache(provider.Object, retryQueries: false);
+            await cache.RefreshAsync().ConfigureAwait(false);
+            var snapshot = cache.Routes;
+
+            await cache.FullRefreshBarrierAsync(confirmIgnoredEmptyResults: true).ConfigureAwait(false);
+
+            Assert.That(queryCount, Is.EqualTo(3));
+            Assert.That(cache.Routes, Is.SameAs(snapshot));
+            AssertEndpoint(cache.Routes[hostId], ConnectionA, "proxy.example.com", 9042);
+        }
+
+        [Test]
+        public async Task Should_RejectNewRefreshWorkAndDropPendingWorkAfterShutdown()
+        {
+            var activeHostId = Guid.NewGuid();
+            var pendingHostId = Guid.NewGuid();
+            var firstStarted = NewSignal();
+            var releaseFirst = NewSignal();
+            var queryCount = 0;
+            var provider = CreateProvider(async (_, __) =>
+            {
+                Interlocked.Increment(ref queryCount);
+                firstStarted.TrySetResult(true);
+                await releaseFirst.Task.ConfigureAwait(false);
+                return EmptyRows();
+            });
+            var cache = CreateCache(provider.Object);
+
+            var activeRefresh = cache.RefreshAsync(Change((ConnectionA, activeHostId)));
+            await firstStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+            var barrier = cache.FullRefreshBarrierAsync();
+            cache.Shutdown();
+            cache.Shutdown();
+
+            Assert.ThrowsAsync<ObjectDisposedException>(async () => await barrier.ConfigureAwait(false));
+            Assert.ThrowsAsync<ObjectDisposedException>(async () => await cache.RefreshAsync().ConfigureAwait(false));
+            Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+                await cache.RefreshAsync(Change((ConnectionA, pendingHostId))).ConfigureAwait(false));
+
+            await cache.RefreshAsync(Change(("unconfigured", pendingHostId))).ConfigureAwait(false);
+            releaseFirst.TrySetResult(true);
+            await activeRefresh.ConfigureAwait(false);
+            await Task.Delay(50).ConfigureAwait(false);
+
+            Assert.That(queryCount, Is.EqualTo(1));
+        }
+
+        [Test]
+        public async Task Should_FaultEveryPendingBarrierWhenFatalFailureInterruptsActivePass()
+        {
+            var hostId = Guid.NewGuid();
+            var fatal = new OutOfMemoryException("fatal query failure");
+            var firstStarted = NewSignal();
+            var releaseFirst = NewSignal();
+            var queryCount = 0;
+            var provider = CreateProvider(async (_, __) =>
+            {
+                if (Interlocked.Increment(ref queryCount) == 1)
+                {
+                    firstStarted.TrySetResult(true);
+                    await releaseFirst.Task.ConfigureAwait(false);
+                    throw fatal;
+                }
+                return Rows(Route(hostId, "recovered.example.com", 9042, 9142, ConnectionA));
+            });
+            var cache = CreateCache(provider.Object, retryQueries: false);
+
+            Task startingBarrier;
+            Task queuedConfirmingBarrier;
+            Task queuedBarrier;
+            Task queuedRefresh;
+            try
+            {
+                startingBarrier = cache.FullRefreshBarrierAsync(confirmIgnoredEmptyResults: true);
+                await firstStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                queuedConfirmingBarrier = cache.FullRefreshBarrierAsync(confirmIgnoredEmptyResults: true);
+                queuedBarrier = cache.FullRefreshBarrierAsync();
+                queuedRefresh = cache.RefreshAsync();
+                Assert.That(startingBarrier.IsCompleted, Is.False);
+                Assert.That(queuedConfirmingBarrier.IsCompleted, Is.False);
+                Assert.That(queuedBarrier.IsCompleted, Is.False);
+            }
+            finally
+            {
+                releaseFirst.TrySetResult(true);
+            }
+
+            foreach (var waiter in new[] { startingBarrier, queuedConfirmingBarrier, queuedBarrier, queuedRefresh })
+            {
+                var thrown = Assert.ThrowsAsync<OutOfMemoryException>(async () =>
+                    await waiter.WaitToCompleteAsync(5000).ConfigureAwait(false));
+                Assert.That(thrown, Is.SameAs(fatal));
+            }
+            Assert.That(queryCount, Is.EqualTo(1));
+            Assert.That(cache.Routes, Is.Empty);
+
+            await cache.FullRefreshBarrierAsync(confirmIgnoredEmptyResults: true)
+                       .WaitToCompleteAsync(5000)
+                       .ConfigureAwait(false);
+
+            Assert.That(queryCount, Is.EqualTo(2));
+            AssertEndpoint(cache.Routes[hostId], ConnectionA, "recovered.example.com", 9042);
+        }
+
+        [Test]
+        public async Task Should_InstallNonemptyRoutesThatEndEmptyConfirmationWithoutClearingCache()
+        {
+            var hostId = Guid.NewGuid();
+            ClientRoutesCache cache = null;
+            IReadOnlyList<ClientRouteEndpoint> routesBeforeConfirmation = null;
+            var queryCount = 0;
+            var provider = CreateProvider((_, __) =>
+            {
+                switch (Interlocked.Increment(ref queryCount))
+                {
+                    case 1:
+                        return Task.FromResult(Rows(Route(hostId, "10.0.0.1", 9042, 9142, ConnectionA)));
+                    case 2:
+                        return Task.FromResult(EmptyRows());
+                    case 3:
+                        routesBeforeConfirmation = cache.Routes[hostId];
+                        return Task.FromResult(Rows(Route(hostId, "10.0.0.2", 9043, 9143, ConnectionA)));
+                    default:
+                        throw new InvalidOperationException("Unexpected client routes query.");
+                }
+            });
+            cache = CreateCache(provider.Object, retryQueries: false);
+            await cache.RefreshAsync().ConfigureAwait(false);
+
+            await cache.FullRefreshBarrierAsync(confirmIgnoredEmptyResults: true)
+                       .WaitToCompleteAsync(5000)
+                       .ConfigureAwait(false);
+
+            Assert.That(queryCount, Is.EqualTo(3));
+            AssertEndpoint(routesBeforeConfirmation, ConnectionA, "10.0.0.1", 9042);
+            AssertEndpoint(cache.Routes[hostId], ConnectionA, "10.0.0.2", 9043);
+        }
+
+        [Test]
+        public async Task Should_NotClearRoutesWhenNonemptyResultFollowsTwoIgnoredEmptyResults()
+        {
+            var hostId = Guid.NewGuid();
+            ClientRoutesCache cache = null;
+            var routesBeforeEachQuery = new ConcurrentQueue<string>();
+            var responses = new Queue<IEnumerable<IRow>>(new[]
+            {
+                Rows(Route(hostId, "10.0.0.1", 9042, 9142, ConnectionA)),
+                EmptyRows(),
+                EmptyRows(),
+                Rows(Route(hostId, "10.0.0.2", 9043, 9143, ConnectionA)),
+                EmptyRows()
+            });
+            var provider = CreateProvider((_, __) =>
+            {
+                routesBeforeEachQuery.Enqueue(
+                    cache.TryGetRoutes(hostId, out var current) ? current.Single().Address : "none");
+                return Task.FromResult(responses.Dequeue());
+            });
+            cache = CreateCache(provider.Object, retryQueries: false);
+            await cache.RefreshAsync().ConfigureAwait(false);
+
+            await cache.FullRefreshBarrierAsync(confirmIgnoredEmptyResults: true)
+                       .WaitToCompleteAsync(5000)
+                       .ConfigureAwait(false);
+
+            Assert.That(
+                routesBeforeEachQuery.ToArray(),
+                Is.EqualTo(new[] { "none", "10.0.0.1", "10.0.0.1", "10.0.0.1" }));
+            AssertEndpoint(cache.Routes[hostId], ConnectionA, "10.0.0.2", 9043);
+
+            // The nonempty result reset the empty count, so one more empty result is only the first.
+            await cache.RefreshAsync().ConfigureAwait(false);
+
+            Assert.That(responses, Is.Empty);
+            AssertEndpoint(cache.Routes[hostId], ConnectionA, "10.0.0.2", 9043);
+        }
+
+        [Test]
+        public async Task Should_FaultConfirmationWaiterAndStopQueryingWhenShutdownDuringConfirmation()
+        {
+            var hostId = Guid.NewGuid();
+            var confirmationStarted = NewSignal();
+            var releaseConfirmation = NewSignal();
+            var queryCount = 0;
+            var provider = CreateProvider(async (_, __) =>
+            {
+                switch (Interlocked.Increment(ref queryCount))
+                {
+                    case 1:
+                        return Rows(Route(hostId, "10.0.0.1", 9042, 9142, ConnectionA));
+                    case 2:
+                        return EmptyRows();
+                    case 3:
+                        confirmationStarted.TrySetResult(true);
+                        await releaseConfirmation.Task.ConfigureAwait(false);
+                        return EmptyRows();
+                    default:
+                        throw new InvalidOperationException("A client routes query ran after shutdown.");
+                }
+            });
+            var cache = CreateCache(provider.Object, retryQueries: false);
+            await cache.RefreshAsync().ConfigureAwait(false);
+
+            Task activeConfirmationPass;
+            Task barrier;
+            try
+            {
+                barrier = cache.FullRefreshBarrierAsync(confirmIgnoredEmptyResults: true);
+                await confirmationStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.That(barrier.IsCompleted, Is.False);
+                // Joins the active pass; its completion is published only after the drain has decided
+                // whether to start another pass.
+                activeConfirmationPass = cache.RefreshAsync();
+
+                cache.Shutdown();
+
+                Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+                    await barrier.WaitToCompleteAsync(5000).ConfigureAwait(false));
+            }
+            finally
+            {
+                releaseConfirmation.TrySetResult(true);
+            }
+
+            await activeConfirmationPass.WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+            Assert.That(queryCount, Is.EqualTo(3));
+            AssertEndpoint(cache.Routes[hostId], ConnectionA, "10.0.0.1", 9042);
+            Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+                await cache.FullRefreshBarrierAsync(confirmIgnoredEmptyResults: true).ConfigureAwait(false));
+            Assert.That(queryCount, Is.EqualTo(3));
+        }
+
         private static ClientRoutesCache CreateCache(
             IMetadataQueryProvider provider,
             IEnumerable<string> connectionIds = null,
             bool useTls = false,
             IReadOnlyDictionary<string, string> addressOverrides = null,
-            Logger logger = null)
+            Logger logger = null,
+            bool retryQueries = true,
+            TimeSpan? failedRefreshRetryDelay = null)
         {
+            // Background retries are disabled unless a test opts in, so query sequences stay deterministic.
             return new ClientRoutesCache(
                 provider,
                 connectionIds ?? new[] { ConnectionA },
                 addressOverrides,
                 useTls,
-                logger);
+                logger,
+                retryQueries,
+                failedRefreshRetryDelay ?? Timeout.InfiniteTimeSpan);
         }
 
         private static Mock<IMetadataQueryProvider> CreateProvider(
@@ -1774,8 +2443,13 @@ namespace Cassandra.Tests
             {
             }
 
+            public ConcurrentQueue<string> Warnings { get; } = new ConcurrentQueue<string>();
+
             public void Warning(string message, params object[] args)
             {
+                Warnings.Enqueue(args == null || args.Length == 0
+                    ? message
+                    : string.Format(message, args));
             }
         }
     }

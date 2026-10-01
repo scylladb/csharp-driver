@@ -15,6 +15,7 @@
 //
 
 using System;
+using System.Collections.Generic;
 using System.Net;
 using System.Threading.Tasks;
 
@@ -30,15 +31,27 @@ namespace Cassandra.Connections
         }
 
         /// <inheritdoc />
-        public Task<IConnectionEndPoint> GetConnectionShardAwareEndPointAsync(Host host, bool refreshCache, int shardAwarePort)
+        public Task<IReadOnlyList<IConnectionEndPoint>> GetConnectionShardAwareEndPointsAsync(
+            Host host,
+            bool refreshCache,
+            int shardAwarePort)
         {
-            return Task.FromResult((IConnectionEndPoint)new ConnectionEndPoint(new IPEndPoint(IPAddress.Parse(host.Address.ToString().Split(':')[0]), shardAwarePort), _serverNameResolver, host.ContactPoint));
+            return Task.FromResult((IReadOnlyList<IConnectionEndPoint>)new IConnectionEndPoint[]
+            {
+                new ConnectionEndPoint(
+                    new IPEndPoint(host.Address.Address, shardAwarePort),
+                    _serverNameResolver,
+                    host.ContactPoint)
+            });
         }
 
         /// <inheritdoc />
-        public Task<IConnectionEndPoint> GetConnectionEndPointAsync(Host host, bool refreshCache)
+        public Task<IReadOnlyList<IConnectionEndPoint>> GetConnectionEndPointsAsync(Host host, bool refreshCache)
         {
-            return Task.FromResult((IConnectionEndPoint)new ConnectionEndPoint(host.Address, _serverNameResolver, host.ContactPoint));
+            return Task.FromResult((IReadOnlyList<IConnectionEndPoint>)new IConnectionEndPoint[]
+            {
+                new ConnectionEndPoint(host.Address, _serverNameResolver, host.ContactPoint)
+            });
         }
     }
 }

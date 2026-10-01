@@ -180,6 +180,38 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public async Task EnsureCreate_WithClientRoutes_Should_UseVirtualOpenOverride()
+        {
+            var fallbackResolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            var connectionFactory = new Mock<IConnectionFactory>(MockBehavior.Strict);
+            var config = new TestConfigurationBuilder
+            {
+                EndPointResolver = fallbackResolver.Object,
+                ConnectionFactory = connectionFactory.Object,
+                PoolingOptions = new PoolingOptions()
+                    .SetCoreConnectionsPerHost(HostDistance.Local, 1),
+                ClientRoutesOptions = new ClientRoutesOptions(
+                    new[] { new ClientRouteProxy("route-a") },
+                    9042,
+                    false)
+            }.Build();
+            config.ClientRoutesRuntime.CompleteLifecyclePass();
+            _mock = GetPoolMock(null, config);
+            var expected = GetConnectionMock(0);
+            _mock.Setup(p => p.DoCreateAndOpen(false, -1, 0, 0)).ReturnsAsync(expected);
+            var pool = _mock.Object;
+            pool.SetDistance(HostDistance.Local);
+
+            var connections = await pool.EnsureCreate().ConfigureAwait(false);
+
+            Assert.AreEqual(1, connections.Count);
+            Assert.AreSame(expected, connections[0]);
+            _mock.Verify(p => p.DoCreateAndOpen(false, -1, 0, 0), Times.Once);
+            fallbackResolver.VerifyNoOtherCalls();
+            connectionFactory.VerifyNoOtherCalls();
+        }
+
+        [Test]
         public void EnsureCreate_Serial_Calls_Should_Yield_First()
         {
             _mock = GetPoolMock();
