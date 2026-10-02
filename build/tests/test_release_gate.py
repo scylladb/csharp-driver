@@ -4,10 +4,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock as mock
 import urllib.error
 import zipfile
 from pathlib import Path
-from unittest import mock
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "release-gate.py"
@@ -479,6 +479,108 @@ class ReleaseGateTests(unittest.TestCase):
                     opener=mock.Mock(side_effect=missing),
                 )
             )
+
+    def test_published_package_classifies_only_transient_query_errors_for_retry(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            package_directory = Path(temporary_directory)
+            self._write_packages(package_directory, "3.22.0.5")
+            package = package_directory / "ScyllaDBCSharpDriver.3.22.0.5.nupkg"
+            transient_errors = [
+                urllib.error.HTTPError(
+                    "https://api.nuget.org", status, "transient", {}, io.BytesIO()
+                )
+                for status in (408, 425, 429, 500, 599)
+            ]
+            transient_errors.append(urllib.error.URLError("connection reset"))
+
+            for error in transient_errors:
+                with self.subTest(error=error):
+                    with self.assertRaises(
+                        release_gate.TransientPackageQueryError
+                    ):
+                        release_gate.published_package_state(
+                            package,
+                            package_id="ScyllaDBCSharpDriver",
+                            version="3.22.0.5",
+                            recovery=True,
+                            opener=mock.Mock(side_effect=error),
+                        )
+
+            permanent = urllib.error.HTTPError(
+                "https://api.nuget.org", 403, "forbidden", {}, io.BytesIO()
+            )
+            with self.assertRaises(release_gate.ReleaseError) as raised:
+                release_gate.published_package_state(
+                    package,
+                    package_id="ScyllaDBCSharpDriver",
+                    version="3.22.0.5",
+                    recovery=True,
+                    opener=mock.Mock(side_effect=permanent),
+                )
+            self.assertNotIsInstance(
+                raised.exception, release_gate.TransientPackageQueryError
+            )
+
+    def test_published_package_cli_converts_transient_query_errors_to_retry(self):
+        arguments = [
+            "published-package",
+            "--package",
+            "package.nupkg",
+            "--package-id",
+            "ScyllaDBCSharpDriver",
+            "--version",
+            "3.22.0.5",
+            "--recovery",
+            "--transient-errors-as-retry",
+        ]
+        for detail in ("HTTP 500", "connection reset"):
+            with self.subTest(detail=detail):
+                with mock.patch.object(
+                    release_gate,
+                    "published_package_state",
+                    side_effect=release_gate.TransientPackageQueryError(detail),
+                ), mock.patch("sys.stdout", new_callable=io.StringIO) as output:
+                    release_gate.main(arguments)
+                self.assertEqual("retry\n", output.getvalue())
+
+    def test_published_package_cli_without_retry_option_fails_closed(self):
+        arguments = [
+            "published-package",
+            "--package",
+            "package.nupkg",
+            "--package-id",
+            "ScyllaDBCSharpDriver",
+            "--version",
+            "3.22.0.5",
+            "--recovery",
+        ]
+        with mock.patch.object(
+            release_gate,
+            "published_package_state",
+            side_effect=release_gate.TransientPackageQueryError("HTTP 500"),
+        ):
+            with self.assertRaises(release_gate.TransientPackageQueryError):
+                release_gate.main(arguments)
+
+    def test_published_package_cli_does_not_convert_permanent_failure(self):
+        arguments = [
+            "published-package",
+            "--package",
+            "package.nupkg",
+            "--package-id",
+            "ScyllaDBCSharpDriver",
+            "--version",
+            "3.22.0.5",
+            "--recovery",
+            "--transient-errors-as-retry",
+        ]
+        with mock.patch.object(
+            release_gate,
+            "published_package_state",
+            side_effect=release_gate.ReleaseError("HTTP 403"),
+        ):
+            with self.assertRaisesRegex(release_gate.ReleaseError, "HTTP 403"):
+                release_gate.main(arguments)
 
     def test_ensure_tag_creates_initial_and_reuses_only_explicit_recovery(self):
         api = FakeApi()

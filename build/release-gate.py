@@ -30,6 +30,10 @@ class ReleaseError(RuntimeError):
     pass
 
 
+class TransientPackageQueryError(ReleaseError):
+    pass
+
+
 class GitHubApiError(ReleaseError):
     def __init__(self, method: str, path: str, status: int | None, detail: str):
         status_text = str(status) if status is not None else "transport error"
@@ -142,6 +146,7 @@ class GitHubApi:
                 if isinstance(error_payload, dict) and error_payload.get("message"):
                     detail = str(error_payload["message"])
             except (UnicodeDecodeError, json.JSONDecodeError):
+                # Error-body parsing is best effort; retain the HTTP fallback detail.
                 pass
             raise GitHubApiError(method, path, error.code, str(detail)) from error
         except urllib.error.URLError as error:
@@ -614,12 +619,17 @@ def published_package_state(
     except urllib.error.HTTPError as error:
         if error.code == 404:
             return False
-        raise ReleaseError(
+        error_type = (
+            TransientPackageQueryError
+            if error.code in (408, 425, 429) or 500 <= error.code <= 599
+            else ReleaseError
+        )
+        raise error_type(
             f"Could not query published package {package_id} {normalized_version}: "
             f"HTTP {error.code}"
         ) from error
     except urllib.error.URLError as error:
-        raise ReleaseError(
+        raise TransientPackageQueryError(
             f"Could not query published package {package_id} {normalized_version}: "
             f"{error.reason}"
         ) from error
@@ -762,6 +772,7 @@ def parse_arguments(arguments: list[str] | None = None) -> argparse.Namespace:
     published_parser.add_argument("--package-id", required=True)
     published_parser.add_argument("--version", required=True)
     published_parser.add_argument("--recovery", action="store_true")
+    published_parser.add_argument("--transient-errors-as-retry", action="store_true")
 
     tag_parser = subparsers.add_parser("ensure-tag")
     add_common_release_arguments(tag_parser)
@@ -825,13 +836,19 @@ def main(arguments: list[str] | None = None) -> None:
             },
         )
     elif options.command == "published-package":
-        published = published_package_state(
-            options.package,
-            package_id=options.package_id,
-            version=options.version,
-            recovery=options.recovery,
-        )
-        print("present" if published else "absent")
+        try:
+            published = published_package_state(
+                options.package,
+                package_id=options.package_id,
+                version=options.version,
+                recovery=options.recovery,
+            )
+        except TransientPackageQueryError:
+            if not options.transient_errors_as_retry:
+                raise
+            print("retry")
+        else:
+            print("present" if published else "absent")
     elif options.command == "ensure-tag":
         ensure_tag(
             github_api(options.repository),
