@@ -663,6 +663,8 @@ namespace Cassandra.Tests
 
         internal class TestLoggerHandler : Logger.ILoggerHandler
         {
+            public long InfoCount = 0;
+            public long VerboseCount = 0;
             public long WarningCount = 0;
 
             public void Error(Exception ex)
@@ -679,10 +681,12 @@ namespace Cassandra.Tests
 
             public void Verbose(string message, params object[] args)
             {
+                Interlocked.Increment(ref VerboseCount);
             }
 
             public void Info(string message, params object[] args)
             {
+                Interlocked.Increment(ref InfoCount);
             }
 
             public void Warning(string message, params object[] args)

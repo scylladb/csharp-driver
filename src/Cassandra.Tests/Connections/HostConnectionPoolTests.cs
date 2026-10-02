@@ -1112,6 +1112,7 @@ namespace Cassandra.Tests.Connections
         public async Task Should_ReleaseOpenGateAndRollbackAdmission_WhenShardPublicationFails()
         {
             var failShardRead = true;
+            var createdConnections = new ConcurrentQueue<Mock<IConnection>>();
             var shardingInfo = ShardingInfo.Create(
                 "0",
                 "4",
@@ -1131,6 +1132,7 @@ namespace Cassandra.Tests.Connections
                     }
                     return shardingInfo;
                 });
+                createdConnections.Enqueue(connection);
                 return connection.Object;
             });
             var target = CreatePool(connectionFactory: factory, coreConnections: 1);
@@ -1141,13 +1143,19 @@ namespace Cassandra.Tests.Connections
             Assert.AreEqual("invalid sharding response", ex.Message);
             Assert.IsNull(GetConnectionOpenTaskSource(target));
             Assert.AreEqual(0, target.OpenConnections);
+            var rejectedConnection = createdConnections.Single();
+            rejectedConnection.Verify(value => value.Dispose(), Times.Once);
 
             failShardRead = false;
             var openedConnection = await InvokeCreateOpenConnection(target).ConfigureAwait(false);
 
             Assert.IsNotNull(openedConnection);
+            Assert.AreEqual(2, createdConnections.Count);
+            Assert.AreSame(createdConnections.Last().Object, openedConnection);
+            rejectedConnection.Verify(value => value.Dispose(), Times.Once);
             Assert.AreEqual(1, target.OpenConnections);
             Assert.IsNotNull(GetShardingInfo(target));
+            Assert.IsNull(GetConnectionOpenTaskSource(target));
         }
 
         [Test]

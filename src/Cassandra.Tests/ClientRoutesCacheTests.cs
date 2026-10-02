@@ -296,6 +296,85 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public async Task Should_KeepFailedFullRetryAcrossInterveningTargetedRefresh()
+        {
+            var hostId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+            var targetedStarted = NewSignal();
+            var releaseTargeted = NewSignal();
+            var retryDelayStarted = NewSignal();
+            var releaseRetryDelay = NewSignal();
+            var retryStarted = NewSignal();
+            var queries = new ConcurrentQueue<string>();
+            var queryCount = 0;
+            var provider = CreateProvider(async (query, _) =>
+            {
+                queries.Enqueue(query);
+                switch (Interlocked.Increment(ref queryCount))
+                {
+                    case 1:
+                        return Rows(Route(hostId, "10.0.0.1", 9042, 9142, ConnectionA));
+                    case 2:
+                        throw new InvalidOperationException("full refresh failed");
+                    case 3:
+                        targetedStarted.TrySetResult(true);
+                        await releaseTargeted.Task.ConfigureAwait(false);
+                        return Rows(Route(hostId, "10.0.0.2", 9043, 9143, ConnectionA));
+                    case 4:
+                        retryStarted.TrySetResult(true);
+                        return Rows(Route(hostId, "10.0.0.3", 9044, 9144, ConnectionA));
+                    default:
+                        throw new InvalidOperationException("Unexpected client-routes query.");
+                }
+            });
+            var cache = CreateCache(
+                provider.Object,
+                failedRefreshRetryDelay: TimeSpan.FromSeconds(1),
+                failedRefreshRetryDelayFactory: (_, __) =>
+                {
+                    retryDelayStarted.TrySetResult(true);
+                    return releaseRetryDelay.Task;
+                });
+
+            try
+            {
+                await cache.FullRefreshBarrierAsync().ConfigureAwait(false);
+                await cache.FullRefreshBarrierAsync().ConfigureAwait(false);
+                await retryDelayStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                var targetedRefresh = cache.RefreshAsync(Change((ConnectionA, hostId)));
+                await targetedStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                // Its work item has now been taken from the pending queue and must not have
+                // absorbed the failed full scope.
+                releaseTargeted.TrySetResult(true);
+                await targetedRefresh.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                AssertEndpoint(cache.Routes[hostId], ConnectionA, "10.0.0.2", 9043);
+
+                releaseRetryDelay.TrySetResult(true);
+                await retryStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                await TestHelper.WaitUntilAsync(
+                        () => cache.Routes[hostId][0].Address == "10.0.0.3",
+                        20,
+                        250)
+                    .ConfigureAwait(false);
+
+                var queryArray = queries.ToArray();
+                Assert.That(queryArray, Has.Length.EqualTo(4));
+                Assert.That(queryArray[2], Does.Contain("host_id IN (" + hostId + ")"));
+                Assert.That(queryArray[2], Does.Not.Contain("ALLOW FILTERING"));
+                Assert.That(queryArray[3], Does.Contain("ALLOW FILTERING"));
+                Assert.That(queryArray[3], Does.Not.Contain("host_id IN"));
+                AssertEndpoint(cache.Routes[hostId], ConnectionA, "10.0.0.3", 9044);
+            }
+            finally
+            {
+                releaseTargeted.TrySetResult(true);
+                releaseRetryDelay.TrySetResult(true);
+                cache.Shutdown();
+            }
+        }
+
+        [Test]
         public async Task Should_NotRetryFailedRefreshAfterShutdown()
         {
             var queryCount = 0;
@@ -2306,7 +2385,8 @@ namespace Cassandra.Tests
             IReadOnlyDictionary<string, string> addressOverrides = null,
             Logger logger = null,
             bool retryQueries = true,
-            TimeSpan? failedRefreshRetryDelay = null)
+            TimeSpan? failedRefreshRetryDelay = null,
+            Func<TimeSpan, CancellationToken, Task> failedRefreshRetryDelayFactory = null)
         {
             // Background retries are disabled unless a test opts in, so query sequences stay deterministic.
             return new ClientRoutesCache(
@@ -2316,7 +2396,8 @@ namespace Cassandra.Tests
                 useTls,
                 logger,
                 retryQueries,
-                failedRefreshRetryDelay ?? Timeout.InfiniteTimeSpan);
+                failedRefreshRetryDelay ?? Timeout.InfiniteTimeSpan,
+                failedRefreshRetryDelayFactory);
         }
 
         private static Mock<IMetadataQueryProvider> CreateProvider(

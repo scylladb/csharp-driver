@@ -18,6 +18,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using System.Threading;
 using System.Threading.Tasks;
 
 using Cassandra.Connections;
@@ -473,11 +474,13 @@ namespace Cassandra.Tests.Connections
                 Route(host.HostId, "198.51.100.81", 9081, 9181, "route-a")).ConfigureAwait(false);
             runtime.BeginLifecyclePass();
             var fallback = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            var loggerHandler = new TestHelper.TestLoggerHandler();
             var target = new ClientRoutesEndPointResolver(
                 runtime,
                 Mock.Of<IDnsResolver>(),
                 fallback.Object,
-                TimeSpan.FromMilliseconds(50));
+                TimeSpan.FromMilliseconds(50),
+                new Logger(loggerHandler));
 
             var resolution = target.GetConnectionEndPointsAsync(host, false);
             await resolution.WaitToCompleteAsync(5000).ConfigureAwait(false);
@@ -487,6 +490,8 @@ namespace Cassandra.Tests.Connections
             Assert.AreEqual(
                 new IPEndPoint(IPAddress.Parse("198.51.100.81"), 9081),
                 candidates.Single().SocketIpEndPoint);
+            Assert.AreEqual(1, Interlocked.Read(ref loggerHandler.VerboseCount));
+            Assert.AreEqual(0, Interlocked.Read(ref loggerHandler.InfoCount));
             fallback.VerifyNoOtherCalls();
         }
 

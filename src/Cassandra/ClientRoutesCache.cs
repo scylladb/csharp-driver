@@ -38,6 +38,7 @@ namespace Cassandra
         private const int CarryOversBeforeEscalation = 3;
         private const int MaxFailedRefreshRetryBackoffExponent = 6;
         private static readonly TimeSpan DefaultFailedRefreshRetryDelay = TimeSpan.FromSeconds(1);
+        private static readonly Logger DefaultLogger = new Logger(typeof(ClientRoutesCache));
 
         private readonly IMetadataQueryProvider _queryProvider;
         private readonly Logger _logger;
@@ -47,6 +48,7 @@ namespace Cassandra
         private readonly object _refreshLock = new object();
         private readonly List<FullRefreshWaiter> _fullRefreshWaiters = new List<FullRefreshWaiter>();
         private readonly TimeSpan _failedRefreshRetryDelay;
+        private readonly Func<TimeSpan, CancellationToken, Task> _failedRefreshRetryDelayFactory;
         private readonly CancellationTokenSource _shutdownCancellation = new CancellationTokenSource();
 
         private RoutesSnapshot _snapshot = RoutesSnapshot.Empty;
@@ -54,7 +56,7 @@ namespace Cassandra
             ImmutableDictionary<ClientRouteKey, int>.Empty;
         private TaskCompletionSource<bool> _inFlightRefresh;
         private ClientRoutesRefreshWorkItem _pendingRefresh;
-        private ClientRoutesRefreshRetryState _failedRefreshRetry;
+        private ClientRoutesRefreshScope _failedRefreshRetry;
         private bool _shutdown;
         private long _requestedFullRefreshGeneration;
         private long _completedFullRefreshGeneration;
@@ -70,14 +72,16 @@ namespace Cassandra
             bool useTls,
             Logger logger = null,
             bool retryQueries = true,
-            TimeSpan? failedRefreshRetryDelay = null)
+            TimeSpan? failedRefreshRetryDelay = null,
+            Func<TimeSpan, CancellationToken, Task> failedRefreshRetryDelayFactory = null)
             : this(
                 queryProvider,
                 ClientRoutesSelection.Create(connectionIds, addressOverrides),
                 useTls,
                 logger,
                 retryQueries,
-                failedRefreshRetryDelay)
+                failedRefreshRetryDelay,
+                failedRefreshRetryDelayFactory)
         {
         }
 
@@ -87,14 +91,16 @@ namespace Cassandra
             bool useTls,
             Logger logger = null,
             bool retryQueries = true,
-            TimeSpan? failedRefreshRetryDelay = null)
+            TimeSpan? failedRefreshRetryDelay = null,
+            Func<TimeSpan, CancellationToken, Task> failedRefreshRetryDelayFactory = null)
         {
             _queryProvider = queryProvider ?? throw new ArgumentNullException(nameof(queryProvider));
-            _logger = logger ?? new Logger(typeof(ClientRoutesCache));
+            _logger = logger ?? ClientRoutesCache.DefaultLogger;
             _selection = selection ?? throw new ArgumentNullException(nameof(selection));
             _useTls = useTls;
             _retryQueries = retryQueries;
             _failedRefreshRetryDelay = failedRefreshRetryDelay ?? DefaultFailedRefreshRetryDelay;
+            _failedRefreshRetryDelayFactory = failedRefreshRetryDelayFactory ?? Task.Delay;
             if (_failedRefreshRetryDelay != Timeout.InfiniteTimeSpan && _failedRefreshRetryDelay <= TimeSpan.Zero)
             {
                 throw new ArgumentOutOfRangeException(
@@ -206,42 +212,29 @@ namespace Cassandra
         private long QueueFullRefresh()
         {
             var generation = ++_requestedFullRefreshGeneration;
-            _pendingRefresh = new FullRefreshWorkItem(generation);
+            QueueRefresh(ClientRoutesRefreshWorkItem.CreateFull(generation));
             return generation;
         }
 
         private void QueueTargetedRefresh(IEnumerable<Guid> hostIds)
         {
-            if (_pendingRefresh is FullRefreshWorkItem)
-            {
-                return;
-            }
+            QueueRefresh(ClientRoutesRefreshWorkItem.CreateTargeted(hostIds));
+        }
 
-            var pendingTargetedRefresh = _pendingRefresh as TargetedRefreshWorkItem;
-            _pendingRefresh = pendingTargetedRefresh == null
-                ? new TargetedRefreshWorkItem(hostIds)
-                : pendingTargetedRefresh.Merge(hostIds);
+        private void QueueRefresh(ClientRoutesRefreshWorkItem requestedRefresh)
+        {
+            _pendingRefresh = requestedRefresh.MergePending(_pendingRefresh);
         }
 
         private ClientRoutesRefreshWorkItem TakePendingRefresh()
         {
             var workItem = _pendingRefresh;
             _pendingRefresh = null;
-            if (workItem is FullRefreshWorkItem)
+            if (workItem == null)
             {
-                // A full pass covers every targeted retry and supersedes an earlier failed full pass.
-                _failedRefreshRetry = null;
-                return workItem;
+                return null;
             }
-
-            var targetedWorkItem = workItem as TargetedRefreshWorkItem;
-            var targetedRetry = _failedRefreshRetry as TargetedRefreshRetryState;
-            if (targetedWorkItem != null && targetedRetry != null)
-            {
-                _failedRefreshRetry = null;
-                return targetedWorkItem.Merge(targetedRetry.HostIds);
-            }
-            return workItem;
+            return workItem.AbsorbRetry(_failedRefreshRetry, out _failedRefreshRetry);
         }
 
         private Task StartDrainIfNeeded()
@@ -317,12 +310,11 @@ namespace Cassandra
                     _consecutiveFailedRefreshes = 0;
                 }
 
-                var fullRefresh = workItem as FullRefreshWorkItem;
-                if (fullRefresh != null)
+                if (refreshResult.FullRefreshGeneration.HasValue)
                 {
                     _completedFullRefreshGeneration = Math.Max(
                         _completedFullRefreshGeneration,
-                        fullRefresh.Generation);
+                        refreshResult.FullRefreshGeneration.Value);
                     if (refreshResult.Outcome == RefreshOutcome.Applied)
                     {
                         _hasSuccessfulFullRefresh = true;
@@ -369,37 +361,12 @@ namespace Cassandra
 
         private void RecordFailedRefresh(ClientRoutesRefreshWorkItem workItem)
         {
-            if (workItem is FullRefreshWorkItem)
-            {
-                _failedRefreshRetry = FullRefreshRetryState.Instance;
-                return;
-            }
-
-            // A failed full refresh already covers every targeted failure and must dominate it.
-            if (!(_failedRefreshRetry is FullRefreshRetryState))
-            {
-                _failedRefreshRetry = new TargetedRefreshRetryState(
-                    ((TargetedRefreshWorkItem)workItem).HostIds);
-            }
+            _failedRefreshRetry = workItem.Scope.MergeRetry(_failedRefreshRetry);
         }
 
         private void LogRecoveredQueryFailure(ClientRoutesRefreshWorkItem workItem, Exception exception)
         {
-            var targetedRefresh = workItem as TargetedRefreshWorkItem;
-            if (targetedRefresh == null)
-            {
-                _logger.Warning(
-                    "Could not refresh client routes. The previous routes will be retained and the query " +
-                    "will be retried. Exception: {0}",
-                    exception);
-                return;
-            }
-
-            _logger.Warning(
-                "Could not refresh client routes for host(s) {0}. The previous routes will be retained " +
-                "and these hosts will be re-queried by the next route refresh or retry. Exception: {1}",
-                string.Join(", ", targetedRefresh.HostIds.OrderBy(id => id).Select(id => id.ToString("D"))),
-                exception);
+            _logger.Warning(workItem.Scope.FormatFailure(exception));
         }
 
         private void ScheduleFailedRefreshRetry()
@@ -417,7 +384,7 @@ namespace Cassandra
                 "Retrying the failed client routes refresh in {0}ms ({1} consecutive failure(s)).",
                 delay.TotalMilliseconds,
                 _consecutiveFailedRefreshes);
-            Task.Delay(delay, _shutdownCancellation.Token)
+            _failedRefreshRetryDelayFactory(delay, _shutdownCancellation.Token)
                 .ContinueWith(
                     _ => RetryFailedRefresh(),
                     CancellationToken.None,
@@ -431,28 +398,15 @@ namespace Cassandra
             lock (_refreshLock)
             {
                 _retryScheduled = false;
-                if (_shutdown)
+                if (_shutdown || _failedRefreshRetry == null)
                 {
                     return;
                 }
 
-                if (_failedRefreshRetry is FullRefreshRetryState)
-                {
-                    _failedRefreshRetry = null;
-                    if (!(_pendingRefresh is FullRefreshWorkItem))
-                    {
-                        QueueFullRefresh();
-                    }
-                }
-                else if (_failedRefreshRetry is TargetedRefreshRetryState targetedRetry &&
-                         !(_pendingRefresh is FullRefreshWorkItem))
-                {
-                    QueueTargetedRefresh(targetedRetry.HostIds);
-                }
-                else
-                {
-                    return;
-                }
+                _pendingRefresh = _failedRefreshRetry.RequeueRetry(
+                    _pendingRefresh,
+                    () => ++_requestedFullRefreshGeneration);
+                _failedRefreshRetry = null;
 
                 // Nobody awaits a background retry, so observe any fatal exception that faults it.
                 StartDrainIfNeeded().Forget();
@@ -510,20 +464,26 @@ namespace Cassandra
             }
             catch (Exception ex) when (!Utils.IsFatalException(ex))
             {
-                return new RefreshResult(RefreshOutcome.QueryFailed, ex);
+                return new RefreshResult(
+                    RefreshOutcome.QueryFailed,
+                    workItem.FullRefreshGeneration,
+                    ex);
             }
 
-            var fullRefresh = workItem as FullRefreshWorkItem;
-            if (fullRefresh != null)
+            if (workItem.FullRefreshGeneration.HasValue)
             {
-                return new RefreshResult(ApplyFullRefresh(parsedRoutes, fullRefresh));
+                return new RefreshResult(
+                    ApplyFullRefresh(parsedRoutes, workItem),
+                    workItem.FullRefreshGeneration);
             }
 
-            ApplyTargetedRefresh(parsedRoutes, (TargetedRefreshWorkItem)workItem);
-            return new RefreshResult(RefreshOutcome.Applied);
+            ApplyTargetedRefresh(parsedRoutes, workItem);
+            return new RefreshResult(RefreshOutcome.Applied, null);
         }
 
-        private RefreshOutcome ApplyFullRefresh(ParsedRoutes parsedRoutes, FullRefreshWorkItem workItem)
+        private RefreshOutcome ApplyFullRefresh(
+            ParsedRoutes parsedRoutes,
+            ClientRoutesRefreshWorkItem workItem)
         {
             var currentRoutes = Volatile.Read(ref _snapshot).ByKey;
             if (parsedRoutes.RowCount == 0 && currentRoutes.Count > 0)
@@ -560,11 +520,13 @@ namespace Cassandra
             return RefreshOutcome.Applied;
         }
 
-        private void ApplyTargetedRefresh(ParsedRoutes parsedRoutes, TargetedRefreshWorkItem workItem)
+        private void ApplyTargetedRefresh(
+            ParsedRoutes parsedRoutes,
+            ClientRoutesRefreshWorkItem workItem)
         {
             var currentRoutes = Volatile.Read(ref _snapshot).ByKey;
             var updatedRoutes = currentRoutes.ToBuilder();
-            foreach (var routeKey in currentRoutes.Keys.Where(key => workItem.IncludesHost(key.HostId)))
+            foreach (var routeKey in currentRoutes.Keys.Where(key => workItem.Scope.IncludesHost(key.HostId)))
             {
                 updatedRoutes.Remove(routeKey);
             }
@@ -587,7 +549,7 @@ namespace Cassandra
             foreach (var route in currentRoutes)
             {
                 var retainWholeScope = parsedRoutes.HasUnattributedMalformedRows &&
-                                       workItem.IncludesHost(route.Key.HostId);
+                                       workItem.Scope.IncludesHost(route.Key.HostId);
                 if ((retainWholeScope ||
                      parsedRoutes.UnsafeHostIds.Contains(route.Key.HostId) ||
                      parsedRoutes.UnsafeRouteKeys.Contains(route.Key)) &&
@@ -617,7 +579,7 @@ namespace Cassandra
                     continue;
                 }
 
-                if (!workItem.IncludesHost(routeKey.HostId))
+                if (!workItem.Scope.IncludesHost(routeKey.HostId))
                 {
                     if (previousCounts.TryGetValue(routeKey, out var previousCount))
                     {
@@ -675,7 +637,7 @@ namespace Cassandra
                     continue;
                 }
 
-                if (!workItem.IncludesHost(hostId))
+                if (!workItem.Scope.IncludesHost(hostId))
                 {
                     continue;
                 }
@@ -759,7 +721,7 @@ namespace Cassandra
             }
 
             var cachedRoutes = Volatile.Read(ref _snapshot).ByKey;
-            var cachedRouteCount = cachedRoutes.Keys.Count(key => workItem.IncludesHost(key.HostId));
+            var cachedRouteCount = cachedRoutes.Keys.Count(key => workItem.Scope.IncludesHost(key.HostId));
             if (parsedRoutes.ReadableHostIds.Count == 0)
             {
                 if (cachedRouteCount == 0)
@@ -822,20 +784,7 @@ namespace Cassandra
             var connectionIds = string.Join(", ", _selection.ConnectionIds.Select(id => $"'{EscapeCqlString(id)}'"));
             var query = $"SELECT {SelectColumns} FROM {TableName} " +
                         $"WHERE connection_id IN ({connectionIds})";
-            var targetedRefresh = workItem as TargetedRefreshWorkItem;
-            if (targetedRefresh != null)
-            {
-                query += " AND host_id IN (" +
-                         string.Join(", ", targetedRefresh.HostIds
-                                                           .OrderBy(id => id)
-                                                           .Select(id => id.ToString("D"))) + ")";
-            }
-            else
-            {
-                // Match the Java driver and the server's full client-routes query convention.
-                query += " ALLOW FILTERING";
-            }
-            return query;
+            return workItem.Scope.AppendQueryFilter(query);
         }
 
         private static string EscapeCqlString(string value)
@@ -914,10 +863,10 @@ namespace Cassandra
                 return completions;
             }
 
-            var pendingFullRefresh = _pendingRefresh as FullRefreshWorkItem;
-            var confirmationGeneration = pendingFullRefresh == null
+            var pendingFullRefreshGeneration = _pendingRefresh?.FullRefreshGeneration;
+            var confirmationGeneration = !pendingFullRefreshGeneration.HasValue
                 ? QueueFullRefresh()
-                : pendingFullRefresh.Generation;
+                : pendingFullRefreshGeneration.Value;
 
             foreach (var waiter in confirmationWaiters)
             {
@@ -988,13 +937,19 @@ namespace Cassandra
 
         private sealed class RefreshResult
         {
-            public RefreshResult(RefreshOutcome outcome, Exception exception = null)
+            public RefreshResult(
+                RefreshOutcome outcome,
+                long? fullRefreshGeneration,
+                Exception exception = null)
             {
                 Outcome = outcome;
+                FullRefreshGeneration = fullRefreshGeneration;
                 Exception = exception;
             }
 
             public RefreshOutcome Outcome { get; }
+
+            public long? FullRefreshGeneration { get; }
 
             public Exception Exception { get; }
         }

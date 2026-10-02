@@ -1141,20 +1141,7 @@ namespace Cassandra.Connections
                     c.Closing -= OnConnectionClosing;
                     _connections.Remove(c);
                 }
-                try
-                {
-                    if (!c.IsDisposed)
-                    {
-                        c.Dispose();
-                    }
-                }
-                catch (Exception disposeException)
-                {
-                    HostConnectionPool.Logger.Warning(
-                        "Could not dispose connection to {0} after shard-state publication failed: {1}",
-                        _host.Address,
-                        disposeException);
-                }
+                TryDisposeRejectedConnection(c, "shard-state publication failed");
                 return await FinishOpen(openOperation, true, ex).ConfigureAwait(false);
             }
 
@@ -1165,20 +1152,7 @@ namespace Cassandra.Connections
                     _host.Address,
                     GetHashCode());
                 c.Closing -= OnConnectionClosing;
-                try
-                {
-                    if (!c.IsDisposed)
-                    {
-                        c.Dispose();
-                    }
-                }
-                catch (Exception disposeException)
-                {
-                    HostConnectionPool.Logger.Warning(
-                        "Could not dispose connection to {0} after post-publication validation failed: {1}",
-                        _host.Address,
-                        disposeException);
-                }
+                TryDisposeRejectedConnection(c, "post-publication validation failed");
                 return await FinishOpen(
                         openOperation,
                         !IsClosing,
@@ -1186,6 +1160,25 @@ namespace Cassandra.Connections
                     .ConfigureAwait(false);
             }
             return await FinishOpen(openOperation, true, null, c).ConfigureAwait(false);
+        }
+
+        private void TryDisposeRejectedConnection(IConnection connection, string failureContext)
+        {
+            try
+            {
+                if (!connection.IsDisposed)
+                {
+                    connection.Dispose();
+                }
+            }
+            catch (Exception disposeException)
+            {
+                HostConnectionPool.Logger.Warning(
+                    "Could not dispose connection to {0} after {1}: {2}",
+                    _host.Address,
+                    failureContext,
+                    disposeException);
+            }
         }
 
         private static void ObserveConnectionOpenOperation(

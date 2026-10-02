@@ -30,6 +30,7 @@ namespace Cassandra.Connections
     /// </summary>
     internal sealed class ClientRoutesEndPointResolver : IEndPointResolver, IEndPointResolutionPlanProvider
     {
+        private static readonly Logger DefaultLogger = new Logger(typeof(ClientRoutesEndPointResolver));
         private readonly ClientRoutesRuntime _runtime;
         private readonly IDnsResolver _dnsResolver;
         private readonly IEndPointResolver _fallbackResolver;
@@ -57,7 +58,7 @@ namespace Cassandra.Connections
             _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
             _dnsResolver = dnsResolver ?? throw new ArgumentNullException(nameof(dnsResolver));
             _fallbackResolver = fallbackResolver ?? throw new ArgumentNullException(nameof(fallbackResolver));
-            _logger = logger ?? new Logger(typeof(ClientRoutesEndPointResolver));
+            _logger = logger ?? ClientRoutesEndPointResolver.DefaultLogger;
             _lifecycleWaitTimeout = lifecycleWaitTimeout ?? Timeout.InfiniteTimeSpan;
             if (_lifecycleWaitTimeout != Timeout.InfiniteTimeSpan && _lifecycleWaitTimeout <= TimeSpan.Zero)
             {
@@ -185,7 +186,7 @@ namespace Cassandra.Connections
                     $"has not loaded system.client_routes within {_lifecycleWaitTimeout.TotalMilliseconds}ms.");
             }
 
-            _logger.Info(
+            _logger.Verbose(
                 "Client routes were not reconfirmed within {0}ms while the control connection reconnects. " +
                 "Using the last loaded routes for host {1}.",
                 _lifecycleWaitTimeout.TotalMilliseconds,

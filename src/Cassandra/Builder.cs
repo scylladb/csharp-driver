@@ -822,6 +822,10 @@ namespace Cassandra
         /// Configures Host-ID-based connection routing through entries discovered in
         /// <c>system.client_routes</c>.
         /// </summary>
+        /// <remarks>
+        /// When this configuration is omitted, client routes are disabled and normal endpoint resolution,
+        /// including address translation, remains active.
+        /// </remarks>
         /// <param name="config">The client-routes configuration.</param>
         /// <returns>This builder.</returns>
         /// <exception cref="ArgumentNullException"><paramref name="config"/> is null.</exception>

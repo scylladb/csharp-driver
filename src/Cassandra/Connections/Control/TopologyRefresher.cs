@@ -228,7 +228,7 @@ namespace Cassandra.Connections.Control
                     incomingHostId.Value != Guid.Empty &&
                     incomingHostId.Value != host.HostId)
                 {
-                    ControlConnection.Logger.Info(
+                    ControlConnection.Logger.Verbose(
                         "Replacing host {0}: its Host ID changed from {1} to {2}.",
                         address,
                         host.HostId,
