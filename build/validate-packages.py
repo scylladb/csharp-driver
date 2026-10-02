@@ -107,6 +107,7 @@ def run(
     *,
     cwd: Path = REPOSITORY_ROOT,
     capture_output: bool = False,
+    merge_stderr: bool = False,
     check: bool = True,
     environment: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
@@ -120,7 +121,7 @@ def run(
         check=False,
         env=process_environment,
         stdout=subprocess.PIPE if capture_output else None,
-        stderr=subprocess.STDOUT if capture_output else None,
+        stderr=subprocess.STDOUT if capture_output and merge_stderr else None,
         text=True,
     )
     if capture_output and result.stdout:
@@ -645,6 +646,7 @@ def run_api_compat(
                 "High",
             ],
             capture_output=True,
+            merge_stderr=True,
             check=False,
             # ApiCompat reports unresolved references as localized warnings and
             # still returns zero. Keep the diagnostic below stable on every OS.
@@ -762,6 +764,7 @@ def validate_incompatible_consumers(
                 str(net9_directory / "packages"),
             ],
             capture_output=True,
+            merge_stderr=True,
             check=False,
         )
         require(

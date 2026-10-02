@@ -33,6 +33,28 @@ class ValidatePackagesTests(unittest.TestCase):
         self.assertEqual("preserved", environment["VALIDATOR_PARENT"])
         self.assertEqual("applied", environment["VALIDATOR_OVERRIDE"])
 
+    def test_run_keeps_stderr_separate_from_captured_stdout_by_default(self):
+        completed = subprocess.CompletedProcess(["command"], 0, stdout="output")
+        with mock.patch.object(
+            validate_packages.subprocess, "run", return_value=completed
+        ) as subprocess_run:
+            validate_packages.run(["command"], capture_output=True)
+
+        self.assertEqual(subprocess.PIPE, subprocess_run.call_args.kwargs["stdout"])
+        self.assertIsNone(subprocess_run.call_args.kwargs["stderr"])
+
+    def test_run_can_merge_stderr_into_captured_stdout(self):
+        completed = subprocess.CompletedProcess(["command"], 0, stdout="output")
+        with mock.patch.object(
+            validate_packages.subprocess, "run", return_value=completed
+        ) as subprocess_run:
+            validate_packages.run(
+                ["command"], capture_output=True, merge_stderr=True
+            )
+
+        self.assertEqual(subprocess.PIPE, subprocess_run.call_args.kwargs["stdout"])
+        self.assertEqual(subprocess.STDOUT, subprocess_run.call_args.kwargs["stderr"])
+
     def test_reference_pack_comes_from_msbuild_resolution(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             packs = Path(temporary_directory) / "packs/Microsoft.NETCore.App.Ref"
@@ -105,6 +127,7 @@ class ValidatePackagesTests(unittest.TestCase):
                     {"DOTNET_SYSTEM_GLOBALIZATION_INVARIANT": "1"},
                     call.kwargs["environment"],
                 )
+                self.assertTrue(call.kwargs["merge_stderr"])
 
     def test_api_compat_rejects_unresolved_references_with_zero_exit(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -423,6 +446,8 @@ class ValidatePackagesTests(unittest.TestCase):
                 )
 
             self.assertEqual(len(validate_packages.PACKAGE_CONTRACTS), run.call_count)
+            for call in run.call_args_list:
+                self.assertTrue(call.kwargs["merge_stderr"])
             for contract in validate_packages.PACKAGE_CONTRACTS:
                 project = (
                     root
