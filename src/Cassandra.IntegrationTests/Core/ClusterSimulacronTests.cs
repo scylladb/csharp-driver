@@ -35,7 +35,7 @@ namespace Cassandra.IntegrationTests.Core
 {
     public class ClusterSimulacronTests : SimulacronTest
     {
-        public ClusterSimulacronTests() : base(false, new SimulacronOptions { Nodes = "3" }, false)
+        public ClusterSimulacronTests() : base(new SimulacronOptions { Nodes = "3" }, false)
         {
         }
 

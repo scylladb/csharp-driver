@@ -68,7 +68,7 @@ namespace Cassandra.IntegrationTests.Core
         /// <summary>
         /// Use 2 nodes
         /// </summary>
-        public SpeculativeExecutionShortTests() : base(false, new SimulacronOptions { Nodes = "2" }, false)
+        public SpeculativeExecutionShortTests() : base(new SimulacronOptions { Nodes = "2" }, false)
         {
         }
 
@@ -81,13 +81,14 @@ namespace Cassandra.IntegrationTests.Core
             _addressNode2 = IPAddress.Parse(address);
         }
 
-        public override void OneTimeTearDown()
+        public override void TearDown()
         {
             foreach (var c in _clusters)
             {
                 c.Dispose();
             }
-            base.OneTimeTearDown();
+            _clusters.Clear();
+            base.TearDown();
         }
 
         [Test]
