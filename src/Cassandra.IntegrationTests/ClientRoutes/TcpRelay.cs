@@ -30,13 +30,11 @@ namespace Cassandra.IntegrationTests.ClientRoutes
 {
     /// <summary>
     /// Controls what is placed in front of the upstream byte stream.
-    /// TLS passthrough intentionally performs the same byte relay as plaintext, preserving the
-    /// driver's TLS handshake and SNI. ProxyProtocolV2 prepends the accepted client's endpoint.
+    /// ProxyProtocolV2 prepends the accepted client's endpoint.
     /// </summary>
     internal enum TcpRelayMode
     {
         Plaintext,
-        TlsPassthrough,
         TlsTerminate,
         ProxyProtocolV2
     }

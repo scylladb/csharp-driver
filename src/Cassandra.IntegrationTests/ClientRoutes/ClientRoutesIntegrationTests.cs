@@ -16,6 +16,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Net;
 using System.Net.Security;
@@ -65,8 +66,10 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 {
                     CassandraYaml = new[]
                     {
-                        $"native_transport_port_proxy_protocol: {ProxyProtocolPort}",
-                        $"native_shard_aware_transport_port_proxy_protocol: {ShardAwareProxyProtocolPort}"
+                        "native_transport_port_proxy_protocol: " +
+                        ProxyProtocolPort.ToString(CultureInfo.InvariantCulture),
+                        "native_shard_aware_transport_port_proxy_protocol: " +
+                        ShardAwareProxyProtocolPort.ToString(CultureInfo.InvariantCulture)
                     }
                 });
 
@@ -78,7 +81,9 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 var hosts = cluster.AllHosts().ToList();
                 Assert.AreEqual(3, hosts.Count, "The client-routes fixture requires all three CCM nodes.");
                 _nodes = hosts
-                    .Select(host => new ClientRoutesNode(host.Address.Address.ToString(), host.HostId))
+                    .Select(host => new ClientRoutesNode(
+                        ClientRoutesTestSupport.FormatAddress(host.Address.Address),
+                        host.HostId))
                     .OrderBy(node => node.Address, StringComparer.Ordinal)
                     .ToArray();
                 Assert.IsTrue(_nodes.All(node => node.HostId != Guid.Empty));
@@ -246,9 +251,10 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                         .UpsertAsync(CreateEntries(PrimaryConnectionId, _nodes, replacementRelays, "127.0.0.1"))
                         .ConfigureAwait(false);
 
-                    await WaitUntilAsync(
+                    await ClientRoutesTestSupport.WaitUntilAsync(
                             () => RoutesPointToRelays(cluster, replacementRelays),
                             TimeSpan.FromSeconds(15),
+                            TimeSpan.FromMilliseconds(100),
                             "The client-routes event was not reflected in the cluster cache.")
                         .ConfigureAwait(false);
 
@@ -303,9 +309,10 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                         // table. The driver cannot observe this update through an event.
                         discoveryRelay.DisableForwarding();
                         DisposeRelays(originalRelays);
-                        await WaitUntilAsync(
+                        await ClientRoutesTestSupport.WaitUntilAsync(
                                 () => discoveryRelay.OpenConnectionCount == 0,
                                 TimeSpan.FromSeconds(5),
+                                TimeSpan.FromMilliseconds(100),
                                 "The discovery relay retained a control connection while disabled.")
                             .ConfigureAwait(false);
 
@@ -362,9 +369,10 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                         "Disabling routed shard awareness should keep one core connection per host.");
                 }
 
-                await WaitUntilAsync(
+                await ClientRoutesTestSupport.WaitUntilAsync(
                         () => relays.Values.All(relay => relay.OpenConnectionCount == 0),
                         TimeSpan.FromSeconds(5),
+                        TimeSpan.FromMilliseconds(100),
                         "Connections from the shard-awareness-disabled cluster did not close.")
                     .ConfigureAwait(false);
                 foreach (var relay in relays.Values)
@@ -379,9 +387,10 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 using (var session = cluster.Connect())
                 {
                     AssertQueriesLandOnIntendedHosts(session, _nodes);
-                    await WaitUntilAsync(
+                    await ClientRoutesTestSupport.WaitUntilAsync(
                             () => relays.Values.All(ObservedBothShardSourcePortClasses),
                             TimeSpan.FromSeconds(30),
+                            TimeSpan.FromMilliseconds(100),
                             "Shard-aware routed pools did not open connections for both shards.")
                         .ConfigureAwait(false);
                 }
@@ -626,44 +635,12 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             return true;
         }
 
-        private static async Task WaitUntilAsync(
-            Func<bool> predicate,
-            TimeSpan timeout,
-            string failureMessage)
-        {
-            var deadline = DateTime.UtcNow + timeout;
-            do
-            {
-                if (predicate())
-                {
-                    return;
-                }
-                await Task.Delay(100).ConfigureAwait(false);
-            }
-            while (DateTime.UtcNow < deadline);
-
-            Assert.Fail(failureMessage);
-        }
-
         private static void DisposeRelays(IEnumerable<KeyValuePair<Guid, TcpRelay>> relays)
         {
             foreach (var relay in relays.Select(item => item.Value))
             {
                 relay.Dispose();
             }
-        }
-
-        private sealed class ClientRoutesNode
-        {
-            public ClientRoutesNode(string address, Guid hostId)
-            {
-                Address = address;
-                HostId = hostId;
-            }
-
-            public string Address { get; }
-
-            public Guid HostId { get; }
         }
     }
 }

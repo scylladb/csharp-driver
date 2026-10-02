@@ -73,7 +73,7 @@ namespace Cassandra.Tests.Connections
             Assert.AreEqual(1, resolved.Count);
             Assert.AreEqual(_proxyEndPoint, resolved[0].GetHostIpEndPointWithFallback());
             Assert.AreEqual(_proxyEndPoint, resolved[0].SocketIpEndPoint);
-            Assert.AreEqual($"{_proxyEndPoint} (host1)", resolved[0].EndpointFriendlyName);
+            Assert.AreEqual(FormatEndPointFriendlyName(_proxyEndPoint, "host1"), resolved[0].EndpointFriendlyName);
             Assert.AreEqual(_proxyEndPoint, resolved[0].GetHostIpEndPointWithFallback());
         }
 
@@ -88,7 +88,9 @@ namespace Cassandra.Tests.Connections
             Assert.AreEqual(1, resolved.Count);
             Assert.AreEqual(_proxyResolvedEndPoint, resolved[0].GetHostIpEndPointWithFallback());
             Assert.AreEqual(_proxyResolvedEndPoint, resolved[0].SocketIpEndPoint);
-            Assert.AreEqual($"{_proxyResolvedEndPoint} (host1)", resolved[0].EndpointFriendlyName);
+            Assert.AreEqual(
+                FormatEndPointFriendlyName(_proxyResolvedEndPoint, "host1"),
+                resolved[0].EndpointFriendlyName);
             Assert.AreEqual(_proxyResolvedEndPoint, resolved[0].GetHostIpEndPointWithFallback());
         }
 
@@ -294,8 +296,14 @@ namespace Cassandra.Tests.Connections
                 Assert.AreEqual(host.Address, endPoint.GetHostIpEndPointWithFallback());
             }
 
-            var resolvedFirst = resolvedCollection.Where(pt => pt.SocketIpEndPoint.Address.ToString() == "127.0.0.5").ToList();
-            var resolvedSecond = resolvedCollection.Where(pt => pt.SocketIpEndPoint.Address.ToString() == "127.0.0.6").ToList();
+            var firstProxyAddress = result.MultipleResolveResults[0];
+            var secondProxyAddress = result.MultipleResolveResults[1];
+            var resolvedFirst = resolvedCollection
+                .Where(pt => pt.SocketIpEndPoint.Address.Equals(firstProxyAddress))
+                .ToList();
+            var resolvedSecond = resolvedCollection
+                .Where(pt => pt.SocketIpEndPoint.Address.Equals(secondProxyAddress))
+                .ToList();
             Assert.AreEqual(2, resolvedFirst.Count);
             Assert.AreEqual(2, resolvedSecond.Count);
             await AssertResolved(resolvedFirst[0], "127.0.0.5").ConfigureAwait(false);
@@ -423,8 +431,10 @@ namespace Cassandra.Tests.Connections
             await Task.WhenAll(tasks).ConfigureAwait(false);
 
             var resolvedArray = resolvedCollection.ToArray();
-            var resolvedFirst = resolvedArray.Count(pt => pt.SocketIpEndPoint.Address.ToString() == "127.0.0.5");
-            var resolvedSecond = resolvedArray.Count(pt => pt.SocketIpEndPoint.Address.ToString() == "127.0.0.6");
+            var firstProxyAddress = result.MultipleResolveResults[0];
+            var secondProxyAddress = result.MultipleResolveResults[1];
+            var resolvedFirst = resolvedArray.Count(pt => pt.SocketIpEndPoint.Address.Equals(firstProxyAddress));
+            var resolvedSecond = resolvedArray.Count(pt => pt.SocketIpEndPoint.Address.Equals(secondProxyAddress));
 
             Assert.AreEqual(500, resolvedFirst);
             Assert.AreEqual(500, resolvedSecond);
@@ -453,8 +463,10 @@ namespace Cassandra.Tests.Connections
             await Task.WhenAll(tasks).ConfigureAwait(false);
 
             var resolvedArray = resolvedCollection.ToArray();
-            var resolvedFirst = resolvedArray.Count(pt => pt.SocketIpEndPoint.Address.ToString() == "127.0.0.5");
-            var resolvedSecond = resolvedArray.Count(pt => pt.SocketIpEndPoint.Address.ToString() == "127.0.0.6");
+            var firstProxyAddress = result.MultipleResolveResults[0];
+            var secondProxyAddress = result.MultipleResolveResults[1];
+            var resolvedFirst = resolvedArray.Count(pt => pt.SocketIpEndPoint.Address.Equals(firstProxyAddress));
+            var resolvedSecond = resolvedArray.Count(pt => pt.SocketIpEndPoint.Address.Equals(secondProxyAddress));
 
             Assert.AreNotEqual(resolvedFirst, resolvedSecond);
             Assert.AreEqual(160000, resolvedFirst + resolvedSecond);
@@ -512,6 +524,15 @@ namespace Cassandra.Tests.Connections
             var candidates = await resolver.GetConnectionEndPointsAsync(host, refreshCache).ConfigureAwait(false);
             Assert.AreEqual(1, candidates.Count);
             return candidates.Single();
+        }
+
+        /// <summary>
+        /// Formats the framework address-and-port representation followed by the SNI server name,
+        /// matching <see cref="SniConnectionEndPoint.EndpointFriendlyName"/>.
+        /// </summary>
+        private static string FormatEndPointFriendlyName(IPEndPoint endPoint, string serverName)
+        {
+            return $"{endPoint.ToString()} ({serverName})";
         }
 
         private Host CreateHost(string ipAddress, int port, Guid? nullableHostId = null)

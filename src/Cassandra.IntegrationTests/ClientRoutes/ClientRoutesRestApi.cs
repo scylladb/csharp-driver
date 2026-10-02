@@ -98,7 +98,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             }
 
             var keys = existingEntries
-                .Select(entry => new ClientRouteApiKey(entry.ConnectionId, entry.HostId))
+                .Select(entry => entry.Key)
                 .ToArray();
             await SendAsync(_nodeUris[0], HttpMethod.Delete, keys).ConfigureAwait(false);
             await WaitUntilAllNodesSeeAsync(new ClientRouteApiEntry[0]).ConfigureAwait(false);
@@ -195,7 +195,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 return false;
             }
 
-            var actualByKey = actualEntries.ToDictionary(entry => entry.Key, StringComparer.Ordinal);
+            var actualByKey = actualEntries.ToDictionary(entry => entry.Key);
             foreach (var expected in expectedEntries)
             {
                 ClientRouteApiEntry actual;
@@ -236,7 +236,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
         public int? TlsPort { get; set; }
 
         [JsonIgnore]
-        public string Key => ConnectionId + "\n" + HostId.ToString("D");
+        public ClientRouteApiKey Key => new ClientRouteApiKey(ConnectionId, HostId);
 
         public bool HasSameRoute(ClientRouteApiEntry other)
         {
@@ -249,7 +249,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
         }
     }
 
-    internal sealed class ClientRouteApiKey
+    internal sealed class ClientRouteApiKey : IEquatable<ClientRouteApiKey>
     {
         public ClientRouteApiKey(string connectionId, Guid hostId)
         {
@@ -262,5 +262,26 @@ namespace Cassandra.IntegrationTests.ClientRoutes
 
         [JsonProperty("host_id")]
         public Guid HostId { get; }
+
+        public bool Equals(ClientRouteApiKey other)
+        {
+            return other != null &&
+                   StringComparer.Ordinal.Equals(ConnectionId, other.ConnectionId) &&
+                   HostId == other.HostId;
+        }
+
+        public override bool Equals(object obj)
+        {
+            return Equals(obj as ClientRouteApiKey);
+        }
+
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                return ((ConnectionId == null ? 0 : StringComparer.Ordinal.GetHashCode(ConnectionId)) * 397) ^
+                       HostId.GetHashCode();
+            }
+        }
     }
 }

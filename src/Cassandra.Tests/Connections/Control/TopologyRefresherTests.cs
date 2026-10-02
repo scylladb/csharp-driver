@@ -376,6 +376,7 @@ namespace Cassandra.Tests.Connections.Control
         [Test]
         public async Task Should_UseBroadcastAddressWhenClientRoutesSystemLocalRpcIsIPv6BindAll()
         {
+            var ipv6Any = new IPAddress(new byte[16]);
             var broadcastAddress = IPAddress.Parse("2001:db8::9");
             var localRow = TestHelper.CreateRow(new Dictionary<string, object>
             {
@@ -385,7 +386,7 @@ namespace Cassandra.Tests.Connections.Control
                 { "tokens", null },
                 { "release_version", "2.2.1-SNAPSHOT" },
                 { "partitioner", "Murmur3Partitioner" },
-                { "rpc_address", IPAddress.IPv6Any },
+                { "rpc_address", ipv6Any },
                 { "broadcast_address", broadcastAddress },
                 { "listen_address", IPAddress.Parse("2001:db8::10") }
             });
@@ -407,7 +408,7 @@ namespace Cassandra.Tests.Connections.Control
                 _serializer).ConfigureAwait(false);
 
             Assert.NotNull(metadata.GetHost(new IPEndPoint(broadcastAddress, ProtocolOptions.DefaultPort)));
-            Assert.IsNull(metadata.GetHost(new IPEndPoint(IPAddress.IPv6Any, ProtocolOptions.DefaultPort)));
+            Assert.IsNull(metadata.GetHost(new IPEndPoint(ipv6Any, ProtocolOptions.DefaultPort)));
             Assert.IsNull(metadata.GetHost(new IPEndPoint(IPAddress.Parse("2001:db8::10"), ProtocolOptions.DefaultPort)));
             Assert.IsNull(metadata.GetHost(new IPEndPoint(IPAddress.Parse("127.0.0.100"), 29042)));
         }
@@ -415,12 +416,13 @@ namespace Cassandra.Tests.Connections.Control
         [Test]
         public async Task Should_UsePeerAddressWhenSystemPeersRpcIsIPv6BindAll()
         {
+            var ipv6Any = new IPAddress(new byte[16]);
             var peerAddress = IPAddress.Parse("2001:db8::12");
             var peerRows = TestHelper.CreateRows(new List<Dictionary<string, object>>
             {
                 new Dictionary<string, object>
                 {
-                    { "rpc_address", IPAddress.IPv6Any },
+                    { "rpc_address", ipv6Any },
                     { "peer", peerAddress },
                     { "data_center", "ut-dc" },
                     { "rack", "ut-rack" },
@@ -436,7 +438,7 @@ namespace Cassandra.Tests.Connections.Control
                 _serializer).ConfigureAwait(false);
 
             Assert.NotNull(_metadata.GetHost(new IPEndPoint(peerAddress, ProtocolOptions.DefaultPort)));
-            Assert.IsNull(_metadata.GetHost(new IPEndPoint(IPAddress.IPv6Any, ProtocolOptions.DefaultPort)));
+            Assert.IsNull(_metadata.GetHost(new IPEndPoint(ipv6Any, ProtocolOptions.DefaultPort)));
         }
 
         [Test]

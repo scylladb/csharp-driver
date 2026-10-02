@@ -45,7 +45,7 @@ namespace Cassandra.Tests.Connections
             Assert.AreEqual(endpoint, resolved.GetHostIpEndPointWithFallback());
             Assert.AreEqual(endpoint, resolved.SocketIpEndPoint);
             Assert.AreEqual(endpoint, resolved.GetHostIpEndPointWithFallback());
-            Assert.AreEqual(endpoint.ToString(), resolved.EndpointFriendlyName);
+            Assert.AreEqual(FormatEndPointFriendlyName(endpoint), resolved.EndpointFriendlyName);
             Assert.AreEqual("140.20.10.10", await resolved.GetServerNameAsync().ConfigureAwait(false));
         }
 
@@ -85,14 +85,32 @@ namespace Cassandra.Tests.Connections
             Assert.AreEqual(expected, resolved.SocketIpEndPoint);
             Assert.AreEqual(hostAddress.ScopeId, resolved.SocketIpEndPoint.Address.ScopeId);
             Assert.AreEqual(expected, resolved.GetHostIpEndPointWithFallback());
-            Assert.AreEqual(expected.ToString(), resolved.EndpointFriendlyName);
+            Assert.AreEqual(FormatEndPointFriendlyName(expected), resolved.EndpointFriendlyName);
         }
 
         private IEndPointResolver Create()
         {
             var protocolOptions = new ProtocolOptions(
-                EndPointResolverTests.Port, new SSLOptions().SetHostNameResolver(addr => addr.ToString()));
+                EndPointResolverTests.Port, new SSLOptions().SetHostNameResolver(FormatAddressAsServerName));
             return new EndPointResolver(new ServerNameResolver(protocolOptions));
+        }
+
+        /// <summary>
+        /// Formats the framework address-and-port representation used by
+        /// <see cref="IConnectionEndPoint.EndpointFriendlyName"/>.
+        /// </summary>
+        private static string FormatEndPointFriendlyName(IPEndPoint endPoint)
+        {
+            return endPoint.ToString();
+        }
+
+        /// <summary>
+        /// Formats an IP address using the framework's canonical textual representation at the
+        /// TLS server-name boundary.
+        /// </summary>
+        private static string FormatAddressAsServerName(IPAddress address)
+        {
+            return address.ToString();
         }
     }
 }

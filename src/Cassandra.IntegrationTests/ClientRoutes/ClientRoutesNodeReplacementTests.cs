@@ -16,6 +16,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -69,7 +70,9 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             {
                 originalNodes = discoveryCluster
                     .AllHosts()
-                    .Select(host => new ClientRoutesNode(host.Address.Address.ToString(), host.HostId))
+                    .Select(host => new ClientRoutesNode(
+                        ClientRoutesTestSupport.FormatAddress(host.Address.Address),
+                        host.HostId))
                     .OrderBy(node => node.Address, StringComparer.Ordinal)
                     .ToArray();
             }
@@ -118,20 +121,22 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                             .ConfigureAwait(false);
 
                         var replacementRoutePort = relays[replacedNode.HostId].ListenEndPoint.Port;
-                        await WaitUntilAsync(
+                        await ClientRoutesTestSupport.WaitUntilAsync(
                                 () => cluster.Configuration.ClientRoutesRuntime.TryGetRoutes(
                                           replacementHostId,
                                           out var routes) &&
                                       routes.Any(route => route.Port == replacementRoutePort),
                                 TimeSpan.FromSeconds(30),
+                                TimeSpan.FromMilliseconds(250),
                                 "The replacement Host ID was visible before its client route was refreshed.")
                             .ConfigureAwait(false);
 
                         relays[replacedNode.HostId].ResetObservations();
-                        await WaitUntilAsync(
+                        await ClientRoutesTestSupport.WaitUntilAsync(
                                 () => cluster.AllHosts().Any(host => host.HostId == replacementHostId) &&
                                       cluster.AllHosts().All(host => host.HostId != replacedNode.HostId),
                                 TimeSpan.FromSeconds(90),
+                                TimeSpan.FromMilliseconds(250),
                                 "The driver did not replace metadata for the same advertised endpoint.")
                             .ConfigureAwait(false);
 
@@ -165,27 +170,42 @@ namespace Cassandra.IntegrationTests.ClientRoutes
         private async Task RecreateNodeAtSameAddressAsync(int nodeId, string address, Guid replacedHostId)
         {
             _testCluster.StopForce(nodeId);
-            await WaitUntilAsync(
+            await ClientRoutesTestSupport.WaitUntilAsync(
                     () => IsNodeDownInNodetool(address),
                     TimeSpan.FromSeconds(90),
+                    TimeSpan.FromMilliseconds(250),
                     $"The surviving nodes did not mark {address} down before replacement.")
                 .ConfigureAwait(false);
             _testCluster.Remove(nodeId);
             _testCluster.SwitchToThisCluster();
 
             TestClusterManager.Executor.ExecuteCcm(
-                $"add node{nodeId} -i {address} -j {7000 + (100 * nodeId)} -b --scylla");
+                string.Format(
+                    CultureInfo.InvariantCulture,
+                    "add node{0} -i {1} -j {2} -b --scylla",
+                    nodeId,
+                    address,
+                    7000 + (100 * nodeId)));
             TestClusterManager.Executor.ExecuteCcm(
-                $"node{nodeId} updateconf \"replace_node_first_boot: {replacedHostId:D}\"");
+                string.Format(
+                    CultureInfo.InvariantCulture,
+                    "node{0} updateconf \"replace_node_first_boot: {1:D}\"",
+                    nodeId,
+                    replacedHostId));
             var output = TestClusterManager.Executor.ExecuteCcm(
-                $"node{nodeId} start --wait-for-binary-proto",
+                "node" + nodeId.ToString(CultureInfo.InvariantCulture) + " start --wait-for-binary-proto",
                 false);
             if (output.ExitCode != 0)
             {
                 var configDirectory = Environment.GetEnvironmentVariable("CCM_CONFIG_DIR");
                 var logPath = configDirectory == null
                     ? null
-                    : Path.Combine(configDirectory, _testCluster.Name, $"node{nodeId}", "logs", "system.log");
+                    : Path.Combine(
+                        configDirectory,
+                        _testCluster.Name,
+                        "node" + nodeId.ToString(CultureInfo.InvariantCulture),
+                        "logs",
+                        "system.log");
                 var logTail = logPath != null && File.Exists(logPath)
                     ? string.Join(Environment.NewLine, File.ReadLines(logPath).Reverse().Take(80).Reverse())
                     : "The replacement node log could not be found.";
@@ -220,7 +240,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                     {
                         var replacement = cluster.AllHosts().FirstOrDefault(
                             host => string.Equals(
-                                host.Address.Address.ToString(),
+                                ClientRoutesTestSupport.FormatAddress(host.Address.Address),
                                 address,
                                 StringComparison.Ordinal));
                         if (replacement != null &&
@@ -280,25 +300,6 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             Assert.AreEqual(expectedHostId, actualHostId);
         }
 
-        private static async Task WaitUntilAsync(
-            Func<bool> predicate,
-            TimeSpan timeout,
-            string failureMessage)
-        {
-            var deadline = DateTime.UtcNow + timeout;
-            do
-            {
-                if (predicate())
-                {
-                    return;
-                }
-                await Task.Delay(250).ConfigureAwait(false);
-            }
-            while (DateTime.UtcNow < deadline);
-
-            Assert.Fail(failureMessage);
-        }
-
         private static async Task AssertEventuallyAsync(Action assertion, TimeSpan timeout)
         {
             var deadline = DateTime.UtcNow + timeout;
@@ -319,19 +320,6 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             while (DateTime.UtcNow < deadline);
 
             throw new AssertionException("The replacement host never became queryable. " + lastException);
-        }
-
-        private sealed class ClientRoutesNode
-        {
-            public ClientRoutesNode(string address, Guid hostId)
-            {
-                Address = address;
-                HostId = hostId;
-            }
-
-            public string Address { get; }
-
-            public Guid HostId { get; }
         }
     }
 }
