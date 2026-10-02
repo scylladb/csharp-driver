@@ -30,6 +30,7 @@ namespace Cassandra.Tests.Connections
     public class EndPointResolverTests
     {
         private const int Port = 100;
+        private const string ServerName = "test-server-name";
 
         [Test]
         public async Task Should_BuildEndPointCorrectly_When_ResolvingHost()
@@ -46,7 +47,7 @@ namespace Cassandra.Tests.Connections
             Assert.AreEqual(endpoint, resolved.SocketIpEndPoint);
             Assert.AreEqual(endpoint, resolved.GetHostIpEndPointWithFallback());
             Assert.AreEqual(FormatEndPointFriendlyName(endpoint), resolved.EndpointFriendlyName);
-            Assert.AreEqual("140.20.10.10", await resolved.GetServerNameAsync().ConfigureAwait(false));
+            Assert.AreEqual(ServerName, await resolved.GetServerNameAsync().ConfigureAwait(false));
         }
 
         [Test]
@@ -91,7 +92,8 @@ namespace Cassandra.Tests.Connections
         private IEndPointResolver Create()
         {
             var protocolOptions = new ProtocolOptions(
-                EndPointResolverTests.Port, new SSLOptions().SetHostNameResolver(FormatAddressAsServerName));
+                EndPointResolverTests.Port,
+                new SSLOptions().SetHostNameResolver(_ => EndPointResolverTests.ServerName));
             return new EndPointResolver(new ServerNameResolver(protocolOptions));
         }
 
@@ -102,15 +104,6 @@ namespace Cassandra.Tests.Connections
         private static string FormatEndPointFriendlyName(IPEndPoint endPoint)
         {
             return endPoint.ToString();
-        }
-
-        /// <summary>
-        /// Formats an IP address using the framework's canonical textual representation at the
-        /// TLS server-name boundary.
-        /// </summary>
-        private static string FormatAddressAsServerName(IPAddress address)
-        {
-            return address.ToString();
         }
     }
 }

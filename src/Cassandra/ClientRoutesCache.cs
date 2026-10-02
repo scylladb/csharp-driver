@@ -47,6 +47,7 @@ namespace Cassandra
         private readonly bool _retryQueries;
         private readonly object _refreshLock = new object();
         private readonly List<FullRefreshWaiter> _fullRefreshWaiters = new List<FullRefreshWaiter>();
+        private readonly List<QueuedRefreshWaiter> _queuedRefreshWaiters = new List<QueuedRefreshWaiter>();
         private readonly TimeSpan _failedRefreshRetryDelay;
         private readonly Func<TimeSpan, CancellationToken, Task> _failedRefreshRetryDelayFactory;
         private readonly CancellationTokenSource _shutdownCancellation = new CancellationTokenSource();
@@ -56,8 +57,11 @@ namespace Cassandra
             ImmutableDictionary<ClientRouteKey, int>.Empty;
         private TaskCompletionSource<bool> _inFlightRefresh;
         private ClientRoutesRefreshWorkItem _pendingRefresh;
+        private long _pendingRefreshMaximumSequence;
         private ClientRoutesRefreshScope _failedRefreshRetry;
         private bool _shutdown;
+        private long _requestedRefreshSequence;
+        private long _completedRefreshSequence;
         private long _requestedFullRefreshGeneration;
         private long _completedFullRefreshGeneration;
         private int _consecutiveEmptyFullRefreshes;
@@ -114,6 +118,17 @@ namespace Cassandra
 
         internal ImmutableDictionary<ClientRouteKey, int> UnconfirmedRouteCounts =>
             Volatile.Read(ref _unconfirmedRouteCounts);
+
+        internal int PendingQueuedRefreshBarrierCount
+        {
+            get
+            {
+                lock (_refreshLock)
+                {
+                    return _queuedRefreshWaiters.Count;
+                }
+            }
+        }
 
         public bool TryGetRoutes(Guid hostId, out ImmutableArray<ClientRouteEndpoint> routes)
         {
@@ -184,6 +199,35 @@ namespace Cassandra
         }
 
         /// <summary>
+        /// Completes after every refresh request accepted before this call has received a nonfatal
+        /// query attempt. Requests accepted later do not extend this fixed-watermark barrier.
+        /// </summary>
+        /// <returns>
+        /// A task that completes successfully after applied, ignored-empty, and recoverably failed
+        /// attempts, or faults on a fatal refresh failure or shutdown.
+        /// </returns>
+        public Task QueuedRefreshBarrierAsync()
+        {
+            lock (_refreshLock)
+            {
+                if (_shutdown)
+                {
+                    return CreateShutdownTask();
+                }
+
+                var maximumSequence = _requestedRefreshSequence;
+                if (_completedRefreshSequence >= maximumSequence)
+                {
+                    return Task.CompletedTask;
+                }
+
+                var completion = CreateRefreshCompletionSource();
+                _queuedRefreshWaiters.Add(new QueuedRefreshWaiter(maximumSequence, completion));
+                return completion.Task;
+            }
+        }
+
+        /// <summary>
         /// Re-queries the hosts named by a client-routes change event, or every route when the event names
         /// no host. Completes like <see cref="RefreshAsync()"/>.
         /// </summary>
@@ -212,24 +256,32 @@ namespace Cassandra
         private long QueueFullRefresh()
         {
             var generation = ++_requestedFullRefreshGeneration;
-            QueueRefresh(ClientRoutesRefreshWorkItem.CreateFull(generation));
+            QueueRefresh(ClientRoutesRefreshWorkItem.CreateFull(generation), NextRefreshSequence());
             return generation;
         }
 
         private void QueueTargetedRefresh(IEnumerable<Guid> hostIds)
         {
-            QueueRefresh(ClientRoutesRefreshWorkItem.CreateTargeted(hostIds));
+            QueueRefresh(ClientRoutesRefreshWorkItem.CreateTargeted(hostIds), NextRefreshSequence());
         }
 
-        private void QueueRefresh(ClientRoutesRefreshWorkItem requestedRefresh)
+        private long NextRefreshSequence()
+        {
+            return ++_requestedRefreshSequence;
+        }
+
+        private void QueueRefresh(ClientRoutesRefreshWorkItem requestedRefresh, long refreshSequence)
         {
             _pendingRefresh = requestedRefresh.MergePending(_pendingRefresh);
+            _pendingRefreshMaximumSequence = Math.Max(_pendingRefreshMaximumSequence, refreshSequence);
         }
 
-        private ClientRoutesRefreshWorkItem TakePendingRefresh()
+        private ClientRoutesRefreshWorkItem TakePendingRefresh(out long maximumSequence)
         {
             var workItem = _pendingRefresh;
             _pendingRefresh = null;
+            maximumSequence = _pendingRefreshMaximumSequence;
+            _pendingRefreshMaximumSequence = 0;
             if (workItem == null)
             {
                 return null;
@@ -250,6 +302,7 @@ namespace Cassandra
         private async Task DrainRefreshesAsync(TaskCompletionSource<bool> completion)
         {
             ClientRoutesRefreshWorkItem workItem;
+            long maximumRefreshSequence;
             lock (_refreshLock)
             {
                 if (_shutdown)
@@ -261,7 +314,7 @@ namespace Cassandra
                     completion.TrySetException(CreateShutdownException());
                     return;
                 }
-                workItem = TakePendingRefresh();
+                workItem = TakePendingRefresh(out maximumRefreshSequence);
                 if (workItem == null)
                 {
                     if (ReferenceEquals(_inFlightRefresh, completion))
@@ -281,16 +334,23 @@ namespace Cassandra
             catch (Exception ex)
             {
                 List<TaskCompletionSource<bool>> fatalFailedBarriers;
+                List<TaskCompletionSource<bool>> fatalFailedQueuedRefreshBarriers;
                 lock (_refreshLock)
                 {
                     _pendingRefresh = null;
+                    _pendingRefreshMaximumSequence = 0;
                     if (ReferenceEquals(_inFlightRefresh, completion))
                     {
                         _inFlightRefresh = null;
                     }
                     fatalFailedBarriers = RemoveAllFullRefreshWaiters();
+                    fatalFailedQueuedRefreshBarriers = RemoveAllQueuedRefreshWaiters();
+                    _completedRefreshSequence = Math.Max(
+                        _completedRefreshSequence,
+                        _requestedRefreshSequence);
                 }
                 CompleteWaiters(fatalFailedBarriers, ex);
+                CompleteWaiters(fatalFailedQueuedRefreshBarriers, ex);
                 completion.TrySetException(ex);
                 return;
             }
@@ -298,6 +358,7 @@ namespace Cassandra
             TaskCompletionSource<bool> nextCompletion = null;
             List<TaskCompletionSource<bool>> completedBarriers = null;
             List<TaskCompletionSource<bool>> failedBarriers = null;
+            List<TaskCompletionSource<bool>> completedQueuedRefreshBarriers;
             lock (_refreshLock)
             {
                 if (refreshResult.Outcome == RefreshOutcome.QueryFailed)
@@ -325,26 +386,59 @@ namespace Cassandra
                         out failedBarriers);
                 }
 
-                if (!_shutdown && _pendingRefresh != null)
-                {
-                    nextCompletion = CreateRefreshCompletionSource();
-                    _inFlightRefresh = nextCompletion;
-                }
-                else
-                {
-                    if (ReferenceEquals(_inFlightRefresh, completion))
-                    {
-                        _inFlightRefresh = null;
-                    }
-                    ScheduleFailedRefreshRetry();
-                }
+                _completedRefreshSequence = Math.Max(
+                    _completedRefreshSequence,
+                    maximumRefreshSequence);
+                completedQueuedRefreshBarriers = CompleteQueuedRefreshPass(_completedRefreshSequence);
             }
 
-            if (refreshResult.Outcome == RefreshOutcome.QueryFailed &&
-                (failedBarriers == null || failedBarriers.Count == 0))
+            // The query attempt has completed, so fixed-watermark waiters must not be left
+            // detached if retry scheduling or logging fails below.
+            CompleteWaiters(completedQueuedRefreshBarriers, null);
+
+            try
             {
-                LogRecoveredQueryFailure(workItem, refreshResult.Exception);
+                if (refreshResult.Outcome == RefreshOutcome.QueryFailed &&
+                    (failedBarriers == null || failedBarriers.Count == 0))
+                {
+                    LogRecoveredQueryFailure(workItem, refreshResult.Exception);
+                }
+
+                lock (_refreshLock)
+                {
+                    if (!_shutdown && _pendingRefresh != null)
+                    {
+                        nextCompletion = CreateRefreshCompletionSource();
+                        _inFlightRefresh = nextCompletion;
+                    }
+                    else
+                    {
+                        // Keep ownership of _inFlightRefresh until this potentially injected
+                        // scheduler returns, so fatal cleanup cannot clobber a newer drain.
+                        ScheduleFailedRefreshRetry();
+                        // A synchronous scheduler callback can re-enter RefreshAsync() and queue
+                        // work behind this completion, so hand that work to a successor drain.
+                        if (!_shutdown && _pendingRefresh != null)
+                        {
+                            nextCompletion = CreateRefreshCompletionSource();
+                            _inFlightRefresh = nextCompletion;
+                        }
+                        else if (ReferenceEquals(_inFlightRefresh, completion))
+                        {
+                            _inFlightRefresh = null;
+                        }
+                    }
+                }
             }
+            catch
+            {
+                // These waiters were detached while recording the completed query attempt.
+                // Finish them according to that attempt before the outer fatal cleanup runs.
+                CompleteWaiters(completedBarriers, null);
+                CompleteWaiters(failedBarriers, refreshResult.Exception);
+                throw;
+            }
+
             CompleteWaiters(completedBarriers, null);
             CompleteWaiters(failedBarriers, refreshResult.Exception);
             // Match the Java driver's completion contract: callers that queued during this
@@ -352,10 +446,41 @@ namespace Cassandra
             completion.TrySetResult(true);
             if (nextCompletion != null)
             {
-                // This completion can be internally owned when no request arrives during the
-                // follow-up refresh, so observe any fatal exception that faults it.
-                nextCompletion.Task.Forget();
-                StartRefresh(nextCompletion);
+                try
+                {
+                    // This completion can be internally owned when no request arrives during the
+                    // follow-up refresh, so observe any fatal exception that faults it.
+                    nextCompletion.Task.Forget();
+                    StartRefresh(nextCompletion);
+                }
+                catch (Exception ex)
+                {
+                    List<TaskCompletionSource<bool>> pendingFullRefreshWaiters;
+                    List<TaskCompletionSource<bool>> pendingQueuedRefreshWaiters;
+                    lock (_refreshLock)
+                    {
+                        if (ReferenceEquals(_inFlightRefresh, nextCompletion))
+                        {
+                            _pendingRefresh = null;
+                            _pendingRefreshMaximumSequence = 0;
+                            _inFlightRefresh = null;
+                            pendingFullRefreshWaiters = RemoveAllFullRefreshWaiters();
+                            pendingQueuedRefreshWaiters = RemoveAllQueuedRefreshWaiters();
+                            _completedRefreshSequence = Math.Max(
+                                _completedRefreshSequence,
+                                _requestedRefreshSequence);
+                        }
+                        else
+                        {
+                            pendingFullRefreshWaiters = null;
+                            pendingQueuedRefreshWaiters = null;
+                        }
+                    }
+                    CompleteWaiters(pendingFullRefreshWaiters, ex);
+                    CompleteWaiters(pendingQueuedRefreshWaiters, ex);
+                    nextCompletion.TrySetException(ex);
+                    return;
+                }
             }
         }
 
@@ -378,19 +503,29 @@ namespace Cassandra
             }
 
             _retryScheduled = true;
-            var exponent = Math.Min(Math.Max(_consecutiveFailedRefreshes - 1, 0), MaxFailedRefreshRetryBackoffExponent);
-            var delay = TimeSpan.FromTicks(_failedRefreshRetryDelay.Ticks * (1L << exponent));
-            _logger.Info(
-                "Retrying the failed client routes refresh in {0}ms ({1} consecutive failure(s)).",
-                delay.TotalMilliseconds,
-                _consecutiveFailedRefreshes);
-            _failedRefreshRetryDelayFactory(delay, _shutdownCancellation.Token)
-                .ContinueWith(
-                    _ => RetryFailedRefresh(),
-                    CancellationToken.None,
-                    TaskContinuationOptions.OnlyOnRanToCompletion,
-                    TaskScheduler.Default)
-                .Forget();
+            try
+            {
+                var exponent = Math.Min(
+                    Math.Max(_consecutiveFailedRefreshes - 1, 0),
+                    MaxFailedRefreshRetryBackoffExponent);
+                var delay = TimeSpan.FromTicks(_failedRefreshRetryDelay.Ticks * (1L << exponent));
+                _logger.Info(
+                    "Retrying the failed client routes refresh in {0}ms ({1} consecutive failure(s)).",
+                    delay.TotalMilliseconds,
+                    _consecutiveFailedRefreshes);
+                _failedRefreshRetryDelayFactory(delay, _shutdownCancellation.Token)
+                    .ContinueWith(
+                        _ => RetryFailedRefresh(),
+                        CancellationToken.None,
+                        TaskContinuationOptions.OnlyOnRanToCompletion,
+                        TaskScheduler.Default)
+                    .Forget();
+            }
+            catch
+            {
+                _retryScheduled = false;
+                throw;
+            }
         }
 
         private void RetryFailedRefresh()
@@ -434,15 +569,28 @@ namespace Cassandra
                 // Never leave the in-flight refresh or its waiters pending, or every later refresh
                 // and barrier would wait on a drain that no longer runs.
                 List<TaskCompletionSource<bool>> waiters;
+                List<TaskCompletionSource<bool>> queuedRefreshWaiters;
                 lock (_refreshLock)
                 {
                     if (ReferenceEquals(_inFlightRefresh, completion))
                     {
+                        _pendingRefresh = null;
+                        _pendingRefreshMaximumSequence = 0;
                         _inFlightRefresh = null;
+                        waiters = RemoveAllFullRefreshWaiters();
+                        queuedRefreshWaiters = RemoveAllQueuedRefreshWaiters();
+                        _completedRefreshSequence = Math.Max(
+                            _completedRefreshSequence,
+                            _requestedRefreshSequence);
                     }
-                    waiters = RemoveAllFullRefreshWaiters();
+                    else
+                    {
+                        waiters = null;
+                        queuedRefreshWaiters = null;
+                    }
                 }
                 CompleteWaiters(waiters, ex);
+                CompleteWaiters(queuedRefreshWaiters, ex);
                 completion.TrySetException(ex);
             }
         }
@@ -795,6 +943,7 @@ namespace Cassandra
         public void Shutdown()
         {
             List<TaskCompletionSource<bool>> waiters;
+            List<TaskCompletionSource<bool>> queuedRefreshWaiters;
             lock (_refreshLock)
             {
                 if (_shutdown)
@@ -804,19 +953,52 @@ namespace Cassandra
 
                 _shutdown = true;
                 _pendingRefresh = null;
+                _pendingRefreshMaximumSequence = 0;
                 _failedRefreshRetry = null;
                 waiters = RemoveAllFullRefreshWaiters();
+                queuedRefreshWaiters = RemoveAllQueuedRefreshWaiters();
             }
 
-            _shutdownCancellation.Cancel();
-
-            CompleteWaiters(waiters, CreateShutdownException());
+            var shutdownException = CreateShutdownException();
+            try
+            {
+                _shutdownCancellation.Cancel();
+            }
+            finally
+            {
+                CompleteWaiters(waiters, shutdownException);
+                CompleteWaiters(queuedRefreshWaiters, shutdownException);
+            }
         }
 
         private List<TaskCompletionSource<bool>> RemoveAllFullRefreshWaiters()
         {
             var completions = _fullRefreshWaiters.Select(waiter => waiter.Completion).ToList();
             _fullRefreshWaiters.Clear();
+            return completions;
+        }
+
+        private List<TaskCompletionSource<bool>> RemoveAllQueuedRefreshWaiters()
+        {
+            var completions = _queuedRefreshWaiters.Select(waiter => waiter.Completion).ToList();
+            _queuedRefreshWaiters.Clear();
+            return completions;
+        }
+
+        private List<TaskCompletionSource<bool>> CompleteQueuedRefreshPass(long maximumSequence)
+        {
+            var completions = new List<TaskCompletionSource<bool>>();
+            for (var i = _queuedRefreshWaiters.Count - 1; i >= 0; i--)
+            {
+                var waiter = _queuedRefreshWaiters[i];
+                if (waiter.MaximumSequence > maximumSequence)
+                {
+                    continue;
+                }
+
+                completions.Add(waiter.Completion);
+                _queuedRefreshWaiters.RemoveAt(i);
+            }
             return completions;
         }
 
@@ -864,9 +1046,18 @@ namespace Cassandra
             }
 
             var pendingFullRefreshGeneration = _pendingRefresh?.FullRefreshGeneration;
-            var confirmationGeneration = !pendingFullRefreshGeneration.HasValue
-                ? QueueFullRefresh()
-                : pendingFullRefreshGeneration.Value;
+            long confirmationGeneration;
+            if (!pendingFullRefreshGeneration.HasValue)
+            {
+                confirmationGeneration = QueueFullRefresh();
+            }
+            else
+            {
+                confirmationGeneration = pendingFullRefreshGeneration.Value;
+                _pendingRefreshMaximumSequence = Math.Max(
+                    _pendingRefreshMaximumSequence,
+                    NextRefreshSequence());
+            }
 
             foreach (var waiter in confirmationWaiters)
             {
@@ -926,6 +1117,21 @@ namespace Cassandra
             public TaskCompletionSource<bool> Completion { get; }
 
             public bool ConfirmIgnoredEmptyResults { get; }
+        }
+
+        private sealed class QueuedRefreshWaiter
+        {
+            public QueuedRefreshWaiter(
+                long maximumSequence,
+                TaskCompletionSource<bool> completion)
+            {
+                MaximumSequence = maximumSequence;
+                Completion = completion;
+            }
+
+            public long MaximumSequence { get; }
+
+            public TaskCompletionSource<bool> Completion { get; }
         }
 
         private enum RefreshOutcome

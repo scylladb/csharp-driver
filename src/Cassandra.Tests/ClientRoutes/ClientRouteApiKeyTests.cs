@@ -21,7 +21,7 @@ using NUnit.Framework;
 
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 
-namespace Cassandra.IntegrationTests.ClientRoutes
+namespace Cassandra.Tests.ClientRoutes
 {
     [TestFixture]
     public sealed class ClientRouteApiKeyTests

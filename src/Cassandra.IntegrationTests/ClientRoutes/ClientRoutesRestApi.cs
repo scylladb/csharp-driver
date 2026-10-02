@@ -21,6 +21,8 @@ using System.Net.Http;
 using System.Text;
 using System.Threading.Tasks;
 
+using Cassandra.Tests.ClientRoutes;
+
 using Newtonsoft.Json;
 
 namespace Cassandra.IntegrationTests.ClientRoutes
@@ -249,39 +251,4 @@ namespace Cassandra.IntegrationTests.ClientRoutes
         }
     }
 
-    internal sealed class ClientRouteApiKey : IEquatable<ClientRouteApiKey>
-    {
-        public ClientRouteApiKey(string connectionId, Guid hostId)
-        {
-            ConnectionId = connectionId;
-            HostId = hostId;
-        }
-
-        [JsonProperty("connection_id")]
-        public string ConnectionId { get; }
-
-        [JsonProperty("host_id")]
-        public Guid HostId { get; }
-
-        public bool Equals(ClientRouteApiKey other)
-        {
-            return other != null &&
-                   StringComparer.Ordinal.Equals(ConnectionId, other.ConnectionId) &&
-                   HostId == other.HostId;
-        }
-
-        public override bool Equals(object obj)
-        {
-            return Equals(obj as ClientRouteApiKey);
-        }
-
-        public override int GetHashCode()
-        {
-            unchecked
-            {
-                return ((ConnectionId == null ? 0 : StringComparer.Ordinal.GetHashCode(ConnectionId)) * 397) ^
-                       HostId.GetHashCode();
-            }
-        }
-    }
 }

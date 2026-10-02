@@ -563,6 +563,7 @@ namespace Cassandra.Connections.Control
                             await _metadata.RebuildTokenMapAsync(false, _config.MetadataSyncOptions.MetadataSyncEnabled).ConfigureAwait(false);
                             if (_clientRoutesCache != null)
                             {
+                                await _clientRoutesCache.QueuedRefreshBarrierAsync().ConfigureAwait(false);
                                 // A failed REGISTER or initial route load must not launch a recursive reconnect
                                 // through the candidate connection's Closing event.
                                 lock (_connectionHandoffLock)
@@ -815,6 +816,10 @@ namespace Cassandra.Connections.Control
                     await _clientRoutesCache.FullRefreshBarrierAsync(confirmIgnoredEmptyResults: true).ConfigureAwait(false);
                 }
                 await _metadata.RebuildTokenMapAsync(false, _config.MetadataSyncOptions.MetadataSyncEnabled).ConfigureAwait(false);
+                if (_clientRoutesCache != null)
+                {
+                    await _clientRoutesCache.QueuedRefreshBarrierAsync().ConfigureAwait(false);
+                }
                 lock (_connectionHandoffLock)
                 {
                     if (_connection?.IsClosed ?? true)

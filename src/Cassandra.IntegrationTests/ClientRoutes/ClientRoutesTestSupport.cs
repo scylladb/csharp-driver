@@ -15,7 +15,9 @@
 //
 
 using System;
+using System.Globalization;
 using System.Net;
+using System.Net.Sockets;
 using System.Threading.Tasks;
 
 using NUnit.Framework;
@@ -25,8 +27,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
     internal static class ClientRoutesTestSupport
     {
         /// <summary>
-        /// Formats an IP address using the framework's canonical textual representation expected
-        /// at client-routes REST and CQL fixture boundaries.
+        /// Formats an IPv4 address for client-routes REST and CQL fixture boundaries.
         /// </summary>
         public static string FormatAddress(IPAddress address)
         {
@@ -35,7 +36,19 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 throw new ArgumentNullException(nameof(address));
             }
 
-            return address.ToString();
+            if (address.AddressFamily != AddressFamily.InterNetwork)
+            {
+                throw new ArgumentException("Client-routes fixtures require an IPv4 address.", nameof(address));
+            }
+
+            var bytes = address.GetAddressBytes();
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                "{0}.{1}.{2}.{3}",
+                bytes[0],
+                bytes[1],
+                bytes[2],
+                bytes[3]);
         }
 
         public static async Task WaitUntilAsync(

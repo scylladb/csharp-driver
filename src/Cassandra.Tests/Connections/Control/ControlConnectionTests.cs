@@ -321,6 +321,7 @@ namespace Cassandra.Tests.Connections.Control
             {
                 var initialization = createResult.ControlConnection.InitAsync();
                 await firstQueryStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                var cache = createResult.Config.ClientRoutesRuntime.Bind(createResult.ControlConnection);
                 subscriber.Raise(new ClientRoutesChangeEventArgs
                 {
                     ConnectionIds = new[] { "connection-a" },
@@ -329,18 +330,33 @@ namespace Cassandra.Tests.Connections.Control
 
                 releaseFirstQuery.TrySetResult(true);
                 await secondQueryStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
-                releaseSecondQuery.TrySetResult(true);
-                await initialization.ConfigureAwait(false);
                 await TestHelper.WaitUntilAsync(
-                    () => createResult.Config.ClientRoutesRuntime.TryGetRoutes(hostId, out var routes) &&
-                          routes.Length == 1 &&
-                          routes[0].Address == "127.0.0.20",
+                    () => cache.PendingQueuedRefreshBarrierCount == 1,
                     20,
                     250).ConfigureAwait(false);
+                Assert.AreEqual(1, cache.PendingQueuedRefreshBarrierCount);
+
+                var lifecycleReady = createResult.Config.ClientRoutesRuntime.WaitForLifecycleReadyAsync();
+                var endpointResolution = createResult.Config.EndPointResolver.GetConnectionEndPointsAsync(
+                    createResult.ControlConnection.Host,
+                    false);
+                Assert.IsFalse(initialization.IsCompleted);
+                Assert.IsFalse(createResult.Config.ClientRoutesRuntime.IsLifecycleReady);
+                Assert.IsFalse(lifecycleReady.IsCompleted);
+                Assert.IsFalse(endpointResolution.IsCompleted);
+
+                releaseSecondQuery.TrySetResult(true);
+                await initialization.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                await lifecycleReady.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                await endpointResolution.WaitToCompleteAsync(5000).ConfigureAwait(false);
 
                 Assert.AreEqual(2, requestHandler.QueryCount);
+                Assert.IsTrue(createResult.Config.ClientRoutesRuntime.IsLifecycleReady);
                 Assert.IsTrue(createResult.Config.ClientRoutesRuntime.TryGetRoutes(hostId, out var refreshedRoutes));
                 Assert.AreEqual("127.0.0.20", refreshedRoutes[0].Address);
+                Assert.AreEqual(
+                    new IPEndPoint(IPAddress.Parse("127.0.0.20"), 29042),
+                    endpointResolution.Result.Single().SocketIpEndPoint);
             }
             finally
             {
@@ -356,6 +372,8 @@ namespace Cassandra.Tests.Connections.Control
             var hostId = Guid.NewGuid();
             var topologyRouteQueryStarted = NewSignal();
             var releaseTopologyRouteQuery = NewSignal();
+            var targetedRouteQueryStarted = NewSignal();
+            var releaseTargetedRouteQuery = NewSignal();
             var requestHandler = new RecordingMetadataRequestHandler(async (_, call) =>
             {
                 if (call == 1)
@@ -363,9 +381,21 @@ namespace Cassandra.Tests.Connections.Control
                     return ClientRouteRows(hostId, "127.0.0.10", 19042);
                 }
 
-                topologyRouteQueryStarted.TrySetResult(true);
-                await releaseTopologyRouteQuery.Task.ConfigureAwait(false);
-                return ClientRouteRows(hostId, "127.0.0.20", 29042);
+                if (call == 2)
+                {
+                    topologyRouteQueryStarted.TrySetResult(true);
+                    await releaseTopologyRouteQuery.Task.ConfigureAwait(false);
+                    return ClientRouteRows(hostId, "127.0.0.20", 29042);
+                }
+
+                if (call == 3)
+                {
+                    targetedRouteQueryStarted.TrySetResult(true);
+                    await releaseTargetedRouteQuery.Task.ConfigureAwait(false);
+                    return ClientRouteRows(hostId, "127.0.0.30", 39042);
+                }
+
+                throw new InvalidOperationException("Unexpected client-routes query.");
             });
             var subscriber = new RecordingServerEventsSubscriber();
             var createResult = NewClientRoutesInstance(hostId, requestHandler, subscriber);
@@ -373,6 +403,7 @@ namespace Cassandra.Tests.Connections.Control
             try
             {
                 await createResult.ControlConnection.InitAsync().ConfigureAwait(false);
+                var cache = createResult.Config.ClientRoutesRuntime.Bind(createResult.ControlConnection);
                 subscriber.Raise(new TopologyChangeEventArgs
                 {
                     What = TopologyChangeEventArgs.Reason.NewNode,
@@ -380,20 +411,47 @@ namespace Cassandra.Tests.Connections.Control
                 });
                 await topologyRouteQueryStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
 
-                var resolution = createResult.Config.EndPointResolver.GetConnectionEndPointsAsync(
+                subscriber.Raise(new ClientRoutesChangeEventArgs
+                {
+                    ConnectionIds = new[] { "connection-a" },
+                    HostIds = new[] { hostId }
+                });
+
+                var lifecycleReady = createResult.Config.ClientRoutesRuntime.WaitForLifecycleReadyAsync();
+                var endpointResolution = createResult.Config.EndPointResolver.GetConnectionEndPointsAsync(
                     createResult.ControlConnection.Host,
                     false);
-                Assert.IsFalse(resolution.IsCompleted);
+                Assert.IsFalse(createResult.Config.ClientRoutesRuntime.IsLifecycleReady);
+                Assert.IsFalse(lifecycleReady.IsCompleted);
+                Assert.IsFalse(endpointResolution.IsCompleted);
 
                 releaseTopologyRouteQuery.TrySetResult(true);
-                await resolution.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                await targetedRouteQueryStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                await TestHelper.WaitUntilAsync(
+                    () => cache.PendingQueuedRefreshBarrierCount == 1,
+                    20,
+                    250).ConfigureAwait(false);
+                Assert.AreEqual(1, cache.PendingQueuedRefreshBarrierCount);
+                Assert.IsFalse(createResult.Config.ClientRoutesRuntime.IsLifecycleReady);
+                Assert.IsFalse(lifecycleReady.IsCompleted);
+                Assert.IsFalse(endpointResolution.IsCompleted);
+
+                releaseTargetedRouteQuery.TrySetResult(true);
+                await lifecycleReady.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                await endpointResolution.WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                Assert.AreEqual(3, requestHandler.QueryCount);
+                Assert.IsTrue(createResult.Config.ClientRoutesRuntime.IsLifecycleReady);
+                Assert.IsTrue(createResult.Config.ClientRoutesRuntime.TryGetRoutes(hostId, out var refreshedRoutes));
+                Assert.AreEqual("127.0.0.30", refreshedRoutes.Single().Address);
                 Assert.AreEqual(
-                    new IPEndPoint(IPAddress.Parse("127.0.0.20"), 29042),
-                    resolution.Result.Single().SocketIpEndPoint);
+                    new IPEndPoint(IPAddress.Parse("127.0.0.30"), 39042),
+                    endpointResolution.Result.Single().SocketIpEndPoint);
             }
             finally
             {
                 releaseTopologyRouteQuery.TrySetResult(true);
+                releaseTargetedRouteQuery.TrySetResult(true);
                 createResult.ControlConnection.Dispose();
             }
         }
