@@ -3,9 +3,14 @@
   "extends": [
     "config:recommended"
   ],
+  "baseBranchPatterns": [
+    "master",
+    "3.22"
+  ],
   "ignoreDeps": [
     "Microsoft.NET.Test.Sdk"
   ],
+  "osvVulnerabilityAlerts": true,
   "packageRules": [
     {
       "matchManagers": ["github-actions"],
@@ -16,6 +21,15 @@
       "matchManagers": ["github-actions"],
       "matchPackageNames": ["actions/setup-python"],
       "enabled": false
+    },
+    {
+      "description": "Allow only security updates on the 3.22 maintenance branch",
+      "matchBaseBranches": ["3.22"],
+      "matchPackageNames": ["*"],
+      "enabled": false
     }
-  ]
+  ],
+  "vulnerabilityAlerts": {
+    "enabled": true
+  }
 }

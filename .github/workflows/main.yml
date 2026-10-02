@@ -7,6 +7,7 @@ on:
   push:
     branches:
       - master
+      - '3.22'
     paths-ignore:
       - "docs/**"
       - .github/workflows/docs-pages.yml
@@ -40,9 +41,9 @@ on:
 
 # Cancel in-flight runs for the same pull request, so a new push does not wait
 # behind the previous run's build and four cluster jobs. Pull requests share one
-# stable ref, so a new push cancels the old run; non-PR runs (master push) are
-# keyed by SHA instead and are never cancelled, so an intermediate master build
-# cannot be dropped by a later one.
+# stable ref, so a new push cancels the old run; non-PR runs (maintained-branch
+# pushes) are keyed by SHA instead and are never cancelled, so an intermediate
+# branch build cannot be dropped by a later one.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
