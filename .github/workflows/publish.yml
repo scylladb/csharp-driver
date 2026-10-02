@@ -1,72 +1,289 @@
-name: Publish NuGet Package
+name: Release NuGet packages
 
 permissions:
+  actions: read
   contents: read
+  issues: read
+  pull-requests: read
 
 on:
-  push:
-    tags:
-      - 'v*.*.*.*'  # Trigger only on version tags like v1.2.3.4
   workflow_dispatch:
     inputs:
-      target_tag:
-        description: "Publish particular tag"
+      version:
+        description: Four-part package version without the v prefix
         type: string
-        required: false
-        default: "master"
-      dry-run:
-        description: "Publish to a dry-run package"
+        required: true
+      target_commit:
+        description: Full 40-character SHA at the protected release branch tip
+        type: string
+        required: true
+      dry_run:
+        description: Sign, pack, validate, and retain artifacts without publishing
         type: boolean
         required: true
         default: true
-      skip-duplicate:
-        description: "Skip publishing if the package already exists"
+      resume_partial_publication:
+        description: Resume the exact tagged commit after a partial NuGet publication
         type: boolean
+        required: true
         default: false
 
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
 jobs:
-  publish:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      branch: ${{ steps.gate.outputs.branch }}
+      tag: ${{ steps.gate.outputs.tag }}
     steps:
-    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      with:
-        ref: ${{ inputs.target_tag || github.ref }}
-        persist-credentials: false
+      - name: Checkout trusted release tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
 
-    - name: Checkout SDK configuration
-      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      with:
-        ref: ${{ github.event.repository.default_branch }}
-        sparse-checkout: global.json
-        sparse-checkout-cone-mode: false
-        path: .sdk-config
-        persist-credentials: false
+      - name: Validate release inputs and milestone
+        id: gate
+        env:
+          ALLOW_BLOCKERS: ${{ inputs.dry_run }}
+          GITHUB_TOKEN: ${{ github.token }}
+          RECOVERY: ${{ inputs.resume_partial_publication }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          TARGET_COMMIT: ${{ inputs.target_commit }}
+          WORKFLOW_REF: ${{ github.ref }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          options=()
+          if [[ "$ALLOW_BLOCKERS" == "true" ]]; then
+            options+=(--allow-blockers)
+          fi
+          if [[ "$RECOVERY" == "true" ]]; then
+            options+=(--recovery)
+          fi
+          python3 build/release-gate.py preflight \
+            --repository "$GITHUB_REPOSITORY" \
+            --version "$RELEASE_VERSION" \
+            --target-commit "$TARGET_COMMIT" \
+            --workflow-ref "$WORKFLOW_REF" \
+            --workflow-sha "$WORKFLOW_SHA" \
+            --github-output "$GITHUB_OUTPUT" \
+            "${options[@]}"
 
-    - name: Add SDK configuration to legacy checkout
-      run: |
-        if [[ ! -f global.json ]]; then
-          cp .sdk-config/global.json global.json
-        fi
+  package:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: release
+    steps:
+      - name: Checkout trusted release tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
 
-    - name: Setup .NET
-      uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
-      with:
-        global-json-file: global.json
+      - name: Checkout exact release source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ inputs.target_commit }}
+          path: source
+          persist-credentials: false
 
-    - name: Publish to NuGet (Dry Run)
-      if: ${{ inputs.dry-run == true }}
-      env:
-        SKIP_DUPLICATE: ${{ inputs.skip-duplicate }}
-        NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
-        SNK_FILE: ${{ secrets.SNK_KEY }}
-      run: make publish-nuget-dry-run
+      - name: Verify exact source and package versions
+        env:
+          RELEASE_BRANCH: ${{ needs.preflight.outputs.branch }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          TARGET_COMMIT: ${{ inputs.target_commit }}
+        run: |
+          python3 build/release-gate.py verify-source \
+            --source source \
+            --version "$RELEASE_VERSION" \
+            --branch "$RELEASE_BRANCH" \
+            --target-commit "$TARGET_COMMIT"
 
-    - name: Publish to NuGet (Production)
-      if: ${{ inputs.dry-run == false }}
-      env:
-        SKIP_DUPLICATE: ${{ inputs.skip-duplicate }}
-        NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
-        SNK_FILE: ${{ secrets.SNK_KEY }}
-      run: make publish-nuget
+      - name: Setup target .NET SDK
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: source/global.json
+
+      - name: Sign and pack all release projects
+        env:
+          SNK_FILE: ${{ secrets.SNK_KEY }}
+        run: |
+          make -C source .use-production-snk
+          rm -rf source/nupkgs
+          projects=(
+            source/src/Cassandra/Cassandra.csproj
+            source/src/Extensions/Cassandra.AppMetrics/Cassandra.AppMetrics.csproj
+            source/src/Extensions/Cassandra.OpenTelemetry/Cassandra.OpenTelemetry.csproj
+          )
+          for project in "${projects[@]}"; do
+            dotnet restore "$project"
+            dotnet build "$project" --configuration Release --no-restore --maxcpucount:1
+            dotnet pack "$project" --configuration Release --no-build --output source/nupkgs
+          done
+
+      - name: Verify complete package set
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          python3 build/release-gate.py verify-packages \
+            --package-directory source/nupkgs \
+            --version "$RELEASE_VERSION"
+
+      - name: Run target-specific package validation
+        run: |
+          if [[ ! -f source/build/validate-packages.py ]]; then
+            echo "Target branch has no package validator; complete its artifact-validation blocker first"
+            exit 1
+          fi
+          (
+            cd source
+            PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+              -s build/tests -p 'test_*.py' -v
+            python3 build/validate-packages.py --package-directory ./nupkgs
+          )
+
+      - name: Record package hashes
+        run: (cd source/nupkgs && sha256sum *.nupkg | tee SHA256SUMS)
+
+      - name: Retain validated packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: packages-${{ needs.preflight.outputs.tag }}-${{ inputs.target_commit }}
+          path: |
+            source/nupkgs/*.nupkg
+            source/nupkgs/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    if: ${{ !inputs.dry_run }}
+    needs: [preflight, package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    steps:
+      - name: Checkout trusted release tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+
+      - name: Download validated packages
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: packages-${{ needs.preflight.outputs.tag }}-${{ inputs.target_commit }}
+          path: nupkgs
+
+      - name: Reverify downloaded package set
+        id: packages
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          (cd nupkgs && sha256sum --check SHA256SUMS)
+          python3 build/release-gate.py verify-packages \
+            --package-directory nupkgs \
+            --version "$RELEASE_VERSION" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Create short-lived release App token
+        id: release-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Recheck gate and create immutable tag
+        env:
+          GATE_TOKEN: ${{ github.token }}
+          RECOVERY: ${{ inputs.resume_partial_publication }}
+          RELEASE_TOKEN: ${{ steps.release-token.outputs.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          TARGET_COMMIT: ${{ inputs.target_commit }}
+        run: |
+          options=()
+          if [[ "$RECOVERY" == "true" ]]; then
+            options+=(--recovery)
+          fi
+          GITHUB_TOKEN="$GATE_TOKEN" python3 build/release-gate.py gate \
+            --repository "$GITHUB_REPOSITORY" --version "$RELEASE_VERSION" \
+            --target-commit "$TARGET_COMMIT" \
+            "${options[@]}"
+          GITHUB_TOKEN="$RELEASE_TOKEN" python3 build/release-gate.py ensure-tag \
+            --repository "$GITHUB_REPOSITORY" --version "$RELEASE_VERSION" \
+            --target-commit "$TARGET_COMMIT" "${options[@]}"
+
+      - name: Gate and publish packages
+        env:
+          APPMETRICS_PACKAGE_PATH: ${{ steps.packages.outputs.appmetrics }}
+          CORE_PACKAGE_PATH: ${{ steps.packages.outputs.core }}
+          GATE_TOKEN: ${{ github.token }}
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          OPENTELEMETRY_PACKAGE_PATH: ${{ steps.packages.outputs.opentelemetry }}
+          RECOVERY: ${{ inputs.resume_partial_publication }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          TARGET_COMMIT: ${{ inputs.target_commit }}
+        run: |
+          package_ids=(
+            ScyllaDBCSharpDriver
+            ScyllaDBCSharpDriver.AppMetrics
+            ScyllaDBCSharpDriver.OpenTelemetry
+          )
+          package_paths=(
+            "$CORE_PACKAGE_PATH"
+            "$APPMETRICS_PACKAGE_PATH"
+            "$OPENTELEMETRY_PACKAGE_PATH"
+          )
+          package_options=()
+          if [[ "$RECOVERY" == "true" ]]; then
+            package_options+=(--recovery)
+          fi
+          for index in "${!package_ids[@]}"; do
+            package_id="${package_ids[$index]}"
+            package_path="${package_paths[$index]}"
+            GITHUB_TOKEN="$GATE_TOKEN" python3 build/release-gate.py gate \
+              --repository "$GITHUB_REPOSITORY" --version "$RELEASE_VERSION" \
+              --target-commit "$TARGET_COMMIT" --recovery
+            state=$(python3 build/release-gate.py published-package \
+              --package "$package_path" --package-id "$package_id" \
+              --version "$RELEASE_VERSION" "${package_options[@]}")
+            if [[ "$state" == "absent" ]]; then
+              dotnet nuget push "$package_path" --api-key "$NUGET_API_KEY" \
+                --source https://api.nuget.org/v3/index.json
+              for attempt in {1..18}; do
+                state=$(python3 build/release-gate.py published-package \
+                  --package "$package_path" --package-id "$package_id" \
+                  --version "$RELEASE_VERSION" --recovery)
+                if [[ "$state" == "present" ]]; then break; fi
+                sleep 10
+              done
+              [[ "$state" == "present" ]]
+            fi
+          done
+
+      - name: Gate and create GitHub Release
+        env:
+          GATE_TOKEN: ${{ github.token }}
+          RECOVERY: ${{ inputs.resume_partial_publication }}
+          RELEASE_TOKEN: ${{ steps.release-token.outputs.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          TARGET_COMMIT: ${{ inputs.target_commit }}
+        run: |
+          options=()
+          if [[ "$RECOVERY" == "true" ]]; then
+            options+=(--recovery)
+          fi
+          GITHUB_TOKEN="$GATE_TOKEN" python3 build/release-gate.py gate \
+            --repository "$GITHUB_REPOSITORY" --version "$RELEASE_VERSION" \
+            --target-commit "$TARGET_COMMIT" --recovery
+          GITHUB_TOKEN="$RELEASE_TOKEN" python3 build/release-gate.py ensure-release \
+            --repository "$GITHUB_REPOSITORY" --version "$RELEASE_VERSION" \
+            --target-commit "$TARGET_COMMIT" \
+            "${options[@]}"

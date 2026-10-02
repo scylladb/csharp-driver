@@ -53,3 +53,49 @@ together:
 Release tags prefix that package version with `v`, for example `v3.22.0.5` or
 `v4.0.0.0`. After publication, maintainers verify the NuGet packages and GitHub
 Release, then update the documentation catalog and `stable` pointer.
+
+### Canonical release workflow
+
+Run **Release NuGet packages** from the protected `master` branch with the
+four-part version and the full commit SHA at the tip of the corresponding
+protected release branch. The workflow resolves the exact `v<version>`
+milestone, verifies successful CI for that SHA, signs and validates all three
+packages, and retains their hashes as a workflow artifact.
+
+A dry run performs that complete package path but creates no tag, NuGet
+package, or GitHub Release. Open milestone blockers are reported but do not
+prevent a dry run. Production runs fail closed while any selected-milestone
+`release-blocker` remains, and recheck the gate before the tag and before each
+individual package upload.
+
+Production requires a protected `release` environment restricted to `master`
+and approved by a reviewer who did not start the run. Store
+`RELEASE_APP_PRIVATE_KEY`, `SNK_KEY`, and `NUGET_API_KEY` in that environment,
+with `RELEASE_APP_CLIENT_ID` as an environment variable. The release App must
+have repository Contents write permission only. An active tag ruleset must
+restrict creation, update, and deletion of `refs/tags/v*.*.*.*`, with only that
+App as a bypass actor.
+
+After configuring the ruleset, an administrator with ruleset write access must
+verify the otherwise-hidden bypass list before production use:
+
+```bash
+GITHUB_TOKEN=<admin-token> python3 build/release-gate.py audit-ruleset \
+  --repository scylladb/csharp-driver \
+  --release-app-id <numeric-app-id>
+```
+
+### Partial-publication recovery
+
+If publication stops after the tag or one of the packages is published:
+
+1. Fix any newly opened release blocker before retrying.
+2. Dispatch the workflow for the same version and exact tagged commit, with
+   **Resume partial publication** enabled.
+3. The workflow verifies that the existing lightweight tag still points to
+   that commit, rebuilds and validates the package set, and skips only package
+   versions already present on NuGet.
+4. Verify all three public packages and the GitHub Release after completion.
+
+Never delete, move, force-update, or reuse a release tag to recover a failed
+publication.
