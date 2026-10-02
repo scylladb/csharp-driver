@@ -68,8 +68,7 @@ namespace Cassandra
                     _queryProvider = queryProvider;
                     _cache = new ClientRoutesCache(
                         queryProvider,
-                        Options.ConnectionIds,
-                        Options.AddressOverrides,
+                        Options.Selection,
                         _useTls,
                         retryQueries: false);
                 }

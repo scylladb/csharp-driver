@@ -116,6 +116,111 @@ namespace Cassandra.Tests.Connections
         }
 
         [Test]
+        public async Task Should_LogDnsFailureOnlyAfterLaterRouteRecoversIt()
+        {
+            var host = CreateHost("192.0.2.12", Guid.NewGuid());
+            var runtime = await CreateRuntimeAsync(
+                new[] { "primary", "backup" },
+                false,
+                Route(host.HostId, "198.51.100.14", 9242, 9342, "backup"),
+                Route(host.HostId, "primary.proxy", 9042, 9142, "primary")).ConfigureAwait(false);
+            var dnsFailure = new InvalidOperationException("primary dns failed");
+            var dns = new Mock<IDnsResolver>(MockBehavior.Strict);
+            dns.Setup(resolver => resolver.GetHostEntryAsync("primary.proxy"))
+               .ThrowsAsync(dnsFailure);
+            var loggerHandler = new TestHelper.TestLoggerHandler();
+            var target = new ClientRoutesEndPointResolver(
+                runtime,
+                dns.Object,
+                new Mock<IEndPointResolver>(MockBehavior.Strict).Object,
+                logger: new Logger(loggerHandler));
+
+            var plan = await target
+                .GetConnectionEndPointResolutionPlanAsync(host, false, false, 0)
+                .ConfigureAwait(false);
+
+            var endpoints = await plan.ResolveNextAsync().ConfigureAwait(false);
+
+            Assert.AreEqual(1, endpoints.Count);
+            Assert.AreEqual(
+                new IPEndPoint(IPAddress.Parse("198.51.100.14"), 9242),
+                endpoints.Single().SocketIpEndPoint);
+            Assert.AreEqual(1, loggerHandler.WarningCount);
+            dns.Verify(resolver => resolver.GetHostEntryAsync("primary.proxy"), Times.Once);
+            dns.VerifyNoOtherCalls();
+        }
+
+        [Test]
+        public async Task Should_NotInvokeDefaultControlFactory_WhenHostHasRoutes()
+        {
+            var host = CreateHost("192.0.2.13", Guid.NewGuid());
+            var runtime = await CreateRuntimeAsync(
+                new[] { "route-a" },
+                false,
+                Route(host.HostId, "198.51.100.13", 9043, 9143, "route-a")).ConfigureAwait(false);
+            var target = new ClientRoutesEndPointResolver(
+                runtime,
+                Mock.Of<IDnsResolver>(),
+                new Mock<IEndPointResolver>(MockBehavior.Strict).Object);
+            var factoryCalls = 0;
+
+            var plan = target.GetControlConnectionEndPointResolutionPlan(
+                host,
+                false,
+                () =>
+                {
+                    factoryCalls++;
+                    return new ConnectionEndPointResolutionPlan(
+                        new Func<Task<IReadOnlyList<IConnectionEndPoint>>>[0]);
+                });
+
+            Assert.IsTrue(target.RetryOnPoolAdmissionFailure);
+            Assert.AreEqual(0, factoryCalls);
+            Assert.AreEqual(
+                new IPEndPoint(IPAddress.Parse("198.51.100.13"), 9043),
+                (await plan.ResolveNextAsync().ConfigureAwait(false)).Single().SocketIpEndPoint);
+            Assert.AreEqual(0, factoryCalls);
+        }
+
+        [Test]
+        public async Task Should_UseDirectFallbackWithoutInvokingDefaultControlFactory_WhenHostHasNoRoutes()
+        {
+            var host = CreateHost("192.0.2.14", Guid.NewGuid());
+            var runtime = await CreateRuntimeAsync(new[] { "route-a" }, false).ConfigureAwait(false);
+            var direct = new ConnectionEndPoint(host.Address, Mock.Of<IServerNameResolver>(), null);
+            var fallback = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            fallback.Setup(resolver => resolver.GetConnectionEndPointsAsync(host, false))
+                    .ReturnsAsync(new IConnectionEndPoint[] { direct });
+            var target = new ClientRoutesEndPointResolver(runtime, Mock.Of<IDnsResolver>(), fallback.Object);
+            var expected = new ConnectionEndPointResolutionPlan(
+                new Func<Task<IReadOnlyList<IConnectionEndPoint>>>[0]);
+            var factoryCalls = 0;
+
+            var actual = target.GetControlConnectionEndPointResolutionPlan(
+                host,
+                false,
+                () =>
+                {
+                    factoryCalls++;
+                    return expected;
+                });
+
+            Assert.AreNotSame(expected, actual);
+            Assert.AreEqual(0, factoryCalls);
+            fallback.VerifyNoOtherCalls();
+
+            CollectionAssert.AreEqual(
+                new[] { direct },
+                await actual.ResolveNextAsync().ConfigureAwait(false));
+            Assert.IsNull(await actual.ResolveNextAsync().ConfigureAwait(false));
+            Assert.AreEqual(0, factoryCalls);
+            fallback.Verify(
+                resolver => resolver.GetConnectionEndPointsAsync(host, false),
+                Times.Once);
+            fallback.VerifyNoOtherCalls();
+        }
+
+        [Test]
         public async Task Should_ResolveDnsAgainForEveryConnectionAttempt()
         {
             var host = CreateHost("192.0.2.10", Guid.NewGuid());
@@ -222,7 +327,7 @@ namespace Cassandra.Tests.Connections
             var ex = Assert.ThrowsAsync<DriverException>(async () =>
                 await target.GetConnectionEndPointsAsync(host, false).ConfigureAwait(false));
 
-            Assert.That(ex.Message, Does.Contain(host.HostId.ToString()));
+            Assert.That(ex.Message, Does.Contain(host.HostId.ToString("D")));
             Assert.IsInstanceOf<AggregateException>(ex.InnerException);
             fallback.VerifyNoOtherCalls();
         }
@@ -241,10 +346,12 @@ namespace Cassandra.Tests.Connections
                .ThrowsAsync(new InvalidOperationException("primary dns failed"));
             dns.Setup(resolver => resolver.GetHostEntryAsync("backup.proxy"))
                .ThrowsAsync(new InvalidOperationException("backup dns failed"));
+            var loggerHandler = new TestHelper.TestLoggerHandler();
             var target = new ClientRoutesEndPointResolver(
                 runtime,
                 dns.Object,
-                new Mock<IEndPointResolver>(MockBehavior.Strict).Object);
+                new Mock<IEndPointResolver>(MockBehavior.Strict).Object,
+                logger: new Logger(loggerHandler));
 
             var ex = Assert.ThrowsAsync<DriverException>(async () =>
                 await target.GetConnectionEndPointsAsync(host, false).ConfigureAwait(false));
@@ -253,6 +360,7 @@ namespace Cassandra.Tests.Connections
             Assert.AreEqual(2, aggregate.InnerExceptions.Count);
             Assert.AreEqual("primary dns failed", aggregate.InnerExceptions[0].Message);
             Assert.AreEqual("backup dns failed", aggregate.InnerExceptions[1].Message);
+            Assert.AreEqual(0, loggerHandler.WarningCount);
         }
 
         [Test]
@@ -267,15 +375,18 @@ namespace Cassandra.Tests.Connections
             var dns = new Mock<IDnsResolver>(MockBehavior.Strict);
             dns.Setup(resolver => resolver.GetHostEntryAsync("primary.proxy"))
                .ThrowsAsync(new OutOfMemoryException("fatal dns failure"));
+            var loggerHandler = new TestHelper.TestLoggerHandler();
             var target = new ClientRoutesEndPointResolver(
                 runtime,
                 dns.Object,
-                new Mock<IEndPointResolver>(MockBehavior.Strict).Object);
+                new Mock<IEndPointResolver>(MockBehavior.Strict).Object,
+                logger: new Logger(loggerHandler));
 
             Assert.ThrowsAsync<OutOfMemoryException>(async () =>
                 await target.GetConnectionEndPointsAsync(host, false).ConfigureAwait(false));
 
             dns.Verify(resolver => resolver.GetHostEntryAsync("backup.proxy"), Times.Never);
+            Assert.AreEqual(0, loggerHandler.WarningCount);
         }
 
         [Test]

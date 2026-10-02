@@ -431,12 +431,12 @@ namespace Cassandra.Tests
                 .Select(invocation => (string)invocation.Arguments[0])
                 .ToArray();
             Assert.That(queries, Has.Length.EqualTo(2));
-            Assert.That(queries[0], Does.Contain(firstHostId.ToString()));
-            Assert.That(queries[0], Does.Not.Contain(secondHostId.ToString()));
+            Assert.That(queries[0], Does.Contain(firstHostId.ToString("D")));
+            Assert.That(queries[0], Does.Not.Contain(secondHostId.ToString("D")));
             Assert.That(queries[0], Does.Not.Contain("ALLOW FILTERING"));
-            Assert.That(queries[1], Does.Contain(Guid.Empty.ToString()));
-            Assert.That(queries[1], Does.Contain(firstHostId.ToString()));
-            Assert.That(queries[1], Does.Contain(secondHostId.ToString()));
+            Assert.That(queries[1], Does.Contain(Guid.Empty.ToString("D")));
+            Assert.That(queries[1], Does.Contain(firstHostId.ToString("D")));
+            Assert.That(queries[1], Does.Contain(secondHostId.ToString("D")));
             Assert.That(queries[1], Does.Not.Contain("ALLOW FILTERING"));
         }
 
@@ -1088,7 +1088,7 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public async Task Should_LogCarryOverErrorStartingWithThirdRefresh()
+        public async Task Should_LogCarryOverWarningStartingWithThirdRefresh()
         {
             var hostId = Guid.NewGuid();
             var responses = new Queue<IEnumerable<IRow>>(new[]
@@ -1109,18 +1109,29 @@ namespace Cassandra.Tests
             await cache.RefreshAsync().ConfigureAwait(false);
             await cache.RefreshAsync().ConfigureAwait(false);
             Assert.That(loggerHandler.Errors, Is.Empty);
+            Assert.That(
+                loggerHandler.Warnings.Where(message => message.Contains("Serving ")),
+                Is.Empty);
 
             await cache.RefreshAsync().ConfigureAwait(false);
-            Assert.That(loggerHandler.Errors, Has.Count.EqualTo(1));
+            var carryOverWarnings = loggerHandler.Warnings
+                                                     .Where(message => message.Contains("Serving "))
+                                                     .ToArray();
+            Assert.That(carryOverWarnings, Has.Length.EqualTo(1));
             Assert.That(
-                loggerHandler.Errors.Single(),
+                carryOverWarnings.Single(),
                 Does.Contain(hostId + "/" + ConnectionA + "=3"));
+            Assert.That(loggerHandler.Errors, Is.Empty);
 
             await cache.RefreshAsync().ConfigureAwait(false);
-            Assert.That(loggerHandler.Errors, Has.Count.EqualTo(2));
+            carryOverWarnings = loggerHandler.Warnings
+                                                .Where(message => message.Contains("Serving "))
+                                                .ToArray();
+            Assert.That(carryOverWarnings, Has.Length.EqualTo(2));
             Assert.That(
-                loggerHandler.Errors.Last(),
+                carryOverWarnings.Last(),
                 Does.Contain(hostId + "/" + ConnectionA + "=4"));
+            Assert.That(loggerHandler.Errors, Is.Empty);
         }
 
         [Test]
@@ -1141,6 +1152,30 @@ namespace Cassandra.Tests
             Assert.That(
                 loggerHandler.Errors.Single(),
                 Does.Contain("None of the 2 client route rows named a readable host ID"));
+        }
+
+        [Test]
+        public async Task Should_LogWarningWhenUnreadableHostIdsCauseCachedRoutesToBeRetained()
+        {
+            var hostId = Guid.NewGuid();
+            var responses = new Queue<IEnumerable<IRow>>(new[]
+            {
+                Rows(Route(hostId, "original.example.com", 9042, 9142, ConnectionA)),
+                Rows(Route("not-a-guid", "replacement.example.com", 9043, 9143, ConnectionA))
+            });
+            var provider = CreateProvider((_, __) => Task.FromResult(responses.Dequeue()));
+            var loggerHandler = new RecordingLoggerHandler();
+            var cache = CreateCache(provider.Object, logger: new Logger(loggerHandler));
+            await cache.RefreshAsync().ConfigureAwait(false);
+
+            await cache.RefreshAsync().ConfigureAwait(false);
+
+            Assert.That(loggerHandler.Errors, Is.Empty);
+            Assert.That(
+                loggerHandler.Warnings.Any(message =>
+                    message.Contains("Keeping all 1 cached routes in the refresh scope")),
+                Is.True);
+            AssertEndpoint(cache.Routes[hostId], ConnectionA, "original.example.com", 9042);
         }
 
         [Test]
@@ -1257,12 +1292,15 @@ namespace Cassandra.Tests
                         return Task.FromException<IEnumerable<IRow>>(laterFailure);
                 }
             });
-            var cache = CreateCache(provider.Object);
+            var loggerHandler = new RecordingLoggerHandler();
+            var cache = CreateCache(provider.Object, logger: new Logger(loggerHandler));
 
             var thrown = Assert.ThrowsAsync<InvalidOperationException>(async () =>
                 await cache.FullRefreshBarrierAsync().ConfigureAwait(false));
             Assert.That(thrown, Is.SameAs(coldStartFailure));
             Assert.That(cache.Routes, Is.Empty);
+            Assert.That(loggerHandler.Warnings, Is.Empty);
+            Assert.That(loggerHandler.Errors, Is.Empty);
 
             await cache.FullRefreshBarrierAsync().ConfigureAwait(false);
             var establishedSnapshot = cache.Routes;
@@ -1270,6 +1308,10 @@ namespace Cassandra.Tests
             await cache.FullRefreshBarrierAsync().ConfigureAwait(false);
 
             Assert.That(queryCount, Is.EqualTo(3));
+            Assert.That(loggerHandler.Warnings, Has.Count.EqualTo(1));
+            Assert.That(loggerHandler.Warnings.Single(), Does.Contain(laterFailure.ToString()));
+            Assert.That(loggerHandler.Warnings.Single(), Does.Not.Contain(coldStartFailure.ToString()));
+            Assert.That(loggerHandler.Errors, Is.Empty);
             Assert.That(cache.Routes, Is.SameAs(establishedSnapshot));
             AssertEndpoint(cache.Routes[hostId], ConnectionA, "proxy.example.com", 9042);
         }
@@ -1379,12 +1421,15 @@ namespace Cassandra.Tests
         {
             var fatal = new OutOfMemoryException("fatal query failure");
             var provider = CreateProvider((_, __) => Task.FromException<IEnumerable<IRow>>(fatal));
-            var cache = CreateCache(provider.Object);
+            var loggerHandler = new RecordingLoggerHandler();
+            var cache = CreateCache(provider.Object, logger: new Logger(loggerHandler));
 
             var thrown = Assert.ThrowsAsync<OutOfMemoryException>(async () =>
                 await cache.RefreshAsync().ConfigureAwait(false));
 
             Assert.That(thrown, Is.SameAs(fatal));
+            Assert.That(loggerHandler.Warnings, Is.Empty);
+            Assert.That(loggerHandler.Errors, Is.Empty);
         }
 
         [Test]
@@ -1701,9 +1746,9 @@ namespace Cassandra.Tests
 
             var queryArray = queries.ToArray();
             Assert.That(queryArray, Has.Length.EqualTo(2));
-            Assert.That(queryArray[1], Does.Not.Contain(activeHostId.ToString()));
-            Assert.That(queryArray[1], Does.Contain(secondHostId.ToString()));
-            Assert.That(queryArray[1], Does.Contain(thirdHostId.ToString()));
+            Assert.That(queryArray[1], Does.Not.Contain(activeHostId.ToString("D")));
+            Assert.That(queryArray[1], Does.Contain(secondHostId.ToString("D")));
+            Assert.That(queryArray[1], Does.Contain(thirdHostId.ToString("D")));
         }
 
         [Test]

@@ -154,6 +154,8 @@ namespace Cassandra
 
         internal IEndPointResolver EndPointResolver { get; }
 
+        internal IEndPointResolutionPlanProvider EndPointResolutionPlanProvider { get; }
+
         internal ClientRoutesRuntime ClientRoutesRuntime { get; }
 
         internal IDnsResolver DnsResolver { get; }
@@ -389,6 +391,8 @@ namespace Cassandra
                     SocketOptions.ConnectTimeoutMillis > 0
                         ? TimeSpan.FromMilliseconds(SocketOptions.ConnectTimeoutMillis)
                         : (TimeSpan?)null);
+            EndPointResolutionPlanProvider = EndPointResolver as IEndPointResolutionPlanProvider ??
+                                             new SingleStepEndPointResolutionPlanProvider(EndPointResolver);
             ContactPointParser = contactPointParser ?? new ContactPointParser(DnsResolver, ProtocolOptions, ServerNameResolver, KeepContactPointsUnresolved);
 
             // Create the buffer pool with 16KB for small buffers and 256Kb for large buffers.

@@ -167,10 +167,7 @@ namespace Cassandra
             var clientOptions = new ClientOptions(_withoutRowSetBuffering, _queryAbortTimeout, _defaultKeyspace);
             var clientRoutesOptions = _clientRoutesConfig == null
                 ? null
-                : new ClientRoutesOptions(
-                    _clientRoutesConfig.Proxies,
-                    _clientRoutesConfig.NativeTransportPort,
-                    _clientRoutesConfig.ShardAwarenessEnabled);
+                : new ClientRoutesOptions(_clientRoutesConfig.Snapshot);
 
             var config = new Configuration(
                 policies,

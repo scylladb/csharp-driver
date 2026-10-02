@@ -75,6 +75,7 @@ namespace Cassandra.Connections
         private readonly IObserverFactory _observerFactory;
         private readonly CopyOnWriteShardedList<IConnection> _connections = new CopyOnWriteShardedList<IConnection>();
         private readonly object _connectionHandoffLock = new object();
+        private readonly object _connectionOpenLock = new object();
         private volatile HostDistance _distance;
         private readonly HashedWheelTimer _timer;
         private readonly SemaphoreSlim _allConnectionClosedEventLock = new SemaphoreSlim(1, 1);
@@ -88,10 +89,38 @@ namespace Cassandra.Connections
         private int _poolResizing;
         private int _state = PoolState.Init;
         private HashedWheelTimer.ITimeout _newConnectionTimeout;
-        private TaskCompletionSource<IConnection> _connectionOpenTcs;
+        private ConnectionOpenOperation _connectionOpenTcs;
         private int _connectionIndex;
         private readonly int _maxRequestsPerConnection;
         private readonly PoolingOptions _poolingOptions;
+
+        private sealed class ConnectionAttemptFailure
+        {
+            internal ConnectionAttemptFailure(IConnectionEndPoint endPoint, Exception exception)
+            {
+                EndPoint = endPoint;
+                Exception = ExceptionDispatchInfo.Capture(exception);
+            }
+
+            internal IConnectionEndPoint EndPoint { get; }
+
+            internal ExceptionDispatchInfo Exception { get; }
+        }
+
+        private sealed class ConnectionOpenOperation
+        {
+            private int _failureObservedByCaller;
+
+            internal TaskCompletionSource<IConnection> Completion { get; } =
+                new TaskCompletionSource<IConnection>();
+
+            internal bool FailureObservedByCaller => Volatile.Read(ref _failureObservedByCaller) != 0;
+
+            internal void MarkFailureObservedByCaller()
+            {
+                Interlocked.Exchange(ref _failureObservedByCaller, 1);
+            }
+        }
 
         public event Action<Host, HostConnectionPool> AllConnectionClosed;
 
@@ -342,53 +371,42 @@ namespace Cassandra.Connections
             int shardID,
             int shardAwarePort,
             int shardCount,
-            Func<IConnection, Func<bool>, Action, bool> tryAddToPool)
+            Func<ConnectionCandidateHandoff, bool> tryAddToPool)
         {
-            ConnectionEndPointResolutionPlan resolutionPlan;
-            var clientRoutesResolver = _config.EndPointResolver as ClientRoutesEndPointResolver;
-            if (clientRoutesResolver != null)
-            {
-                resolutionPlan = await clientRoutesResolver
-                    .GetConnectionEndPointResolutionPlanAsync(
-                        _host,
-                        isReconnection,
-                        shardAwarePort != 0,
-                        shardAwarePort)
-                    .ConfigureAwait(false);
-            }
-            else
-            {
-                IReadOnlyList<IConnectionEndPoint> resolvedEndPoints;
-                if (shardAwarePort != 0)
-                {
-                    resolvedEndPoints = await _config.EndPointResolver
-                        .GetConnectionShardAwareEndPointsAsync(_host, isReconnection, shardAwarePort)
-                        .ConfigureAwait(false);
-                }
-                else
-                {
-                    resolvedEndPoints = await _config.EndPointResolver
-                        .GetConnectionEndPointsAsync(_host, isReconnection)
-                        .ConfigureAwait(false);
-                }
-
-                resolutionPlan = new ConnectionEndPointResolutionPlan(new[]
-                {
-                    (Func<Task<IReadOnlyList<IConnectionEndPoint>>>)(() => Task.FromResult(resolvedEndPoints))
-                });
-            }
+            var resolutionPlan = await _config.EndPointResolutionPlanProvider
+                .GetConnectionEndPointResolutionPlanAsync(
+                    _host,
+                    isReconnection,
+                    shardAwarePort != 0,
+                    shardAwarePort)
+                .ConfigureAwait(false);
 
             // Surface the last failure, except that a socket error never replaces a non-socket one
             // (for example authentication or protocol version), so a backup route timing out does not hide it.
-            ExceptionDispatchInfo surfacedFailure = null;
-            IReadOnlyList<IConnectionEndPoint> endPoints;
-            while ((endPoints = await resolutionPlan.ResolveNextAsync().ConfigureAwait(false)) != null)
+            ConnectionAttemptFailure surfacedFailure = null;
+            var attemptFailures = new List<ConnectionAttemptFailure>();
+            while (true)
             {
+                IReadOnlyList<IConnectionEndPoint> endPoints;
+                try
+                {
+                    endPoints = await resolutionPlan.ResolveNextAsync().ConfigureAwait(false);
+                }
+                catch
+                {
+                    LogRecoveredRouteFailures(attemptFailures, null);
+                    throw;
+                }
+                if (endPoints == null)
+                {
+                    break;
+                }
+
                 foreach (var endPoint in endPoints)
                 {
                     IConnection c = null;
-                    var candidateClosed = 0;
-                    Action<IConnection> candidateClosing = _ => Interlocked.Exchange(ref candidateClosed, 1);
+                    ConnectionCandidateHandoff handoff = null;
+                    var admissionFailed = false;
                     try
                     {
                         c = _config.ConnectionFactory.Create(
@@ -396,7 +414,7 @@ namespace Cassandra.Connections
                             endPoint,
                             _config,
                             _observerFactory.CreateConnectionObserver(_host));
-                        c.Closing += candidateClosing;
+                        handoff = new ConnectionCandidateHandoff(c);
                         if (_poolingOptions.GetHeartBeatInterval() > 0)
                         {
                             c.OnIdleRequestException += ex => OnIdleRequestException(c, ex);
@@ -410,63 +428,63 @@ namespace Cassandra.Connections
                             await c.Open().ConfigureAwait(false);
                         }
 
-                        if (c.IsDisposed || c.IsClosed || Volatile.Read(ref candidateClosed) != 0)
+                        if (handoff.IsUnavailable)
                         {
                             throw new SocketException((int)SocketError.NotConnected);
                         }
 
                         if (tryAddToPool != null)
                         {
-                            if (!tryAddToPool(
-                                    c,
-                                    () => Volatile.Read(ref candidateClosed) != 0,
-                                    () => c.Closing += OnConnectionClosing))
+                            if (!tryAddToPool(handoff))
                             {
+                                admissionFailed = true;
                                 throw new SocketException((int)SocketError.NotConnected);
                             }
                         }
-                        else
+                        else if (!handoff.TryTransfer(
+                                     _connectionHandoffLock,
+                                     connection => connection.Closing += OnConnectionClosing,
+                                     connection => true,
+                                     connection => connection.Closing -= OnConnectionClosing))
                         {
-                            c.Closing += OnConnectionClosing;
-                            if (c.IsDisposed || c.IsClosed || Volatile.Read(ref candidateClosed) != 0)
-                            {
-                                throw new SocketException((int)SocketError.NotConnected);
-                            }
+                            throw new SocketException((int)SocketError.NotConnected);
                         }
 
-                        c.Closing -= candidateClosing;
+                        LogRecoveredRouteFailures(attemptFailures, null);
                         return c;
                     }
                     catch (Exception ex)
                     {
+                        handoff?.Dispose();
                         if (c != null)
                         {
                             // A failed candidate is local to this open operation. Do not let disposing it
                             // schedule a pool reconnection before the remaining route candidates are tried.
-                            c.Closing -= candidateClosing;
                             c.Closing -= OnConnectionClosing;
                             if (!c.IsDisposed)
                             {
                                 c.Dispose();
                             }
                         }
+
+                        var attemptFailure = new ConnectionAttemptFailure(endPoint, ex);
+                        attemptFailures.Add(attemptFailure);
                         if (Utils.IsFatalException(ex) || IsClosing)
                         {
+                            LogRecoveredRouteFailures(attemptFailures, attemptFailure);
                             throw;
                         }
-                        if (endPoint is ClientRouteConnectionEndPoint)
+                        if (admissionFailed &&
+                            !_config.EndPointResolutionPlanProvider.RetryOnPoolAdmissionFailure)
                         {
-                            // Only one candidate's error is surfaced, so record each route failure.
-                            HostConnectionPool.Logger.Info(
-                                "Failed to open a connection to {0}. Exception: {1}",
-                                endPoint.EndpointFriendlyName,
-                                ex);
+                            LogRecoveredRouteFailures(attemptFailures, attemptFailure);
+                            throw;
                         }
                         if (surfacedFailure == null ||
                             !(ex is SocketException) ||
-                            surfacedFailure.SourceException is SocketException)
+                            surfacedFailure.Exception.SourceException is SocketException)
                         {
-                            surfacedFailure = ExceptionDispatchInfo.Capture(ex);
+                            surfacedFailure = attemptFailure;
                         }
                     }
                 }
@@ -474,9 +492,29 @@ namespace Cassandra.Connections
 
             if (surfacedFailure != null)
             {
-                surfacedFailure.Throw();
+                LogRecoveredRouteFailures(attemptFailures, surfacedFailure);
+                surfacedFailure.Exception.Throw();
             }
             throw new DriverInternalError($"No connection endpoints were resolved for host {_host.Address}.");
+        }
+
+        private static void LogRecoveredRouteFailures(
+            IEnumerable<ConnectionAttemptFailure> failures,
+            ConnectionAttemptFailure propagatedFailure)
+        {
+            foreach (var failure in failures)
+            {
+                if (ReferenceEquals(failure, propagatedFailure) ||
+                    !(failure.EndPoint is ClientRouteConnectionEndPoint))
+                {
+                    continue;
+                }
+
+                HostConnectionPool.Logger.Info(
+                    "Failed to open a connection to {0}. Exception: {1}",
+                    failure.EndPoint.EndpointFriendlyName,
+                    failure.Exception.SourceException);
+            }
         }
 
         private bool ShouldUseShardAwareSourcePort(IConnectionEndPoint endPoint)
@@ -486,10 +524,39 @@ namespace Cassandra.Connections
                    _config.ClientRoutesRuntime.Options.ShardAwarenessEnabled;
         }
 
+        private bool TryTransferConnectionToPool(
+            ConnectionCandidateHandoff handoff,
+            out int connectionCount)
+        {
+            var currentConnectionCount = 0;
+            var transferred = handoff.TryTransfer(
+                _connectionHandoffLock,
+                connection => connection.Closing += OnConnectionClosing,
+                connection =>
+                {
+                    currentConnectionCount = _connections.Count;
+                    // Recheck under the pool lock immediately before publication. The handoff
+                    // performs another check afterwards and rolls the add back if close wins there.
+                    if (IsClosing || handoff.IsUnavailable)
+                    {
+                        return false;
+                    }
+
+                    currentConnectionCount = _connections.AddNew(connection);
+                    return true;
+                },
+                connection =>
+                {
+                    connection.Closing -= OnConnectionClosing;
+                    _connections.Remove(connection);
+                    currentConnectionCount = _connections.Count;
+                });
+            connectionCount = currentConnectionCount;
+            return transferred;
+        }
+
         private bool TryAddConnectionToPool(
             IConnection connection,
-            Func<bool> isCandidateClosed,
-            Action acceptConnection,
             bool addIfMissing,
             out int connectionCount)
         {
@@ -498,8 +565,7 @@ namespace Cassandra.Connections
                 connectionCount = _connections.Count;
                 if (IsClosing ||
                     connection.IsDisposed ||
-                    connection.IsClosed ||
-                    (isCandidateClosed != null && isCandidateClosed()))
+                    connection.IsClosed)
                 {
                     if (!addIfMissing)
                     {
@@ -511,11 +577,9 @@ namespace Cassandra.Connections
 
                 if (addIfMissing)
                 {
-                    acceptConnection?.Invoke();
                     if (IsClosing ||
                         connection.IsDisposed ||
-                        connection.IsClosed ||
-                        (isCandidateClosed != null && isCandidateClosed()))
+                        connection.IsClosed)
                     {
                         return false;
                     }
@@ -854,19 +918,33 @@ namespace Cassandra.Connections
                 return;
             }
 
+            ConnectionOpenOperation openOperation = null;
             try
             {
-                await CreateOpenConnection(false, schedule != null).ConfigureAwait(false);
+                await CreateOpenConnectionCore(
+                        false,
+                        schedule != null,
+                        false,
+                        operation => openOperation = operation)
+                    .ConfigureAwait(false);
                 StartCreatingConnection(null);
                 _host.BringUpIfDown();
             }
-            catch (Exception)
+            catch (Exception ex)
             {
                 // The connection could not be opened
                 if (IsClosing)
                 {
                     // don't mind, the pool is not supposed to be open
                     return;
+                }
+
+                if (openOperation != null && !openOperation.FailureObservedByCaller)
+                {
+                    HostConnectionPool.Logger.Info(
+                        "Connection to {0} could not be created and will be retried: {1}",
+                        _host.Address,
+                        ex);
                 }
 
                 if (schedule == null)
@@ -899,25 +977,50 @@ namespace Cassandra.Connections
         /// <exception cref="UnsupportedProtocolVersionException" />
         private async Task<IConnection> CreateOpenConnection(bool satisfyWithAnOpenConnection, bool isReconnection)
         {
-            var concurrentOpenTcs = Volatile.Read(ref _connectionOpenTcs);
-            // Try to exit early (cheap) as there could be another thread creating / finishing creating
-            if (concurrentOpenTcs != null)
+            return await CreateOpenConnectionCore(
+                    satisfyWithAnOpenConnection,
+                    isReconnection,
+                    true,
+                    null)
+                .ConfigureAwait(false);
+        }
+
+        private async Task<IConnection> CreateOpenConnectionCore(
+            bool satisfyWithAnOpenConnection,
+            bool isReconnection,
+            bool failureObservedByCaller,
+            Action<ConnectionOpenOperation> operationSelected)
+        {
+            ConnectionOpenOperation openOperation;
+            var ownsOpenOperation = false;
+            lock (_connectionOpenLock)
             {
-                // There is another thread opening a new connection
-                return await concurrentOpenTcs.Task.ConfigureAwait(false);
+                openOperation = _connectionOpenTcs;
+                if (openOperation == null)
+                {
+                    openOperation = new ConnectionOpenOperation();
+                    _connectionOpenTcs = openOperation;
+                    ownsOpenOperation = true;
+                }
+                ObserveConnectionOpenOperation(
+                    openOperation,
+                    failureObservedByCaller,
+                    operationSelected);
             }
-            var tcs = new TaskCompletionSource<IConnection>();
-            // Try to set the creation task source
-            concurrentOpenTcs = Interlocked.CompareExchange(ref _connectionOpenTcs, tcs, null);
-            if (concurrentOpenTcs != null)
+
+            if (!ownsOpenOperation)
             {
                 // There is another thread opening a new connection
-                return await concurrentOpenTcs.Task.ConfigureAwait(false);
+                return await openOperation.Completion.Task.ConfigureAwait(false);
             }
 
             if (IsClosing)
             {
-                return await FinishOpen(tcs, false, HostConnectionPool.GetNotConnectedException()).ConfigureAwait(false);
+                return await FinishOpen(
+                        openOperation,
+                        false,
+                        HostConnectionPool.GetNotConnectedException())
+                    .ConfigureAwait(false);
             }
 
             // Before creating, make sure that its still needed
@@ -929,9 +1032,13 @@ namespace Cassandra.Connections
                 if (connectionsSnapshot.Length == 0)
                 {
                     // Avoid race condition while removing
-                    return await FinishOpen(tcs, false, HostConnectionPool.GetNotConnectedException()).ConfigureAwait(false);
+                    return await FinishOpen(
+                            openOperation,
+                            false,
+                            HostConnectionPool.GetNotConnectedException())
+                        .ConfigureAwait(false);
                 }
-                return await FinishOpen(tcs, true, null, connectionsSnapshot[0]).ConfigureAwait(false);
+                return await FinishOpen(openOperation, true, null, connectionsSnapshot[0]).ConfigureAwait(false);
             }
 
             if (satisfyWithAnOpenConnection && !_canCreateForeground)
@@ -941,9 +1048,13 @@ namespace Cassandra.Connections
                 if (connectionsSnapshot.Length == 0)
                 {
                     // When creating in foreground, it failed
-                    return await FinishOpen(tcs, false, HostConnectionPool.GetNotConnectedException()).ConfigureAwait(false);
+                    return await FinishOpen(
+                            openOperation,
+                            false,
+                            HostConnectionPool.GetNotConnectedException())
+                        .ConfigureAwait(false);
                 }
-                return await FinishOpen(tcs, false, null, connectionsSnapshot[0]).ConfigureAwait(false);
+                return await FinishOpen(openOperation, false, null, connectionsSnapshot[0]).ConfigureAwait(false);
             }
 
             HostConnectionPool.Logger.Info("Creating a new connection to {0}", _host.Address);
@@ -967,22 +1078,19 @@ namespace Cassandra.Connections
                         lastAttemptedShard = shardID;
                     }
                 }
-                // Subclasses can override DoCreateAndOpen, so only the concrete production pool may move
-                // admission into the route loop without changing the virtual call's completion contract.
-                if (GetType() == typeof(HostConnectionPool) &&
-                    _config.EndPointResolver is ClientRoutesEndPointResolver)
+                // Subclasses can override DoCreateAndOpen, so only the concrete production pool moves
+                // admission under the candidate handoff without changing the virtual completion contract.
+                // The provider still decides whether a failed admission may try another endpoint.
+                if (GetType() == typeof(HostConnectionPool))
                 {
                     c = await DoCreateAndOpenCore(
                             isReconnection,
                             shardID,
                             shardAwarePort,
                             shardCount,
-                            (connection, isCandidateClosed, acceptConnection) =>
-                                addedDuringOpen = TryAddConnectionToPool(
-                                    connection,
-                                    isCandidateClosed,
-                                    acceptConnection,
-                                    true,
+                            handoff =>
+                                addedDuringOpen = TryTransferConnectionToPool(
+                                    handoff,
                                     out newLength))
                         .ConfigureAwait(false);
                 }
@@ -997,11 +1105,10 @@ namespace Cassandra.Connections
             }
             catch (Exception ex)
             {
-                HostConnectionPool.Logger.Info("Connection to {0} could not be created: {1}", _host.Address, ex);
-                return await FinishOpen(tcs, true, ex).ConfigureAwait(false);
+                return await FinishOpen(openOperation, true, ex).ConfigureAwait(false);
             }
 
-            if (!TryAddConnectionToPool(c, null, null, !addedDuringOpen, out newLength))
+            if (!TryAddConnectionToPool(c, !addedDuringOpen, out newLength))
             {
                 HostConnectionPool.Logger.Info(
                     "Connection to {0} opened successfully but could not be added to pool #{1}",
@@ -1009,7 +1116,7 @@ namespace Cassandra.Connections
                     GetHashCode());
                 c.Dispose();
                 return await FinishOpen(
-                        tcs,
+                        openOperation,
                         !IsClosing,
                         HostConnectionPool.GetNotConnectedException())
                     .ConfigureAwait(false);
@@ -1026,11 +1133,6 @@ namespace Cassandra.Connections
             }
             catch (Exception ex)
             {
-                HostConnectionPool.Logger.Error(
-                    "Could not publish shard state for connection to {0} in pool #{1}. The connection is discarded. Exception: {2}",
-                    _host.Address,
-                    GetHashCode(),
-                    ex);
                 // The connection was already admitted, so roll it back without firing the normal
                 // reconnection callback. Most importantly, always release _connectionOpenTcs:
                 // otherwise one malformed sharding response would deadlock every future open.
@@ -1053,10 +1155,10 @@ namespace Cassandra.Connections
                         _host.Address,
                         disposeException);
                 }
-                return await FinishOpen(tcs, true, ex).ConfigureAwait(false);
+                return await FinishOpen(openOperation, true, ex).ConfigureAwait(false);
             }
 
-            if (!TryAddConnectionToPool(c, null, null, false, out newLength))
+            if (!TryAddConnectionToPool(c, false, out newLength))
             {
                 HostConnectionPool.Logger.Info(
                     "Connection to {0} was removed or closed while publishing shard state for pool #{1}",
@@ -1078,12 +1180,24 @@ namespace Cassandra.Connections
                         disposeException);
                 }
                 return await FinishOpen(
-                        tcs,
+                        openOperation,
                         !IsClosing,
                         HostConnectionPool.GetNotConnectedException())
                     .ConfigureAwait(false);
             }
-            return await FinishOpen(tcs, true, null, c).ConfigureAwait(false);
+            return await FinishOpen(openOperation, true, null, c).ConfigureAwait(false);
+        }
+
+        private static void ObserveConnectionOpenOperation(
+            ConnectionOpenOperation operation,
+            bool failureObservedByCaller,
+            Action<ConnectionOpenOperation> operationSelected)
+        {
+            if (failureObservedByCaller)
+            {
+                operation.MarkFailureObservedByCaller();
+            }
+            operationSelected?.Invoke(operation);
         }
 
         private int GetLeastRepresentedShard(int shardCount)
@@ -1116,7 +1230,7 @@ namespace Cassandra.Connections
         }
 
         private Task<IConnection> FinishOpen(
-            TaskCompletionSource<IConnection> tcs,
+            ConnectionOpenOperation openOperation,
             bool preventForeground,
             Exception ex,
             IConnection c = null)
@@ -1126,9 +1240,15 @@ namespace Cassandra.Connections
             {
                 _canCreateForeground = false;
             }
-            Interlocked.Exchange(ref _connectionOpenTcs, null);
-            tcs.TrySet(ex, c);
-            return tcs.Task;
+            lock (_connectionOpenLock)
+            {
+                if (ReferenceEquals(_connectionOpenTcs, openOperation))
+                {
+                    _connectionOpenTcs = null;
+                }
+            }
+            openOperation.Completion.TrySet(ex, c);
+            return openOperation.Completion.Task;
         }
 
         private static SocketException GetNotConnectedException()
@@ -1369,8 +1489,12 @@ namespace Cassandra.Connections
                 {
                     await CreateOpenConnection(false, false).ConfigureAwait(false);
                 }
-                catch
+                catch (Exception ex)
                 {
+                    HostConnectionPool.Logger.Info(
+                        "An optional connection to {0} could not be created during pool warmup: {1}",
+                        _host.Address,
+                        ex);
                     break;
                 }
             }

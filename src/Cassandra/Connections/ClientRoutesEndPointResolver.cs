@@ -28,14 +28,13 @@ namespace Cassandra.Connections
     /// <summary>
     /// Resolves fresh, priority-ordered socket candidates from the cluster's client-routes snapshot.
     /// </summary>
-    internal sealed class ClientRoutesEndPointResolver : IEndPointResolver
+    internal sealed class ClientRoutesEndPointResolver : IEndPointResolver, IEndPointResolutionPlanProvider
     {
-        private static readonly Logger Logger = new Logger(typeof(ClientRoutesEndPointResolver));
-
         private readonly ClientRoutesRuntime _runtime;
         private readonly IDnsResolver _dnsResolver;
         private readonly IEndPointResolver _fallbackResolver;
         private readonly TimeSpan _lifecycleWaitTimeout;
+        private readonly Logger _logger;
         private readonly ConcurrentDictionary<Guid, bool> _hostsReportedWithoutRoutes =
             new ConcurrentDictionary<Guid, bool>();
 
@@ -47,15 +46,18 @@ namespace Cassandra.Connections
         /// the last confirmed snapshot is used; before any snapshot was confirmed, the open fails.
         /// Null waits indefinitely.
         /// </param>
+        /// <param name="logger">Logger used for recovered-resolution and fallback diagnostics.</param>
         public ClientRoutesEndPointResolver(
             ClientRoutesRuntime runtime,
             IDnsResolver dnsResolver,
             IEndPointResolver fallbackResolver,
-            TimeSpan? lifecycleWaitTimeout = null)
+            TimeSpan? lifecycleWaitTimeout = null,
+            Logger logger = null)
         {
             _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
             _dnsResolver = dnsResolver ?? throw new ArgumentNullException(nameof(dnsResolver));
             _fallbackResolver = fallbackResolver ?? throw new ArgumentNullException(nameof(fallbackResolver));
+            _logger = logger ?? new Logger(typeof(ClientRoutesEndPointResolver));
             _lifecycleWaitTimeout = lifecycleWaitTimeout ?? Timeout.InfiniteTimeSpan;
             if (_lifecycleWaitTimeout != Timeout.InfiniteTimeSpan && _lifecycleWaitTimeout <= TimeSpan.Zero)
             {
@@ -64,6 +66,8 @@ namespace Cassandra.Connections
                     "The lifecycle wait timeout must be positive, or null to wait indefinitely.");
             }
         }
+
+        public bool RetryOnPoolAdmissionFailure => true;
 
         public Task<IReadOnlyList<IConnectionEndPoint>> GetConnectionEndPointsAsync(
             Host host,
@@ -80,7 +84,7 @@ namespace Cassandra.Connections
             return ResolveAllAsync(host, refreshCache, true, shardAwarePort, true);
         }
 
-        internal Task<ConnectionEndPointResolutionPlan> GetConnectionEndPointResolutionPlanAsync(
+        public Task<ConnectionEndPointResolutionPlan> GetConnectionEndPointResolutionPlanAsync(
             Host host,
             bool refreshCache,
             bool shardAware,
@@ -89,10 +93,20 @@ namespace Cassandra.Connections
             return CreateResolutionPlanAsync(host, refreshCache, shardAware, shardAwarePort, true);
         }
 
-        internal ConnectionEndPointResolutionPlan GetControlConnectionEndPointResolutionPlan(
+        public ConnectionEndPointResolutionPlan GetControlConnectionEndPointResolutionPlan(
             Host host,
-            bool refreshCache)
+            bool refreshCache,
+            Func<ConnectionEndPointResolutionPlan> defaultResolutionPlanFactory)
         {
+            if (defaultResolutionPlanFactory == null)
+            {
+                throw new ArgumentNullException(nameof(defaultResolutionPlanFactory));
+            }
+
+            // Preserve the direct fallback owned by this resolver. Invoking the control
+            // connection's default factory here could route back through EndPointResolver,
+            // which is this instance when client routes are enabled, and wait on the same
+            // lifecycle pass that the control connection is currently trying to complete.
             return CreateResolutionPlan(host, refreshCache, false, 0);
         }
 
@@ -171,7 +185,7 @@ namespace Cassandra.Connections
                     $"has not loaded system.client_routes within {_lifecycleWaitTimeout.TotalMilliseconds}ms.");
             }
 
-            ClientRoutesEndPointResolver.Logger.Info(
+            _logger.Info(
                 "Client routes were not reconfirmed within {0}ms while the control connection reconnects. " +
                 "Using the last loaded routes for host {1}.",
                 _lifecycleWaitTimeout.TotalMilliseconds,
@@ -193,7 +207,7 @@ namespace Cassandra.Connections
             {
                 if (_hostsReportedWithoutRoutes.TryAdd(host.HostId, true))
                 {
-                    ClientRoutesEndPointResolver.Logger.Warning(
+                    _logger.Warning(
                         "No client route is configured for host {0} ({1}) in any of the connection IDs [{2}]. " +
                         "Connecting to its advertised address directly, which may be unreachable from this client.",
                         host.HostId,
@@ -208,11 +222,13 @@ namespace Cassandra.Connections
             }
 
             _hostsReportedWithoutRoutes.TryRemove(host.HostId, out _);
-            var resolutionSteps = new List<Func<Task<IReadOnlyList<IConnectionEndPoint>>>>(routes.Length);
+            var resolutionSteps = new List<ConnectionEndPointResolutionStep>(routes.Length);
             foreach (var route in routes)
             {
                 var currentRoute = route;
-                resolutionSteps.Add(() => ResolveRouteAsync(host, currentRoute));
+                resolutionSteps.Add(new ConnectionEndPointResolutionStep(
+                    () => ResolveRouteAsync(host, currentRoute),
+                    ex => LogRecoveredRouteResolutionFailure(currentRoute, ex)));
             }
 
             return new ConnectionEndPointResolutionPlan(
@@ -224,26 +240,22 @@ namespace Cassandra.Connections
             Host host,
             ClientRouteEndpoint route)
         {
-            IReadOnlyList<IPAddress> addresses;
-            try
-            {
-                addresses = await ResolveAddressesAsync(route.Address).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (!Utils.IsFatalException(ex))
-            {
-                ClientRoutesEndPointResolver.Logger.Warning(
-                    "Could not resolve client route {0} for connection {1}. Skipping this route. Exception: {2}",
-                    route.Address,
-                    route.ConnectionId,
-                    ex);
-                throw;
-            }
+            var addresses = await ResolveAddressesAsync(route.Address).ConfigureAwait(false);
 
             return addresses.Select(address => (IConnectionEndPoint)new ClientRouteConnectionEndPoint(
                 new IPEndPoint(address, route.Port),
                 host.Address,
                 GetServerName(route.Address),
                 route.ConnectionId)).ToArray();
+        }
+
+        private void LogRecoveredRouteResolutionFailure(ClientRouteEndpoint route, Exception exception)
+        {
+            _logger.Warning(
+                "Could not resolve client route {0} for connection {1}. Skipping this route. Exception: {2}",
+                route.Address,
+                route.ConnectionId,
+                exception);
         }
 
         private static Exception CreateNoRoutesResolvedException(

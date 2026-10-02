@@ -155,6 +155,30 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public void Should_ReuseValidatedOrdinalSelectionWhileCloningOptionProxyIdentities()
+        {
+            var first = new ClientRouteProxy("route-a", "a.example.com");
+            var second = new ClientRouteProxy("ROUTE-A", "b.example.com");
+            var config = new ClientRoutesConfig(new[] { first, second });
+
+            var options = new ClientRoutesOptions(config.Snapshot);
+
+            Assert.That(config.Proxies[0], Is.SameAs(first));
+            Assert.That(config.Proxies[1], Is.SameAs(second));
+            Assert.That(options.Proxies[0], Is.Not.SameAs(first));
+            Assert.That(options.Proxies[1], Is.Not.SameAs(second));
+            Assert.That(options.Selection, Is.SameAs(config.Snapshot.Selection));
+            Assert.That(
+                options.Selection.ConnectionIds,
+                Is.EqualTo(new[] { "route-a", "ROUTE-A" }));
+            Assert.That(options.Selection.ConnectionPriorities["route-a"], Is.EqualTo(0));
+            Assert.That(options.Selection.ConnectionPriorities["ROUTE-A"], Is.EqualTo(1));
+            Assert.That(options.Selection.ConnectionPriorities.ContainsKey("Route-A"), Is.False);
+            Assert.That(options.Selection.AddressOverrides["route-a"], Is.EqualTo("a.example.com"));
+            Assert.That(options.Selection.AddressOverrides["ROUTE-A"], Is.EqualTo("b.example.com"));
+        }
+
+        [Test]
         public void Should_UseDefaultsAndApplyConstructorSettings()
         {
             var defaults = CreateConfig();

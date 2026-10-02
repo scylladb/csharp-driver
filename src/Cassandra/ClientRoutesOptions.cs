@@ -16,8 +16,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Collections.ObjectModel;
-using System.Linq;
 
 namespace Cassandra
 {
@@ -26,51 +24,38 @@ namespace Cassandra
     /// </summary>
     internal sealed class ClientRoutesOptions
     {
+        private readonly ClientRoutesConfigurationSnapshot _snapshot;
+
         public ClientRoutesOptions(
             IEnumerable<ClientRouteProxy> proxies,
             int nativeTransportPort,
             bool shardAwarenessEnabled)
+            : this(ClientRoutesConfigurationSnapshot.Create(
+                proxies,
+                nativeTransportPort,
+                shardAwarenessEnabled))
         {
-            if (proxies == null)
-            {
-                throw new ArgumentNullException(nameof(proxies));
-            }
-
-            var frozenProxies = proxies
-                .Select(proxy => proxy == null
-                    ? throw new ArgumentException("Client route proxies must not contain null values.", nameof(proxies))
-                    : new ClientRouteProxy(proxy.ConnectionId, proxy.ConnectionAddressOverride))
-                .ToArray();
-            if (frozenProxies.Length == 0)
-            {
-                throw new ArgumentException("At least one client route proxy must be configured.", nameof(proxies));
-            }
-            if (nativeTransportPort < 1 || nativeTransportPort > 65535)
-            {
-                throw new ArgumentOutOfRangeException(
-                    nameof(nativeTransportPort),
-                    nativeTransportPort,
-                    "The native transport port must be between 1 and 65535, inclusive.");
-            }
-
-            Proxies = new ReadOnlyCollection<ClientRouteProxy>(frozenProxies);
-            NativeTransportPort = nativeTransportPort;
-            ShardAwarenessEnabled = shardAwarenessEnabled;
         }
 
-        public IReadOnlyList<ClientRouteProxy> Proxies { get; }
+        internal ClientRoutesOptions(ClientRoutesConfigurationSnapshot snapshot)
+        {
+            if (snapshot == null)
+            {
+                throw new ArgumentNullException(nameof(snapshot));
+            }
+            _snapshot = snapshot.CloneProxyIdentities();
+        }
 
-        public int NativeTransportPort { get; }
+        public IReadOnlyList<ClientRouteProxy> Proxies => _snapshot.Proxies;
 
-        public bool ShardAwarenessEnabled { get; }
+        public int NativeTransportPort => _snapshot.NativeTransportPort;
 
-        public IEnumerable<string> ConnectionIds => Proxies.Select(proxy => proxy.ConnectionId);
+        public bool ShardAwarenessEnabled => _snapshot.ShardAwarenessEnabled;
 
-        public IReadOnlyDictionary<string, string> AddressOverrides => Proxies
-            .Where(proxy => proxy.ConnectionAddressOverride != null)
-            .ToDictionary(
-                proxy => proxy.ConnectionId,
-                proxy => proxy.ConnectionAddressOverride,
-                StringComparer.Ordinal);
+        public IEnumerable<string> ConnectionIds => Selection.ConnectionIds;
+
+        public IReadOnlyDictionary<string, string> AddressOverrides => Selection.AddressOverrides;
+
+        internal ClientRoutesSelection Selection => _snapshot.Selection;
     }
 }

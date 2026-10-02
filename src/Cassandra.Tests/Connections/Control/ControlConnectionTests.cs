@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
@@ -180,14 +181,7 @@ namespace Cassandra.Tests.Connections.Control
                 return Task.FromResult(ClientRouteRows(hostId, "127.0.0.10", 19042));
             });
             var subscriber = new RecordingServerEventsSubscriber(() => operations.Enqueue("register"));
-            var createResult = NewInstance(
-                CreateHostRows(hostId),
-                configBuilderAct: builder =>
-                {
-                    builder.ClientRoutesOptions = CreateClientRoutesOptions();
-                    builder.MetadataRequestHandler = requestHandler;
-                    builder.ServerEventsSubscriber = subscriber;
-                });
+            var createResult = NewClientRoutesInstance(hostId, requestHandler, subscriber);
 
             using (var controlConnection = createResult.ControlConnection)
             {
@@ -216,14 +210,7 @@ namespace Cassandra.Tests.Connections.Control
                     ? Task.FromException<IEnumerable<IRow>>(queryFailure)
                     : Task.FromResult(ClientRouteRows(hostId, "127.0.0.10", 19042)));
             var subscriber = new RecordingServerEventsSubscriber();
-            var createResult = NewInstance(
-                CreateHostRows(hostId),
-                configBuilderAct: builder =>
-                {
-                    builder.ClientRoutesOptions = CreateClientRoutesOptions();
-                    builder.MetadataRequestHandler = requestHandler;
-                    builder.ServerEventsSubscriber = subscriber;
-                });
+            var createResult = NewClientRoutesInstance(hostId, requestHandler, subscriber);
 
             try
             {
@@ -262,14 +249,7 @@ namespace Cassandra.Tests.Connections.Control
                     : ClientRouteRows(hostId, "127.0.0.30", 39042));
             });
             var subscriber = new RecordingServerEventsSubscriber();
-            var createResult = NewInstance(
-                CreateHostRows(hostId),
-                configBuilderAct: builder =>
-                {
-                    builder.ClientRoutesOptions = CreateClientRoutesOptions();
-                    builder.MetadataRequestHandler = requestHandler;
-                    builder.ServerEventsSubscriber = subscriber;
-                });
+            var createResult = NewClientRoutesInstance(hostId, requestHandler, subscriber);
 
             using (var controlConnection = createResult.ControlConnection)
             {
@@ -335,14 +315,7 @@ namespace Cassandra.Tests.Connections.Control
                 return ClientRouteRows(hostId, "127.0.0.20", 29042);
             });
             var subscriber = new RecordingServerEventsSubscriber();
-            var createResult = NewInstance(
-                CreateHostRows(hostId),
-                configBuilderAct: builder =>
-                {
-                    builder.ClientRoutesOptions = CreateClientRoutesOptions();
-                    builder.MetadataRequestHandler = requestHandler;
-                    builder.ServerEventsSubscriber = subscriber;
-                });
+            var createResult = NewClientRoutesInstance(hostId, requestHandler, subscriber);
 
             try
             {
@@ -395,14 +368,7 @@ namespace Cassandra.Tests.Connections.Control
                 return ClientRouteRows(hostId, "127.0.0.20", 29042);
             });
             var subscriber = new RecordingServerEventsSubscriber();
-            var createResult = NewInstance(
-                CreateHostRows(hostId),
-                configBuilderAct: builder =>
-                {
-                    builder.ClientRoutesOptions = CreateClientRoutesOptions();
-                    builder.MetadataRequestHandler = requestHandler;
-                    builder.ServerEventsSubscriber = subscriber;
-                });
+            var createResult = NewClientRoutesInstance(hostId, requestHandler, subscriber);
 
             try
             {
@@ -545,10 +511,11 @@ namespace Cassandra.Tests.Connections.Control
         public async Task Should_RefreshDirectContactPointAfterRoutesFailDuringTotalConnectivityLoss()
         {
             var hostId = Guid.NewGuid();
+            const string routeAddress = "127.0.0.10";
             var contactPointEndPoint = new IPEndPoint(IPAddress.Parse("127.0.0.1"), ProtocolOptions.DefaultPort);
-            var routeEndPoint = new IPEndPoint(IPAddress.Parse("127.0.0.10"), 19042);
+            var routeEndPoint = new IPEndPoint(IPAddress.Parse(routeAddress), 19042);
             var attemptedEndPoints = new ConcurrentQueue<IPEndPoint>();
-            var connectionFactory = new FakeConnectionFactory(endPoint =>
+            var connectionFactory = new FakeConnectionFactory((IConnectionEndPoint endPoint) =>
             {
                 attemptedEndPoints.Enqueue(endPoint.SocketIpEndPoint);
                 var connection = new Mock<IConnection>();
@@ -561,7 +528,7 @@ namespace Cassandra.Tests.Connections.Control
                 return connection.Object;
             });
             var requestHandler = new RecordingMetadataRequestHandler((_, __) => Task.FromResult(
-                ClientRouteRows(hostId, routeEndPoint.Address.ToString(), routeEndPoint.Port)));
+                ClientRouteRows(hostId, routeAddress, routeEndPoint.Port)));
             var cluster = new Mock<IInternalCluster>();
             var loadBalancingPolicy = new TestHelper.CustomLoadBalancingPolicy();
             TestContactPoint contactPoint = null;
@@ -680,9 +647,10 @@ namespace Cassandra.Tests.Connections.Control
         public async Task Should_ConfirmEmptyRoutesBeforeCompletingReconnectLifecycle()
         {
             var hostId = Guid.NewGuid();
+            const string staleRouteAddress = "127.0.0.10";
             var advertisedEndPoint = new IPEndPoint(IPAddress.Parse("127.0.0.1"), ProtocolOptions.DefaultPort);
             var contactPointEndPoint = new IPEndPoint(IPAddress.Parse("127.0.0.2"), ProtocolOptions.DefaultPort);
-            var staleRouteEndPoint = new IPEndPoint(IPAddress.Parse("127.0.0.10"), 19042);
+            var staleRouteEndPoint = new IPEndPoint(IPAddress.Parse(staleRouteAddress), 19042);
             var attemptedEndPoints = new ConcurrentQueue<IPEndPoint>();
             var firstEmptyQueryStarted = NewSignal();
             var releaseFirstEmptyQuery = NewSignal();
@@ -706,7 +674,7 @@ namespace Cassandra.Tests.Connections.Control
             {
                 if (call == 1)
                 {
-                    return ClientRouteRows(hostId, staleRouteEndPoint.Address.ToString(), staleRouteEndPoint.Port);
+                    return ClientRouteRows(hostId, staleRouteAddress, staleRouteEndPoint.Port);
                 }
 
                 TaskCompletionSource<bool> queryStarted;
@@ -785,7 +753,7 @@ namespace Cassandra.Tests.Connections.Control
                 releaseFirstEmptyQuery.TrySetResult(true);
                 await secondEmptyQueryStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
                 Assert.IsTrue(createResult.Config.ClientRoutesRuntime.TryGetRoutes(hostId, out var routesAfterFirstEmpty));
-                Assert.AreEqual(staleRouteEndPoint.Address.ToString(), routesAfterFirstEmpty.Single().Address);
+                Assert.AreEqual(staleRouteAddress, routesAfterFirstEmpty.Single().Address);
                 Assert.IsFalse(lifecycleReady.IsCompleted);
                 Assert.IsFalse(reconnect.IsCompleted);
                 Assert.IsFalse(endpointResolution.IsCompleted);
@@ -793,7 +761,7 @@ namespace Cassandra.Tests.Connections.Control
                 releaseSecondEmptyQuery.TrySetResult(true);
                 await thirdEmptyQueryStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
                 Assert.IsTrue(createResult.Config.ClientRoutesRuntime.TryGetRoutes(hostId, out var routesAfterSecondEmpty));
-                Assert.AreEqual(staleRouteEndPoint.Address.ToString(), routesAfterSecondEmpty.Single().Address);
+                Assert.AreEqual(staleRouteAddress, routesAfterSecondEmpty.Single().Address);
                 Assert.IsFalse(lifecycleReady.IsCompleted);
                 Assert.IsFalse(reconnect.IsCompleted);
                 Assert.IsFalse(endpointResolution.IsCompleted);
@@ -886,6 +854,8 @@ namespace Cassandra.Tests.Connections.Control
         {
             var hostId = Guid.NewGuid();
             var events = new ConcurrentQueue<string>();
+            var firstPrimaryAddress = IPAddress.Parse("127.0.0.10");
+            var secondPrimaryAddress = IPAddress.Parse("127.0.0.11");
             var dns = new Mock<IDnsResolver>(MockBehavior.Strict);
             dns.Setup(value => value.GetHostEntryAsync("primary.proxy"))
                .Callback(() => events.Enqueue("resolve-primary"))
@@ -902,17 +872,18 @@ namespace Cassandra.Tests.Connections.Control
             {
                 var connection = new Mock<IConnection>();
                 connection.SetupGet(value => value.EndPoint).Returns(endPoint);
-                var address = endPoint.SocketIpEndPoint.Address.ToString();
-                if (address == "127.0.0.10" || address == "127.0.0.11")
+                var address = endPoint.SocketIpEndPoint.Address;
+                if (address.Equals(firstPrimaryAddress) || address.Equals(secondPrimaryAddress))
                 {
+                    var addressText = address.Equals(firstPrimaryAddress) ? "127.0.0.10" : "127.0.0.11";
                     connection.Setup(value => value.Open())
-                              .Callback(() => events.Enqueue("open-" + address))
+                              .Callback(() => events.Enqueue("open-" + addressText))
                               .ThrowsAsync(new SocketException((int)SocketError.ConnectionRefused));
                 }
                 else
                 {
                     connection.Setup(value => value.Open())
-                              .Callback(() => events.Enqueue("open-" + address))
+                              .Callback(() => events.Enqueue("open-127.0.0.12"))
                               .ReturnsAsync((Response)null);
                 }
                 return connection.Object;
@@ -972,14 +943,7 @@ namespace Cassandra.Tests.Connections.Control
                           Mock.Get(connection).Raise(value => value.Closing += null, connection);
                           return Task.CompletedTask;
                       });
-            var createResult = NewInstance(
-                CreateHostRows(hostId),
-                configBuilderAct: builder =>
-                {
-                    builder.ClientRoutesOptions = CreateClientRoutesOptions();
-                    builder.MetadataRequestHandler = requestHandler;
-                    builder.ServerEventsSubscriber = subscriber.Object;
-                });
+            var createResult = NewClientRoutesInstance(hostId, requestHandler, subscriber.Object);
 
             try
             {
@@ -1371,14 +1335,7 @@ namespace Cassandra.Tests.Connections.Control
                 return Task.FromException<IEnumerable<IRow>>(new InvalidQueryException("route query failed"));
             });
             var subscriber = new RecordingServerEventsSubscriber();
-            var createResult = NewInstance(
-                CreateHostRows(hostId),
-                configBuilderAct: builder =>
-                {
-                    builder.ClientRoutesOptions = CreateClientRoutesOptions();
-                    builder.MetadataRequestHandler = requestHandler;
-                    builder.ServerEventsSubscriber = subscriber;
-                });
+            var createResult = NewClientRoutesInstance(hostId, requestHandler, subscriber);
 
             using (var controlConnection = createResult.ControlConnection)
             {
@@ -1443,14 +1400,7 @@ namespace Cassandra.Tests.Connections.Control
             var requestHandler = new RecordingMetadataRequestHandler((_, __) =>
                 Task.FromResult(ClientRouteRows(hostId, "127.0.0.10", 19042)));
             var subscriber = new RecordingServerEventsSubscriber();
-            var createResult = NewInstance(
-                CreateHostRows(hostId),
-                configBuilderAct: builder =>
-                {
-                    builder.ClientRoutesOptions = CreateClientRoutesOptions();
-                    builder.MetadataRequestHandler = requestHandler;
-                    builder.ServerEventsSubscriber = subscriber;
-                });
+            var createResult = NewClientRoutesInstance(hostId, requestHandler, subscriber);
 
             await createResult.ControlConnection.InitAsync().ConfigureAwait(false);
             createResult.ControlConnection.Dispose();
@@ -1692,6 +1642,186 @@ namespace Cassandra.Tests.Connections.Control
             }
         }
 
+        [Test]
+        [NonParallelizable]
+        public async Task Should_LogContactPointResolutionFailureOnlyAfterAnotherCandidateConnects()
+        {
+            var resolutionFailure = new InvalidOperationException("recovered contact-point resolution failure");
+            var failingContactPoint = new Mock<IContactPoint>();
+            failingContactPoint.SetupGet(value => value.StringRepresentation).Returns("failing.example");
+            failingContactPoint.Setup(value => value.GetConnectionEndPointsAsync(It.IsAny<bool>()))
+                               .ThrowsAsync(resolutionFailure);
+            var createResult = NewInstance(
+                configBuilderAct: builder => builder.KeepContactPointsUnresolved = true,
+                contactPointsFactory: config => new IContactPoint[]
+                {
+                    failingContactPoint.Object,
+                    new IpLiteralContactPoint(
+                        IPAddress.Parse("127.0.0.1"),
+                        config.ProtocolOptions,
+                        config.ServerNameResolver)
+                });
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            var listener = new LoggingTests.TestTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Warning;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                using (createResult.ControlConnection)
+                {
+                    await createResult.ControlConnection.InitAsync().ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+
+            Assert.IsTrue(listener.Messages.Values.Any(message =>
+                message.Contains("recovered contact-point resolution failure")));
+        }
+
+        [Test]
+        [NonParallelizable]
+        public void Should_PropagateUnrecoveredContactPointResolutionFailureWithoutLoggingIt()
+        {
+            var resolutionFailure = new InvalidOperationException("propagated contact-point resolution failure");
+            var failingContactPoint = new Mock<IContactPoint>();
+            failingContactPoint.SetupGet(value => value.StringRepresentation).Returns("failing.example");
+            failingContactPoint.Setup(value => value.GetConnectionEndPointsAsync(It.IsAny<bool>()))
+                               .ThrowsAsync(resolutionFailure);
+            var createResult = NewInstance(
+                configBuilderAct: builder => builder.KeepContactPointsUnresolved = true,
+                contactPointsFactory: _ => new[] { failingContactPoint.Object });
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            var listener = new LoggingTests.TestTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Warning;
+            Trace.Listeners.Add(listener);
+            NoHostAvailableException exception;
+            try
+            {
+                using (createResult.ControlConnection)
+                {
+                    exception = Assert.ThrowsAsync<NoHostAvailableException>(
+                        () => createResult.ControlConnection.InitAsync());
+                }
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+
+            var aggregate = (AggregateException)exception.InnerException;
+            Assert.AreSame(resolutionFailure, aggregate.InnerExceptions.Single());
+            Assert.IsFalse(listener.Messages.Values.Any(message =>
+                message.Contains("propagated contact-point resolution failure")));
+        }
+
+        [Test]
+        [NonParallelizable]
+        public void Should_LogEarlierCandidateFailureBeforePropagatingLaterFatalFailure()
+        {
+            var recoveredFailure = new InvalidOperationException("recovered candidate before fatal");
+            var fatalFailure = new OutOfMemoryException("propagated fatal candidate");
+            var firstEndPoint = new IPEndPoint(IPAddress.Parse("127.0.0.10"), 9042);
+            var secondEndPoint = new IPEndPoint(IPAddress.Parse("127.0.0.11"), 9042);
+            var connectionFactory = new FakeConnectionFactory(endPoint =>
+            {
+                var connection = new Mock<IConnection>();
+                connection.SetupGet(value => value.EndPoint).Returns(endPoint);
+                connection.Setup(value => value.Open())
+                          .ThrowsAsync(endPoint.SocketIpEndPoint.Equals(firstEndPoint)
+                              ? (Exception)recoveredFailure
+                              : fatalFailure);
+                return connection.Object;
+            });
+            var createResult = NewInstance(
+                configBuilderAct: builder =>
+                {
+                    builder.ConnectionFactory = connectionFactory;
+                    builder.KeepContactPointsUnresolved = true;
+                },
+                contactPointsFactory: config => new[]
+                {
+                    new TestContactPoint(new IConnectionEndPoint[]
+                    {
+                        new ConnectionEndPoint(firstEndPoint, config.ServerNameResolver, null),
+                        new ConnectionEndPoint(secondEndPoint, config.ServerNameResolver, null)
+                    })
+                });
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            var listener = new LoggingTests.TestTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                using (createResult.ControlConnection)
+                {
+                    var actual = Assert.ThrowsAsync<OutOfMemoryException>(
+                        () => createResult.ControlConnection.InitAsync());
+                    Assert.AreSame(fatalFailure, actual);
+                }
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+
+            Assert.IsTrue(listener.Messages.Values.Any(message =>
+                message.Contains("recovered candidate before fatal")));
+            Assert.IsFalse(listener.Messages.Values.Any(message =>
+                message.Contains("propagated fatal candidate")));
+        }
+
+        [Test]
+        [NonParallelizable]
+        public void Should_LogEarlierResolutionFailureBeforePropagatingLaterFatalResolution()
+        {
+            var recoveredFailure = new InvalidOperationException("recovered resolution before fatal");
+            var fatalFailure = new OutOfMemoryException("propagated fatal resolution");
+            var firstContactPoint = new Mock<IContactPoint>();
+            firstContactPoint.SetupGet(value => value.StringRepresentation).Returns("first.example");
+            firstContactPoint.Setup(value => value.GetConnectionEndPointsAsync(It.IsAny<bool>()))
+                             .ThrowsAsync(recoveredFailure);
+            var secondContactPoint = new Mock<IContactPoint>();
+            secondContactPoint.SetupGet(value => value.StringRepresentation).Returns("second.example");
+            secondContactPoint.Setup(value => value.GetConnectionEndPointsAsync(It.IsAny<bool>()))
+                              .ThrowsAsync(fatalFailure);
+            var createResult = NewInstance(
+                configBuilderAct: builder => builder.KeepContactPointsUnresolved = true,
+                contactPointsFactory: _ => new[]
+                {
+                    firstContactPoint.Object,
+                    secondContactPoint.Object
+                });
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            var listener = new LoggingTests.TestTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Warning;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                using (createResult.ControlConnection)
+                {
+                    var actual = Assert.ThrowsAsync<OutOfMemoryException>(
+                        () => createResult.ControlConnection.InitAsync());
+                    Assert.AreSame(fatalFailure, actual);
+                }
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+
+            Assert.IsTrue(listener.Messages.Values.Any(message =>
+                message.Contains("recovered resolution before fatal")));
+            Assert.IsFalse(listener.Messages.Values.Any(message =>
+                message.Contains("propagated fatal resolution")));
+        }
+
         private ControlConnectionCreateResult CreateForContactPointTest(
             bool keepContactPointsUnresolved,
             FakeConnectionFactory connectionFactory = null)
@@ -1827,6 +1957,21 @@ namespace Cassandra.Tests.Connections.Control
         private static TaskCompletionSource<bool> NewSignal()
         {
             return new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        private ControlConnectionCreateResult NewClientRoutesInstance(
+            Guid hostId,
+            IMetadataRequestHandler requestHandler,
+            IServerEventsSubscriber subscriber)
+        {
+            return NewInstance(
+                CreateHostRows(hostId),
+                configBuilderAct: builder =>
+                {
+                    builder.ClientRoutesOptions = CreateClientRoutesOptions();
+                    builder.MetadataRequestHandler = requestHandler;
+                    builder.ServerEventsSubscriber = subscriber;
+                });
         }
 
         private ControlConnectionCreateResult NewReconnectingClientRoutesInstance(

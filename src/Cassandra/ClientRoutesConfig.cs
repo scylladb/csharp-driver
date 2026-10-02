@@ -16,7 +16,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Collections.ObjectModel;
 
 namespace Cassandra
 {
@@ -25,6 +24,8 @@ namespace Cassandra
     /// </summary>
     public sealed class ClientRoutesConfig
     {
+        private readonly ClientRoutesConfigurationSnapshot _snapshot;
+
         /// <summary>
         /// The default <see cref="NativeTransportPort"/>.
         /// </summary>
@@ -56,50 +57,18 @@ namespace Cassandra
             int nativeTransportPort = DefaultNativeTransportPort,
             bool shardAwarenessEnabled = false)
         {
-            if (proxies == null)
-            {
-                throw new ArgumentNullException(nameof(proxies));
-            }
-
-            var copiedProxies = new List<ClientRouteProxy>();
-            var connectionIds = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var proxy in proxies)
-            {
-                if (proxy == null)
-                {
-                    throw new ArgumentException("Client-routes proxies must not contain null elements.", nameof(proxies));
-                }
-                if (!connectionIds.Add(proxy.ConnectionId))
-                {
-                    throw new ArgumentException(
-                        "Client-routes proxy connection IDs must be unique.",
-                        nameof(proxies));
-                }
-                copiedProxies.Add(proxy);
-            }
-
-            if (copiedProxies.Count == 0)
-            {
-                throw new ArgumentException("At least one client-routes proxy must be configured.", nameof(proxies));
-            }
-
-            if (nativeTransportPort < 1 || nativeTransportPort > 65535)
-            {
-                throw new ArgumentOutOfRangeException(
-                    nameof(nativeTransportPort),
-                    nativeTransportPort,
-                    "The native transport port must be between 1 and 65535, inclusive.");
-            }
-
-            Proxies = new ReadOnlyCollection<ClientRouteProxy>(copiedProxies);
-            NativeTransportPort = nativeTransportPort;
-            ShardAwarenessEnabled = shardAwarenessEnabled;
+            _snapshot = ClientRoutesConfigurationSnapshot.Create(
+                proxies,
+                nativeTransportPort,
+                shardAwarenessEnabled);
         }
+
+        internal ClientRoutesConfigurationSnapshot Snapshot => _snapshot;
 
         /// <summary>
         /// Gets the configured proxies in priority order.
         /// </summary>
-        public IReadOnlyList<ClientRouteProxy> Proxies { get; }
+        public IReadOnlyList<ClientRouteProxy> Proxies => _snapshot.Proxies;
 
         /// <summary>
         /// Gets the native transport port for advertised node addresses whose topology metadata does not include one.
@@ -112,7 +81,7 @@ namespace Cassandra
         /// dialed as configured. Routed connections always use the port from <c>system.client_routes</c>:
         /// <c>tls_port</c> when SSL is configured, otherwise <c>port</c>.
         /// </remarks>
-        public int NativeTransportPort { get; }
+        public int NativeTransportPort => _snapshot.NativeTransportPort;
 
         /// <summary>
         /// Gets whether shard-aware source-port selection is enabled for client-routes connections.
@@ -123,6 +92,6 @@ namespace Cassandra
         /// so it is opt-in. This setting only affects routed connections; direct connections to hosts without
         /// a client route remain shard-aware.
         /// </remarks>
-        public bool ShardAwarenessEnabled { get; }
+        public bool ShardAwarenessEnabled => _snapshot.ShardAwarenessEnabled;
     }
 }
