@@ -31,7 +31,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
 {
     [TestFixture]
     [NonParallelizable]
-    [Category(ClientRoutesTestEnvironment.Category)]
+    [Category(TestCategory.RealCluster)]
     [TestTimeout(600000)]
     public sealed class ClientRoutesUnsupportedServerTests : TestGlobals
     {
@@ -40,7 +40,10 @@ namespace Cassandra.IntegrationTests.ClientRoutes
         [OneTimeSetUp]
         public void OneTimeSetUp()
         {
-            ClientRoutesTestEnvironment.RequireEnabled(true);
+            if (TestClusterManager.IsScylla)
+            {
+                Assert.Ignore("The unsupported client-routes diagnostic is covered by the regular Cassandra lane.");
+            }
             _testCluster = TestClusterManager.CreateNew(1);
         }
 
@@ -104,43 +107,6 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                     }
                 }
             }
-        }
-    }
-
-    internal static class ClientRoutesTestEnvironment
-    {
-        public const string Category = "client-routes";
-
-        private const string EnabledVariable = "CLIENT_ROUTES_INTEGRATION";
-        private const string UnsupportedVariable = "CLIENT_ROUTES_EXPECT_UNSUPPORTED";
-
-        public static void RequireEnabled(bool expectUnsupported)
-        {
-            if (!IsTrue(Environment.GetEnvironmentVariable(EnabledVariable)))
-            {
-                Assert.Ignore(
-                    $"Set {EnabledVariable}=1 and run the dedicated client-routes target; " +
-                    "these tests mutate ScyllaDB's cluster-wide client-routes table.");
-            }
-            if (!TestClusterManager.IsScylla)
-            {
-                Assert.Ignore("Client routes require a ScyllaDB integration-test cluster.");
-            }
-
-            var actualUnsupported = IsTrue(Environment.GetEnvironmentVariable(UnsupportedVariable));
-            if (actualUnsupported != expectUnsupported)
-            {
-                Assert.Ignore(expectUnsupported
-                    ? $"Set {UnsupportedVariable}=1 to run the unsupported-server lane."
-                    : $"The positive client-routes fixture is disabled when {UnsupportedVariable}=1.");
-            }
-        }
-
-        private static bool IsTrue(string value)
-        {
-            return string.Equals(value, "1", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(value, "true", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(value, "yes", StringComparison.OrdinalIgnoreCase);
         }
     }
 }

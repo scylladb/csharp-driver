@@ -39,7 +39,9 @@ namespace Cassandra.IntegrationTests.ClientRoutes
 {
     [TestFixture]
     [NonParallelizable]
-    [Category(ClientRoutesTestEnvironment.Category)]
+    [Category(TestCategory.RealCluster)]
+    [Category(TestCategory.ServerApi)]
+    [TestScyllaVersion(2026, 1)]
     [TestTimeout(600000)]
     public sealed class ClientRoutesIntegrationTests : TestGlobals
     {
@@ -58,8 +60,6 @@ namespace Cassandra.IntegrationTests.ClientRoutes
         [OneTimeSetUp]
         public void OneTimeSetUp()
         {
-            ClientRoutesTestEnvironment.RequireEnabled(false);
-
             _testCluster = TestClusterManager.CreateNew(
                 3,
                 new TestClusterOptions
