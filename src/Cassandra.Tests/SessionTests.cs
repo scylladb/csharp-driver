@@ -21,6 +21,8 @@ using System.Net;
 using System.Net.Sockets;
 using System.Threading.Tasks;
 using Cassandra.Connections;
+using Cassandra.Metrics;
+using Cassandra.Metrics.Abstractions;
 using Cassandra.Observers.Abstractions;
 using Cassandra.Serialization;
 using Cassandra.SessionManagement;
@@ -117,6 +119,136 @@ namespace Cassandra.Tests
                     It.IsAny<ISerializerManager>(),
                     It.IsAny<IObserverFactory>(),
                     It.IsAny<TokenFactory>()), Times.Never);
+            }
+        }
+
+        [Test]
+        public void Should_PropagatePoolFactoryNotConnectedExceptionDuringWarmup()
+        {
+            var failure = new SocketException((int)SocketError.NotConnected);
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                           It.IsAny<Host>(),
+                           It.IsAny<Configuration>(),
+                           It.IsAny<ISerializerManager>(),
+                           It.IsAny<IObserverFactory>(),
+                           It.IsAny<TokenFactory>()))
+                       .Throws(failure);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object
+            }.Build();
+
+            using (var session = CreateWarmupSession(config, "factory-not-connected-test"))
+            {
+                var ex = Assert.ThrowsAsync<SocketException>(async () =>
+                    await ((IInternalSession)session).Init().ConfigureAwait(false));
+
+                Assert.AreSame(failure, ex);
+            }
+        }
+
+        [Test]
+        public void Should_PropagateMetricsExceptionDuringWarmup()
+        {
+            var failure = new InvalidOperationException("node metrics initialization failed");
+            var metricsProvider = new Mock<IDriverMetricsProvider>();
+            metricsProvider.Setup(value => value.Timer(It.IsAny<string>(), It.IsAny<IMetric>()))
+                           .Returns(Mock.Of<IDriverTimer>());
+            metricsProvider.Setup(value => value.Meter(It.IsAny<string>(), It.IsAny<IMetric>()))
+                           .Returns(Mock.Of<IDriverMeter>());
+            metricsProvider.Setup(value => value.Counter(It.IsAny<string>(), It.IsAny<IMetric>()))
+                           .Returns(Mock.Of<IDriverCounter>());
+            metricsProvider.Setup(value => value.Gauge(
+                               It.IsAny<string>(),
+                               It.IsAny<IMetric>(),
+                               It.IsAny<Func<double?>>()))
+                           .Returns((string _, IMetric metric, Func<double?> __) =>
+                           {
+                               if (metric is NodeMetric)
+                               {
+                                   throw failure;
+                               }
+                               return Mock.Of<IDriverGauge>();
+                           });
+            var pool = new Mock<IHostConnectionPool>();
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                           It.IsAny<Host>(),
+                           It.IsAny<Configuration>(),
+                           It.IsAny<ISerializerManager>(),
+                           It.IsAny<IObserverFactory>(),
+                           It.IsAny<TokenFactory>()))
+                       .Returns(pool.Object);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object,
+                MetricsProvider = metricsProvider.Object
+            }.Build();
+
+            using (var session = CreateWarmupSession(config, "metrics-failure-test"))
+            {
+                var ex = Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                    await ((IInternalSession)session).Init().ConfigureAwait(false));
+
+                Assert.AreSame(failure, ex);
+                pool.Verify(value => value.Warmup(), Times.Never);
+            }
+        }
+
+        [Test]
+        public void Should_PropagateSynchronousPoolWarmupException()
+        {
+            var failure = new InvalidOperationException("synchronous pool warmup failure");
+            var pool = new Mock<IHostConnectionPool>();
+            pool.Setup(value => value.Warmup()).Throws(failure);
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                           It.IsAny<Host>(),
+                           It.IsAny<Configuration>(),
+                           It.IsAny<ISerializerManager>(),
+                           It.IsAny<IObserverFactory>(),
+                           It.IsAny<TokenFactory>()))
+                       .Returns(pool.Object);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object
+            }.Build();
+
+            using (var session = CreateWarmupSession(config, "synchronous-warmup-failure-test"))
+            {
+                var ex = Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                    await ((IInternalSession)session).Init().ConfigureAwait(false));
+
+                Assert.AreSame(failure, ex);
+            }
+        }
+
+        [Test]
+        public void Should_PropagateSynchronousFatalPoolWarmupException()
+        {
+            var failure = new OutOfMemoryException("fatal pool warmup failure");
+            var pool = new Mock<IHostConnectionPool>();
+            pool.Setup(value => value.Warmup()).Throws(failure);
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                           It.IsAny<Host>(),
+                           It.IsAny<Configuration>(),
+                           It.IsAny<ISerializerManager>(),
+                           It.IsAny<IObserverFactory>(),
+                           It.IsAny<TokenFactory>()))
+                       .Returns(pool.Object);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object
+            }.Build();
+
+            using (var session = CreateWarmupSession(config, "fatal-warmup-failure-test"))
+            {
+                var ex = Assert.ThrowsAsync<OutOfMemoryException>(async () =>
+                    await ((IInternalSession)session).Init().ConfigureAwait(false));
+
+                Assert.AreSame(failure, ex);
             }
         }
 
@@ -218,8 +350,9 @@ namespace Cassandra.Tests
                     replacementHost.SetDown();
                 }
 
-                Assert.Throws<SocketException>(() =>
+                var ex = Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
                     internalSession.GetOrCreateConnectionPool(oldHost, HostDistance.Local));
+                Assert.AreEqual(SocketError.NotConnected, ex.SocketErrorCode);
 
                 cluster.Verify(value => value.RetrieveAndSetDistance(replacementHost), Times.Once);
                 poolFactory.Verify(value => value.Create(
@@ -241,6 +374,18 @@ namespace Cassandra.Tests
                 { "release_version", "2026.1" },
                 { "tokens", new string[0] }
             });
+        }
+
+        private static Session CreateWarmupSession(Configuration config, string sessionName)
+        {
+            var metadata = new Metadata(config);
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            cluster.Setup(value => value.AllHosts()).Returns(() => metadata.AllHosts());
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            var host = metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.11"), 9042));
+            host.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            return new Session(cluster.Object, config, null, SerializerManager.Default, sessionName);
         }
     }
 }

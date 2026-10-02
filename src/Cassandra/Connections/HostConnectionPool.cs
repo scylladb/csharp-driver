@@ -89,7 +89,7 @@ namespace Cassandra.Connections
         private int _poolResizing;
         private int _state = PoolState.Init;
         private HashedWheelTimer.ITimeout _newConnectionTimeout;
-        private ConnectionOpenOperation _connectionOpenTcs;
+        private ConnectionOpenOperation _connectionOpenOperation;
         private int _connectionIndex;
         private readonly int _maxRequestsPerConnection;
         private readonly PoolingOptions _poolingOptions;
@@ -995,11 +995,11 @@ namespace Cassandra.Connections
             var ownsOpenOperation = false;
             lock (_connectionOpenLock)
             {
-                openOperation = _connectionOpenTcs;
+                openOperation = _connectionOpenOperation;
                 if (openOperation == null)
                 {
                     openOperation = new ConnectionOpenOperation();
-                    _connectionOpenTcs = openOperation;
+                    _connectionOpenOperation = openOperation;
                     ownsOpenOperation = true;
                 }
                 ObserveConnectionOpenOperation(
@@ -1124,7 +1124,7 @@ namespace Cassandra.Connections
 
             HostConnectionPool.Logger.Info("Connection to {0} opened successfully, pool #{1} length: {2}",
                 _host.Address, GetHashCode(), newLength);
-            // Publish shard state before releasing _connectionOpenTcs. Connection creation is
+            // Publish shard state before releasing _connectionOpenOperation. Connection creation is
             // serialized by that field, so an older connection cannot overwrite a newer route
             // transition after the next open has already updated the pool.
             try
@@ -1134,7 +1134,7 @@ namespace Cassandra.Connections
             catch (Exception ex)
             {
                 // The connection was already admitted, so roll it back without firing the normal
-                // reconnection callback. Most importantly, always release _connectionOpenTcs:
+                // reconnection callback. Most importantly, always release _connectionOpenOperation:
                 // otherwise one malformed sharding response would deadlock every future open.
                 lock (_connectionHandoffLock)
                 {
@@ -1235,9 +1235,9 @@ namespace Cassandra.Connections
             }
             lock (_connectionOpenLock)
             {
-                if (ReferenceEquals(_connectionOpenTcs, openOperation))
+                if (ReferenceEquals(_connectionOpenOperation, openOperation))
                 {
-                    _connectionOpenTcs = null;
+                    _connectionOpenOperation = null;
                 }
             }
             openOperation.Completion.TrySet(ex, c);
@@ -1482,12 +1482,13 @@ namespace Cassandra.Connections
                 {
                     await CreateOpenConnection(false, false).ConfigureAwait(false);
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (!Utils.IsFatalException(ex))
                 {
                     HostConnectionPool.Logger.Info(
                         "An optional connection to {0} could not be created during pool warmup: {1}",
                         _host.Address,
                         ex);
+                    OnConnectionClosing();
                     break;
                 }
             }

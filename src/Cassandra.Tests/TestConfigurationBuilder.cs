@@ -21,6 +21,7 @@ using Cassandra.Connections.Control;
 using Cassandra.ExecutionProfiles;
 using Cassandra.MetadataHelpers;
 using Cassandra.Metrics;
+using Cassandra.Metrics.Abstractions;
 using Cassandra.Metrics.Providers.Null;
 using Cassandra.Observers;
 using Cassandra.Observers.Metrics;
@@ -79,6 +80,8 @@ namespace Cassandra.Tests
 
         public DriverMetricsOptions MetricsOptions { get; set; } = new DriverMetricsOptions();
 
+        public IDriverMetricsProvider MetricsProvider { get; set; } = new NullDriverMetricsProvider();
+
         public string SessionName { get; set; } = Configuration.DefaultSessionName;
 
         public string ApplicationVersion { get; set; } = Configuration.DefaultApplicationVersion;
@@ -134,7 +137,7 @@ namespace Cassandra.Tests
                 ExecutionProfiles,
                 MetadataSyncOptions,
                 EndPointResolver,
-                new NullDriverMetricsProvider(),
+                MetricsProvider,
                 MetricsOptions,
                 SessionName,
                 ClusterId,

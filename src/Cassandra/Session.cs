@@ -18,7 +18,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
-using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -274,10 +273,22 @@ namespace Cassandra
             }
         }
 
-        private async Task WarmupHost(Host host)
+        private Task WarmupHost(Host host)
         {
-            var pool = InternalRef.GetOrCreateConnectionPool(host, HostDistance.Local);
-            await pool.Warmup().ConfigureAwait(false);
+            IHostConnectionPool pool;
+            try
+            {
+                pool = InternalRef.GetOrCreateConnectionPool(host, HostDistance.Local);
+            }
+            catch (HostConnectionPoolNotEligibleException)
+            {
+                // The host became down, ignored, or was replaced after the warmup list was built.
+                return Task.CompletedTask;
+            }
+
+            // Do not introduce an async boundary here. Synchronous failures from pool creation,
+            // metrics initialization, and Warmup() must retain their original propagation behavior.
+            return pool.Warmup();
         }
 
         /// <inheritdoc />
@@ -390,7 +401,7 @@ namespace Cassandra
                         "Not creating a connection pool for host {0}: it is {1}.",
                         host.Address,
                         distance == HostDistance.Ignored ? "ignored" : "down");
-                    throw new SocketException((int)SocketError.NotConnected);
+                    throw new HostConnectionPoolNotEligibleException();
                 }
 
                 if (_connectionPool.TryGetValue(host.Address, out var existingPool))

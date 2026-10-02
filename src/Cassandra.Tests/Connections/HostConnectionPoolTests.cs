@@ -272,7 +272,7 @@ namespace Cassandra.Tests.Connections
             });
             var target = CreatePool(
                 connectionFactory: factory,
-                coreConnections: 1,
+                coreConnections: 2,
                 reconnectionPolicy: new ConstantReconnectionPolicy(10));
 
             await target.Warmup().ConfigureAwait(false);
@@ -302,13 +302,43 @@ namespace Cassandra.Tests.Connections
         public async Task Should_LogOptionalConnectionFailureSwallowedByWarmup()
         {
             var failure = new InvalidOperationException("optional warmup connection failure");
+            var shardingInfo = ShardingInfo.Create(
+                "0",
+                "2",
+                "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin",
+                "12",
+                "19042",
+                "19142");
+            var resolvedEndPoint = new FakeConnectionEndPoint("198.51.100.27", 9042);
+            var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            resolver.Setup(value => value.GetConnectionEndPointsAsync(It.IsAny<Host>(), false))
+                    .ReturnsAsync(new IConnectionEndPoint[] { resolvedEndPoint });
+            resolver.Setup(value => value.GetConnectionShardAwareEndPointsAsync(
+                               It.IsAny<Host>(),
+                               false,
+                               19042))
+                    .ReturnsAsync(new IConnectionEndPoint[] { resolvedEndPoint });
+            resolver.Setup(value => value.GetConnectionShardAwareEndPointsAsync(
+                               It.IsAny<Host>(),
+                               true,
+                               19042))
+                    .ReturnsAsync(new IConnectionEndPoint[] { resolvedEndPoint });
             var createdConnections = 0;
             var target = CreatePool(
+                res: resolver.Object,
                 connectionFactory: new FakeConnectionFactory(endPoint =>
-                    Interlocked.Increment(ref createdConnections) == 1
-                        ? CreateConnection(endPoint).Object
-                        : CreateConnection(endPoint, failure).Object),
-                coreConnections: 2);
+                {
+                    var attempt = Interlocked.Increment(ref createdConnections);
+                    var connection = CreateConnection(
+                        endPoint,
+                        attempt == 2 ? failure : null,
+                        shardingInfo);
+                    connection.Object.ShardID = attempt == 1 ? 0 : 1;
+                    return connection.Object;
+                }),
+                coreConnections: 1,
+                reconnectionPolicy: new ConstantReconnectionPolicy(10));
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
             var listener = new LoggingTests.TestTraceListener();
             Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
@@ -316,14 +346,75 @@ namespace Cassandra.Tests.Connections
             try
             {
                 await target.Warmup().ConfigureAwait(false);
+                Assert.AreEqual(2, GetExpectedConnectionLength(target));
                 Assert.IsTrue(listener.Messages.Values.Any(message =>
                     message.Contains("optional warmup connection failure")));
+                TestHelper.RetryAssert(
+                    () => Assert.AreEqual(2, target.OpenConnections),
+                    20,
+                    50);
+                Assert.AreEqual(3, Volatile.Read(ref createdConnections));
+                CollectionAssert.AreEquivalent(
+                    new[] { 0, 1 },
+                    target.ConnectionsSnapshot.Select(connection => connection.ShardID).ToArray());
             }
             finally
             {
                 target.Dispose();
                 Trace.Listeners.Remove(listener);
                 Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+        }
+
+        [Test]
+        public void Should_PropagateFatalOptionalConnectionFailureDuringWarmup()
+        {
+            var failure = new OutOfMemoryException("fatal optional warmup connection failure");
+            var shardingInfo = ShardingInfo.Create(
+                "0",
+                "2",
+                "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin",
+                "12",
+                "19042",
+                "19142");
+            var resolvedEndPoint = new FakeConnectionEndPoint("198.51.100.28", 9042);
+            var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            resolver.Setup(value => value.GetConnectionEndPointsAsync(It.IsAny<Host>(), false))
+                    .ReturnsAsync(new IConnectionEndPoint[] { resolvedEndPoint });
+            resolver.Setup(value => value.GetConnectionShardAwareEndPointsAsync(
+                               It.IsAny<Host>(),
+                               false,
+                               19042))
+                    .ReturnsAsync(new IConnectionEndPoint[] { resolvedEndPoint });
+            var createdConnections = 0;
+            var target = CreatePool(
+                res: resolver.Object,
+                connectionFactory: new FakeConnectionFactory(endPoint =>
+                {
+                    var attempt = Interlocked.Increment(ref createdConnections);
+                    var connection = CreateConnection(
+                        endPoint,
+                        attempt == 2 ? failure : null,
+                        shardingInfo);
+                    connection.Object.ShardID = attempt == 1 ? 0 : 1;
+                    return connection.Object;
+                }),
+                coreConnections: 2,
+                reconnectionPolicy: new ConstantReconnectionPolicy(5000));
+
+            try
+            {
+                var ex = Assert.ThrowsAsync<OutOfMemoryException>(async () =>
+                    await target.Warmup().ConfigureAwait(false));
+
+                Assert.AreSame(failure, ex);
+                Assert.AreEqual(2, Volatile.Read(ref createdConnections));
+                Assert.AreEqual(1, target.OpenConnections);
+            }
+            finally
+            {
+                target.Dispose();
             }
         }
 
@@ -1068,7 +1159,7 @@ namespace Cassandra.Tests.Connections
 
             var warmup = Task.Run(() => target.Warmup());
             await directShardingReadStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
-            var shardUpdateIsSerialized = GetConnectionOpenTaskSource(target) != null;
+            var shardUpdateIsSerialized = GetConnectionOpenOperation(target) != null;
 
             rows.Add(ClientRouteRow(_host.HostId, "198.51.100.92", 9042, "route-a"));
             await routesCache.FullRefreshBarrierAsync().ConfigureAwait(false);
@@ -1141,7 +1232,7 @@ namespace Cassandra.Tests.Connections
                 await InvokeCreateOpenConnection(target).ConfigureAwait(false));
 
             Assert.AreEqual("invalid sharding response", ex.Message);
-            Assert.IsNull(GetConnectionOpenTaskSource(target));
+            Assert.IsNull(GetConnectionOpenOperation(target));
             Assert.AreEqual(0, target.OpenConnections);
             var rejectedConnection = createdConnections.Single();
             rejectedConnection.Verify(value => value.Dispose(), Times.Once);
@@ -1155,7 +1246,7 @@ namespace Cassandra.Tests.Connections
             rejectedConnection.Verify(value => value.Dispose(), Times.Once);
             Assert.AreEqual(1, target.OpenConnections);
             Assert.IsNotNull(GetShardingInfo(target));
-            Assert.IsNull(GetConnectionOpenTaskSource(target));
+            Assert.IsNull(GetConnectionOpenOperation(target));
         }
 
         [Test]
@@ -1210,7 +1301,7 @@ namespace Cassandra.Tests.Connections
             candidate.Verify(value => value.Dispose(), Times.Once);
             Assert.AreEqual(0, target.OpenConnections);
             Assert.IsEmpty(target.ConnectionsSnapshot);
-            Assert.IsNull(GetConnectionOpenTaskSource(target));
+            Assert.IsNull(GetConnectionOpenOperation(target));
             // Every reconnection path either creates a schedule or asks the current one for a delay,
             // and the disposal checks that suppress them run before the open task completes.
             Assert.AreEqual(1, reconnectionPolicy.ScheduleCount, "A reconnection schedule was created after disposal.");
@@ -1332,10 +1423,10 @@ namespace Cassandra.Tests.Connections
             return (ShardingInfo)field.GetValue(pool);
         }
 
-        private static object GetConnectionOpenTaskSource(HostConnectionPool pool)
+        private static object GetConnectionOpenOperation(HostConnectionPool pool)
         {
             var field = typeof(HostConnectionPool).GetField(
-                "_connectionOpenTcs",
+                "_connectionOpenOperation",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.IsNotNull(field);
             return field.GetValue(pool);
