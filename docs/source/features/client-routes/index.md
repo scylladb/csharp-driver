@@ -37,7 +37,7 @@ Client routes cannot be combined with an explicitly configured `IAddressTranslat
 
 ## Connection selection and fallback
 
-The explicit contact points bootstrap the first control connection. They are dialed as configured and bypass client-route lookup, address overrides, and address translation. After topology and protocol negotiation, the driver registers for route-change events and loads the routes before cluster initialization completes.
+The explicit contact points are bootstrap-only: they establish the first control connection and are not dialed again after client-routes initialization. During bootstrap they are dialed as configured and bypass client-route lookup, address overrides, and address translation. After topology and protocol negotiation, the driver registers for route-change events and loads the routes before cluster initialization completes.
 
 For each new connection to a known Host ID, the driver behaves as follows:
 
@@ -45,7 +45,9 @@ For each new connection to a known Host ID, the driver behaves as follows:
 2. If no route exists for that Host ID, the driver connects to the node's advertised endpoint and logs a warning. This direct fallback allows routed and directly reachable nodes to coexist in one cluster.
 3. If one or more routes exist but all routed candidates fail, the driver does not fall back to the node's advertised endpoint.
 
-On later control-connection attempts, Host-ID routes are preferred. Explicit contact points remain available as the final recovery path after total cluster connectivity loss; this does not enable per-host direct fallback when that host has routes.
+Later control-connection attempts remain Host-ID routed. If every routed candidate fails, that attempt fails and the normal control-reconnection schedule tries again; the driver does not redial the bootstrap contact points or bypass the route table.
+
+Direct fallback for a Host ID requires confirmation from a completed route-lifecycle pass that the Host ID has no route. After a lifecycle timeout, a cached route or confirmed route absence can be reused only for Host IDs covered by the last completed pass. In particular, a stale snapshot cannot authorize a direct connection to an unconfirmed new or replacement Host ID, even when its advertised address is unchanged. Once a pass covering that Host ID completes, the normal routed or confirmed-no-route behavior resumes.
 
 Cached routes are not dropped on a single empty or unreadable result: when a full refresh returns no rows, the cached routes are kept until three consecutive refreshes confirm the empty result, and routes in rows the driver cannot read are retained. If a route query fails, the previous routes are kept and the query is retried in the background with an increasing delay.
 

@@ -195,7 +195,7 @@ namespace Cassandra.Tests
                     9042,
                     false)
             }.Build();
-            config.ClientRoutesRuntime.CompleteLifecyclePass();
+            config.ClientRoutesRuntime.CompleteLifecyclePass(new[] { Host1.HostId });
             _mock = GetPoolMock(null, config);
             var expected = GetConnectionMock(0);
             _mock.Setup(p => p.DoCreateAndOpen(false, -1, 0, 0)).ReturnsAsync(expected);

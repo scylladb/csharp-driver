@@ -51,13 +51,31 @@ namespace Cassandra.IntegrationTests.ClientRoutes
         [OneTimeSetUp]
         public void OneTimeSetUp()
         {
-            _testCluster = TestClusterManager.CreateNew(3);
+            try
+            {
+                _testCluster = TestClusterManager.CreateNew(3);
+            }
+            catch (Exception setupException)
+            {
+                try
+                {
+                    CleanupFixture();
+                }
+                catch (Exception cleanupException)
+                {
+                    throw new AggregateException(
+                        "Node-replacement fixture setup and cleanup both failed.",
+                        setupException,
+                        cleanupException);
+                }
+                throw;
+            }
         }
 
         [OneTimeTearDown]
         public void OneTimeTearDown()
         {
-            TestClusterManager.TryRemove();
+            CleanupFixture();
         }
 
         [Test]
@@ -160,10 +178,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 }
                 finally
                 {
-                    foreach (var relay in relays.Values)
-                    {
-                        relay.Dispose();
-                    }
+                    DisposeRelays(relays);
                 }
             }
         }
@@ -214,6 +229,12 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                     "Could not start the same-address replacement node." + Environment.NewLine +
                     output + Environment.NewLine + logTail);
             }
+        }
+
+        private void CleanupFixture()
+        {
+            _testCluster = null;
+            ClientRoutesTestSupport.RunAllCleanupActions(TestClusterManager.TryRemove);
         }
 
         private static bool IsNodeDownInNodetool(string address)
@@ -268,14 +289,38 @@ namespace Cassandra.IntegrationTests.ClientRoutes
         private static Dictionary<Guid, TcpRelay> StartRelays(IEnumerable<ClientRoutesNode> nodes)
         {
             var relays = new Dictionary<Guid, TcpRelay>();
-            foreach (var node in nodes)
+            try
             {
-                relays.Add(
-                    node.HostId,
-                    new TcpRelay(
-                        new IPEndPoint(IPAddress.Parse(node.Address), DefaultCassandraPort)));
+                foreach (var node in nodes)
+                {
+                    relays.Add(
+                        node.HostId,
+                        new TcpRelay(
+                            new IPEndPoint(IPAddress.Parse(node.Address), DefaultCassandraPort)));
+                }
+                return relays;
             }
-            return relays;
+            catch (Exception creationException)
+            {
+                try
+                {
+                    DisposeRelays(relays);
+                }
+                catch (Exception cleanupException)
+                {
+                    throw new AggregateException(
+                        "Relay construction and partial relay cleanup both failed.",
+                        creationException,
+                        cleanupException);
+                }
+                throw;
+            }
+        }
+
+        private static void DisposeRelays(IEnumerable<KeyValuePair<Guid, TcpRelay>> relays)
+        {
+            ClientRoutesTestSupport.RunAllCleanupActions(
+                relays.Select(item => new Action(item.Value.Dispose)).ToArray());
         }
 
         private static ClientRouteApiEntry[] CreateEntries(

@@ -64,6 +64,7 @@ namespace Cassandra
         private volatile bool _initialized;
         private volatile Exception _initException;
         private readonly SemaphoreSlim _initLock = new SemaphoreSlim(1, 1);
+        private int _controlConnectionDisposed;
         private long _sessionCounter = -1;
 
         private readonly Metadata _metadata;
@@ -258,14 +259,7 @@ namespace Cassandra
                             " between the client driver instance and the cluster. You can increase this timeout via " +
                             "the SocketOptions.ConnectTimeoutMillis config setting. This can also be related to deadlocks " +
                             "caused by mixing synchronous and asynchronous code.", ex);
-                        _initException = new InitFatalErrorException(newEx);
-                        initTask.ContinueWith(t =>
-                        {
-                            if (t.IsFaulted && t.Exception != null)
-                            {
-                                _initException = new InitFatalErrorException(t.Exception.InnerException);
-                            }
-                        }, TaskContinuationOptions.ExecuteSynchronously).Forget();
+                        initTask.Forget();
                         throw newEx;
                     }
 
@@ -290,15 +284,12 @@ namespace Cassandra
                     //No host available now, maybe later it can recover from
                     throw;
                 }
-                catch (TimeoutException)
-                {
-                    throw;
-                }
                 catch (Exception ex)
                 {
                     //There was an error that the driver is not able to recover from
                     //Store the exception for the following times
                     _initException = new InitFatalErrorException(ex);
+                    DisposeControlConnectionAfterInitFailure();
                     //Throw the actual exception for the first time
                     throw;
                 }
@@ -572,7 +563,7 @@ namespace Cassandra
                 _preparedStatementCache.Clear();
                 _unstartedPreparedStatementCacheEntries.Clear();
                 _metadata.ShutDown(timeoutMs);
-                _controlConnection.Dispose();
+                DisposeControlConnectionOnce();
                 await _protocolEventDebouncer.ShutdownAsync().ConfigureAwait(false);
                 Configuration.Timer.Dispose();
                 Cluster.Logger.Info("Cluster #{0} has been shut down.", GetHashCode());
@@ -601,7 +592,7 @@ namespace Cassandra
             _preparedStatementCache.Clear();
             _unstartedPreparedStatementCacheEntries.Clear();
             _metadata.ShutDown(timeoutMs);
-            _controlConnection.Dispose();
+            DisposeControlConnectionOnce();
             await _protocolEventDebouncer.ShutdownAsync().ConfigureAwait(false);
             Configuration.Timer.Dispose();
 
@@ -619,6 +610,42 @@ namespace Cassandra
 
             Cluster.Logger.Info("Cluster #{0} [{1}] has been shut down.", GetHashCode(), Metadata.ClusterName);
             return;
+        }
+
+        private void DisposeControlConnectionAfterInitFailure()
+        {
+            try
+            {
+                DisposeControlConnectionOnce();
+            }
+            catch (Exception disposeException)
+            {
+                // The initialization exception is the terminal cause. Cleanup failures must not
+                // replace it for either the current caller or later initialization attempts.
+                Cluster.Logger.Error(
+                    "An exception was thrown while disposing the control connection after cluster " +
+                    "initialization failed.",
+                    disposeException);
+            }
+        }
+
+        private void DisposeControlConnectionOnce()
+        {
+            if (Interlocked.Exchange(ref _controlConnectionDisposed, 1) != 0)
+            {
+                return;
+            }
+
+            // Custom control-connection factories do not necessarily own this cluster-scoped runtime.
+            // Stop it explicitly so a terminal initialization failure cannot leave route retries alive.
+            try
+            {
+                Configuration.ClientRoutesRuntime?.Shutdown();
+            }
+            finally
+            {
+                _controlConnection.Dispose();
+            }
         }
 
         /// <inheritdoc />

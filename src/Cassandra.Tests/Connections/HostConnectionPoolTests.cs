@@ -129,7 +129,7 @@ namespace Cassandra.Tests.Connections
         }
 
         [Test]
-        public void Should_ThrowLastFailure_WhenAllCandidatesFail()
+        public void Should_NormalizeLastNonSocketFailureAndRetainSupersededFailure()
         {
             var firstEndPoint = new FakeConnectionEndPoint("198.51.100.3", 9042);
             var secondEndPoint = new FakeConnectionEndPoint("198.51.100.4", 9042);
@@ -146,10 +146,18 @@ namespace Cassandra.Tests.Connections
             resolver.Setup(r => r.GetConnectionEndPointsAsync(_host, false))
                     .ReturnsAsync(new IConnectionEndPoint[] { firstEndPoint, secondEndPoint });
 
-            var ex = Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            var failure = Assert.ThrowsAsync<ConnectionFailure>(async () =>
                 await target.DoCreateAndOpen(false).ConfigureAwait(false));
+            var ex = new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>
+            {
+                { _host.Address, failure }
+            });
 
-            Assert.AreEqual("second candidate failed", ex.Message);
+            Assert.AreSame(failure.PreferredError, ex.Errors[_host.Address]);
+            Assert.AreEqual("second candidate failed", ex.Errors[_host.Address].Message);
+            Assert.AreEqual(
+                "first candidate failed",
+                ((AggregateException)ex.InnerException).InnerExceptions.Single().Message);
             firstConnection.Verify(connection => connection.Open(), Times.Once);
             secondConnection.Verify(connection => connection.Open(), Times.Once);
             firstConnection.Verify(connection => connection.Dispose(), Times.Once);
@@ -174,11 +182,48 @@ namespace Cassandra.Tests.Connections
             resolver.Setup(r => r.GetConnectionEndPointsAsync(_host, false))
                     .ReturnsAsync(new IConnectionEndPoint[] { firstEndPoint, secondEndPoint });
 
-            var ex = Assert.ThrowsAsync<AuthenticationException>(async () =>
+            var failure = Assert.ThrowsAsync<ConnectionFailure>(async () =>
                 await target.DoCreateAndOpen(false).ConfigureAwait(false));
+            var ex = new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>
+            {
+                { _host.Address, failure }
+            });
 
-            Assert.AreEqual("bad credentials", ex.Message);
+            Assert.IsInstanceOf<AuthenticationException>(ex.Errors[_host.Address]);
+            Assert.AreEqual("bad credentials", ex.Errors[_host.Address].Message);
+            Assert.IsInstanceOf<SocketException>(
+                ((AggregateException)ex.InnerException).InnerExceptions.Single());
             secondConnection.Verify(connection => connection.Open(), Times.Once);
+        }
+
+        [Test]
+        public void Should_SurfaceLaterNonSocketFailure_WhenEarlierCandidateFailsWithSocketError()
+        {
+            var firstEndPoint = new FakeConnectionEndPoint("198.51.100.61", 9042);
+            var secondEndPoint = new FakeConnectionEndPoint("198.51.100.62", 9042);
+            var socketFailure = new SocketException((int)SocketError.TimedOut);
+            var authenticationFailure = new AuthenticationException("later bad credentials");
+            var firstConnection = CreateConnection(firstEndPoint, socketFailure);
+            var secondConnection = CreateConnection(secondEndPoint, authenticationFailure);
+            var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            var target = CreatePool(
+                resolver.Object,
+                new FakeConnectionFactory((IConnectionEndPoint endPoint) =>
+                    endPoint.Equals(firstEndPoint) ? firstConnection.Object : secondConnection.Object));
+            resolver.Setup(value => value.GetConnectionEndPointsAsync(_host, false))
+                    .ReturnsAsync(new IConnectionEndPoint[] { firstEndPoint, secondEndPoint });
+
+            var failure = Assert.ThrowsAsync<ConnectionFailure>(async () =>
+                await target.DoCreateAndOpen(false).ConfigureAwait(false));
+            var ex = new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>
+            {
+                { _host.Address, failure }
+            });
+
+            Assert.AreSame(authenticationFailure, ex.Errors[_host.Address]);
+            Assert.AreSame(
+                socketFailure,
+                ((AggregateException)ex.InnerException).InnerExceptions.Single());
         }
 
         [Test]
@@ -239,7 +284,7 @@ namespace Cassandra.Tests.Connections
             Trace.Listeners.Add(listener);
             try
             {
-                Assert.ThrowsAsync<AuthenticationException>(async () =>
+                Assert.ThrowsAsync<ConnectionFailure>(async () =>
                     await target.DoCreateAndOpen(false).ConfigureAwait(false));
             }
             finally
@@ -250,7 +295,7 @@ namespace Cassandra.Tests.Connections
 
             Assert.IsFalse(listener.Messages.Values.Any(message =>
                 message.Contains("selected route failure")));
-            Assert.IsTrue(listener.Messages.Values.Any(message =>
+            Assert.IsFalse(listener.Messages.Values.Any(message =>
                 message.Contains("198.51.100.10")));
         }
 
@@ -539,6 +584,50 @@ namespace Cassandra.Tests.Connections
             {
                 backupResolution.TrySetResult(HostEntry("198.51.100.41"));
             }
+        }
+
+        [Test]
+        public void Should_RetainBackupDnsFailureWhenPrimarySocketConnectionFails()
+        {
+            var socketFailure = new SocketException((int)SocketError.ConnectionRefused);
+            var dnsFailure = new InvalidOperationException("backup route DNS failed");
+            var dns = new Mock<IDnsResolver>(MockBehavior.Strict);
+            dns.Setup(value => value.GetHostEntryAsync("primary.proxy"))
+               .ReturnsAsync(HostEntry("198.51.100.42"));
+            dns.Setup(value => value.GetHostEntryAsync("backup.proxy"))
+               .ThrowsAsync(dnsFailure);
+            var options = new ClientRoutesOptions(
+                new[]
+                {
+                    new ClientRouteProxy("primary"),
+                    new ClientRouteProxy("backup")
+                },
+                9042,
+                false);
+            var target = CreatePool(
+                connectionFactory: new FakeConnectionFactory(
+                    endPoint => CreateConnection(endPoint, socketFailure).Object),
+                clientRoutesOptions: options,
+                clientRouteRowsFactory: hostId => new[]
+                {
+                    ClientRouteRow(hostId, "backup.proxy", 9242, "backup"),
+                    ClientRouteRow(hostId, "primary.proxy", 9042, "primary")
+                },
+                dnsResolver: dns.Object);
+
+            var failure = Assert.ThrowsAsync<ConnectionFailure>(async () =>
+                await target.DoCreateAndOpen(false).ConfigureAwait(false));
+            var ex = new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>
+            {
+                { _host.Address, failure }
+            });
+
+            Assert.AreSame(socketFailure, ex.Errors[_host.Address]);
+            Assert.AreSame(
+                dnsFailure,
+                ((AggregateException)ex.InnerException).InnerExceptions.Single());
+            dns.Verify(value => value.GetHostEntryAsync("primary.proxy"), Times.Once);
+            dns.Verify(value => value.GetHostEntryAsync("backup.proxy"), Times.Once);
         }
 
         [Test]
@@ -1351,7 +1440,7 @@ namespace Cassandra.Tests.Connections
                 cache.FullRefreshBarrierAsync().GetAwaiter().GetResult();
                 clientRoutesCacheCreated?.Invoke(cache);
             }
-            config.ClientRoutesRuntime?.CompleteLifecyclePass();
+            config.ClientRoutesRuntime?.CompleteLifecyclePass(new[] { _host.HostId });
 
             var pool = new HostConnectionPool(
                 _host,

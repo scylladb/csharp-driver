@@ -26,8 +26,10 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading.Tasks;
 
+using Cassandra.Connections;
 using Cassandra.IntegrationTests.TestBase;
 using Cassandra.IntegrationTests.TestClusterManagement;
+using Cassandra.SessionManagement;
 using Cassandra.Tests;
 
 using NUnit.Framework;
@@ -60,58 +62,63 @@ namespace Cassandra.IntegrationTests.ClientRoutes
         [OneTimeSetUp]
         public void OneTimeSetUp()
         {
-            _testCluster = TestClusterManager.CreateNew(
-                3,
-                new TestClusterOptions
-                {
-                    CassandraYaml = new[]
-                    {
-                        "native_transport_port_proxy_protocol: " +
-                        ProxyProtocolPort.ToString(CultureInfo.InvariantCulture),
-                        "native_shard_aware_transport_port_proxy_protocol: " +
-                        ShardAwareProxyProtocolPort.ToString(CultureInfo.InvariantCulture)
-                    }
-                });
-
-            using (var cluster = ClusterBuilder()
-                                 .AddContactPoint(_testCluster.InitialContactPoint)
-                                 .Build())
-            using (cluster.Connect())
+            try
             {
-                var hosts = cluster.AllHosts().ToList();
-                Assert.AreEqual(3, hosts.Count, "The client-routes fixture requires all three CCM nodes.");
-                _nodes = hosts
-                    .Select(host => new ClientRoutesNode(
-                        ClientRoutesTestSupport.FormatAddress(host.Address.Address),
-                        host.HostId))
-                    .OrderBy(node => node.Address, StringComparer.Ordinal)
-                    .ToArray();
-                Assert.IsTrue(_nodes.All(node => node.HostId != Guid.Empty));
-            }
+                _testCluster = TestClusterManager.CreateNew(
+                    3,
+                    new TestClusterOptions
+                    {
+                        CassandraYaml = new[]
+                        {
+                            "native_transport_port_proxy_protocol: " +
+                            ProxyProtocolPort.ToString(CultureInfo.InvariantCulture),
+                            "native_shard_aware_transport_port_proxy_protocol: " +
+                            ShardAwareProxyProtocolPort.ToString(CultureInfo.InvariantCulture)
+                        }
+                    });
 
-            _restApi = new ClientRoutesRestApi(_nodes.Select(node => node.Address));
-            _restApi.DeleteAllAsync().GetAwaiter().GetResult();
-            _discoveryRelay = new TcpRelay(
-                new IPEndPoint(IPAddress.Parse(_testCluster.InitialContactPoint), DefaultCassandraPort));
+                using (var cluster = ClusterBuilder()
+                                     .AddContactPoint(_testCluster.InitialContactPoint)
+                                     .Build())
+                using (cluster.Connect())
+                {
+                    var hosts = cluster.AllHosts().ToList();
+                    Assert.AreEqual(3, hosts.Count, "The client-routes fixture requires all three CCM nodes.");
+                    _nodes = hosts
+                        .Select(host => new ClientRoutesNode(
+                            ClientRoutesTestSupport.FormatAddress(host.Address.Address),
+                            host.HostId))
+                        .OrderBy(node => node.Address, StringComparer.Ordinal)
+                        .ToArray();
+                    Assert.IsTrue(_nodes.All(node => node.HostId != Guid.Empty));
+                }
+
+                _restApi = new ClientRoutesRestApi(_nodes.Select(node => node.Address));
+                _restApi.DeleteAllAsync().GetAwaiter().GetResult();
+                _discoveryRelay = new TcpRelay(
+                    new IPEndPoint(IPAddress.Parse(_testCluster.InitialContactPoint), DefaultCassandraPort));
+            }
+            catch (Exception setupException)
+            {
+                try
+                {
+                    CleanupFixture();
+                }
+                catch (Exception cleanupException)
+                {
+                    throw new AggregateException(
+                        "Client-routes fixture setup and cleanup both failed.",
+                        setupException,
+                        cleanupException);
+                }
+                throw;
+            }
         }
 
         [OneTimeTearDown]
         public void OneTimeTearDown()
         {
-            if (_restApi != null)
-            {
-                try
-                {
-                    _restApi.DeleteAllAsync().GetAwaiter().GetResult();
-                }
-                finally
-                {
-                    _restApi.Dispose();
-                }
-            }
-
-            _discoveryRelay?.Dispose();
-            TestClusterManager.TryRemove();
+            CleanupFixture();
         }
 
         [Test]
@@ -288,56 +295,98 @@ namespace Cassandra.IntegrationTests.ClientRoutes
         public async Task ControlReconnectRecoversRoutesUpdatedWhileEventsWereUnavailable()
         {
             var originalRelays = StartRelays(_nodes, DefaultCassandraPort, TcpRelayMode.Plaintext);
+            var secondaryRelays = StartRelays(_nodes, DefaultCassandraPort, TcpRelayMode.Plaintext);
             var replacementRelays = StartRelays(_nodes, DefaultCassandraPort, TcpRelayMode.Plaintext);
+            foreach (var relay in secondaryRelays.Values)
+            {
+                relay.DisableForwarding();
+            }
             using (var discoveryRelay = new TcpRelay(
                        new IPEndPoint(IPAddress.Parse(_testCluster.InitialContactPoint), DefaultCassandraPort)))
             {
                 try
                 {
                     await _restApi
-                        .ReplaceAsync(CreateEntries(PrimaryConnectionId, _nodes, originalRelays, "127.0.0.1"))
+                        .ReplaceAsync(
+                            CreateEntries(PrimaryConnectionId, _nodes, originalRelays, "127.0.0.1")
+                                .Concat(CreateEntries(
+                                    SecondaryConnectionId,
+                                    _nodes,
+                                    secondaryRelays,
+                                    "127.0.0.1"))
+                                .ToArray())
                         .ConfigureAwait(false);
-                    var config = new ClientRoutesConfig(new[] { new ClientRouteProxy(PrimaryConnectionId) });
+                    var config = new ClientRoutesConfig(new[]
+                    {
+                        new ClientRouteProxy(PrimaryConnectionId),
+                        new ClientRouteProxy(SecondaryConnectionId)
+                    });
 
                     using (var cluster = BuildClient(config, discoveryRelay.ListenEndPoint, null))
                     using (var session = cluster.Connect())
                     {
                         AssertQueriesLandOnIntendedHosts(session, _nodes);
                         Assert.IsTrue(originalRelays.Values.All(relay => relay.ForwardedConnectionCount > 0));
+                        var contactPointAttemptsAfterInitialization = discoveryRelay.AcceptedConnectionCount;
 
-                        // Drop the control connection and reject all reconnects before updating the
-                        // table. The driver cannot observe this update through an event.
+                        // Drop the bootstrap control connection, the primary Host-ID routes, and the
+                        // temporarily disabled secondary Host-ID routes. The driver cannot observe the
+                        // route-table update through an event while all routed candidates are unavailable.
                         discoveryRelay.DisableForwarding();
                         DisposeRelays(originalRelays);
                         await ClientRoutesTestSupport.WaitUntilAsync(
-                                () => discoveryRelay.OpenConnectionCount == 0,
+                                () => discoveryRelay.OpenConnectionCount == 0 &&
+                                      secondaryRelays.Values.Any(relay => relay.AcceptedConnectionCount > 0),
                                 TimeSpan.FromSeconds(5),
                                 TimeSpan.FromMilliseconds(100),
-                                "The discovery relay retained a control connection while disabled.")
+                                "The control connection did not exhaust its cached Host-ID routes.")
                             .ConfigureAwait(false);
 
                         await _restApi
-                            .UpsertAsync(CreateEntries(
-                                PrimaryConnectionId,
-                                _nodes,
-                                replacementRelays,
-                                "127.0.0.1"))
+                            .UpsertAsync(
+                                CreateEntries(
+                                        PrimaryConnectionId,
+                                        _nodes,
+                                        replacementRelays,
+                                        "127.0.0.1")
+                                    .Concat(CreateEntries(
+                                        SecondaryConnectionId,
+                                        _nodes,
+                                        secondaryRelays,
+                                        "127.0.0.1"))
+                                    .ToArray())
                             .ConfigureAwait(false);
 
-                        var discoveryAttemptsBeforeRecovery = discoveryRelay.AcceptedConnectionCount;
-                        discoveryRelay.EnableForwarding();
+                        foreach (var relay in secondaryRelays.Values)
+                        {
+                            relay.EnableForwarding();
+                        }
 
+                        await ClientRoutesTestSupport.WaitUntilAsync(
+                                () => RoutesPointToRelays(cluster, replacementRelays, PrimaryConnectionId),
+                                TimeSpan.FromSeconds(15),
+                                TimeSpan.FromMilliseconds(100),
+                                "The control connection did not reload routes through a secondary Host-ID route.")
+                            .ConfigureAwait(false);
+                        Assert.IsTrue(
+                            secondaryRelays.Values.Any(relay => relay.ForwardedConnectionCount > 0),
+                            "The control connection did not reconnect through a secondary Host-ID route.");
+
+                        // Close any control or data connection that used the unchanged secondary route.
+                        // New connections must now use the reloaded primary route snapshot.
+                        DisposeRelays(secondaryRelays);
                         await AssertEventuallyQueriesLandOnIntendedHosts(session, _nodes, replacementRelays)
                             .ConfigureAwait(false);
-                        Assert.Greater(
+                        Assert.AreEqual(
+                            contactPointAttemptsAfterInitialization,
                             discoveryRelay.AcceptedConnectionCount,
-                            discoveryAttemptsBeforeRecovery,
-                            "The control connection did not reconnect through its explicit discovery endpoint.");
+                            "A post-initialization control attempt redialed the bootstrap contact point.");
                     }
                 }
                 finally
                 {
                     DisposeRelays(originalRelays);
+                    DisposeRelays(secondaryRelays);
                     DisposeRelays(replacementRelays);
                 }
             }
@@ -387,12 +436,17 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 using (var session = cluster.Connect())
                 {
                     AssertQueriesLandOnIntendedHosts(session, _nodes);
+                    IReadOnlyDictionary<Guid, int> shardCounts = null;
                     await ClientRoutesTestSupport.WaitUntilAsync(
-                            () => relays.Values.All(ObservedBothShardSourcePortClasses),
+                            () => (shardCounts = GetShardCountsWhenPoolsCoverServerReportedShardSets(session)) != null,
                             TimeSpan.FromSeconds(30),
                             TimeSpan.FromMilliseconds(100),
-                            "Shard-aware routed pools did not open connections for both shards.")
+                            "Shard-aware routed pools did not open connections for every server-reported shard.")
                         .ConfigureAwait(false);
+                    foreach (var relay in relays)
+                    {
+                        AssertRelaySourcePortsCoverShardSet(relay.Value, shardCounts[relay.Key]);
+                    }
                 }
             }
             finally
@@ -464,6 +518,28 @@ namespace Cassandra.IntegrationTests.ClientRoutes
         private Cluster BuildClient(ClientRoutesConfig config)
         {
             return BuildClient(config, _discoveryRelay.ListenEndPoint, null);
+        }
+
+        private void CleanupFixture()
+        {
+            var restApi = _restApi;
+            var discoveryRelay = _discoveryRelay;
+            _restApi = null;
+            _discoveryRelay = null;
+            _testCluster = null;
+            _nodes = null;
+
+            ClientRoutesTestSupport.RunAllCleanupActions(
+                () =>
+                {
+                    if (restApi != null)
+                    {
+                        restApi.DeleteAllAsync().GetAwaiter().GetResult();
+                    }
+                },
+                () => restApi?.Dispose(),
+                () => discoveryRelay?.Dispose(),
+                TestClusterManager.TryRemove);
         }
 
         private Cluster BuildClient(
@@ -613,21 +689,67 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 "Connections did not recover through the updated client routes. " + lastException);
         }
 
-        private static bool ObservedBothShardSourcePortClasses(TcpRelay relay)
+        private static IReadOnlyDictionary<Guid, int> GetShardCountsWhenPoolsCoverServerReportedShardSets(
+            ISession session)
         {
-            var residues = relay.AcceptedSourcePorts.Select(port => port % 2).Distinct().ToArray();
-            return residues.Contains(0) && residues.Contains(1);
+            var hostsByAddress = session.Cluster.AllHosts().ToDictionary(host => host.Address);
+            var shardCounts = new Dictionary<Guid, int>();
+            foreach (var pool in ((IInternalSession)session).GetPools())
+            {
+                if (!hostsByAddress.TryGetValue(pool.Key, out var host))
+                {
+                    return null;
+                }
+
+                var shardingInfos = pool.Value.ConnectionsSnapshot
+                    .Select(connection => connection.ShardingInfo())
+                    .Where(info => info != null)
+                    .ToArray();
+                if (shardingInfos.Length == 0)
+                {
+                    return null;
+                }
+
+                var shardCount = shardingInfos[0].ScyllaNrShards;
+                if (shardCount <= 0 || shardingInfos.Any(info => info.ScyllaNrShards != shardCount))
+                {
+                    return null;
+                }
+
+                var reportedShards = shardingInfos.Select(info => info.ScyllaShard).Distinct();
+                if (Enumerable.Range(0, shardCount).Except(reportedShards).Any())
+                {
+                    return null;
+                }
+
+                shardCounts[host.HostId] = shardCount;
+            }
+
+            return shardCounts.Count == hostsByAddress.Count ? shardCounts : null;
+        }
+
+        private static void AssertRelaySourcePortsCoverShardSet(TcpRelay relay, int shardCount)
+        {
+            var observedShardClasses = relay.AcceptedSourcePorts
+                .Select(port => port % shardCount)
+                .Distinct()
+                .ToArray();
+            CollectionAssert.IsSubsetOf(
+                Enumerable.Range(0, shardCount).ToArray(),
+                observedShardClasses,
+                "The proxy relay did not observe source-port classes for every server-reported shard.");
         }
 
         private static bool RoutesPointToRelays(
             Cluster cluster,
-            IReadOnlyDictionary<Guid, TcpRelay> relays)
+            IReadOnlyDictionary<Guid, TcpRelay> relays,
+            string connectionId = PrimaryConnectionId)
         {
             foreach (var relay in relays)
             {
                 if (!cluster.Configuration.ClientRoutesRuntime.TryGetRoutes(relay.Key, out var routes) ||
-                    routes.Length != 1 ||
-                    routes[0].Port != relay.Value.ListenEndPoint.Port)
+                    !routes.Any(route => route.ConnectionId == connectionId &&
+                                         route.Port == relay.Value.ListenEndPoint.Port))
                 {
                     return false;
                 }
@@ -637,10 +759,8 @@ namespace Cassandra.IntegrationTests.ClientRoutes
 
         private static void DisposeRelays(IEnumerable<KeyValuePair<Guid, TcpRelay>> relays)
         {
-            foreach (var relay in relays.Select(item => item.Value))
-            {
-                relay.Dispose();
-            }
+            ClientRoutesTestSupport.RunAllCleanupActions(
+                relays.Select(item => new Action(item.Value.Dispose)).ToArray());
         }
     }
 }

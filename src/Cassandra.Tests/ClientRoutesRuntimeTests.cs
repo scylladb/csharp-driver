@@ -35,7 +35,7 @@ namespace Cassandra.Tests
         public void Shutdown_Should_FaultActiveLifecycleWaiter()
         {
             var runtime = CreateRuntime();
-            runtime.CompleteLifecyclePass();
+            runtime.CompleteLifecyclePass(new Guid[0]);
             runtime.BeginLifecyclePass();
             var waiter = runtime.WaitForLifecycleReadyAsync();
             Assert.IsFalse(waiter.IsCompleted);
@@ -50,7 +50,7 @@ namespace Cassandra.Tests
         public void BeginLifecyclePass_Should_SerializeWithShutdownAndNotReplaceItsSignal()
         {
             var runtime = CreateRuntime();
-            runtime.CompleteLifecyclePass();
+            runtime.CompleteLifecyclePass(new Guid[0]);
             var bindLock = GetPrivateField<object>(runtime, "_bindLock");
             var lifecycleSignal = GetPrivateField<TaskCompletionSource<bool>>(runtime, "_lifecycleReady");
             Exception beginException = null;
@@ -121,7 +121,7 @@ namespace Cassandra.Tests
                     completionStarted.Set();
                     try
                     {
-                        runtime.CompleteLifecyclePass();
+                        runtime.CompleteLifecyclePass(new Guid[0]);
                     }
                     catch (Exception ex)
                     {
@@ -182,7 +182,7 @@ namespace Cassandra.Tests
             var runtime = CreateRuntime();
             Assert.IsFalse(runtime.HasCompletedLifecyclePass);
 
-            runtime.CompleteLifecyclePass();
+            runtime.CompleteLifecyclePass(new Guid[0]);
             runtime.BeginLifecyclePass();
 
             Assert.IsTrue(runtime.HasCompletedLifecyclePass);
@@ -249,7 +249,7 @@ namespace Cassandra.Tests
             var runtime = CreateRuntime();
             if (startFromCompletedPass)
             {
-                runtime.CompleteLifecyclePass();
+                runtime.CompleteLifecyclePass(new Guid[0]);
             }
 
             runtime.BeginLifecyclePass();
@@ -262,11 +262,30 @@ namespace Cassandra.Tests
             Assert.IsFalse(secondWaiter.IsCompleted);
             Assert.AreSame(firstWaiter, secondWaiter);
 
-            runtime.CompleteLifecyclePass();
+            runtime.CompleteLifecyclePass(new Guid[0]);
 
             await Task.WhenAll(firstWaiter, secondWaiter).WaitToCompleteAsync(5000).ConfigureAwait(false);
             Assert.IsTrue(runtime.IsLifecycleReady);
             Assert.IsTrue(runtime.HasCompletedLifecyclePass);
+        }
+
+        [Test]
+        public void CompleteLifecyclePass_Should_ReplaceCoveredHostIdsOnlyWhenPassCompletes()
+        {
+            var runtime = CreateRuntime();
+            var originalHostId = Guid.NewGuid();
+            var replacementHostId = Guid.NewGuid();
+
+            runtime.CompleteLifecyclePass(new[] { originalHostId });
+            runtime.BeginLifecyclePass();
+
+            Assert.IsTrue(runtime.WasHostCoveredByLastCompletedLifecyclePass(originalHostId));
+            Assert.IsFalse(runtime.WasHostCoveredByLastCompletedLifecyclePass(replacementHostId));
+
+            runtime.CompleteLifecyclePass(new[] { replacementHostId });
+
+            Assert.IsFalse(runtime.WasHostCoveredByLastCompletedLifecyclePass(originalHostId));
+            Assert.IsTrue(runtime.WasHostCoveredByLastCompletedLifecyclePass(replacementHostId));
         }
 
         private static ClientRoutesRuntime CreateRuntime()

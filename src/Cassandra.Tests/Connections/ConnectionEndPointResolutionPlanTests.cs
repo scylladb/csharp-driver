@@ -31,7 +31,7 @@ namespace Cassandra.Tests.Connections
     public class ConnectionEndPointResolutionPlanTests
     {
         [Test]
-        public async Task Should_NotifyFailedStepOnce_WhenLaterStepReturnsEndpoints()
+        public async Task Should_NotifyFailedStepOnce_OnlyWhenConnectionSuccessIsAcknowledged()
         {
             var failure = new InvalidOperationException("first failed");
             var recovered = new List<Exception>();
@@ -51,15 +51,22 @@ namespace Cassandra.Tests.Connections
             CollectionAssert.AreEqual(
                 new[] { endpoint },
                 await target.ResolveNextAsync().ConfigureAwait(false));
+            Assert.AreEqual(0, recovered.Count);
+            CollectionAssert.AreEqual(new[] { failure }, target.UnresolvedResolutionErrors);
+
+            target.AcknowledgeConnectionSuccess();
+
             CollectionAssert.AreEqual(new[] { failure }, recovered);
+            Assert.AreEqual(0, target.UnresolvedResolutionErrors.Count);
 
             Assert.IsNull(await target.ResolveNextAsync().ConfigureAwait(false));
             Assert.IsNull(await target.ResolveNextAsync().ConfigureAwait(false));
+            target.AcknowledgeConnectionSuccess();
             CollectionAssert.AreEqual(new[] { failure }, recovered);
         }
 
         [Test]
-        public async Task Should_NotifyFailedStepOnce_WhenPlanExhaustsAfterEarlierEndpoints()
+        public async Task Should_NotNotifyFailedStepWhenPlanExhaustsAfterEarlierEndpoints()
         {
             var failure = new InvalidOperationException("later failed");
             var recovered = new List<Exception>();
@@ -78,10 +85,16 @@ namespace Cassandra.Tests.Connections
             Assert.AreEqual(0, recovered.Count);
 
             Assert.IsNull(await target.ResolveNextAsync().ConfigureAwait(false));
-            CollectionAssert.AreEqual(new[] { failure }, recovered);
+            Assert.AreEqual(0, recovered.Count);
+            CollectionAssert.AreEqual(new[] { failure }, target.UnresolvedResolutionErrors);
 
             Assert.IsNull(await target.ResolveNextAsync().ConfigureAwait(false));
+            Assert.AreEqual(0, recovered.Count);
+
+            target.AcknowledgeConnectionSuccess();
+
             CollectionAssert.AreEqual(new[] { failure }, recovered);
+            Assert.AreEqual(0, target.UnresolvedResolutionErrors.Count);
         }
 
         [Test]
@@ -145,7 +158,7 @@ namespace Cassandra.Tests.Connections
         }
 
         [Test]
-        public void Should_NotifyEarlierRecoverableFailureBeforePropagatingLaterFatalFailure()
+        public void Should_RetainEarlierRecoverableFailureWhenLaterResolutionFailsFatally()
         {
             var recoveredFailure = new InvalidOperationException("recovered before fatal");
             var fatalFailure = new OutOfMemoryException("fatal");
@@ -164,7 +177,8 @@ namespace Cassandra.Tests.Connections
                 await target.ResolveNextAsync().ConfigureAwait(false));
 
             Assert.AreSame(fatalFailure, actual);
-            CollectionAssert.AreEqual(new[] { recoveredFailure }, recovered);
+            Assert.AreEqual(0, recovered.Count);
+            CollectionAssert.AreEqual(new[] { recoveredFailure }, target.UnresolvedResolutionErrors);
         }
 
         private static ConnectionEndPointResolutionStep Step(

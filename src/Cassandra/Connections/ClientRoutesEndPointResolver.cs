@@ -44,8 +44,8 @@ namespace Cassandra.Connections
         /// <param name="fallbackResolver">Resolves direct endpoints for hosts without routes.</param>
         /// <param name="lifecycleWaitTimeout">
         /// How long a pool connection waits for the control connection to confirm routes. After that,
-        /// the last confirmed snapshot is used; before any snapshot was confirmed, the open fails.
-        /// Null waits indefinitely.
+        /// the last confirmed snapshot may be used only for a Host ID covered by that completed pass;
+        /// before any snapshot was confirmed, or for an unconfirmed Host ID, the open fails. Null waits indefinitely.
         /// </param>
         /// <param name="logger">Logger used for recovered-resolution and fallback diagnostics.</param>
         public ClientRoutesEndPointResolver(
@@ -184,6 +184,14 @@ namespace Cassandra.Connections
                 throw new DriverException(
                     $"Client routes for host {host.HostId} are not available yet: the control connection " +
                     $"has not loaded system.client_routes within {_lifecycleWaitTimeout.TotalMilliseconds}ms.");
+            }
+
+            if (!_runtime.WasHostCoveredByLastCompletedLifecyclePass(host.HostId))
+            {
+                throw new DriverException(
+                    $"Client routes for host {host.HostId} are not available yet: the host identity was not " +
+                    $"covered by the last completed control-connection lifecycle pass, and the current pass " +
+                    $"did not complete within {_lifecycleWaitTimeout.TotalMilliseconds}ms.");
             }
 
             _logger.Verbose(

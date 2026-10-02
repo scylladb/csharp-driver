@@ -18,6 +18,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -371,6 +372,81 @@ namespace Cassandra.Tests
                 releaseTargeted.TrySetResult(true);
                 releaseRetryDelay.TrySetResult(true);
                 cache.Shutdown();
+            }
+        }
+
+        [Test]
+        public async Task Should_NotLetStaleRetryCallbackConsumeNewFailure()
+        {
+            var hostId = Guid.NewGuid();
+            var firstRetryDelay = NewSignal();
+            var secondRetryDelay = NewSignal();
+            var secondRetryScheduled = NewSignal();
+            var queryCount = 0;
+            var retryScheduleCount = 0;
+            var provider = CreateProvider((_, __) =>
+            {
+                switch (Interlocked.Increment(ref queryCount))
+                {
+                    case 1:
+                    case 2:
+                        return Task.FromException<IEnumerable<IRow>>(
+                            new InvalidOperationException("query failed"));
+                    case 3:
+                        return Task.FromResult(Rows(Route(
+                            hostId,
+                            "recovered.example.com",
+                            9042,
+                            9142,
+                            ConnectionA)));
+                    default:
+                        throw new InvalidOperationException("Unexpected client-routes query.");
+                }
+            });
+            var cache = CreateCache(
+                provider.Object,
+                failedRefreshRetryDelay: TimeSpan.FromSeconds(1),
+                failedRefreshRetryDelayFactory: (_, __) =>
+                {
+                    if (Interlocked.Increment(ref retryScheduleCount) == 1)
+                    {
+                        return firstRetryDelay.Task;
+                    }
+                    secondRetryScheduled.TrySetResult(true);
+                    return secondRetryDelay.Task;
+                });
+
+            try
+            {
+                await cache.RefreshAsync(Change((ConnectionA, hostId))).ConfigureAwait(false);
+                var firstGeneration = GetScheduledRetryGeneration(cache);
+
+                // This pass fully absorbs the first failed scope. When it also fails, it must
+                // own a new delay instead of remaining latched to the first callback.
+                await cache.RefreshAsync(Change((ConnectionA, hostId))).ConfigureAwait(false);
+                await secondRetryScheduled.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                var secondGeneration = GetScheduledRetryGeneration(cache);
+                Assert.That(secondGeneration, Is.Not.EqualTo(firstGeneration));
+
+                InvokeRetryCallback(cache, firstGeneration);
+                Assert.That(GetScheduledRetryGeneration(cache), Is.EqualTo(secondGeneration));
+                Assert.That(queryCount, Is.EqualTo(2));
+
+                secondRetryDelay.TrySetResult(true);
+                await TestHelper.WaitUntilAsync(
+                        () => cache.TryGetRoutes(hostId, out _),
+                        20,
+                        250)
+                    .ConfigureAwait(false);
+
+                Assert.That(queryCount, Is.EqualTo(3));
+                AssertEndpoint(cache.Routes[hostId], ConnectionA, "recovered.example.com", 9042);
+            }
+            finally
+            {
+                cache.Shutdown();
+                firstRetryDelay.TrySetResult(true);
+                secondRetryDelay.TrySetResult(true);
             }
         }
 
@@ -2826,6 +2902,22 @@ namespace Cassandra.Tests
                 retryQueries,
                 failedRefreshRetryDelay ?? Timeout.InfiniteTimeSpan,
                 failedRefreshRetryDelayFactory);
+        }
+
+        private static long GetScheduledRetryGeneration(ClientRoutesCache cache)
+        {
+            return (long)typeof(ClientRoutesCache)
+                .GetField(
+                    "_scheduledFailedRefreshRetryGeneration",
+                    BindingFlags.Instance | BindingFlags.NonPublic)
+                .GetValue(cache);
+        }
+
+        private static void InvokeRetryCallback(ClientRoutesCache cache, long generation)
+        {
+            typeof(ClientRoutesCache)
+                .GetMethod("RetryFailedRefresh", BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(cache, new object[] { generation });
         }
 
         private static Mock<IMetadataQueryProvider> CreateProvider(

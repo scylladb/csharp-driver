@@ -392,9 +392,19 @@ namespace Cassandra.Connections
                 {
                     endPoints = await resolutionPlan.ResolveNextAsync().ConfigureAwait(false);
                 }
-                catch
+                catch (Exception ex)
                 {
-                    LogRecoveredRouteFailures(attemptFailures, null);
+                    if (Utils.IsFatalException(ex) || surfacedFailure == null)
+                    {
+                        throw;
+                    }
+
+                    ThrowPreferredConnectionFailure(
+                        surfacedFailure,
+                        attemptFailures,
+                        resolutionPlan.UnresolvedResolutionErrors.Count == 0
+                            ? new[] { ex }
+                            : resolutionPlan.UnresolvedResolutionErrors);
                     throw;
                 }
                 if (endPoints == null)
@@ -450,7 +460,8 @@ namespace Cassandra.Connections
                             throw new SocketException((int)SocketError.NotConnected);
                         }
 
-                        LogRecoveredRouteFailures(attemptFailures, null);
+                        resolutionPlan.AcknowledgeConnectionSuccess();
+                        LogRecoveredRouteFailures(attemptFailures);
                         return c;
                     }
                     catch (Exception ex)
@@ -471,20 +482,22 @@ namespace Cassandra.Connections
                         attemptFailures.Add(attemptFailure);
                         if (Utils.IsFatalException(ex) || IsClosing)
                         {
-                            LogRecoveredRouteFailures(attemptFailures, attemptFailure);
                             throw;
+                        }
+                        if (ConnectionFailure.ShouldReplacePreferred(
+                                surfacedFailure?.Exception.SourceException,
+                                ex))
+                        {
+                            surfacedFailure = attemptFailure;
                         }
                         if (admissionFailed &&
                             !_config.EndPointResolutionPlanProvider.RetryOnPoolAdmissionFailure)
                         {
-                            LogRecoveredRouteFailures(attemptFailures, attemptFailure);
+                            ThrowPreferredConnectionFailure(
+                                surfacedFailure,
+                                attemptFailures,
+                                resolutionPlan.UnresolvedResolutionErrors);
                             throw;
-                        }
-                        if (surfacedFailure == null ||
-                            !(ex is SocketException) ||
-                            surfacedFailure.Exception.SourceException is SocketException)
-                        {
-                            surfacedFailure = attemptFailure;
                         }
                     }
                 }
@@ -492,20 +505,41 @@ namespace Cassandra.Connections
 
             if (surfacedFailure != null)
             {
-                LogRecoveredRouteFailures(attemptFailures, surfacedFailure);
-                surfacedFailure.Exception.Throw();
+                ThrowPreferredConnectionFailure(
+                    surfacedFailure,
+                    attemptFailures,
+                    resolutionPlan.UnresolvedResolutionErrors);
             }
             throw new DriverInternalError($"No connection endpoints were resolved for host {_host.Address}.");
         }
 
-        private static void LogRecoveredRouteFailures(
+        private static void ThrowPreferredConnectionFailure(
+            ConnectionAttemptFailure preferredFailure,
             IEnumerable<ConnectionAttemptFailure> failures,
-            ConnectionAttemptFailure propagatedFailure)
+            IEnumerable<Exception> unresolvedResolutionErrors)
+        {
+            var supersededConnectionErrors = failures
+                .Where(failure => !ReferenceEquals(failure, preferredFailure))
+                .Select(failure => failure.Exception.SourceException)
+                .ToArray();
+            var resolutionErrors = unresolvedResolutionErrors?.ToArray() ?? new Exception[0];
+            if (supersededConnectionErrors.Length > 0 || resolutionErrors.Length > 0)
+            {
+                throw new ConnectionFailure(
+                    preferredFailure.Exception.SourceException,
+                    supersededConnectionErrors,
+                    resolutionErrors);
+            }
+
+            preferredFailure.Exception.Throw();
+            throw new DriverInternalError("The preferred connection failure did not propagate.");
+        }
+
+        private static void LogRecoveredRouteFailures(IEnumerable<ConnectionAttemptFailure> failures)
         {
             foreach (var failure in failures)
             {
-                if (ReferenceEquals(failure, propagatedFailure) ||
-                    !(failure.EndPoint is ClientRouteConnectionEndPoint))
+                if (!(failure.EndPoint is ClientRouteConnectionEndPoint))
                 {
                     continue;
                 }
@@ -1362,6 +1396,18 @@ namespace Cassandra.Connections
                 {
                     c = BorrowExistingConnection(routingKey, shardID);
                 }
+            }
+            catch (ConnectionFailure failure)
+                when (failure.PreferredError is UnsupportedProtocolVersionException)
+            {
+                var ex = (UnsupportedProtocolVersionException)failure.PreferredError;
+                // Preserve the supplemental candidate failures for NoHostAvailableException while
+                // retaining the existing unsupported-protocol host handling.
+                HostConnectionPool.Logger.Error("Host {0} does not support protocol version {1}. You should use a fixed protocol " +
+                             "version during rolling upgrades of the cluster. Setting the host as DOWN to " +
+                             "avoid hitting this node as part of the query plan for a while", _host.Address, ex.ProtocolVersion);
+                triedHosts[_host.Address] = failure;
+                MarkAsDownAndScheduleReconnection();
             }
             catch (UnsupportedProtocolVersionException ex)
             {

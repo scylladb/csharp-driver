@@ -15,6 +15,7 @@
 //
 
 using System;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Threading;
 using System.Threading.Tasks;
@@ -31,6 +32,7 @@ namespace Cassandra
         private ClientRoutesCache _cache;
         private IMetadataQueryProvider _queryProvider;
         private bool _hasCompletedLifecyclePass;
+        private ImmutableHashSet<Guid> _coveredHostIds = ImmutableHashSet<Guid>.Empty;
         private TaskCompletionSource<bool> _lifecycleReady = CreateLifecycleCompletionSource();
         private bool _shutdown;
 
@@ -96,6 +98,14 @@ namespace Cassandra
         /// </summary>
         public bool HasCompletedLifecyclePass => Volatile.Read(ref _hasCompletedLifecyclePass);
 
+        /// <summary>
+        /// Gets whether the last completed lifecycle pass covered the supplied host identity.
+        /// </summary>
+        public bool WasHostCoveredByLastCompletedLifecyclePass(Guid hostId)
+        {
+            return Volatile.Read(ref _coveredHostIds).Contains(hostId);
+        }
+
         public Task WaitForLifecycleReadyAsync()
         {
             if (Volatile.Read(ref _shutdown))
@@ -123,14 +133,21 @@ namespace Cassandra
             }
         }
 
-        public void CompleteLifecyclePass()
+        public void CompleteLifecyclePass(IEnumerable<Guid> coveredHostIds)
         {
+            if (coveredHostIds == null)
+            {
+                throw new ArgumentNullException(nameof(coveredHostIds));
+            }
+
+            var completedCoverage = coveredHostIds.ToImmutableHashSet();
             lock (_bindLock)
             {
                 if (_shutdown)
                 {
                     return;
                 }
+                Volatile.Write(ref _coveredHostIds, completedCoverage);
                 Volatile.Write(ref _hasCompletedLifecyclePass, true);
                 Volatile.Read(ref _lifecycleReady).TrySetResult(true);
             }

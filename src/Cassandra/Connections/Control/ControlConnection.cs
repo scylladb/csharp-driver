@@ -17,7 +17,6 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
@@ -151,8 +150,7 @@ namespace Cassandra.Connections.Control
         private async Task<IReadOnlyList<IConnectionEndPoint>> ResolveContactPoint(
             IContactPoint contactPoint,
             bool refresh,
-            ICollection<Exception> resolutionErrors,
-            Action<Exception> recordFailure)
+            ControlConnectionAttempt attempt)
         {
             try
             {
@@ -161,33 +159,34 @@ namespace Cassandra.Connections.Control
             }
             catch (Exception ex) when (!Utils.IsFatalException(ex))
             {
-                resolutionErrors.Add(ex);
-                recordFailure(ex);
+                attempt.RecordResolutionFailure(
+                    ex,
+                    () => ControlConnection.Logger.Warning(
+                        "Failed to resolve contact point {0}. Exception: {1}",
+                        contactPoint.StringRepresentation,
+                        ex));
                 return new IConnectionEndPoint[0];
             }
         }
 
         private ConnectionEndPointResolutionPlan GetHostContactPointOrConnectionEndpointResolutionPlan(
-            ConcurrentDictionary<IContactPoint, object> attemptedContactPoints, Host host,
-            bool refreshContactPoints, bool refreshEndpoints, ICollection<Exception> resolutionErrors,
-            List<Action> recoveredFailureLogs)
+            ControlConnectionAttempt attempt,
+            Host host,
+            bool refreshContactPoints,
+            bool refreshEndpoints)
         {
             return _config.EndPointResolutionPlanProvider.GetControlConnectionEndPointResolutionPlan(
                 host,
                 refreshEndpoints,
                 () =>
                 {
-                    if (host.ContactPoint != null && attemptedContactPoints.TryAdd(host.ContactPoint, null))
+                    if (host.ContactPoint != null && attempt.AttemptedContactPoints.TryAdd(host.ContactPoint, null))
                     {
                         return CreateSingleResolutionPlan(
                             () => ResolveContactPoint(
                                 host.ContactPoint,
                                 refreshContactPoints,
-                                resolutionErrors,
-                                ex => recoveredFailureLogs.Add(() => ControlConnection.Logger.Warning(
-                                    "Failed to resolve contact point {0}. Exception: {1}",
-                                    host.ContactPoint.StringRepresentation,
-                                    ex))));
+                                attempt));
                     }
 
                     return CreateSingleResolutionPlan(
@@ -202,39 +201,30 @@ namespace Cassandra.Connections.Control
         }
 
         private IEnumerable<ConnectionEndPointResolutionPlan> ContactPointResolutionPlansEnumerable(
-            ConcurrentDictionary<IContactPoint, object> attemptedContactPoints,
-            bool refresh,
-            ICollection<Exception> resolutionErrors,
-            List<Action> recoveredFailureLogs)
+            ControlConnectionAttempt attempt,
+            bool refresh)
         {
             foreach (var contactPoint in _contactPoints)
             {
-                if (attemptedContactPoints.TryAdd(contactPoint, null))
+                if (attempt.AttemptedContactPoints.TryAdd(contactPoint, null))
                 {
                     yield return CreateSingleResolutionPlan(() => ResolveContactPoint(
                         contactPoint,
                         refresh,
-                        resolutionErrors,
-                        ex => recoveredFailureLogs.Add(() => ControlConnection.Logger.Warning(
-                            "Failed to resolve contact point {0}. Exception: {1}",
-                            contactPoint.StringRepresentation,
-                            ex))));
+                        attempt));
                 }
             }
         }
 
         private IEnumerable<ConnectionEndPointResolutionPlan> AllHostsEndPointResolutionPlansEnumerable(
-            ConcurrentDictionary<IContactPoint, object> attemptedContactPoints,
-            ConcurrentDictionary<Host, object> attemptedHosts,
+            ControlConnectionAttempt attempt,
             bool isInitializing,
             bool refreshContactPoints,
-            bool refreshEndpoints,
-            ICollection<Exception> resolutionErrors,
-            List<Action> recoveredFailureLogs)
+            bool refreshEndpoints)
         {
             foreach (var host in GetHostEnumerable())
             {
-                if (attemptedHosts.TryAdd(host, null))
+                if (attempt.AttemptedHosts.TryAdd(host, null))
                 {
                     if (!IsHostValid(host, isInitializing))
                     {
@@ -242,29 +232,24 @@ namespace Cassandra.Connections.Control
                     }
 
                     yield return GetHostContactPointOrConnectionEndpointResolutionPlan(
-                        attemptedContactPoints,
+                        attempt,
                         host,
                         refreshContactPoints,
-                        refreshEndpoints,
-                        resolutionErrors,
-                        recoveredFailureLogs);
+                        refreshEndpoints);
                 }
             }
         }
 
         private IEnumerable<ConnectionEndPointResolutionPlan> DefaultLbpHostsEnumerable(
-            ConcurrentDictionary<IContactPoint, object> attemptedContactPoints,
-            ConcurrentDictionary<Host, object> attemptedHosts,
+            ControlConnectionAttempt attempt,
             bool isInitializing,
             bool refreshContactPoints,
             bool refreshEndpoints,
-            bool allowDownHosts,
-            ICollection<Exception> resolutionErrors,
-            List<Action> recoveredFailureLogs)
+            bool allowDownHosts)
         {
             foreach (var hostShard in _config.DefaultRequestOptions.LoadBalancingPolicy.NewQueryPlan(null, null))
             {
-                if (attemptedHosts.TryAdd(hostShard.Host, null))
+                if (attempt.AttemptedHosts.TryAdd(hostShard.Host, null))
                 {
                     if (!IsHostValid(hostShard.Host, isInitializing, allowDownHosts))
                     {
@@ -272,12 +257,10 @@ namespace Cassandra.Connections.Control
                     }
 
                     yield return GetHostContactPointOrConnectionEndpointResolutionPlan(
-                        attemptedContactPoints,
+                        attempt,
                         hostShard.Host,
                         refreshContactPoints,
-                        refreshEndpoints,
-                        resolutionErrors,
-                        recoveredFailureLogs);
+                        refreshEndpoints);
                 }
             }
         }
@@ -342,15 +325,10 @@ namespace Cassandra.Connections.Control
             IEnumerable<ConnectionEndPointResolutionPlan> endPointResolutionPlansLazyIterator =
                 Enumerable.Empty<ConnectionEndPointResolutionPlan>();
 
-            var attemptedContactPoints = new ConcurrentDictionary<IContactPoint, object>();
-            var attemptedHosts = new ConcurrentDictionary<Host, object>();
-            var resolutionErrors = new List<Exception>();
-            var supersededConnectionErrors = new List<Exception>();
-            var recoveredFailureLogs = new List<Action>();
+            var attempt = new ControlConnectionAttempt();
 
-            // Bootstrap client routes through explicit contact points. On later attempts, routed
-            // Host-ID endpoints are tried first and direct contact points are reserved for final
-            // recovery from total connectivity loss.
+            // Bootstrap client routes through explicit contact points. Once initialization has
+            // completed, control-connection recovery remains on the Host-ID routing path.
             var totalConnectivityLoss = TotalConnectivityLoss();
             var addedContactPoints = false;
             var clientRoutesEnabled = _clientRoutesCache != null;
@@ -371,10 +349,8 @@ namespace Cassandra.Connections.Control
                 }
                 endPointResolutionPlansLazyIterator = endPointResolutionPlansLazyIterator.Concat(
                     ContactPointResolutionPlansEnumerable(
-                        attemptedContactPoints,
-                        refresh,
-                        resolutionErrors,
-                        recoveredFailureLogs));
+                        attempt,
+                        refresh));
             }
 
             // add endpoints from the default LBP if it is already initialized
@@ -382,27 +358,22 @@ namespace Cassandra.Connections.Control
             {
                 endPointResolutionPlansLazyIterator = endPointResolutionPlansLazyIterator.Concat(
                     DefaultLbpHostsEnumerable(
-                        attemptedContactPoints,
-                        attemptedHosts,
+                        attempt,
                         false,
                         _config.KeepContactPointsUnresolved,
                         true,
-                        clientRoutesEnabled && totalConnectivityLoss,
-                        resolutionErrors,
-                        recoveredFailureLogs));
+                        clientRoutesEnabled && totalConnectivityLoss));
             }
 
             // Preserve the legacy contact-point tail when client routes are disabled. With client
-            // routes, direct contact points are only the final total-loss recovery path.
-            if (!addedContactPoints && (!clientRoutesEnabled || totalConnectivityLoss))
+            // routes, explicit contact points are bootstrap-only.
+            if (!addedContactPoints && !clientRoutesEnabled)
             {
                 addedContactPoints = true;
                 endPointResolutionPlansLazyIterator = endPointResolutionPlansLazyIterator.Concat(
                     ContactPointResolutionPlansEnumerable(
-                        attemptedContactPoints,
-                        totalConnectivityLoss || _config.KeepContactPointsUnresolved,
-                        resolutionErrors,
-                        recoveredFailureLogs));
+                        attempt,
+                        totalConnectivityLoss || _config.KeepContactPointsUnresolved));
             }
 
             // add all hosts iterator, this will contain already tried hosts but we will check for it with the concurrent dictionary
@@ -410,22 +381,19 @@ namespace Cassandra.Connections.Control
             {
                 endPointResolutionPlansLazyIterator = endPointResolutionPlansLazyIterator.Concat(
                     AllHostsEndPointResolutionPlansEnumerable(
-                        attemptedContactPoints,
-                        attemptedHosts,
+                        attempt,
                         true,
                         _config.KeepContactPointsUnresolved,
-                        true,
-                        resolutionErrors,
-                        recoveredFailureLogs));
+                        true));
             }
 
             var oldConnection = _connection;
             var oldHost = _host;
             var oldEndpoint = _currentConnectionEndPoint;
 
-            var triedHosts = new Dictionary<IPEndPoint, Exception>();
             foreach (var endPointResolutionPlan in endPointResolutionPlansLazyIterator)
             {
+                attempt.RegisterResolutionPlan(endPointResolutionPlan);
                 while (true)
                 {
                     IReadOnlyList<IConnectionEndPoint> endPoints;
@@ -435,16 +403,19 @@ namespace Cassandra.Connections.Control
                     }
                     catch (Exception ex) when (!Utils.IsFatalException(ex))
                     {
-                        resolutionErrors.Add(ex);
-                        recoveredFailureLogs.Add(() => ControlConnection.Logger.Warning(
-                            "Failed to resolve a control-connection endpoint candidate. " +
-                            "Continuing with the remaining hosts and contact points. Exception: {0}",
-                            ex));
+                        if (endPointResolutionPlan.UnresolvedResolutionErrors.Count == 0)
+                        {
+                            attempt.RecordResolutionFailure(
+                                ex,
+                                () => ControlConnection.Logger.Warning(
+                                    "Failed to resolve a control-connection endpoint candidate. " +
+                                    "Continuing with the remaining hosts and contact points. Exception: {0}",
+                                    ex));
+                        }
                         break;
                     }
                     catch
                     {
-                        FlushRecoveredFailureLogs(recoveredFailureLogs);
                         throw;
                     }
 
@@ -477,7 +448,7 @@ namespace Cassandra.Connections.Control
                                 {
                                     // The version of the protocol is not supported on this host
                                     // Most likely, we are using a higher protocol version than the host supports
-                                    recoveredFailureLogs.Add(() => ControlConnection.Logger.Warning(
+                                    attempt.DeferRecoveredFailureLog(() => ControlConnection.Logger.Warning(
                                         "Host {0} does not support protocol version {1}. You should use a fixed protocol " +
                                         "version during rolling upgrades of the cluster. " +
                                         "Skipping this host on the current attempt to open the control connection.",
@@ -541,7 +512,16 @@ namespace Cassandra.Connections.Control
                             if (_clientRoutesCache == null)
                             {
                                 // Preserve the legacy subscription timing when client routes are disabled.
-                                Subscribe(currentHost, connection, false);
+                                lock (_connectionHandoffLock)
+                                {
+                                    if (IsShutdown || !ReferenceEquals(_connection, connection))
+                                    {
+                                        throw new ObjectDisposedException(
+                                            nameof(ControlConnection),
+                                            "The Control Connection was disposed before the connection lifecycle completed.");
+                                    }
+                                    Subscribe(currentHost, connection, false);
+                                }
                             }
 
                             ControlConnection.Logger.Info(
@@ -568,6 +548,12 @@ namespace Cassandra.Connections.Control
                                 // through the candidate connection's Closing event.
                                 lock (_connectionHandoffLock)
                                 {
+                                    if (IsShutdown)
+                                    {
+                                        throw new ObjectDisposedException(
+                                            nameof(ControlConnection),
+                                            "The Control Connection was disposed before the client-routes lifecycle completed.");
+                                    }
                                     Subscribe(currentHost, connection, false);
                                     if (!ReferenceEquals(_connection, connection) ||
                                         connection.IsDisposed ||
@@ -577,10 +563,11 @@ namespace Cassandra.Connections.Control
                                         Unsubscribe(currentHost, connection);
                                         throw new SocketException((int)SocketError.NotConnected);
                                     }
-                                    _config.ClientRoutesRuntime.CompleteLifecyclePass();
+                                    _config.ClientRoutesRuntime.CompleteLifecyclePass(
+                                        _metadata.AllHosts().Select(host => host.HostId));
                                 }
                             }
-                            FlushRecoveredFailureLogs(recoveredFailureLogs);
+                            attempt.CompleteSuccessfully();
                             return;
                         }
                         catch (Exception ex)
@@ -592,64 +579,177 @@ namespace Cassandra.Connections.Control
                                 connection.Dispose();
                             }
 
-                            if (ReferenceEquals(_connection, connection))
+                            lock (_connectionHandoffLock)
                             {
-                                RestoreCurrentConnection(oldConnection, oldHost, oldEndpoint);
+                                if (!IsShutdown && ReferenceEquals(_connection, connection))
+                                {
+                                    RestoreCurrentConnection(oldConnection, oldHost, oldEndpoint);
+                                }
                             }
 
                             if (IsShutdown)
                             {
-                                FlushRecoveredFailureLogs(recoveredFailureLogs);
                                 throw new ObjectDisposedException("Control Connection has been disposed.", ex);
                             }
                             if (Utils.IsFatalException(ex))
                             {
-                                FlushRecoveredFailureLogs(recoveredFailureLogs);
                                 throw;
                             }
 
-                            recoveredFailureLogs.Add(() => ControlConnection.Logger.Info(
+                            attempt.DeferRecoveredFailureLog(() => ControlConnection.Logger.Info(
                                 "Failed to connect to {0}. Exception: {1}",
                                 endPoint.EndpointFriendlyName,
                                 ex));
 
                             // There was a socket or authentication exception or an unexpected error
                             var hostEndPoint = endPoint.GetHostIpEndPointWithFallback();
-                            if (triedHosts.TryGetValue(hostEndPoint, out var supersededError))
-                            {
-                                supersededConnectionErrors.Add(supersededError);
-                            }
-                            triedHosts[hostEndPoint] = ex;
+                            attempt.RecordConnectionFailure(hostEndPoint, ex);
                         }
                     }
                 }
+                attempt.CollectUnresolvedResolutionErrors(endPointResolutionPlan);
             }
-            var supplementalErrors = resolutionErrors.Concat(supersededConnectionErrors).ToArray();
-            if (supplementalErrors.Length > 0)
-            {
-                if (triedHosts.Count == 0)
-                {
-                    throw new NoHostAvailableException(
-                        "No control-connection endpoint could be resolved.",
-                        new AggregateException(supplementalErrors));
-                }
-                throw new NoHostAvailableException(
-                    triedHosts,
-                    "Another " + supplementalErrors.Length.ToString(CultureInfo.InvariantCulture) +
-                    " control-connection candidate(s) also failed; " +
-                    "see InnerException.",
-                    new AggregateException(supplementalErrors));
-            }
-            throw new NoHostAvailableException(triedHosts);
+            throw attempt.CreateNoHostAvailableException();
         }
 
-        private static void FlushRecoveredFailureLogs(ICollection<Action> recoveredFailureLogs)
+        /// <summary>
+        /// Owns all mutable state for one control-connection attempt so candidate preference,
+        /// supplemental failures, and recovered diagnostics cannot drift between resolution paths.
+        /// </summary>
+        private sealed class ControlConnectionAttempt
         {
-            foreach (var recoveredFailureLog in recoveredFailureLogs)
+            private readonly Dictionary<IPEndPoint, HostConnectionFailures> _connectionFailures =
+                new Dictionary<IPEndPoint, HostConnectionFailures>();
+            private readonly List<Exception> _resolutionErrors = new List<Exception>();
+            private readonly List<Action> _recoveredFailureLogs = new List<Action>();
+            private readonly List<ConnectionEndPointResolutionPlan> _resolutionPlans =
+                new List<ConnectionEndPointResolutionPlan>();
+            private readonly HashSet<ConnectionEndPointResolutionPlan> _collectedResolutionPlans =
+                new HashSet<ConnectionEndPointResolutionPlan>();
+
+            internal ConcurrentDictionary<IContactPoint, object> AttemptedContactPoints { get; } =
+                new ConcurrentDictionary<IContactPoint, object>();
+
+            internal ConcurrentDictionary<Host, object> AttemptedHosts { get; } =
+                new ConcurrentDictionary<Host, object>();
+
+            internal void RegisterResolutionPlan(ConnectionEndPointResolutionPlan resolutionPlan)
             {
-                recoveredFailureLog();
+                _resolutionPlans.Add(resolutionPlan);
             }
-            recoveredFailureLogs.Clear();
+
+            internal void CollectUnresolvedResolutionErrors(ConnectionEndPointResolutionPlan resolutionPlan)
+            {
+                if (!_collectedResolutionPlans.Add(resolutionPlan))
+                {
+                    return;
+                }
+                _resolutionErrors.AddRange(resolutionPlan.UnresolvedResolutionErrors);
+            }
+
+            internal void RecordResolutionFailure(Exception exception, Action recoveredFailureLog)
+            {
+                _resolutionErrors.Add(exception);
+                DeferRecoveredFailureLog(recoveredFailureLog);
+            }
+
+            internal void RecordConnectionFailure(IPEndPoint endPoint, Exception exception)
+            {
+                if (!_connectionFailures.TryGetValue(endPoint, out var failures))
+                {
+                    failures = new HostConnectionFailures();
+                    _connectionFailures.Add(endPoint, failures);
+                }
+                failures.Add(exception);
+            }
+
+            internal void DeferRecoveredFailureLog(Action recoveredFailureLog)
+            {
+                if (recoveredFailureLog != null)
+                {
+                    _recoveredFailureLogs.Add(recoveredFailureLog);
+                }
+            }
+
+            internal void CompleteSuccessfully()
+            {
+                foreach (var resolutionPlan in _resolutionPlans)
+                {
+                    resolutionPlan.AcknowledgeConnectionSuccess();
+                }
+                foreach (var recoveredFailureLog in _recoveredFailureLogs)
+                {
+                    recoveredFailureLog();
+                }
+                _recoveredFailureLogs.Clear();
+                _resolutionErrors.Clear();
+            }
+
+            internal NoHostAvailableException CreateNoHostAvailableException()
+            {
+                if (_connectionFailures.Count == 0)
+                {
+                    if (_resolutionErrors.Count == 0)
+                    {
+                        return new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>());
+                    }
+                    return new NoHostAvailableException(
+                        "No control-connection endpoint could be resolved.",
+                        new AggregateException(_resolutionErrors));
+                }
+
+                var errors = new Dictionary<IPEndPoint, Exception>(_connectionFailures.Count);
+                var attachResolutionErrors = true;
+                foreach (var hostFailure in _connectionFailures)
+                {
+                    var supersededErrors = hostFailure.Value.GetSupersededErrors();
+                    var hasResolutionErrors = attachResolutionErrors && _resolutionErrors.Count > 0;
+                    var resolutionErrors = attachResolutionErrors
+                        ? _resolutionErrors
+                        : (IEnumerable<Exception>)new Exception[0];
+                    attachResolutionErrors = false;
+                    errors.Add(
+                        hostFailure.Key,
+                        supersededErrors.Count > 0 || hasResolutionErrors
+                            ? (Exception)new ConnectionFailure(
+                                hostFailure.Value.PreferredError,
+                                supersededErrors,
+                                resolutionErrors)
+                            : hostFailure.Value.PreferredError);
+                }
+                return new NoHostAvailableException(errors);
+            }
+
+            private sealed class HostConnectionFailures
+            {
+                private readonly List<Exception> _errors = new List<Exception>();
+                private int _preferredIndex = -1;
+
+                internal Exception PreferredError => _errors[_preferredIndex];
+
+                internal void Add(Exception exception)
+                {
+                    _errors.Add(exception);
+                    if (_preferredIndex < 0 ||
+                        ConnectionFailure.ShouldReplacePreferred(PreferredError, exception))
+                    {
+                        _preferredIndex = _errors.Count - 1;
+                    }
+                }
+
+                internal IReadOnlyList<Exception> GetSupersededErrors()
+                {
+                    var superseded = new List<Exception>(_errors.Count - 1);
+                    for (var i = 0; i < _errors.Count; i++)
+                    {
+                        if (i != _preferredIndex)
+                        {
+                            superseded.Add(_errors[i]);
+                        }
+                    }
+                    return superseded;
+                }
+            }
         }
 
         private void ReconnectEventHandler(object state)
@@ -858,8 +958,6 @@ namespace Cassandra.Connections.Control
                 var currentHost = await _topologyRefresher.RefreshNodeListAsync(
                     currentEndPoint, _connection, _serializer.GetCurrentSerializer()).ConfigureAwait(false);
 
-                SetCurrentConnectionEndpoint(currentHost, currentEndPoint);
-
                 if (_clientRoutesCache != null)
                 {
                     await _clientRoutesCache.FullRefreshBarrierAsync(confirmIgnoredEmptyResults: true).ConfigureAwait(false);
@@ -871,11 +969,19 @@ namespace Cassandra.Connections.Control
                 }
                 lock (_connectionHandoffLock)
                 {
+                    if (IsShutdown)
+                    {
+                        throw new ObjectDisposedException(
+                            nameof(ControlConnection),
+                            "The Control Connection was disposed before the refresh lifecycle completed.");
+                    }
                     if (_connection?.IsClosed ?? true)
                     {
                         throw new SocketException((int)SocketError.NotConnected);
                     }
-                    _config.ClientRoutesRuntime?.CompleteLifecyclePass();
+                    SetCurrentConnectionEndpoint(currentHost, currentEndPoint);
+                    _config.ClientRoutesRuntime?.CompleteLifecyclePass(
+                        _metadata.AllHosts().Select(host => host.HostId));
                 }
                 _reconnectionSchedule = _reconnectionPolicy.NewSchedule();
             }
@@ -894,7 +1000,7 @@ namespace Cassandra.Connections.Control
                 _controlLifecycleLock.Release();
                 Interlocked.Exchange(ref _refreshFlag, 0);
             }
-            if (reconnect)
+            if (reconnect && !IsShutdown)
             {
                 await Reconnect(null).ConfigureAwait(false);
             }
@@ -902,20 +1008,30 @@ namespace Cassandra.Connections.Control
 
         public void Shutdown()
         {
-            var oldState = Interlocked.Exchange(ref _state, ControlConnection.StateDisposed);
-            if (oldState == ControlConnection.StateDisposed)
+            IConnection connection;
+            lock (_connectionHandoffLock)
             {
-                return;
+                var oldState = Interlocked.Exchange(ref _state, ControlConnection.StateDisposed);
+                if (oldState == ControlConnection.StateDisposed)
+                {
+                    return;
+                }
+
+                connection = _connection;
+                Unsubscribe(_host, connection);
             }
 
+            // Lifecycle completion uses the same lock. Once shutdown has linearized above, no
+            // connection or route lifecycle can be published. Fault the captured runtime waiters
+            // without holding the connection handoff lock.
             _config.ClientRoutesRuntime?.Shutdown();
 
-            var c = _connection;
-            Unsubscribe(_host, c);
-            if (c != null)
+            if (connection != null)
             {
-                ControlConnection.Logger.Info("Shutting down control connection to {0}", c.EndPoint.EndpointFriendlyName);
-                c.Dispose();
+                ControlConnection.Logger.Info(
+                    "Shutting down control connection to {0}",
+                    connection.EndPoint.EndpointFriendlyName);
+                connection.Dispose();
             }
             _reconnectionTimer.Change(Timeout.Infinite, Timeout.Infinite);
             _reconnectionTimer.Dispose();

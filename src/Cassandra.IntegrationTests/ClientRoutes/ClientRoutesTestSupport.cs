@@ -15,6 +15,7 @@
 //
 
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
@@ -70,6 +71,44 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             while (DateTime.UtcNow < deadline);
 
             Assert.Fail(failureMessage);
+        }
+
+        /// <summary>
+        /// Runs every cleanup action and reports all failures after cleanup has finished.
+        /// </summary>
+        public static void RunAllCleanupActions(params Action[] cleanupActions)
+        {
+            if (cleanupActions == null)
+            {
+                throw new ArgumentNullException(nameof(cleanupActions));
+            }
+
+            List<Exception> exceptions = null;
+            foreach (var cleanupAction in cleanupActions)
+            {
+                if (cleanupAction == null)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    cleanupAction();
+                }
+                catch (Exception ex)
+                {
+                    if (exceptions == null)
+                    {
+                        exceptions = new List<Exception>();
+                    }
+                    exceptions.Add(ex);
+                }
+            }
+
+            if (exceptions != null)
+            {
+                throw new AggregateException("One or more client-routes cleanup actions failed.", exceptions);
+            }
         }
     }
 

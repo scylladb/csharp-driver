@@ -55,6 +55,13 @@ namespace Cassandra.Connections
         private int _nextStep;
         private bool _resolvedAnyEndPoints;
 
+        /// <summary>
+        /// Gets a snapshot of resolution failures that have not yet been followed by a successful
+        /// connection. Resolving another endpoint does not recover these failures: that endpoint
+        /// may still fail while opening the socket or authenticating.
+        /// </summary>
+        public IReadOnlyList<Exception> UnresolvedResolutionErrors => _resolutionErrors.ToArray();
+
         public ConnectionEndPointResolutionPlan(
             IEnumerable<Func<Task<IReadOnlyList<IConnectionEndPoint>>>> steps,
             Func<IReadOnlyList<Exception>, Exception> noEndPointsExceptionFactory = null)
@@ -105,16 +112,12 @@ namespace Cassandra.Connections
                 }
                 catch
                 {
-                    // Earlier recoverable failures were swallowed in order to reach this step.
-                    // They are not part of the fatal exception that now propagates.
-                    NotifyRecoveredFailures();
                     throw;
                 }
 
                 if (endPoints.Count > 0)
                 {
                     _resolvedAnyEndPoints = true;
-                    NotifyRecoveredFailures();
                 }
                 return endPoints;
             }
@@ -124,8 +127,17 @@ namespace Cassandra.Connections
                 throw _noEndPointsExceptionFactory(_resolutionErrors.ToArray());
             }
 
-            NotifyRecoveredFailures();
             return null;
+        }
+
+        /// <summary>
+        /// Marks the resolution failures accumulated by this plan as recovered by a connection
+        /// that was successfully opened. Recovery callbacks are invoked at most once per failure.
+        /// </summary>
+        public void AcknowledgeConnectionSuccess()
+        {
+            NotifyRecoveredFailures();
+            _resolutionErrors.Clear();
         }
 
         private void NotifyRecoveredFailures()

@@ -117,7 +117,7 @@ namespace Cassandra.Tests.Connections
         }
 
         [Test]
-        public async Task Should_LogDnsFailureOnlyAfterLaterRouteRecoversIt()
+        public async Task Should_LogDnsFailureOnlyAfterSuccessfulConnectionIsAcknowledged()
         {
             var host = CreateHost("192.0.2.12", Guid.NewGuid());
             var runtime = await CreateRuntimeAsync(
@@ -146,6 +146,14 @@ namespace Cassandra.Tests.Connections
             Assert.AreEqual(
                 new IPEndPoint(IPAddress.Parse("198.51.100.14"), 9242),
                 endpoints.Single().SocketIpEndPoint);
+            Assert.AreEqual(0, loggerHandler.WarningCount);
+            CollectionAssert.AreEqual(new[] { dnsFailure }, plan.UnresolvedResolutionErrors);
+
+            plan.AcknowledgeConnectionSuccess();
+
+            Assert.AreEqual(1, loggerHandler.WarningCount);
+            Assert.AreEqual(0, plan.UnresolvedResolutionErrors.Count);
+            plan.AcknowledgeConnectionSuccess();
             Assert.AreEqual(1, loggerHandler.WarningCount);
             dns.Verify(resolver => resolver.GetHostEntryAsync("primary.proxy"), Times.Once);
             dns.VerifyNoOtherCalls();
@@ -445,7 +453,7 @@ namespace Cassandra.Tests.Connections
                     .ReturnsAsync(() => rows);
             var cache = runtime.Bind(provider.Object);
             await cache.FullRefreshBarrierAsync().ConfigureAwait(false);
-            runtime.CompleteLifecyclePass();
+            runtime.CompleteLifecyclePass(new Guid[0]);
             runtime.BeginLifecyclePass();
             var fallback = new Mock<IEndPointResolver>(MockBehavior.Strict);
             var target = new ClientRoutesEndPointResolver(runtime, Mock.Of<IDnsResolver>(), fallback.Object);
@@ -455,7 +463,7 @@ namespace Cassandra.Tests.Connections
 
             rows = new[] { Route(host.HostId, "198.51.100.80", 9080, 9180, "route-a") };
             await cache.FullRefreshBarrierAsync().ConfigureAwait(false);
-            runtime.CompleteLifecyclePass();
+            runtime.CompleteLifecyclePass(new[] { host.HostId });
             await resolution.WaitToCompleteAsync(5000).ConfigureAwait(false);
             var candidate = resolution.Result.Single();
 
@@ -518,6 +526,68 @@ namespace Cassandra.Tests.Connections
             fallback.VerifyNoOtherCalls();
         }
 
+        [Test]
+        public async Task Should_NotUseConfirmedAbsenceForNewHostIdAfterLifecycleTimeout()
+        {
+            var knownHostId = Guid.NewGuid();
+            var newHost = CreateHost("192.0.2.83", Guid.NewGuid());
+            var runtime = new ClientRoutesRuntime(
+                new ClientRoutesOptions(new[] { new ClientRouteProxy("route-a") }, AdvertisedPort, false),
+                false);
+            runtime.CompleteLifecyclePass(new[] { knownHostId });
+            runtime.BeginLifecyclePass();
+            var direct = new ConnectionEndPoint(newHost.Address, Mock.Of<IServerNameResolver>(), null);
+            var fallback = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            var target = new ClientRoutesEndPointResolver(
+                runtime,
+                Mock.Of<IDnsResolver>(),
+                fallback.Object,
+                TimeSpan.FromMilliseconds(50));
+
+            var ex = Assert.ThrowsAsync<DriverException>(async () =>
+                await target.GetConnectionEndPointsAsync(newHost, false)
+                            .WaitToCompleteAsync(5000)
+                            .ConfigureAwait(false));
+
+            StringAssert.Contains("host identity", ex.Message);
+            fallback.VerifyNoOtherCalls();
+
+            fallback.Setup(resolver => resolver.GetConnectionEndPointsAsync(newHost, false))
+                    .ReturnsAsync(new IConnectionEndPoint[] { direct });
+            runtime.CompleteLifecyclePass(new[] { knownHostId, newHost.HostId });
+
+            CollectionAssert.AreEqual(
+                new[] { direct },
+                await target.GetConnectionEndPointsAsync(newHost, false).ConfigureAwait(false));
+            fallback.Verify(resolver => resolver.GetConnectionEndPointsAsync(newHost, false), Times.Once);
+        }
+
+        [Test]
+        public async Task Should_NotUseOldHostCoverageForSameAddressReplacementAfterLifecycleTimeout()
+        {
+            var oldHost = CreateHost("192.0.2.84", Guid.NewGuid());
+            var replacement = CreateHost("192.0.2.84", Guid.NewGuid());
+            var runtime = await CreateRuntimeAsync(
+                new[] { "route-a" },
+                false,
+                Route(oldHost.HostId, "198.51.100.84", 9084, 9184, "route-a")).ConfigureAwait(false);
+            runtime.BeginLifecyclePass();
+            var fallback = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            var target = new ClientRoutesEndPointResolver(
+                runtime,
+                Mock.Of<IDnsResolver>(),
+                fallback.Object,
+                TimeSpan.FromMilliseconds(50));
+
+            var ex = Assert.ThrowsAsync<DriverException>(async () =>
+                await target.GetConnectionEndPointsAsync(replacement, false)
+                            .WaitToCompleteAsync(5000)
+                            .ConfigureAwait(false));
+
+            StringAssert.Contains(replacement.HostId.ToString("D"), ex.Message);
+            fallback.VerifyNoOtherCalls();
+        }
+
         private static async Task<ClientRoutesRuntime> CreateRuntimeAsync(
             IEnumerable<string> connectionIds,
             bool useTls,
@@ -532,7 +602,7 @@ namespace Cassandra.Tests.Connections
             provider.Setup(p => p.QueryUnpagedAsync(It.IsAny<string>(), It.IsAny<bool>()))
                     .ReturnsAsync(rows);
             await runtime.Bind(provider.Object).FullRefreshBarrierAsync().ConfigureAwait(false);
-            runtime.CompleteLifecyclePass();
+            runtime.CompleteLifecyclePass(rows.Select(row => row.GetValue<Guid>("host_id")));
             return runtime;
         }
 

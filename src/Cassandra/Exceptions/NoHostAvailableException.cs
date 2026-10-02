@@ -20,6 +20,7 @@ using System.Collections.Generic;
 using System.Net;
 using System.Runtime.Serialization;
 using System.Text;
+using Cassandra.Connections;
 
 namespace Cassandra
 {
@@ -43,9 +44,14 @@ namespace Cassandra
         public Dictionary<IPEndPoint, Exception> Errors { get; }
 
         public NoHostAvailableException(Dictionary<IPEndPoint, Exception> errors)
-            : base(CreateMessage(errors))
+            : this(NormalizeErrors(errors))
         {
-            Errors = errors;
+        }
+
+        private NoHostAvailableException(NormalizedErrors normalized)
+            : base(CreateMessage(normalized.Errors), normalized.InnerException)
+        {
+            Errors = normalized.Errors;
         }
 
         /// <summary>
@@ -53,9 +59,14 @@ namespace Cassandra
         /// describing failures that happened before any host could be tried.
         /// </summary>
         internal NoHostAvailableException(Dictionary<IPEndPoint, Exception> errors, string detail, Exception innerException)
-            : base(CreateMessage(errors) + " " + detail, innerException)
+            : this(NormalizeErrors(errors, innerException), detail)
         {
-            Errors = errors;
+        }
+
+        private NoHostAvailableException(NormalizedErrors normalized, string detail)
+            : base(CreateMessage(normalized.Errors) + " " + detail, normalized.InnerException)
+        {
+            Errors = normalized.Errors;
         }
 
         /// <summary>
@@ -107,6 +118,60 @@ namespace Cassandra
             }
             builder.Append(errors.Count <= MaxTriedInfo ? ")" : "; ...), see Errors property for more info");
             return builder.ToString();
+        }
+
+        private static NormalizedErrors NormalizeErrors(
+            Dictionary<IPEndPoint, Exception> errors,
+            Exception existingInnerException = null)
+        {
+            if (errors == null)
+            {
+                throw new ArgumentNullException(nameof(errors));
+            }
+
+            Dictionary<IPEndPoint, Exception> normalized = null;
+            var supplementalErrors = new List<Exception>();
+            foreach (var error in errors)
+            {
+                var connectionFailure = error.Value as ConnectionFailure;
+                if (connectionFailure == null)
+                {
+                    continue;
+                }
+
+                if (normalized == null)
+                {
+                    normalized = new Dictionary<IPEndPoint, Exception>(errors);
+                }
+                normalized[error.Key] = connectionFailure.PreferredError;
+                supplementalErrors.AddRange(connectionFailure.SupersededConnectionErrors);
+                supplementalErrors.AddRange(connectionFailure.UnresolvedResolutionErrors);
+            }
+
+            Exception innerException = existingInnerException;
+            if (supplementalErrors.Count > 0)
+            {
+                if (existingInnerException != null)
+                {
+                    supplementalErrors.Insert(0, existingInnerException);
+                }
+                innerException = new AggregateException(supplementalErrors);
+            }
+
+            return new NormalizedErrors(normalized ?? errors, innerException);
+        }
+
+        private sealed class NormalizedErrors
+        {
+            public NormalizedErrors(Dictionary<IPEndPoint, Exception> errors, Exception innerException)
+            {
+                Errors = errors;
+                InnerException = innerException;
+            }
+
+            public Dictionary<IPEndPoint, Exception> Errors { get; }
+
+            public Exception InnerException { get; }
         }
     }
 }

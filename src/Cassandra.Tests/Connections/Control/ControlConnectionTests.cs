@@ -566,27 +566,40 @@ namespace Cassandra.Tests.Connections.Control
         }
 
         [Test]
-        public async Task Should_RefreshDirectContactPointAfterRoutesFailDuringTotalConnectivityLoss()
+        public async Task Should_NotUseBootstrapContactPointAfterRoutedReconnectBegins()
         {
             var hostId = Guid.NewGuid();
-            const string routeAddress = "127.0.0.10";
             var contactPointEndPoint = new IPEndPoint(IPAddress.Parse("127.0.0.1"), ProtocolOptions.DefaultPort);
-            var routeEndPoint = new IPEndPoint(IPAddress.Parse(routeAddress), 19042);
+            var primaryRouteEndPoint = new IPEndPoint(IPAddress.Parse("127.0.0.10"), 19042);
+            var backupRouteEndPoint = new IPEndPoint(IPAddress.Parse("127.0.0.12"), 19242);
             var attemptedEndPoints = new ConcurrentQueue<IPEndPoint>();
+            var initialized = false;
+            var backupRouteEnabled = false;
             var connectionFactory = new FakeConnectionFactory((IConnectionEndPoint endPoint) =>
             {
                 attemptedEndPoints.Enqueue(endPoint.SocketIpEndPoint);
                 var connection = new Mock<IConnection>();
                 connection.SetupGet(value => value.EndPoint).Returns(endPoint);
-                if (endPoint.SocketIpEndPoint.Equals(routeEndPoint))
+                if (Volatile.Read(ref initialized) &&
+                    (endPoint.SocketIpEndPoint.Equals(primaryRouteEndPoint) ||
+                     (endPoint.SocketIpEndPoint.Equals(backupRouteEndPoint) &&
+                      !Volatile.Read(ref backupRouteEnabled))))
                 {
                     connection.Setup(value => value.Open())
                               .ThrowsAsync(new SocketException((int)SocketError.ConnectionRefused));
                 }
                 return connection.Object;
             });
-            var requestHandler = new RecordingMetadataRequestHandler((_, __) => Task.FromResult(
-                ClientRouteRows(hostId, routeAddress, routeEndPoint.Port)));
+            var requestHandler = new RecordingMetadataRequestHandler((_, call) => Task.FromResult(
+                call == 1
+                    ? ClientRouteRows(
+                        hostId,
+                        ("primary", primaryRouteEndPoint.Address.ToString(), primaryRouteEndPoint.Port),
+                        ("backup", backupRouteEndPoint.Address.ToString(), backupRouteEndPoint.Port))
+                    : ClientRouteRows(
+                        hostId,
+                        ("primary", "127.0.0.20", 29042),
+                        ("backup", backupRouteEndPoint.Address.ToString(), backupRouteEndPoint.Port))));
             var cluster = new Mock<IInternalCluster>();
             var loadBalancingPolicy = new TestHelper.CustomLoadBalancingPolicy();
             TestContactPoint contactPoint = null;
@@ -596,7 +609,7 @@ namespace Cassandra.Tests.Connections.Control
                 configBuilderAct: builder =>
                 {
                     builder.ConnectionFactory = connectionFactory;
-                    builder.ClientRoutesOptions = CreateClientRoutesOptions();
+                    builder.ClientRoutesOptions = CreateClientRoutesOptions("primary", "backup");
                     builder.MetadataRequestHandler = requestHandler;
                     builder.ServerEventsSubscriber = new RecordingServerEventsSubscriber();
                     builder.Policies = new Cassandra.Policies(
@@ -620,41 +633,62 @@ namespace Cassandra.Tests.Connections.Control
                 cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
                 loadBalancingPolicy.Initialize(cluster.Object);
                 await controlConnection.InitAsync().ConfigureAwait(false);
+                Volatile.Write(ref initialized, true);
 
                 contactPoint.Calls.Clear();
                 attemptedEndPoints.Clear();
 
+                Assert.ThrowsAsync<NoHostAvailableException>(() => controlConnection.Reconnect(null));
+
+                CollectionAssert.AreEqual(
+                    new[] { primaryRouteEndPoint, backupRouteEndPoint },
+                    attemptedEndPoints.ToArray());
+                CollectionAssert.IsEmpty(contactPoint.Calls.ToArray());
+                Assert.AreEqual(1, requestHandler.QueryCount);
+
+                attemptedEndPoints.Clear();
+                Volatile.Write(ref backupRouteEnabled, true);
                 await controlConnection.Reconnect(null).ConfigureAwait(false);
 
                 CollectionAssert.AreEqual(
-                    new[] { routeEndPoint, contactPointEndPoint },
+                    new[] { primaryRouteEndPoint, backupRouteEndPoint },
                     attemptedEndPoints.ToArray());
-                CollectionAssert.AreEqual(new[] { true }, contactPoint.Calls.ToArray());
+                CollectionAssert.IsEmpty(contactPoint.Calls.ToArray());
+                Assert.AreEqual(2, requestHandler.QueryCount);
+                Assert.IsTrue(createResult.Config.ClientRoutesRuntime.TryGetRoutes(hostId, out var refreshedRoutes));
+                Assert.AreEqual("127.0.0.20", refreshedRoutes[0].Address);
+                Assert.AreEqual("primary", refreshedRoutes[0].ConnectionId);
             }
         }
 
         [Test]
-        public async Task Should_IncludeRouteResolutionErrorsWhenOtherCandidatesWereTried()
+        public async Task Should_RetainBackupDnsFailureAfterPrimaryRouteSocketFailure()
         {
             var hostId = Guid.NewGuid();
             var contactPointEndPoint = new IPEndPoint(IPAddress.Parse("127.0.0.1"), ProtocolOptions.DefaultPort);
+            var primaryRouteEndPoint = new IPEndPoint(IPAddress.Parse("127.0.0.10"), 19042);
             var initialized = false;
             var dnsFailure = new SocketException((int)SocketError.HostNotFound);
+            var socketFailure = new SocketException((int)SocketError.ConnectionRefused);
             var dns = new Mock<IDnsResolver>(MockBehavior.Strict);
-            dns.Setup(value => value.GetHostEntryAsync("route.proxy")).ThrowsAsync(dnsFailure);
+            dns.Setup(value => value.GetHostEntryAsync("backup.proxy")).ThrowsAsync(dnsFailure);
             var connectionFactory = new FakeConnectionFactory(endPoint =>
             {
                 var connection = new Mock<IConnection>();
                 connection.SetupGet(value => value.EndPoint).Returns(endPoint);
-                if (Volatile.Read(ref initialized))
+                if (Volatile.Read(ref initialized) &&
+                    endPoint.SocketIpEndPoint.Equals(primaryRouteEndPoint))
                 {
                     connection.Setup(value => value.Open())
-                              .ThrowsAsync(new SocketException((int)SocketError.ConnectionRefused));
+                              .ThrowsAsync(socketFailure);
                 }
                 return connection.Object;
             });
             var requestHandler = new RecordingMetadataRequestHandler((_, __) => Task.FromResult(
-                ClientRouteRows(hostId, "route.proxy", 19042)));
+                ClientRouteRows(
+                    hostId,
+                    ("primary", primaryRouteEndPoint.Address.ToString(), primaryRouteEndPoint.Port),
+                    ("backup", "backup.proxy", 19142))));
             var cluster = new Mock<IInternalCluster>();
             var loadBalancingPolicy = new TestHelper.CustomLoadBalancingPolicy();
             var createResult = NewInstance(
@@ -663,7 +697,7 @@ namespace Cassandra.Tests.Connections.Control
                 configBuilderAct: builder =>
                 {
                     builder.ConnectionFactory = connectionFactory;
-                    builder.ClientRoutesOptions = CreateClientRoutesOptions();
+                    builder.ClientRoutesOptions = CreateClientRoutesOptions("primary", "backup");
                     builder.DnsResolver = dns.Object;
                     builder.MetadataRequestHandler = requestHandler;
                     builder.ServerEventsSubscriber = new RecordingServerEventsSubscriber();
@@ -692,12 +726,76 @@ namespace Cassandra.Tests.Connections.Control
                 var ex = Assert.ThrowsAsync<NoHostAvailableException>(() => controlConnection.Reconnect(null));
 
                 CollectionAssert.AreEqual(new[] { contactPointEndPoint }, ex.Errors.Keys.ToArray());
+                Assert.AreSame(socketFailure, ex.Errors[contactPointEndPoint]);
                 Assert.IsInstanceOf<AggregateException>(ex.InnerException);
                 var resolutionError = ((AggregateException)ex.InnerException).InnerExceptions.Single();
-                Assert.IsInstanceOf<DriverException>(resolutionError);
+                Assert.AreSame(dnsFailure, resolutionError);
+            }
+        }
+
+        [TestCase(true)]
+        [TestCase(false)]
+        public async Task Should_PreferAuthenticationFailureOverSocketFailureForControlRoutes(
+            bool authenticationFailureFirst)
+        {
+            var hostId = Guid.NewGuid();
+            var advertisedEndPoint = new IPEndPoint(IPAddress.Parse("127.0.0.1"), ProtocolOptions.DefaultPort);
+            var primaryRouteEndPoint = new IPEndPoint(IPAddress.Parse("127.0.0.10"), 19042);
+            var backupRouteEndPoint = new IPEndPoint(IPAddress.Parse("127.0.0.11"), 19142);
+            var authenticationFailure = new AuthenticationException("control route authentication failed");
+            var socketFailure = new SocketException((int)SocketError.ConnectionRefused);
+            var initialized = false;
+            var connectionFactory = new FakeConnectionFactory(endPoint =>
+            {
+                var connection = new Mock<IConnection>();
+                connection.SetupGet(value => value.EndPoint).Returns(endPoint);
+                if (Volatile.Read(ref initialized))
+                {
+                    var isPrimary = endPoint.SocketIpEndPoint.Equals(primaryRouteEndPoint);
+                    var failure = isPrimary == authenticationFailureFirst
+                        ? (Exception)authenticationFailure
+                        : socketFailure;
+                    connection.Setup(value => value.Open()).ThrowsAsync(failure);
+                }
+                return connection.Object;
+            });
+            var requestHandler = new RecordingMetadataRequestHandler((_, __) => Task.FromResult(
+                ClientRouteRows(
+                    hostId,
+                    ("primary", primaryRouteEndPoint.Address.ToString(), primaryRouteEndPoint.Port),
+                    ("backup", backupRouteEndPoint.Address.ToString(), backupRouteEndPoint.Port))));
+            var cluster = new Mock<IInternalCluster>();
+            var loadBalancingPolicy = new TestHelper.CustomLoadBalancingPolicy();
+            var createResult = NewInstance(
+                CreateHostRows(hostId),
+                cluster.Object,
+                configBuilderAct: builder =>
+                {
+                    builder.ConnectionFactory = connectionFactory;
+                    builder.ClientRoutesOptions = CreateClientRoutesOptions("primary", "backup");
+                    builder.MetadataRequestHandler = requestHandler;
+                    builder.ServerEventsSubscriber = new RecordingServerEventsSubscriber();
+                    builder.Policies = new Cassandra.Policies(
+                        loadBalancingPolicy,
+                        new ConstantReconnectionPolicy(1000),
+                        new DefaultRetryPolicy());
+                });
+
+            using (var controlConnection = createResult.ControlConnection)
+            {
+                cluster.Setup(value => value.AllHosts()).Returns(() => createResult.Metadata.AllHosts());
+                cluster.Setup(value => value.AnyOpenConnections(It.IsAny<Host>())).Returns(false);
+                cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+                loadBalancingPolicy.Initialize(cluster.Object);
+                await controlConnection.InitAsync().ConfigureAwait(false);
+                Volatile.Write(ref initialized, true);
+
+                var ex = Assert.ThrowsAsync<NoHostAvailableException>(() => controlConnection.Reconnect(null));
+
+                Assert.AreSame(authenticationFailure, ex.Errors[advertisedEndPoint]);
                 Assert.AreSame(
-                    dnsFailure,
-                    ((AggregateException)resolutionError.InnerException).InnerExceptions.Single());
+                    socketFailure,
+                    ((AggregateException)ex.InnerException).InnerExceptions.Single());
             }
         }
 
@@ -709,6 +807,7 @@ namespace Cassandra.Tests.Connections.Control
             var advertisedEndPoint = new IPEndPoint(IPAddress.Parse("127.0.0.1"), ProtocolOptions.DefaultPort);
             var contactPointEndPoint = new IPEndPoint(IPAddress.Parse("127.0.0.2"), ProtocolOptions.DefaultPort);
             var staleRouteEndPoint = new IPEndPoint(IPAddress.Parse(staleRouteAddress), 19042);
+            var backupRouteEndPoint = new IPEndPoint(IPAddress.Parse("127.0.0.11"), 19142);
             var attemptedEndPoints = new ConcurrentQueue<IPEndPoint>();
             var firstEmptyQueryStarted = NewSignal();
             var releaseFirstEmptyQuery = NewSignal();
@@ -732,7 +831,10 @@ namespace Cassandra.Tests.Connections.Control
             {
                 if (call == 1)
                 {
-                    return ClientRouteRows(hostId, staleRouteAddress, staleRouteEndPoint.Port);
+                    return ClientRouteRows(
+                        hostId,
+                        ("primary", staleRouteAddress, staleRouteEndPoint.Port),
+                        ("backup", backupRouteEndPoint.Address.ToString(), backupRouteEndPoint.Port));
                 }
 
                 TaskCompletionSource<bool> queryStarted;
@@ -767,7 +869,7 @@ namespace Cassandra.Tests.Connections.Control
                 configBuilderAct: builder =>
                 {
                     builder.ConnectionFactory = connectionFactory;
-                    builder.ClientRoutesOptions = CreateClientRoutesOptions();
+                    builder.ClientRoutesOptions = CreateClientRoutesOptions("primary", "backup");
                     builder.MetadataRequestHandler = requestHandler;
                     builder.ServerEventsSubscriber = new RecordingServerEventsSubscriber();
                     builder.Policies = new Cassandra.Policies(
@@ -805,13 +907,15 @@ namespace Cassandra.Tests.Connections.Control
                 Assert.IsFalse(reconnect.IsCompleted);
                 Assert.IsFalse(endpointResolution.IsCompleted);
                 CollectionAssert.AreEqual(
-                    new[] { staleRouteEndPoint, contactPointEndPoint },
+                    new[] { staleRouteEndPoint, backupRouteEndPoint },
                     attemptedEndPoints.ToArray());
 
                 releaseFirstEmptyQuery.TrySetResult(true);
                 await secondEmptyQueryStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
                 Assert.IsTrue(createResult.Config.ClientRoutesRuntime.TryGetRoutes(hostId, out var routesAfterFirstEmpty));
-                Assert.AreEqual(staleRouteAddress, routesAfterFirstEmpty.Single().Address);
+                CollectionAssert.AreEqual(
+                    new[] { staleRouteAddress, backupRouteEndPoint.Address.ToString() },
+                    routesAfterFirstEmpty.Select(route => route.Address).ToArray());
                 Assert.IsFalse(lifecycleReady.IsCompleted);
                 Assert.IsFalse(reconnect.IsCompleted);
                 Assert.IsFalse(endpointResolution.IsCompleted);
@@ -819,7 +923,9 @@ namespace Cassandra.Tests.Connections.Control
                 releaseSecondEmptyQuery.TrySetResult(true);
                 await thirdEmptyQueryStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
                 Assert.IsTrue(createResult.Config.ClientRoutesRuntime.TryGetRoutes(hostId, out var routesAfterSecondEmpty));
-                Assert.AreEqual(staleRouteAddress, routesAfterSecondEmpty.Single().Address);
+                CollectionAssert.AreEqual(
+                    new[] { staleRouteAddress, backupRouteEndPoint.Address.ToString() },
+                    routesAfterSecondEmpty.Select(route => route.Address).ToArray());
                 Assert.IsFalse(lifecycleReady.IsCompleted);
                 Assert.IsFalse(reconnect.IsCompleted);
                 Assert.IsFalse(endpointResolution.IsCompleted);
@@ -1238,6 +1344,62 @@ namespace Cassandra.Tests.Connections.Control
             candidate.Verify(value => value.Dispose(), Times.AtLeastOnce);
             Assert.IsTrue(candidate.Object.IsDisposed);
             Assert.AreEqual(1, requestHandler.QueryCount);
+        }
+
+        [Test]
+        public async Task Should_NotPublishOrReconnectWhenShutdownWinsDuringRefreshLifecycle()
+        {
+            var hostId = Guid.NewGuid();
+            var refreshQueryStarted = NewSignal();
+            var releaseRefreshQuery = NewSignal();
+            var connections = new ConcurrentQueue<Mock<IConnection>>();
+            var requestHandler = new RecordingMetadataRequestHandler(async (_, call) =>
+            {
+                if (call == 1)
+                {
+                    return ClientRouteRows(hostId, "127.0.0.10", 19042);
+                }
+
+                refreshQueryStarted.TrySetResult(true);
+                await releaseRefreshQuery.Task.ConfigureAwait(false);
+                return ClientRouteRows(hostId, "127.0.0.20", 29042);
+            });
+            var createResult = NewInstance(
+                CreateHostRows(hostId),
+                configBuilderAct: builder =>
+                {
+                    builder.ConnectionFactory = CreateRecordingConnectionFactory(connections);
+                    builder.ClientRoutesOptions = CreateClientRoutesOptions();
+                    builder.MetadataRequestHandler = requestHandler;
+                    builder.ServerEventsSubscriber = new RecordingServerEventsSubscriber();
+                });
+            var runtime = createResult.Config.ClientRoutesRuntime;
+
+            try
+            {
+                await createResult.ControlConnection.InitAsync().ConfigureAwait(false);
+                var refresh = (Task)typeof(ControlConnection)
+                    .GetMethod("Refresh", BindingFlags.Instance | BindingFlags.NonPublic)
+                    .Invoke(createResult.ControlConnection, null);
+                await refreshQueryStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                var lifecycleReady = runtime.WaitForLifecycleReadyAsync();
+                Assert.IsFalse(lifecycleReady.IsCompleted);
+
+                createResult.ControlConnection.Dispose();
+                releaseRefreshQuery.TrySetResult(true);
+
+                Assert.ThrowsAsync<ObjectDisposedException>(() =>
+                    lifecycleReady.WaitToCompleteAsync(5000));
+                await refresh.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.IsFalse(runtime.IsLifecycleReady);
+                Assert.AreEqual(1, connections.Count);
+                Assert.AreEqual(2, requestHandler.QueryCount);
+            }
+            finally
+            {
+                releaseRefreshQuery.TrySetResult(true);
+                createResult.ControlConnection.Dispose();
+            }
         }
 
         [Test]
@@ -1875,7 +2037,7 @@ namespace Cassandra.Tests.Connections.Control
 
         [Test]
         [NonParallelizable]
-        public void Should_LogEarlierCandidateFailureBeforePropagatingLaterFatalFailure()
+        public void Should_NotLogEarlierCandidateFailureBeforePropagatingLaterFatalFailure()
         {
             var recoveredFailure = new InvalidOperationException("recovered candidate before fatal");
             var fatalFailure = new OutOfMemoryException("propagated fatal candidate");
@@ -1924,7 +2086,7 @@ namespace Cassandra.Tests.Connections.Control
                 Diagnostics.CassandraTraceSwitch.Level = previousLevel;
             }
 
-            Assert.IsTrue(listener.Messages.Values.Any(message =>
+            Assert.IsFalse(listener.Messages.Values.Any(message =>
                 message.Contains("recovered candidate before fatal")));
             Assert.IsFalse(listener.Messages.Values.Any(message =>
                 message.Contains("propagated fatal candidate")));
@@ -1932,7 +2094,7 @@ namespace Cassandra.Tests.Connections.Control
 
         [Test]
         [NonParallelizable]
-        public void Should_LogEarlierResolutionFailureBeforePropagatingLaterFatalResolution()
+        public void Should_NotLogEarlierResolutionFailureBeforePropagatingLaterFatalResolution()
         {
             var recoveredFailure = new InvalidOperationException("recovered resolution before fatal");
             var fatalFailure = new OutOfMemoryException("propagated fatal resolution");
@@ -1970,7 +2132,7 @@ namespace Cassandra.Tests.Connections.Control
                 Diagnostics.CassandraTraceSwitch.Level = previousLevel;
             }
 
-            Assert.IsTrue(listener.Messages.Values.Any(message =>
+            Assert.IsFalse(listener.Messages.Values.Any(message =>
                 message.Contains("recovered resolution before fatal")));
             Assert.IsFalse(listener.Messages.Values.Any(message =>
                 message.Contains("propagated fatal resolution")));
@@ -2075,6 +2237,20 @@ namespace Cassandra.Tests.Connections.Control
                     { "connection_id", "connection-a" }
                 })
             };
+        }
+
+        private static IEnumerable<IRow> ClientRouteRows(
+            Guid hostId,
+            params (string ConnectionId, string Address, int Port)[] routes)
+        {
+            return routes.Select(route => (IRow)new TestHelper.DictionaryBasedRow(new Dictionary<string, object>
+            {
+                { "host_id", hostId },
+                { "address", route.Address },
+                { "port", route.Port },
+                { "tls_port", route.Port + 100 },
+                { "connection_id", route.ConnectionId }
+            }));
         }
 
         private static IEnumerable<IRow> MultipleClientRouteRows(Guid hostId)
