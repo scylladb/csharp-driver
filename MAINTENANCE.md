@@ -65,6 +65,19 @@ Release tags use the four-part package version prefixed with `v`, for example
 together. After publication, the GitHub Release and the `master` branch's
 documentation catalog must point to the same artifacts.
 
+Release orchestration lives only on the protected `master` branch. Run the
+manual **Release NuGet packages** workflow there with the four-part version and
+the full commit SHA at the tip of `3.22`. A dry run signs, packs, validates, and
+retains all three packages without creating a tag, NuGet package, or GitHub
+Release. Production remains blocked until the selected milestone has no open
+`release-blocker` issue or pull request.
+
+If publication stops after creating the immutable tag or publishing one of the
+packages, fix any newly opened blocker and rerun the same version and tagged
+commit with **Resume partial publication** enabled. The workflow verifies the
+tag and any already-published package before completing the remaining uploads.
+Never delete, move, force-update, or reuse a release tag as recovery.
+
 ## End of life
 
 There is no calendar EOL date for 3.22 at branch creation. The project will

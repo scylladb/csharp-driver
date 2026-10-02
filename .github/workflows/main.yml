@@ -12,7 +12,6 @@ on:
       - "docs/**"
       - .github/workflows/docs-pages.yml
       - .github/workflows/docs-pr.yml
-      - .github/workflows/publish.yml
       - .gitignore
       - .gitattributes
       - "**/*.md"
@@ -28,7 +27,6 @@ on:
       - "docs/**"
       - .github/workflows/docs-pages.yml
       - .github/workflows/docs-pr.yml
-      - .github/workflows/publish.yml
       - .gitignore
       - .gitattributes
       - "**/*.md"
