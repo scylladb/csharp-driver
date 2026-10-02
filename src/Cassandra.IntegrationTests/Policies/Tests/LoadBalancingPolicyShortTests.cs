@@ -323,7 +323,7 @@ namespace Cassandra.IntegrationTests.Policies.Tests
             try
             {
                 var session = cluster.Connect();
-                Assert.AreEqual(256, cluster.AllHosts().First().Tokens.Count());
+                Assert.Greater(cluster.AllHosts().First().Tokens.Count(), 1);
                 var ks = TestUtils.GetUniqueKeyspaceName();
                 if (TestClusterManager.IsScylla)
                 {

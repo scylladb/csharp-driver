@@ -39,7 +39,7 @@ on:
       - .nav
 
 # Cancel in-flight runs for the same pull request, so a new push does not wait
-# behind the previous run's build and four cluster jobs. Pull requests share one
+# behind the previous run's build and cluster jobs. Pull requests share one
 # stable ref, so a new push cancels the old run; non-PR runs (master push) are
 # keyed by SHA instead and are never cancelled, so an intermediate master build
 # cannot be dropped by a later one.
@@ -66,9 +66,8 @@ jobs:
       - name: Run dotnet format (checks formatting)
         run: make check
 
-  # Run every target framework's unit suite once here instead of repeating it in
-  # each integration matrix leg (where net9 was also duplicating this job).
-  # All four SDKs are installed so the net6/7/8 tests have a runtime to execute on.
+  # Run the net10 unit suite once here instead of repeating it in each
+  # integration matrix leg.
   unit-tests:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -80,11 +79,6 @@ jobs:
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           global-json-file: global.json
-          dotnet-version: |
-            9.0.x
-            8.0.x
-            7.0.x
-            6.0.x
 
       - name: Cache NuGet packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -95,7 +89,7 @@ jobs:
             nuget-${{ runner.os }}-
 
       - name: Run unit tests
-        run: TARGET_FRAMEWORK=all make test-unit
+        run: TARGET_FRAMEWORK=net10.0 make test-unit
 
   build-examples:
     runs-on: ubuntu-24.04
@@ -128,17 +122,13 @@ jobs:
       matrix:
         include:
           - scylla-version: LTS-LATEST
-            target-framework: net9
-            dotnet-version: '9.0.x'
+            target-framework: net10.0
           - scylla-version: LTS-PRIOR
-            target-framework: net8
-            dotnet-version: '8.0.x'
+            target-framework: net10.0
           - scylla-version: LATEST
-            target-framework: net7
-            dotnet-version: '7.0.x'
+            target-framework: net10.0
           - scylla-version: PRIOR
-            target-framework: net6
-            dotnet-version: '6.0.x'
+            target-framework: net10.0
       fail-fast: false
 
     env:
@@ -153,11 +143,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
-      - name: Setup .NET ${{ matrix.dotnet-version }}
+      - name: Setup .NET
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           global-json-file: global.json
-          dotnet-version: ${{ matrix.dotnet-version }}
 
       - name: Set up JDK 8
         uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
@@ -280,3 +269,91 @@ jobs:
         with:
           path: ~/.ccm/scylla-repository
           key: ccm-scylla-${{ runner.os }}-${{ steps.scylla-version.outputs.value }}
+
+  cassandra-integration-tests:
+    needs: [lint]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      CASSANDRA_VERSION: 4.0.21
+      TARGET_FRAMEWORK: net10.0
+      PIP_USER: "1"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Checkout Cassandra CCM SSL fixtures
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          repository: apache/cassandra-ccm
+          ref: d3225ac6565242b231129e0c4f8f0b7a041219cf
+          path: cassandra-ccm
+          persist-credentials: false
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+
+      - name: Set up JDK 8
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
+        with:
+          java-version: 8
+          distribution: 'temurin'
+
+      - name: Setup Python 3
+        id: python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
+      - name: Put user-installed Python scripts on PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Cache pip
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('Makefile') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+
+      - name: Cache CCM install
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.local
+            ~/.ccm/ccm-type
+            ~/.ccm/ccm-version
+          key: ccm-install-cassandra-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('Makefile') }}
+          restore-keys: |
+            ccm-install-cassandra-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-
+
+      - name: Cache NuGet packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      - name: Pull Cassandra distribution from the cache
+        id: cassandra-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.ccm/repository
+          key: ccm-cassandra-${{ runner.os }}-${{ env.CASSANDRA_VERSION }}
+
+      - name: Run integration tests on Cassandra, including SSL
+        env:
+          CCM_SSL_PATH: ${{ github.workspace }}/cassandra-ccm/ssl
+        run: make test-integration-cassandra
+
+      - name: Save Cassandra distribution into the cache
+        if: steps.cassandra-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.ccm/repository
+          key: ccm-cassandra-${{ runner.os }}-${{ env.CASSANDRA_VERSION }}

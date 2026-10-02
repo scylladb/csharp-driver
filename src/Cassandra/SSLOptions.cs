@@ -37,7 +37,7 @@ namespace Cassandra
         private readonly static RemoteCertificateValidationCallback DefaultCertValidationCallback = ValidateServerCertificate;
 
         private RemoteCertificateValidationCallback _remoteCertValidationCallback = SSLOptions.DefaultCertValidationCallback;
-        private SslProtocols _sslProtocol = SslProtocols.Tls;
+        private SslProtocols _sslProtocol = SslProtocols.None;
         private bool _checkCertificateRevocation;
         private X509CertificateCollection _certificateCollection = new X509CertificateCollection();
         private Func<IPAddress, string> _hostNameResolver = GetHostName;
@@ -100,7 +100,7 @@ namespace Cassandra
         }
 
         /// <summary>
-        ///  Creates SSLOptions with default values.   
+        /// Creates SSL options with default values, delegating protocol selection to the operating system.
         /// </summary>
         public SSLOptions()
         {
@@ -109,7 +109,7 @@ namespace Cassandra
         /// <summary>
         /// Creates SSL options used for SSL connections with Casandra hosts. 
         /// </summary>
-        /// <param name="sslProtocol">type of SSL protocol, default set to Tls.</param>
+        /// <param name="sslProtocol">The SSL protocol to use.</param>
         /// <param name="checkCertificateRevocation">specifies whether the certificate revocation list is checked during connection authentication.</param>
         /// <param name="remoteCertValidationCallback">verifies Cassandra host SSL certificate used for authentication.
         ///     <remarks>

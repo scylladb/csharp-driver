@@ -549,6 +549,12 @@ namespace Cassandra.IntegrationTests.Core
         [TestCassandraVersion(3, 11)]
         public void SimpleStatement_With_No_Compact_Enabled_Should_Reveal_Non_Schema_Columns()
         {
+            if (TestClusterManager.CheckCassandraVersion(true, new Version(4, 0), Comparison.GreaterThanOrEqualsTo))
+            {
+                Assert.Ignore("COMPACT STORAGE is not supported by C* 4.0");
+                return;
+            }
+
             var builder = ClusterBuilder().WithNoCompact().AddContactPoint(TestCluster.InitialContactPoint);
             using (ICluster cluster = builder.Build())
             {
@@ -564,6 +570,12 @@ namespace Cassandra.IntegrationTests.Core
         [TestCassandraVersion(3, 11)]
         public void SimpleStatement_With_No_Compact_Disabled_Should_Not_Reveal_Non_Schema_Columns()
         {
+            if (TestClusterManager.CheckCassandraVersion(true, new Version(4, 0), Comparison.GreaterThanOrEqualsTo))
+            {
+                Assert.Ignore("COMPACT STORAGE is not supported by C* 4.0");
+                return;
+            }
+
             var builder = ClusterBuilder().AddContactPoint(TestCluster.InitialContactPoint);
             using (var cluster = builder.Build())
             {

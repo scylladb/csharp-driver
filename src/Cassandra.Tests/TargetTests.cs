@@ -24,25 +24,23 @@ namespace Cassandra.Tests
     [TestFixture]
     public class TargetTests
     {
-#if NETCOREAPP
         [Test]
-        public void Should_TargetNetstandard15_When_TestsTargetNetcore20()
+        public void ShippingAssemblies_Should_TargetNet10()
         {
-            var framework = Assembly
-                            .GetAssembly(typeof(ISession))?
-                            .GetCustomAttribute<TargetFrameworkAttribute>()?
-                            .FrameworkName;
+            TargetTests.AssertTargetFramework(typeof(ISession), "ScyllaDB");
+            TargetTests.AssertTargetFramework(typeof(Cassandra.AppMetrics.DriverAppMetricsOptions), "Cassandra.AppMetrics");
+            TargetTests.AssertTargetFramework(
+                typeof(Cassandra.OpenTelemetry.CassandraInstrumentationOptions), "Cassandra.OpenTelemetry");
+        }
 
-            Assert.AreEqual(".NETStandard,Version=v2.0", framework);
-        }
-#else
-        [Test]
-        public void Should_FailTest_When_TestsTargetDifferentTarget()
+        private static void AssertTargetFramework(System.Type type, string assemblyName)
         {
-            Assert.Fail("Something changed in the test project targets. "+
-                    "Please review these tests to make sure the change is intended "+
-                    "and if so please add new tests for the new targets.")
+            var assembly = Assembly.GetAssembly(type);
+
+            Assert.AreEqual(assemblyName, assembly.GetName().Name);
+            Assert.AreEqual(
+                ".NETCoreApp,Version=v10.0",
+                assembly.GetCustomAttribute<TargetFrameworkAttribute>().FrameworkName);
         }
-#endif
     }
 }

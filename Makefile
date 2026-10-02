@@ -59,7 +59,7 @@ build-examples: .use-development-snk
 .PHONY: test-unit
 test-unit: .use-development-snk
 	dotnet build-server shutdown
-	dotnet test --maxcpucount:1 $(TEST_TARGET_OPTIONS) src/Cassandra.Tests/Cassandra.Tests.csproj
+	dotnet test --configuration Release --maxcpucount:1 $(TEST_TARGET_OPTIONS) src/Cassandra.Tests/Cassandra.Tests.csproj
 
 TEST_INTEGRATION_SCYLLA_FILTER ?= (FullyQualifiedName!~ClientWarningsTests & FullyQualifiedName!~CustomPayloadTests & FullyQualifiedName!~Connect_With_Ssl_Test & FullyQualifiedName!~Should_UpdateHosts_When_HostIpChanges & FullyQualifiedName!~Should_UseNewHostInQueryPlans_When_HostIsDecommissionedAndJoinsAgain & FullyQualifiedName!~Should_RemoveNodeMetricsAndDisposeMetricsContext_When_HostIsRemoved & FullyQualifiedName!~Virtual_Keyspaces_Are_Included & FullyQualifiedName!~Virtual_Table_Metadata_Test & FullyQualifiedName!~SessionAuthenticationTests & FullyQualifiedName!~Custom_MetadataTest & FullyQualifiedName!~Should_Use_Custom_TypeSerializers & FullyQualifiedName!~LinqWhere_WithVectors & FullyQualifiedName!~SimpleStatement_With_No_Compact_Enabled_Should_Reveal_Non_Schema_Columns & FullyQualifiedName!~SimpleStatement_With_No_Compact_Disabled_Should_Not_Reveal_Non_Schema_Columns & FullyQualifiedName!~ColumnClusteringOrderReversedTest & FullyQualifiedName!~GetMaterializedView_Should_Refresh_View_Metadata_Via_Events & FullyQualifiedName!~MaterializedView_Base_Table_Column_Addition & FullyQualifiedName!~MultipleSecondaryIndexTest & FullyQualifiedName!~RaiseErrorOnInvalidMultipleSecondaryIndexTest & FullyQualifiedName!~TableMetadataAllTypesTest & FullyQualifiedName!~TableMetadataClusteringOrderTest & FullyQualifiedName!~TableMetadataCollectionsSecondaryIndexTest & FullyQualifiedName!~TableMetadataCompositePartitionKeyTest & FullyQualifiedName!~TupleMetadataTest & FullyQualifiedName!~Udt_Case_Sensitive_Metadata_Test & FullyQualifiedName!~UdtMetadataTest & FullyQualifiedName!~Should_Retrieve_Table_Metadata & FullyQualifiedName!~CreateTable_With_Frozen_Key & FullyQualifiedName!~CreateTable_With_Frozen_Udt & FullyQualifiedName!~CreateTable_With_Frozen_Value & FullyQualifiedName!~Should_AllMetricsHaveValidValues_When_AllNodesAreUp & FullyQualifiedName!~SimpleStatement_Dictionary_Parameters_CaseInsensitivity_ExcessOfParams & FullyQualifiedName!~SimpleStatement_Dictionary_Parameters_CaseInsensitivity_NoOverload & FullyQualifiedName!~TokenAware_TransientReplication_NoHopsAndOnlyFullReplicas & FullyQualifiedName!~GetFunction_Should_Return_Most_Up_To_Date_Metadata_Via_Events & FullyQualifiedName!~LargeDataTests & FullyQualifiedName!~MetadataTests & FullyQualifiedName!~MultiThreadingTests & FullyQualifiedName!~PoolTests & FullyQualifiedName!~PrepareLongTests & FullyQualifiedName!~SpeculativeExecutionLongTests & FullyQualifiedName!~StressTests & FullyQualifiedName!~TransitionalAuthenticationTests & FullyQualifiedName!~ProxyAuthenticationTests & FullyQualifiedName!~CloudIntegrationTests & FullyQualifiedName!~CoreGraphTests & FullyQualifiedName!~GraphTests & FullyQualifiedName!~InsightsIntegrationTests & FullyQualifiedName!~DateRangeTests & FullyQualifiedName!~FoundBugTests & FullyQualifiedName!~GeometryTests & FullyQualifiedName!~LoadBalancingPolicyTests & FullyQualifiedName!~ConsistencyTests & FullyQualifiedName!~LoadBalancingPolicyTests & FullyQualifiedName!~ReconnectionPolicyTests & FullyQualifiedName!~RetryPolicyTests)
 TEST_INTEGRATION_OPTIONS ?= -l "console;verbosity=detailed"
@@ -67,11 +67,11 @@ TEST_INTEGRATION_CSPROJ ?= src/Cassandra.IntegrationTests/Cassandra.IntegrationT
 .PHONY: test-integration-scylla
 test-integration-scylla: .use-development-snk .prepare-scylla-ccm
 	dotnet build-server shutdown
-	CCM_DISTRIBUTION=scylla dotnet test --maxcpucount:1 $(TEST_TARGET_OPTIONS) $(TEST_INTEGRATION_CSPROJ) $(TEST_INTEGRATION_OPTIONS) --filter "$(TEST_INTEGRATION_SCYLLA_FILTER)"
+	CCM_DISTRIBUTION=scylla dotnet test --configuration Release --maxcpucount:1 $(TEST_TARGET_OPTIONS) $(TEST_INTEGRATION_CSPROJ) $(TEST_INTEGRATION_OPTIONS) --filter "$(TEST_INTEGRATION_SCYLLA_FILTER)"
 
 .PHONY: test-integration-cassandra
 test-integration-cassandra: .use-development-snk .prepare-cassandra-ccm
-	CCM_DISTRIBUTION=cassandra dotnet test --maxcpucount:1 $(TEST_TARGET_OPTIONS) $(TEST_INTEGRATION_CSPROJ) $(TEST_INTEGRATION_OPTIONS)
+	env -u SCYLLA_VERSION CCM_DISTRIBUTION=cassandra dotnet test --configuration Release --maxcpucount:1 $(TEST_TARGET_OPTIONS) $(TEST_INTEGRATION_CSPROJ) $(TEST_INTEGRATION_OPTIONS)
 
 .prepare-cassandra-ccm:
 	@ccm --help 2>/dev/null 1>&2; if [[ $$? -lt 127 ]] && grep CASSANDRA ${CCM_CONFIG_DIR}/ccm-type 2>/dev/null 1>&2 && grep ${CCM_CASSANDRA_VERSION} ${CCM_CONFIG_DIR}/ccm-version 2>/dev//null  1>&2; then \
@@ -139,30 +139,35 @@ install-scylla-ccm:
 	grep '<PackageId>ScyllaDBCSharpDriver.DRYRUN' $(PROJECT_PATH) || \
 	sed -Ei "s#<PackageId>ScyllaDBCSharpDriver(.*)</PackageId>#<PackageId>ScyllaDBCSharpDriver.DRYRUN\1</PackageId>#g" $(PROJECT_PATH)
 
-.publish-proj-nuget: .use-production-snk
+.pack-proj-nuget:
+	dotnet restore $(PROJECT_PATH)
+	dotnet build $(PROJECT_PATH) --configuration Release --no-restore
+	dotnet pack $(PROJECT_PATH) --configuration Release --no-build --output ./nupkgs
+
+.publish-nuget: .use-production-snk
 ifndef DRY_RUN
 	@echo "Publishing to NuGet with production SNK"
 else
 	@echo "Dry run publishing to NuGet with production SNK"
-	$(MAKE) .target-to-dry-run-package
+	$(MAKE) .target-to-dry-run-package PROJECT_PATH=src/Cassandra/Cassandra.csproj
+	$(MAKE) .target-to-dry-run-package PROJECT_PATH=src/Extensions/Cassandra.AppMetrics/Cassandra.AppMetrics.csproj
+	$(MAKE) .target-to-dry-run-package PROJECT_PATH=src/Extensions/Cassandra.OpenTelemetry/Cassandra.OpenTelemetry.csproj
 endif
-	dotnet restore $(PROJECT_PATH)
-	dotnet build $(PROJECT_PATH) --configuration Release --no-restore
 	rm -rf ./nupkgs
-	dotnet pack $(PROJECT_PATH) --configuration Release --no-build --output ./nupkgs
+	$(MAKE) .pack-proj-nuget PROJECT_PATH=src/Cassandra/Cassandra.csproj
+	$(MAKE) .pack-proj-nuget PROJECT_PATH=src/Extensions/Cassandra.AppMetrics/Cassandra.AppMetrics.csproj
+	$(MAKE) .pack-proj-nuget PROJECT_PATH=src/Extensions/Cassandra.OpenTelemetry/Cassandra.OpenTelemetry.csproj
+	python3 -m unittest discover -s build/tests -p 'test_*.py'
+	python3 build/validate-packages.py --package-directory ./nupkgs $(if $(DRY_RUN),--dry-run)
 	dotnet nuget push ${NUGET_PUSH_OPTIONS} "./nupkgs/*.nupkg" --api-key ${NUGET_API_KEY} --source https://api.nuget.org/v3/index.json
 
 .PHONY: publish-nuget
 publish-nuget:
-	$(MAKE) .publish-proj-nuget PROJECT_PATH=src/Cassandra/Cassandra.csproj
-	$(MAKE) .publish-proj-nuget PROJECT_PATH=src/Extensions/Cassandra.AppMetrics/Cassandra.AppMetrics.csproj
-	$(MAKE) .publish-proj-nuget PROJECT_PATH=src/Extensions/Cassandra.OpenTelemetry/Cassandra.OpenTelemetry.csproj
+	$(MAKE) .publish-nuget
 
 .PHONY: publish-nuget-dry-run
 publish-nuget-dry-run:
-	$(MAKE) .publish-proj-nuget PROJECT_PATH=src/Cassandra/Cassandra.csproj DRY_RUN=1
-	$(MAKE) .publish-proj-nuget PROJECT_PATH=src/Extensions/Cassandra.AppMetrics/Cassandra.AppMetrics.csproj DRY_RUN=1
-	$(MAKE) .publish-proj-nuget PROJECT_PATH=src/Extensions/Cassandra.OpenTelemetry/Cassandra.OpenTelemetry.csproj DRY_RUN=1
+	$(MAKE) .publish-nuget DRY_RUN=1
 
 .PHONY: clean
 clean:

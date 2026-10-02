@@ -22,17 +22,13 @@ using System.Net.Security;
 using System.Reflection;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
-using System.Threading;
-#if JSON_SCHEMA_VALIDATOR
 using System.Text.Json;
-#endif
+using System.Threading;
 
 using Cassandra.ExecutionProfiles;
 using Cassandra.Requests;
 
-#if JSON_SCHEMA_VALIDATOR
 using Json.Schema;
-#endif
 
 using Moq;
 
@@ -46,13 +42,11 @@ namespace Cassandra.Tests.Requests
     [TestFixture]
     public class DriverConfigReporterTests
     {
-#if JSON_SCHEMA_VALIDATOR
         /// <summary>
         /// The normative v1 schema, embedded verbatim by the test project. Parsed once: it is immutable and
         /// building it is the expensive part of a conformance assertion.
         /// </summary>
         private static readonly JsonSchema Schema = DriverConfigReporterTests.LoadSchema();
-#endif
 
         //// ---------------------------------------------------------------------------------------------------
         //// Gating, fail-safe and size limit
@@ -1168,9 +1162,7 @@ namespace Cassandra.Tests.Requests
             var report = DriverConfigReporterTests.BuildReport(DriverConfigReporterTests.DefaultConfiguration());
             report["not-in-the-schema"] = true;
 
-#if JSON_SCHEMA_VALIDATOR
             Assert.IsFalse(DriverConfigReporterTests.ConformsToSchema(report));
-#endif
         }
 
         [Test]
@@ -1214,9 +1206,7 @@ namespace Cassandra.Tests.Requests
             Assert.AreEqual("42", report["query"]["defaults"]["consistency"].Value<string>());
 
             // That one field is the only thing wrong with the document: a level the schema lists makes it conform.
-#if JSON_SCHEMA_VALIDATOR
             Assert.IsFalse(DriverConfigReporterTests.ConformsToSchema(report));
-#endif
             report["query"]["defaults"]["consistency"] = "LOCAL_ONE";
             DriverConfigReporterTests.AssertConformsToSchema(report);
         }
@@ -1283,23 +1273,18 @@ namespace Cassandra.Tests.Requests
         }
 
         /// <summary>
-        /// Asserts that <paramref name="report"/> satisfies the normative v1 schema. Does nothing on a target
-        /// framework without the validator (see JSON_SCHEMA_VALIDATOR in the project file): the report is one code
-        /// path with no per-framework behaviour, so the net8/net9 runs establish its conformance everywhere.
+        /// Asserts that <paramref name="report"/> satisfies the normative v1 schema.
         /// </summary>
         private static void AssertConformsToSchema(JObject report)
         {
-#if JSON_SCHEMA_VALIDATOR
             var results = DriverConfigReporterTests.Evaluate(report);
 
             Assert.IsTrue(
                 results.IsValid,
                 "The report does not conform to the v1 schema: " + DriverConfigReporterTests.Describe(results) +
                 Environment.NewLine + report.ToString(Newtonsoft.Json.Formatting.None));
-#endif
         }
 
-#if JSON_SCHEMA_VALIDATOR
         private static bool ConformsToSchema(JObject report)
         {
             return DriverConfigReporterTests.Evaluate(report).IsValid;
@@ -1349,8 +1334,6 @@ namespace Cassandra.Tests.Requests
                 }
             }
         }
-#endif
-
         private class OversizedDriverConfigReporter : DriverConfigReporter
         {
             private readonly string _report;

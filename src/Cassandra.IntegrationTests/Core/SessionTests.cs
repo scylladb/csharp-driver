@@ -22,6 +22,7 @@ using System.Threading;
 using System.Threading.Tasks;
 
 using Cassandra.IntegrationTests.TestBase;
+using Cassandra.IntegrationTests.TestClusterManagement;
 using Cassandra.SessionManagement;
 using Cassandra.Tests;
 
@@ -196,7 +197,7 @@ namespace Cassandra.IntegrationTests.Core
             Thread.Sleep(2000);
             var pool11 = localSession1.GetOrCreateConnectionPool(hosts1[0], HostDistance.Local);
             var pool12 = localSession1.GetOrCreateConnectionPool(hosts1[1], HostDistance.Local);
-            var expectedConnections1 = useShardAwareness ? 4 : 3;
+            var expectedConnections1 = useShardAwareness && TestClusterManager.IsScylla ? 4 : 3;
             Assert.That(pool11.OpenConnections, Is.EqualTo(expectedConnections1));
             Assert.That(pool12.OpenConnections, Is.EqualTo(expectedConnections1));
 
@@ -222,7 +223,7 @@ namespace Cassandra.IntegrationTests.Core
                 Thread.Sleep(2000);
                 var pool21 = localSession2.GetOrCreateConnectionPool(hosts2[0], HostDistance.Local);
                 var pool22 = localSession2.GetOrCreateConnectionPool(hosts2[1], HostDistance.Local);
-                var expectedConnections2 = useShardAwareness ? 2 : 1;
+                var expectedConnections2 = useShardAwareness && TestClusterManager.IsScylla ? 2 : 1;
                 Assert.That(pool21.OpenConnections, Is.EqualTo(expectedConnections2));
                 Assert.That(pool22.OpenConnections, Is.EqualTo(expectedConnections2));
             }
