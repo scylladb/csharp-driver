@@ -2,6 +2,12 @@
 
 ScyllaDB's fork of a modern, [feature-rich][features] and highly tunable C# client library for Scylla using Cassandra's binary protocol and Cassandra Query Language v3.
 
+> **3.22 maintenance line:** This branch accepts security and correctness fixes
+> only. It does not accept features or new public APIs. See the
+> [3.22 maintenance policy](MAINTENANCE.md) for support, backport, and release
+> rules. Development for version 4 continues on
+> [`master`](https://github.com/scylladb/csharp-driver/tree/master).
+
 The driver targets .NET Standard 2.0. For more detailed information about platform compatibility, check [this section](#compatibility).
 
 ## Installation
@@ -237,20 +243,10 @@ ICluster cluster = Cluster.Builder()
 - Apache Cassandra versions 2.0 and above.
 - ScyllaDB 5.x and above.
 - ScyllaDB Enterprise 2021.x and above.
-- The driver targets .NET Standard 2.0
-
-Here is a list of platforms and .NET targets that Datastax uses when testing this driver:
-
-|  Platform             | net6 | net7 | net8  |
-|-----------------------|------|------|-------|
-| Windows Server 2019³  |  ✓²  |  ✓¹ |  ✓   |
-| Ubuntu 18.04          |  ✓   | ✓   | ✓    |
-
-¹ No tests are run for the `net7` target on the Windows platform but `net7` is still considered fully supported.
-
-² Only unit tests are ran for the `net6` target on the windows platform but `net6` is still considered fully supported.
-
-³ Appveyor's `Visual Studio 2022` image is used for these tests.
+- The driver and both extension packages target .NET Standard 2.0
+  (`netstandard2.0`).
+- CI validates the unit and integration test projects on .NET 6, .NET 7,
+  .NET 8, and .NET 9.
 
 Note: Big-endian systems are not supported.
 

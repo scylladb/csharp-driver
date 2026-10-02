@@ -2,6 +2,9 @@
 
 When contributing to this repository, please first discuss the changes you wish to make via [Scylla Slack channel][scylla-slack]
 
+Changes targeting the `3.22` branch must also follow the
+[3.22 maintenance policy](MAINTENANCE.md).
+
 ## Automated checks - Code Analyzers
 
 The CI builds run a couple of code analyzers: [FxCop][fxcop] and [StyleCop][stylecop]. At this time, the severity for a lot of warnings and errors is set to `suggestion` because we are still in the process of fixing them in the entire codebase. Progress on this is tracked on [linting issue][linting-issue].
@@ -96,11 +99,13 @@ its downloaded package. Unstable references remain supported unchanged.
 
 ## Building the driver and running tests
 
-DataStax C# drivers target .NET Standard 2.0. The test projects target .NET 6, 7 and 8. To run the code analyzers you need the .NET 8 SDK.
+The driver and extension projects target .NET Standard 2.0. The test projects
+target .NET 6, 7, 8, and 9. The repository pins .NET SDK 9.0.318 in
+`global.json`; use that SDK for builds and code analyzers.
 
 ### Prerequisites
 
-- [.NET 8 SDK][dotnetsdk]
+- [.NET 9 SDK 9.0.318][dotnetsdk]
 
 ### IDE Support
 
@@ -123,28 +128,36 @@ You can build specific projects against specific target frameworks on any platfo
 
 ```bash
 dotnet build src/Cassandra/Cassandra.csproj -f netstandard2.0
-dotnet build src/Cassandra.Tests/Cassandra.Tests.csproj -f net8
-dotnet build src/Cassandra.IntegrationTests/Cassandra.IntegrationTests.csproj -f net8
+dotnet build src/Cassandra.Tests/Cassandra.Tests.csproj -f net9
+dotnet build src/Cassandra.IntegrationTests/Cassandra.IntegrationTests.csproj -f net9
 ```
 
-Alternatively you can set the `BuildCoreOnly` environment variable which will cause the projects to support .NET Core / .NET Standard targets only (you can see the conditions on the `.csproj` files).
+The test projects use .NET 9 by default. Pass `-p:BuildTarget=all` to build all
+four test targets.
 
 ### Running Unit Tests
 
 ```bash
-dotnet test src/Cassandra.Tests/Cassandra.Tests.csproj -f net8
+dotnet test src/Cassandra.Tests/Cassandra.Tests.csproj -f net9
 ```
 
-The target framework supported by the test projects is `net8` (by default). If you set the `BuildAllTargets` environment variable, the test projects will support these targets:
+The supported test targets are:
 
-- `net6` 
-- `net7`(not LTS, might be removed at some point)
+- `net6`
+- `net7`
 - `net8`
+- `net9`
+
+Run every target through the same command used by CI:
+
+```bash
+TARGET_FRAMEWORK=all make test-unit
+```
 
 Running the unit tests for a single target should take no more than 5 minutes (usually less):
 
 ```bash
-dotnet test src/Cassandra.Tests/Cassandra.Tests.csproj -c Release -f net8 -l "console;verbosity=detailed"
+dotnet test src/Cassandra.Tests/Cassandra.Tests.csproj -c Release -f net9 -l "console;verbosity=detailed"
 ```
 
 ### Running Integration Tests
@@ -254,5 +267,6 @@ If you need new stuff from the base branch, it's fine to rebase and force-push, 
 [ccmrepo]: https://github.com/riptano/ccm
 [simulacronrepo]: https://github.com/datastax/simulacron
 [simulacronreleases]: https://github.com/datastax/simulacron/releases
+[dotnetsdk]: https://dotnet.microsoft.com/download/dotnet/9.0
 [dotnetcoresdk]: https://www.microsoft.com/net/download/core
 [scylla-slack]: https://scylladb-users.slack.com
