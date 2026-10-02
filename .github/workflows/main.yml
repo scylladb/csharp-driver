@@ -11,7 +11,6 @@ on:
       - "docs/**"
       - .github/workflows/docs-pages.yml
       - .github/workflows/docs-pr.yml
-      - .github/workflows/publish.yml
       - .gitignore
       - .gitattributes
       - "**/*.md"
@@ -27,7 +26,6 @@ on:
       - "docs/**"
       - .github/workflows/docs-pages.yml
       - .github/workflows/docs-pr.yml
-      - .github/workflows/publish.yml
       - .gitignore
       - .gitattributes
       - "**/*.md"
@@ -65,6 +63,21 @@ jobs:
 
       - name: Run dotnet format (checks formatting)
         run: make check
+
+  release-tool-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Setup Python 3
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
+      - name: Test release tooling
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s build/tests -p 'test_*.py' -v
 
   # Run the net10 unit suite once here instead of repeating it in each
   # integration matrix leg.
