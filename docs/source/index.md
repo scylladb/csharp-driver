@@ -4,6 +4,17 @@ ScyllaDB's fork of a modern, [feature-rich][features] and highly tunable C# clie
 
 Version 4 of the driver targets .NET 10 (`net10.0`). For more detailed information about platform compatibility, check [this section](#compatibility).
 
+## Supported release lines
+
+| Line | Status | Branch | Package target | Validated runtime |
+|---|---|---|---|---|
+| 3.22.x | Maintained; security and correctness fixes only | [`3.22`][branch-3-22] | `netstandard2.0` | .NET 6–.NET 9 |
+| 4.x | Active development; not yet released | [`master`][branch-master] | `net10.0` | .NET 10 |
+
+The 3.22.x line remains maintained until the project announces an end-of-life
+date in advance. See the [maintenance and release policy][maintenance-policy]
+for backport and release rules.
+
 ## Installation
 
 [Get it on Nuget][nuget]
@@ -237,9 +248,10 @@ ICluster cluster = Cluster.Builder()
 - ScyllaDB Enterprise 2021.x and above.
 - Version 4 of the driver and its extension packages target .NET 10 (`net10.0`).
 
-Applications that cannot target .NET 10 should remain on version `3.22.0.4` of all
-the packages they use: `ScyllaDBCSharpDriver`, `ScyllaDBCSharpDriver.AppMetrics`,
-and `ScyllaDBCSharpDriver.OpenTelemetry`.
+Applications that cannot target .NET 10 should remain on the latest 3.22.x
+release of all the packages they use: `ScyllaDBCSharpDriver`,
+`ScyllaDBCSharpDriver.AppMetrics`, and
+`ScyllaDBCSharpDriver.OpenTelemetry`.
 
 Note: Big-endian systems are not supported.
 
@@ -276,6 +288,9 @@ Unless required by applicable law or agreed to in writing, software distributed 
 [implicit]: https://docs.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/implicit
 [dynamic]: https://msdn.microsoft.com/en-us/library/dd264736.aspx
 [dev-guide]: https://docs.scylladb.com/stable/get-started/develop-with-scylladb/index.html
+[branch-3-22]: https://github.com/scylladb/csharp-driver/tree/3.22
+[branch-master]: https://github.com/scylladb/csharp-driver/tree/master
+[maintenance-policy]: https://github.com/scylladb/csharp-driver/blob/master/MAINTENANCE.md
 
 :::{toctree}
 :hidden:
