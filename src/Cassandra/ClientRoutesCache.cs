@@ -73,6 +73,8 @@ namespace Cassandra
         private long _scheduledRetryGeneration;
         private int _consecutiveFailedRefreshes;
         private int _consecutiveEmptyFullRefreshes;
+        private int _pendingQueuedRefreshBarrierCount;
+        private Task _refreshDrain = Task.CompletedTask;
 
         public ClientRoutesCache(
             IMetadataQueryProvider queryProvider,
@@ -115,6 +117,19 @@ namespace Cassandra
             Volatile.Read(ref _snapshot).ByHost;
 
         public bool HasCompleteSnapshot => Volatile.Read(ref _snapshot).IsComplete;
+
+        internal Task RefreshDrain
+        {
+            get
+            {
+                lock (_refreshLock)
+                {
+                    return _refreshDrain;
+                }
+            }
+        }
+
+        internal int PendingQueuedRefreshBarrierCount => Volatile.Read(ref _pendingQueuedRefreshBarrierCount);
 
         public bool TryGetRoutes(Guid hostId, out ImmutableArray<ClientRouteEndpoint> routes)
         {
@@ -167,6 +182,35 @@ namespace Cassandra
                     _latestTopology = topologyHostIds.ToImmutableHashSet();
                 }
                 return QueueRefresh(ClientRoutesRefreshWorkItem.Full, hasCaller: true);
+            }
+        }
+
+        /// <summary>
+        /// Requests a full attempt, optionally confirming ignored empty results before returning.
+        /// Initial failures cannot establish readiness; later failures retain the usable snapshot.
+        /// </summary>
+        public Task FullRefreshBarrierAsync(
+            IEnumerable<Guid> topologyHostIds = null,
+            bool confirmIgnoredEmptyResults = false)
+        {
+            return CompleteFullRefreshAsync(RefreshAsync(topologyHostIds), confirmIgnoredEmptyResults);
+        }
+
+        /// <summary>
+        /// Waits for batches accepted before this call. Later requests do not extend the wait.
+        /// </summary>
+        public Task QueuedRefreshBarrierAsync()
+        {
+            lock (_refreshLock)
+            {
+                if (_shutdown)
+                {
+                    return Task.FromException(CreateShutdownException());
+                }
+                Task active = _activeRefresh == null ? Task.CompletedTask : _activeRefresh.Completion.Task;
+                Task pending = _pendingRefresh == null ? Task.CompletedTask : _pendingRefresh.Completion.Task;
+                var barrier = Task.WhenAll(active, pending);
+                return barrier.IsCompleted ? barrier : TrackQueuedRefreshBarrierAsync(barrier);
             }
         }
 
@@ -240,7 +284,8 @@ namespace Cassandra
                 _pendingRefresh = null;
                 try
                 {
-                    Task.Run(DrainRefreshesAsync).Forget();
+                    _refreshDrain = Task.Run(DrainRefreshesAsync);
+                    _refreshDrain.Forget();
                 }
                 catch (Exception ex)
                 {
@@ -399,8 +444,13 @@ namespace Cassandra
             }
             catch (Exception ex) when (!Utils.IsFatalException(ex))
             {
+                var permissionHint = ex is UnauthorizedException
+                    ? "Check SELECT permission on system.client_routes; an administrator can grant it with " +
+                      "GRANT SELECT ON TABLE system.client_routes TO <role>. "
+                    : string.Empty;
                 _logger.Warning("Could not refresh client routes. Existing routes are retained; " +
-                                "a full refresh will be retried when background retries are enabled. Exception: {0}", ex);
+                                "a full refresh will be retried when background retries are enabled. " +
+                                permissionHint + "Exception: {0}", ex);
                 return ClientRoutesRefreshOutcome.QueryFailed;
             }
 
@@ -553,6 +603,34 @@ namespace Cassandra
             var query = $"SELECT {SelectColumns} FROM {TableName} " +
                         $"WHERE connection_id IN ({connectionIds})";
             return workItem.AppendQueryFilter(query);
+        }
+
+        private async Task CompleteFullRefreshAsync(
+            Task<ClientRoutesRefreshOutcome> refresh,
+            bool confirmIgnoredEmptyResults)
+        {
+            var outcome = await refresh.ConfigureAwait(false);
+            while (confirmIgnoredEmptyResults && outcome == ClientRoutesRefreshOutcome.EmptyIgnored)
+            {
+                outcome = await RefreshAsync().ConfigureAwait(false);
+            }
+            if (outcome != ClientRoutesRefreshOutcome.Applied && !HasCompleteSnapshot)
+            {
+                throw new DriverException($"The initial client-routes refresh did not produce a complete snapshot: {outcome}.");
+            }
+        }
+
+        private async Task TrackQueuedRefreshBarrierAsync(Task barrier)
+        {
+            Interlocked.Increment(ref _pendingQueuedRefreshBarrierCount);
+            try
+            {
+                await barrier.ConfigureAwait(false);
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _pendingQueuedRefreshBarrierCount);
+            }
         }
 
         private sealed class RefreshBatch
