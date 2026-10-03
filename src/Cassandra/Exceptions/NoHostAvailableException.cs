@@ -19,7 +19,6 @@ using System.Linq;
 using System.Collections.Generic;
 using System.Net;
 using System.Text;
-
 using Cassandra.Connections;
 
 namespace Cassandra
