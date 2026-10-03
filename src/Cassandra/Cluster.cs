@@ -654,14 +654,15 @@ namespace Cassandra
 
             if (request.Payload != null)
             {
-                // Custom payload semantics are request-specific. Preserve the existing uncached behavior.
+                // The server-side ID does not include the custom payload. Bypass the query cache and return
+                // this payload-specific response even when another response has the same prepared ID.
                 return await PrepareAsync(
                     session,
                     serializerManager,
                     new InternalPrepareRequest(serializer, request.Query, requestKeyspace, request.Payload),
                     sessionKeyspace,
                     effectiveKeyspace,
-                    true).ConfigureAwait(false);
+                    false).ConfigureAwait(false);
             }
 
             var cacheKey = new PreparedStatementCacheKey(request.Query, effectiveKeyspace);
