@@ -17,8 +17,11 @@
 using System;
 using System.Collections.Generic;
 using System.Net;
+using System.Net.Sockets;
+using Cassandra.Connections;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
+using CollectionAssert = NUnit.Framework.Legacy.CollectionAssert;
 using StringAssert = NUnit.Framework.Legacy.StringAssert;
 
 namespace Cassandra.Tests
@@ -96,6 +99,48 @@ namespace Cassandra.Tests
                 "All hosts tried for query failed (tried 10.10.0.1:9042; 10.10.0.2:9042: AuthenticationException " +
                 "'No credentials')",
                 ex.Message);
+        }
+
+        [Test]
+        public void NoHostAvailableException_NormalizesConnectionFailure()
+        {
+            var host = new IPEndPoint(IPAddress.Parse("10.10.0.1"), 9042);
+            var preferred = new AuthenticationException("Bad credentials");
+            var socketFailure = new SocketException((int)SocketError.ConnectionRefused);
+            var dnsFailure = new InvalidOperationException("DNS failed");
+
+            var ex = new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>
+            {
+                {
+                    host,
+                    new ConnectionFailure(
+                        preferred,
+                        new[] { socketFailure },
+                        new[] { dnsFailure })
+                }
+            });
+
+            Assert.AreSame(preferred, ex.Errors[host]);
+            StringAssert.Contains("AuthenticationException 'Bad credentials'", ex.Message);
+            var aggregate = (AggregateException)ex.InnerException;
+            CollectionAssert.AreEqual(
+                new Exception[] { socketFailure, dnsFailure },
+                aggregate.InnerExceptions);
+        }
+
+        [Test]
+        public void NoHostAvailableException_DoesNotAddInnerExceptionForCarrierWithoutSupplementalErrors()
+        {
+            var host = new IPEndPoint(IPAddress.Parse("10.10.0.1"), 9042);
+            var preferred = new AuthenticationException("Bad credentials");
+
+            var ex = new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>
+            {
+                { host, new ConnectionFailure(preferred, null, null) }
+            });
+
+            Assert.AreSame(preferred, ex.Errors[host]);
+            Assert.IsNull(ex.InnerException);
         }
 
         [Test]

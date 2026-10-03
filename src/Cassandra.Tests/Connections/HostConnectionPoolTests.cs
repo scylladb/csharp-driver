@@ -14,8 +14,11 @@
 //   limitations under the License.
 //
 
+using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
+using System.Net.Sockets;
 using System.Threading.Tasks;
 using Cassandra.Connections;
 using Cassandra.Helpers;
@@ -49,8 +52,8 @@ namespace Cassandra.Tests.Connections
             {
                 Assert.AreEqual(2, target.OpenConnections);
             });
-            Mock.Get(_resolver).Verify(resolver => resolver.GetConnectionEndPointAsync(_host, false), Times.Exactly(2));
-            Mock.Get(_resolver).Verify(resolver => resolver.GetConnectionEndPointAsync(_host, true), Times.Never);
+            Mock.Get(_resolver).Verify(resolver => resolver.GetConnectionEndPointsAsync(_host, false), Times.Exactly(2));
+            Mock.Get(_resolver).Verify(resolver => resolver.GetConnectionEndPointsAsync(_host, true), Times.Never);
 
             // remove connection to trigger reconnection
             target.Remove(c);
@@ -59,8 +62,8 @@ namespace Cassandra.Tests.Connections
             {
                 Assert.AreEqual(2, target.OpenConnections);
             });
-            Mock.Get(_resolver).Verify(resolver => resolver.GetConnectionEndPointAsync(_host, false), Times.Exactly(2));
-            Mock.Get(_resolver).Verify(resolver => resolver.GetConnectionEndPointAsync(_host, true), Times.Once);
+            Mock.Get(_resolver).Verify(resolver => resolver.GetConnectionEndPointsAsync(_host, false), Times.Exactly(2));
+            Mock.Get(_resolver).Verify(resolver => resolver.GetConnectionEndPointsAsync(_host, true), Times.Once);
         }
 
         [Test]
@@ -94,7 +97,118 @@ namespace Cassandra.Tests.Connections
             Assert.AreEqual(new IPEndPoint(IPAddress.Parse("127.0.0.99"), 9032), target.ConnectionsSnapshot[1].EndPoint.SocketIpEndPoint);
         }
 
-        private IHostConnectionPool CreatePool(IEndPointResolver res = null)
+        [Test]
+        public async Task Should_TryCandidatesInOrderUntilAConnectionOpens()
+        {
+            var firstEndPoint = new FakeConnectionEndPoint("198.51.100.1", 9042);
+            var secondEndPoint = new FakeConnectionEndPoint("198.51.100.2", 9042);
+            var firstConnection = CreateConnection(
+                firstEndPoint,
+                new InvalidOperationException("first candidate failed"));
+            var secondConnection = CreateConnection(secondEndPoint);
+            var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            var factory = new FakeConnectionFactory((IConnectionEndPoint endPoint) =>
+                endPoint.Equals(firstEndPoint) ? firstConnection.Object : secondConnection.Object);
+            var target = CreatePool(resolver.Object, factory);
+            resolver.Setup(r => r.GetConnectionEndPointsAsync(_host, false))
+                    .ReturnsAsync(new IConnectionEndPoint[] { firstEndPoint, secondEndPoint });
+
+            var opened = await target.DoCreateAndOpen(false).ConfigureAwait(false);
+
+            Assert.AreSame(secondConnection.Object, opened);
+            firstConnection.Verify(connection => connection.Open(), Times.Once);
+            firstConnection.Verify(connection => connection.Dispose(), Times.Once);
+            secondConnection.Verify(connection => connection.Open(), Times.Once);
+            secondConnection.Verify(connection => connection.Dispose(), Times.Never);
+        }
+
+        [Test]
+        public void Should_NormalizeLastNonSocketFailureAndRetainSupersededFailure()
+        {
+            var firstEndPoint = new FakeConnectionEndPoint("198.51.100.3", 9042);
+            var secondEndPoint = new FakeConnectionEndPoint("198.51.100.4", 9042);
+            var firstConnection = CreateConnection(
+                firstEndPoint,
+                new InvalidOperationException("first candidate failed"));
+            var secondConnection = CreateConnection(
+                secondEndPoint,
+                new InvalidOperationException("second candidate failed"));
+            var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            var factory = new FakeConnectionFactory((IConnectionEndPoint endPoint) =>
+                endPoint.Equals(firstEndPoint) ? firstConnection.Object : secondConnection.Object);
+            var target = CreatePool(resolver.Object, factory);
+            resolver.Setup(r => r.GetConnectionEndPointsAsync(_host, false))
+                    .ReturnsAsync(new IConnectionEndPoint[] { firstEndPoint, secondEndPoint });
+
+            var failure = Assert.ThrowsAsync<ConnectionFailure>(async () =>
+                await target.DoCreateAndOpen(false).ConfigureAwait(false));
+            var ex = new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>
+            {
+                { _host.Address, failure }
+            });
+
+            Assert.AreSame(failure.PreferredError, ex.Errors[_host.Address]);
+            Assert.AreEqual("second candidate failed", ex.Errors[_host.Address].Message);
+            Assert.AreEqual(
+                "first candidate failed",
+                ((AggregateException)ex.InnerException).InnerExceptions.Single().Message);
+        }
+
+        [Test]
+        public void Should_SurfaceNonSocketFailure_WhenLaterCandidateFailsWithSocketError()
+        {
+            var firstEndPoint = new FakeConnectionEndPoint("198.51.100.5", 9042);
+            var secondEndPoint = new FakeConnectionEndPoint("198.51.100.6", 9042);
+            var firstConnection = CreateConnection(firstEndPoint, new AuthenticationException("bad credentials"));
+            var secondConnection = CreateConnection(secondEndPoint, new SocketException((int)SocketError.TimedOut));
+            var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            var target = CreatePool(
+                resolver.Object,
+                new FakeConnectionFactory((IConnectionEndPoint endPoint) =>
+                    endPoint.Equals(firstEndPoint) ? firstConnection.Object : secondConnection.Object));
+            resolver.Setup(r => r.GetConnectionEndPointsAsync(_host, false))
+                    .ReturnsAsync(new IConnectionEndPoint[] { firstEndPoint, secondEndPoint });
+
+            var failure = Assert.ThrowsAsync<ConnectionFailure>(async () =>
+                await target.DoCreateAndOpen(false).ConfigureAwait(false));
+            var ex = new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>
+            {
+                { _host.Address, failure }
+            });
+
+            Assert.IsInstanceOf<AuthenticationException>(ex.Errors[_host.Address]);
+            Assert.IsInstanceOf<SocketException>(
+                ((AggregateException)ex.InnerException).InnerExceptions.Single());
+        }
+
+        [Test]
+        public async Task Should_TryNextCandidateWhenConnectionConstructionFails()
+        {
+            var firstEndPoint = new FakeConnectionEndPoint("198.51.100.30", 9042);
+            var secondEndPoint = new FakeConnectionEndPoint("198.51.100.31", 9042);
+            var secondConnection = CreateConnection(secondEndPoint);
+            var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            var factory = new FakeConnectionFactory((IConnectionEndPoint endPoint) =>
+            {
+                if (endPoint.Equals(firstEndPoint))
+                {
+                    throw new InvalidOperationException("first construction failed");
+                }
+                return secondConnection.Object;
+            });
+            var target = CreatePool(resolver.Object, factory);
+            resolver.Setup(r => r.GetConnectionEndPointsAsync(_host, false))
+                    .ReturnsAsync(new IConnectionEndPoint[] { firstEndPoint, secondEndPoint });
+
+            var opened = await target.DoCreateAndOpen(false).ConfigureAwait(false);
+
+            Assert.AreSame(secondConnection.Object, opened);
+            secondConnection.Verify(connection => connection.Open(), Times.Once);
+        }
+
+        private HostConnectionPool CreatePool(
+            IEndPointResolver res = null,
+            IConnectionFactory connectionFactory = null)
         {
             _host = new Host(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042), contactPoint: null);
             _resolver = res ?? Mock.Of<IEndPointResolver>();
@@ -102,7 +216,7 @@ namespace Cassandra.Tests.Connections
             var config = new TestConfigurationBuilder
             {
                 EndPointResolver = _resolver,
-                ConnectionFactory = new FakeConnectionFactory(),
+                ConnectionFactory = connectionFactory ?? new FakeConnectionFactory(),
                 Policies = new Cassandra.Policies(
                     new RoundRobinPolicy(),
                     new ConstantReconnectionPolicy(1),
@@ -124,11 +238,31 @@ namespace Cassandra.Tests.Connections
 
             if (res == null)
             {
-                Mock.Get(_resolver).Setup(resolver => resolver.GetConnectionEndPointAsync(_host, It.IsAny<bool>()))
-                    .ReturnsAsync((Host h, bool b) => new ConnectionEndPoint(h.Address, config.ServerNameResolver, null));
+                Mock.Get(_resolver).Setup(resolver => resolver.GetConnectionEndPointsAsync(_host, It.IsAny<bool>()))
+                    .ReturnsAsync((Host h, bool b) => new IConnectionEndPoint[]
+                    {
+                        new ConnectionEndPoint(h.Address, config.ServerNameResolver, null)
+                    });
             }
 
             return pool;
+        }
+
+        private static Mock<IConnection> CreateConnection(
+            IConnectionEndPoint endPoint,
+            Exception openException = null)
+        {
+            var connection = new Mock<IConnection>();
+            connection.SetupGet(c => c.EndPoint).Returns(endPoint);
+            if (openException == null)
+            {
+                connection.Setup(c => c.Open()).ReturnsAsync((Cassandra.Responses.Response)null);
+            }
+            else
+            {
+                connection.Setup(c => c.Open()).ThrowsAsync(openException);
+            }
+            return connection;
         }
     }
 }

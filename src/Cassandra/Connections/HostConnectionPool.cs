@@ -19,6 +19,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Collections;
@@ -73,6 +74,7 @@ namespace Cassandra.Connections
         private readonly ISerializerManager _serializerManager;
         private readonly IObserverFactory _observerFactory;
         private readonly CopyOnWriteShardedList<IConnection> _connections = new CopyOnWriteShardedList<IConnection>();
+        private readonly object _connectionHandoffLock = new object();
         private volatile HostDistance _distance;
         private readonly HashedWheelTimer _timer;
         private readonly SemaphoreSlim _allConnectionClosedEventLock = new SemaphoreSlim(1, 1);
@@ -90,6 +92,19 @@ namespace Cassandra.Connections
         private int _connectionIndex;
         private readonly int _maxRequestsPerConnection;
         private readonly PoolingOptions _poolingOptions;
+
+        private sealed class ConnectionAttemptFailure
+        {
+            internal ConnectionAttemptFailure(IConnectionEndPoint endPoint, Exception exception)
+            {
+                EndPoint = endPoint;
+                Exception = ExceptionDispatchInfo.Capture(exception);
+            }
+
+            internal IConnectionEndPoint EndPoint { get; }
+
+            internal ExceptionDispatchInfo Exception { get; }
+        }
 
         public event Action<Host, HostConnectionPool> AllConnectionClosed;
 
@@ -308,7 +323,11 @@ namespace Cassandra.Connections
                 return;
             }
             HostConnectionPool.Logger.Info("Disposing connection pool #{0} to {1}", GetHashCode(), _host.Address);
-            var connections = _connections.ClearAndGet();
+            ShardedList<IConnection> connections;
+            lock (_connectionHandoffLock)
+            {
+                connections = _connections.ClearAndGet();
+            }
             foreach (var c in connections)
             {
                 c.Dispose();
@@ -325,41 +344,250 @@ namespace Cassandra.Connections
             Interlocked.Exchange(ref _state, PoolState.Shutdown);
         }
 
-        public virtual async Task<IConnection> DoCreateAndOpen(bool isReconnection, int shardID = -1, int shardAwarePort = 0, int shardCount = 0)
+        public virtual Task<IConnection> DoCreateAndOpen(bool isReconnection, int shardID = -1, int shardAwarePort = 0, int shardCount = 0)
         {
-            IConnectionEndPoint endPoint;
-            if (shardAwarePort != 0)
+            return DoCreateAndOpenCore(isReconnection, shardID, shardAwarePort, shardCount, null);
+        }
+
+        private async Task<IConnection> DoCreateAndOpenCore(
+            bool isReconnection,
+            int shardID,
+            int shardAwarePort,
+            int shardCount,
+            Func<ConnectionCandidateHandoff, bool> tryAddToPool)
+        {
+            var resolutionPlan = await _config.EndPointResolutionPlanProvider
+                .GetConnectionEndPointResolutionPlanAsync(
+                    _host,
+                    isReconnection,
+                    shardAwarePort != 0,
+                    shardAwarePort)
+                .ConfigureAwait(false);
+
+            // Surface the last failure, except that a socket error never replaces a non-socket one
+            // (for example authentication or protocol version), so a backup route timing out does not hide it.
+            ConnectionAttemptFailure surfacedFailure = null;
+            var attemptFailures = new List<ConnectionAttemptFailure>();
+            while (true)
             {
-                endPoint = await _config.EndPointResolver.GetConnectionShardAwareEndPointAsync(_host, isReconnection, shardAwarePort).ConfigureAwait(false);
-            }
-            else
-            {
-                endPoint = await _config.EndPointResolver.GetConnectionEndPointAsync(_host, isReconnection).ConfigureAwait(false);
-            }
-            var c = _config.ConnectionFactory.Create(_serializerManager.GetCurrentSerializer(), endPoint, _config, _observerFactory.CreateConnectionObserver(_host));
-            c.Closing += OnConnectionClosing;
-            if (_poolingOptions.GetHeartBeatInterval() > 0)
-            {
-                c.OnIdleRequestException += ex => OnIdleRequestException(c, ex);
-            }
-            try
-            {
-                if (shardID != -1)
+                IReadOnlyList<IConnectionEndPoint> endPoints;
+                try
                 {
-                    await c.Open(shardID, shardCount).ConfigureAwait(false);
+                    endPoints = await resolutionPlan.ResolveNextAsync().ConfigureAwait(false);
                 }
-                else
+                catch (Exception ex)
                 {
-                    await c.Open().ConfigureAwait(false);
+                    if (Utils.IsFatalException(ex) || surfacedFailure == null)
+                    {
+                        throw;
+                    }
+
+                    ThrowPreferredConnectionFailure(
+                        surfacedFailure,
+                        attemptFailures,
+                        resolutionPlan.UnresolvedResolutionErrors.Count == 0
+                            ? new[] { ex }
+                            : resolutionPlan.UnresolvedResolutionErrors);
+                    throw;
+                }
+                if (endPoints == null)
+                {
+                    break;
                 }
 
+                foreach (var endPoint in endPoints)
+                {
+                    IConnection c = null;
+                    ConnectionCandidateHandoff handoff = null;
+                    var admissionFailed = false;
+                    try
+                    {
+                        c = _config.ConnectionFactory.Create(
+                            _serializerManager.GetCurrentSerializer(),
+                            endPoint,
+                            _config,
+                            _observerFactory.CreateConnectionObserver(_host));
+                        handoff = new ConnectionCandidateHandoff(c);
+                        if (_poolingOptions.GetHeartBeatInterval() > 0)
+                        {
+                            c.OnIdleRequestException += ex => OnIdleRequestException(c, ex);
+                        }
+                        if (shardID != -1)
+                        {
+                            await c.Open(shardID, shardCount).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            await c.Open().ConfigureAwait(false);
+                        }
+
+                        if (handoff.IsUnavailable)
+                        {
+                            throw new SocketException((int)SocketError.NotConnected);
+                        }
+
+                        if (tryAddToPool != null)
+                        {
+                            if (!tryAddToPool(handoff))
+                            {
+                                admissionFailed = true;
+                                throw new SocketException((int)SocketError.NotConnected);
+                            }
+                        }
+                        else if (!handoff.TryTransfer(
+                                     _connectionHandoffLock,
+                                     connection => connection.Closing += OnConnectionClosing,
+                                     connection => true,
+                                     connection => connection.Closing -= OnConnectionClosing))
+                        {
+                            throw new SocketException((int)SocketError.NotConnected);
+                        }
+
+                        resolutionPlan.AcknowledgeConnectionSuccess();
+                        return c;
+                    }
+                    catch (Exception ex)
+                    {
+                        handoff?.Dispose();
+                        if (c != null)
+                        {
+                            // A failed candidate is local to this open operation. Do not let disposing it
+                            // schedule a pool reconnection before the remaining candidates are tried.
+                            c.Closing -= OnConnectionClosing;
+                            if (!c.IsDisposed)
+                            {
+                                c.Dispose();
+                            }
+                        }
+
+                        var attemptFailure = new ConnectionAttemptFailure(endPoint, ex);
+                        attemptFailures.Add(attemptFailure);
+                        if (Utils.IsFatalException(ex) || IsClosing)
+                        {
+                            throw;
+                        }
+                        if (ConnectionFailure.ShouldReplacePreferred(
+                                surfacedFailure?.Exception.SourceException,
+                                ex))
+                        {
+                            surfacedFailure = attemptFailure;
+                        }
+                        if (admissionFailed &&
+                            !_config.EndPointResolutionPlanProvider.RetryOnPoolAdmissionFailure)
+                        {
+                            ThrowPreferredConnectionFailure(
+                                surfacedFailure,
+                                attemptFailures,
+                                resolutionPlan.UnresolvedResolutionErrors);
+                            throw;
+                        }
+                    }
+                }
             }
-            catch
+
+            if (surfacedFailure != null)
             {
-                c.Dispose();
-                throw;
+                ThrowPreferredConnectionFailure(
+                    surfacedFailure,
+                    attemptFailures,
+                    resolutionPlan.UnresolvedResolutionErrors);
             }
-            return c;
+            throw new DriverInternalError($"No connection endpoints were resolved for host {_host.Address}.");
+        }
+
+        private static void ThrowPreferredConnectionFailure(
+            ConnectionAttemptFailure preferredFailure,
+            IEnumerable<ConnectionAttemptFailure> failures,
+            IEnumerable<Exception> unresolvedResolutionErrors)
+        {
+            var supersededConnectionErrors = failures
+                .Where(failure => !ReferenceEquals(failure, preferredFailure))
+                .Select(failure => failure.Exception.SourceException)
+                .ToArray();
+            var resolutionErrors = unresolvedResolutionErrors?.ToArray() ?? new Exception[0];
+            if (supersededConnectionErrors.Length > 0 || resolutionErrors.Length > 0)
+            {
+                throw new ConnectionFailure(
+                    preferredFailure.Exception.SourceException,
+                    supersededConnectionErrors,
+                    resolutionErrors);
+            }
+
+            preferredFailure.Exception.Throw();
+            throw new DriverInternalError("The preferred connection failure did not propagate.");
+        }
+
+        private bool TryTransferConnectionToPool(
+            ConnectionCandidateHandoff handoff,
+            out int connectionCount)
+        {
+            var currentConnectionCount = 0;
+            var transferred = handoff.TryTransfer(
+                _connectionHandoffLock,
+                connection => connection.Closing += OnConnectionClosing,
+                connection =>
+                {
+                    currentConnectionCount = _connections.Count;
+                    // Recheck under the pool lock immediately before publication. The handoff
+                    // performs another check afterwards and rolls the add back if close wins there.
+                    if (IsClosing || handoff.IsUnavailable)
+                    {
+                        return false;
+                    }
+
+                    currentConnectionCount = _connections.AddNew(connection);
+                    return true;
+                },
+                connection =>
+                {
+                    connection.Closing -= OnConnectionClosing;
+                    _connections.Remove(connection);
+                    currentConnectionCount = _connections.Count;
+                });
+            connectionCount = currentConnectionCount;
+            return transferred;
+        }
+
+        private bool TryAddConnectionToPool(
+            IConnection connection,
+            bool addIfMissing,
+            out int connectionCount)
+        {
+            lock (_connectionHandoffLock)
+            {
+                connectionCount = _connections.Count;
+                if (IsClosing ||
+                    connection.IsDisposed ||
+                    connection.IsClosed)
+                {
+                    if (!addIfMissing)
+                    {
+                        _connections.Remove(connection);
+                        connectionCount = _connections.Count;
+                    }
+                    return false;
+                }
+
+                if (addIfMissing)
+                {
+                    if (IsClosing ||
+                        connection.IsDisposed ||
+                        connection.IsClosed)
+                    {
+                        return false;
+                    }
+
+                    connectionCount = _connections.AddNew(connection);
+                    return true;
+                }
+
+                if (!_connections.Contains(connection))
+                {
+                    return false;
+                }
+
+                return true;
+            }
         }
 
         public void OnHostRemoved()
@@ -447,14 +675,17 @@ namespace Cassandra.Connections
             int currentLength;
             if (c != null)
             {
-                var removalInfo = _connections.RemoveAndCount(c);
+                Tuple<bool, int> removalInfo;
+                lock (_connectionHandoffLock)
+                {
+                    removalInfo = _connections.RemoveAndCount(c);
+                }
                 currentLength = removalInfo.Item2;
                 var removed = removalInfo.Item1;
                 if (!removed)
                 {
-                    // It has been already removed (via event or direct call)
-                    // When it was removed, all the following checks have been made
-                    // No point in doing them again
+                    // It was already removed, or it is still a candidate whose admission path will observe
+                    // the Closing notification. There is no pool removal to process here.
                     return;
                 }
                 c.Dispose();
@@ -534,7 +765,11 @@ namespace Cassandra.Connections
         /// </summary>
         private void DrainConnections(Action afterDrainHandler)
         {
-            var connections = _connections.ClearAndGet();
+            ShardedList<IConnection> connections;
+            lock (_connectionHandoffLock)
+            {
+                connections = _connections.ClearAndGet();
+            }
             if (connections.Length == 0)
             {
                 HostConnectionPool.Logger.Info("Pool #{0} to {1} had no connections", GetHashCode(), _host.Address);
@@ -771,6 +1006,8 @@ namespace Cassandra.Connections
 
             HostConnectionPool.Logger.Info("Creating a new connection to {0}", _host.Address);
             IConnection c;
+            var addedDuringOpen = false;
+            var newLength = 0;
             try
             {
                 // Find out to which shard should we connect to
@@ -787,7 +1024,26 @@ namespace Cassandra.Connections
                         lastAttemptedShard = shardID;
                     }
                 }
-                c = await DoCreateAndOpen(isReconnection, shardID, shardAwarePort, shardCount).ConfigureAwait(false);
+                // Subclasses can override DoCreateAndOpen, so only the concrete production pool moves
+                // admission under the candidate handoff without changing the virtual completion contract.
+                // The provider still decides whether a failed admission may try another endpoint.
+                if (GetType() == typeof(HostConnectionPool))
+                {
+                    c = await DoCreateAndOpenCore(
+                            isReconnection,
+                            shardID,
+                            shardAwarePort,
+                            shardCount,
+                            handoff =>
+                                addedDuringOpen = TryTransferConnectionToPool(
+                                    handoff,
+                                    out newLength))
+                        .ConfigureAwait(false);
+                }
+                else
+                {
+                    c = await DoCreateAndOpen(isReconnection, shardID, shardAwarePort, shardCount).ConfigureAwait(false);
+                }
                 if (c != null && c.ShardID != -1)
                 {
                     lastAttemptedShard = c.ShardID;
@@ -799,38 +1055,22 @@ namespace Cassandra.Connections
                 return await FinishOpen(tcs, true, ex).ConfigureAwait(false);
             }
 
-            if (IsClosing)
+            if (!TryAddConnectionToPool(c, !addedDuringOpen, out newLength))
             {
-                HostConnectionPool.Logger.Info("Connection to {0} opened successfully but pool #{1} was being closed",
-                    _host.Address, GetHashCode());
+                HostConnectionPool.Logger.Info(
+                    "Connection to {0} opened successfully but could not be added to pool #{1}",
+                    _host.Address,
+                    GetHashCode());
                 c.Dispose();
-                return await FinishOpen(tcs, false, HostConnectionPool.GetNotConnectedException()).ConfigureAwait(false);
+                return await FinishOpen(
+                        tcs,
+                        !IsClosing,
+                        HostConnectionPool.GetNotConnectedException())
+                    .ConfigureAwait(false);
             }
 
-            var newLength = _connections.AddNew(c);
             HostConnectionPool.Logger.Info("Connection to {0} opened successfully, pool #{1} length: {2}",
                 _host.Address, GetHashCode(), newLength);
-
-            if (IsClosing)
-            {
-                // We haven't use a CAS operation, so it's possible that the pool is being closed while adding a new
-                // connection, we should remove it.
-                HostConnectionPool.Logger.Info("Connection to {0} opened successfully and added to the pool #{1} but the pool was being closed",
-                    _host.Address, GetHashCode());
-                _connections.Remove(c);
-                c.Dispose();
-                return await FinishOpen(tcs, false, HostConnectionPool.GetNotConnectedException()).ConfigureAwait(false);
-            }
-
-            if (c.IsDisposed)
-            {
-                // We haven't use a CAS operation, so it's possible that the connection is being disposed while adding it
-                HostConnectionPool.Logger.Info("Connection to {0} opened successfully and added to the pool #{1} but it got closed",
-                    _host.Address, GetHashCode());
-                _connections.Remove(c);
-                c.Dispose();
-                return await FinishOpen(tcs, true, HostConnectionPool.GetNotConnectedException()).ConfigureAwait(false);
-            }
 
             return await FinishOpen(tcs, true, null, c).ConfigureAwait(false);
         }
@@ -999,6 +1239,18 @@ namespace Cassandra.Connections
                 {
                     c = BorrowExistingConnection(routingKey, shardID);
                 }
+            }
+            catch (ConnectionFailure failure)
+                when (failure.PreferredError is UnsupportedProtocolVersionException)
+            {
+                var ex = (UnsupportedProtocolVersionException)failure.PreferredError;
+                // Preserve the supplemental candidate failures for NoHostAvailableException while
+                // retaining the existing unsupported-protocol host handling.
+                HostConnectionPool.Logger.Error("Host {0} does not support protocol version {1}. You should use a fixed protocol " +
+                             "version during rolling upgrades of the cluster. Setting the host as DOWN to " +
+                             "avoid hitting this node as part of the query plan for a while", _host.Address, ex.ProtocolVersion);
+                triedHosts[_host.Address] = failure;
+                MarkAsDownAndScheduleReconnection();
             }
             catch (UnsupportedProtocolVersionException ex)
             {

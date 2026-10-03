@@ -154,6 +154,8 @@ namespace Cassandra
 
         internal IEndPointResolver EndPointResolver { get; }
 
+        internal IEndPointResolutionPlanProvider EndPointResolutionPlanProvider { get; }
+
         internal IDnsResolver DnsResolver { get; }
 
         internal IMetadataRequestHandler MetadataRequestHandler { get; }
@@ -374,6 +376,8 @@ namespace Cassandra
             MonitorReportingOptions = monitorReportingOptions ?? new MonitorReportingOptions();
             ServerNameResolver = serverNameResolver ?? new ServerNameResolver(ProtocolOptions);
             EndPointResolver = endPointResolver ?? new EndPointResolver(ServerNameResolver);
+            EndPointResolutionPlanProvider = EndPointResolver as IEndPointResolutionPlanProvider ??
+                                             new SingleStepEndPointResolutionPlanProvider(EndPointResolver);
             ContactPointParser = contactPointParser ?? new ContactPointParser(DnsResolver, ProtocolOptions, ServerNameResolver, KeepContactPointsUnresolved);
 
             // Create the buffer pool with 16KB for small buffers and 256Kb for large buffers.
