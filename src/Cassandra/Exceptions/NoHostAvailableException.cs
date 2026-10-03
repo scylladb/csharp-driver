@@ -19,7 +19,6 @@ using System.Linq;
 using System.Collections.Generic;
 using System.Net;
 using System.Text;
-
 using Cassandra.Connections;
 
 namespace Cassandra
@@ -49,6 +48,21 @@ namespace Cassandra
 
         private NoHostAvailableException(NormalizedErrors normalized)
             : base(CreateMessage(normalized.Errors), normalized.InnerException)
+        {
+            Errors = normalized.Errors;
+        }
+
+        /// <summary>
+        /// Creates a new instance of NoHostAvailableException with the tried hosts and an inner exception
+        /// describing failures that happened before any host could be tried.
+        /// </summary>
+        internal NoHostAvailableException(Dictionary<IPEndPoint, Exception> errors, string detail, Exception innerException)
+            : this(NormalizeErrors(errors, innerException), detail)
+        {
+        }
+
+        private NoHostAvailableException(NormalizedErrors normalized, string detail)
+            : base(CreateMessage(normalized.Errors) + " " + detail, normalized.InnerException)
         {
             Errors = normalized.Errors;
         }
