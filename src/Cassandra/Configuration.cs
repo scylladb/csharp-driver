@@ -156,6 +156,8 @@ namespace Cassandra
 
         internal IEndPointResolutionPlanProvider EndPointResolutionPlanProvider { get; }
 
+        internal ClientRoutesRuntime ClientRoutesRuntime { get; }
+
         internal IDnsResolver DnsResolver { get; }
 
         internal IMetadataRequestHandler MetadataRequestHandler { get; }
@@ -314,7 +316,8 @@ namespace Cassandra
                                IProtocolVersionNegotiator protocolVersionNegotiator = null,
                                IServerEventsSubscriber serverEventsSubscriber = null,
                                IRequestTracker requestTracker = null,
-                               bool? driverConfigReportingEnabled = null)
+                               bool? driverConfigReportingEnabled = null,
+                               ClientRoutesOptions clientRoutesOptions = null)
         {
             AddressTranslator = addressTranslator ?? throw new ArgumentNullException(nameof(addressTranslator));
             QueryOptions = queryOptions ?? throw new ArgumentNullException(nameof(queryOptions));
@@ -348,7 +351,10 @@ namespace Cassandra
             SchemaParserFactory = schemaParserFactory ?? new SchemaParserFactory();
             SupportedOptionsInitializerFactory = supportedOptionsInitializerFactory ?? new SupportedOptionsInitializerFactory();
             ProtocolVersionNegotiator = protocolVersionNegotiator ?? new ProtocolVersionNegotiator();
-            ServerEventsSubscriber = serverEventsSubscriber ?? new ServerEventsSubscriber();
+            ClientRoutesRuntime = clientRoutesOptions == null
+                ? null
+                : new ClientRoutesRuntime(clientRoutesOptions, ProtocolOptions.SslOptions != null);
+            ServerEventsSubscriber = serverEventsSubscriber ?? new ServerEventsSubscriber(ClientRoutesRuntime != null);
 
             MetricsOptions = metricsOptions ?? new DriverMetricsOptions();
             MetricsProvider = driverMetricsProvider ?? new NullDriverMetricsProvider();
@@ -375,7 +381,16 @@ namespace Cassandra
 
             MonitorReportingOptions = monitorReportingOptions ?? new MonitorReportingOptions();
             ServerNameResolver = serverNameResolver ?? new ServerNameResolver(ProtocolOptions);
-            EndPointResolver = endPointResolver ?? new EndPointResolver(ServerNameResolver);
+            var fallbackEndPointResolver = endPointResolver ?? new EndPointResolver(ServerNameResolver);
+            EndPointResolver = ClientRoutesRuntime == null
+                ? fallbackEndPointResolver
+                : new ClientRoutesEndPointResolver(
+                    ClientRoutesRuntime,
+                    DnsResolver,
+                    fallbackEndPointResolver,
+                    SocketOptions.ConnectTimeoutMillis > 0
+                        ? TimeSpan.FromMilliseconds(SocketOptions.ConnectTimeoutMillis)
+                        : (TimeSpan?)null);
             EndPointResolutionPlanProvider = EndPointResolver as IEndPointResolutionPlanProvider ??
                                              new SingleStepEndPointResolutionPlanProvider(EndPointResolver);
             ContactPointParser = contactPointParser ?? new ContactPointParser(DnsResolver, ProtocolOptions, ServerNameResolver, KeepContactPointsUnresolved);

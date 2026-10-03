@@ -60,6 +60,8 @@ namespace Cassandra
         private SSLOptions _sslOptions;
         private bool _withoutRowSetBuffering;
         private IAddressTranslator _addressTranslator = new DefaultAddressTranslator();
+        private bool _addressTranslatorWasExplicitlySet;
+        private ClientRoutesConfig _clientRoutesConfig;
         private ISpeculativeExecutionPolicy _speculativeExecutionPolicy;
         private ProtocolVersion _maxProtocolVersion = ProtocolVersion.MaxSupported;
         private TypeSerializerDefinitions _typeSerializerDefinitions;
@@ -163,6 +165,9 @@ namespace Cassandra
                     .SetMaxSchemaAgreementWaitSeconds(_maxSchemaAgreementWaitSeconds);
 
             var clientOptions = new ClientOptions(_withoutRowSetBuffering, _queryAbortTimeout, _defaultKeyspace);
+            var clientRoutesOptions = _clientRoutesConfig == null
+                ? null
+                : new ClientRoutesOptions(_clientRoutesConfig.Snapshot);
 
             var config = new Configuration(
                 policies,
@@ -188,7 +193,8 @@ namespace Cassandra
                 _keepContactPointsUnresolved,
                 _allowBetaProtocolVersions,
                 requestTracker: _requestTracker,
-                driverConfigReportingEnabled: _driverConfigReportingEnabled);
+                driverConfigReportingEnabled: _driverConfigReportingEnabled,
+                clientRoutesOptions: clientRoutesOptions);
 
             return config;
         }
@@ -787,12 +793,58 @@ namespace Cassandra
         /// See <see cref="IAddressTranslator"/> for more detail on address translation,
         /// but the default translator, <see cref="DefaultAddressTranslator"/>, should be
         /// correct in most cases. If unsure, stick to the default.
+        /// An address translator cannot be combined with <see cref="WithClientRoutesConfig"/>.
         /// </remarks>
         /// <param name="addressTranslator">the translator to use.</param>
         /// <returns>this Builder</returns>
+        /// <exception cref="ArgumentNullException"><paramref name="addressTranslator"/> is null.</exception>
+        /// <exception cref="InvalidOperationException">
+        /// Client routes were configured on this builder with <see cref="WithClientRoutesConfig"/>.
+        /// </exception>
         public Builder WithAddressTranslator(IAddressTranslator addressTranslator)
         {
+            if (addressTranslator == null)
+            {
+                throw new ArgumentNullException(nameof(addressTranslator));
+            }
+            if (_clientRoutesConfig != null)
+            {
+                throw new InvalidOperationException(
+                    "Client routes cannot be combined with an explicitly configured address translator.");
+            }
+
             _addressTranslator = addressTranslator;
+            _addressTranslatorWasExplicitlySet = true;
+            return this;
+        }
+
+        /// <summary>
+        /// Configures Host-ID-based connection routing through entries discovered in
+        /// <c>system.client_routes</c>.
+        /// </summary>
+        /// <remarks>
+        /// When this configuration is omitted, client routes are disabled and normal endpoint resolution,
+        /// including address translation, remains active.
+        /// </remarks>
+        /// <param name="config">The client-routes configuration.</param>
+        /// <returns>This builder.</returns>
+        /// <exception cref="ArgumentNullException"><paramref name="config"/> is null.</exception>
+        /// <exception cref="InvalidOperationException">
+        /// An <see cref="IAddressTranslator"/> was explicitly configured on this builder.
+        /// </exception>
+        public Builder WithClientRoutesConfig(ClientRoutesConfig config)
+        {
+            if (config == null)
+            {
+                throw new ArgumentNullException(nameof(config));
+            }
+            if (_addressTranslatorWasExplicitlySet)
+            {
+                throw new InvalidOperationException(
+                    "Client routes cannot be combined with an explicitly configured address translator.");
+            }
+
+            _clientRoutesConfig = config;
             return this;
         }
 
