@@ -64,6 +64,10 @@ namespace Cassandra
         private volatile bool _initialized;
         private volatile Exception _initException;
         private readonly SemaphoreSlim _initLock = new SemaphoreSlim(1, 1);
+
+        // Retain routed setup across caller timeouts; _initLock serializes access.
+        private Task _clientRoutesInitTask;
+        private int _controlConnectionDisposed;
         private long _sessionCounter = -1;
 
         private readonly Metadata _metadata;
@@ -256,7 +260,9 @@ namespace Cassandra
                     // Only abort the async operations when at least twice the time for ConnectTimeout per host passed
                     var initialAbortTimeout = Configuration.SocketOptions.ConnectTimeoutMillis * 2 * _metadata.Hosts.Count;
                     initialAbortTimeout = Math.Max(initialAbortTimeout, Configuration.SocketOptions.MetadataAbortTimeout);
-                    var initTask = _controlConnection.InitAsync();
+                    var initTask = Configuration.ClientRoutesRuntime == null
+                        ? _controlConnection.InitAsync()
+                        : _clientRoutesInitTask ?? (_clientRoutesInitTask = _controlConnection.InitAsync());
                     try
                     {
                         await initTask.WaitToCompleteAsync(initialAbortTimeout).ConfigureAwait(false);
@@ -269,14 +275,27 @@ namespace Cassandra
                             " between the client driver instance and the cluster. You can increase this timeout via " +
                             "the SocketOptions.ConnectTimeoutMillis config setting. This can also be related to deadlocks " +
                             "caused by mixing synchronous and asynchronous code.", ex);
-                        _initException = new InitFatalErrorException(newEx);
-                        initTask.ContinueWith(t =>
+                        if (Configuration.ClientRoutesRuntime == null)
                         {
-                            if (t.IsFaulted && t.Exception != null)
+                            _initException = new InitFatalErrorException(newEx);
+                            initTask.ContinueWith(t =>
                             {
-                                _initException = new InitFatalErrorException(t.Exception.InnerException);
+                                if (t.IsFaulted && t.Exception != null)
+                                {
+                                    _initException = new InitFatalErrorException(t.Exception.InnerException);
+                                }
+                            }, TaskContinuationOptions.ExecuteSynchronously).Forget();
+                        }
+                        else
+                        {
+                            // Only a timeout thrown by setup itself completes that attempt. A caller's
+                            // wait timeout can race a late success or terminal failure, which must be retained.
+                            if (initTask.IsFaulted && initTask.Exception.InnerExceptions.Contains(ex))
+                            {
+                                _clientRoutesInitTask = null;
                             }
-                        }, TaskContinuationOptions.ExecuteSynchronously).Forget();
+                            initTask.Forget();
+                        }
                         throw newEx;
                     }
 
@@ -299,6 +318,7 @@ namespace Cassandra
                 catch (NoHostAvailableException)
                 {
                     //No host available now, maybe later it can recover from
+                    _clientRoutesInitTask = null;
                     throw;
                 }
                 catch (TimeoutException)
@@ -310,6 +330,10 @@ namespace Cassandra
                     //There was an error that the driver is not able to recover from
                     //Store the exception for the following times
                     _initException = new InitFatalErrorException(ex);
+                    if (Configuration.ClientRoutesRuntime != null)
+                    {
+                        DisposeControlConnectionAfterInitFailure();
+                    }
                     //Throw the actual exception for the first time
                     throw;
                 }
@@ -562,7 +586,7 @@ namespace Cassandra
                 _preparedStatementCache.Clear();
                 _unstartedPreparedStatementCacheEntries.Clear();
                 _metadata.ShutDown(timeoutMs);
-                _controlConnection.Dispose();
+                DisposeControlConnectionOnce();
                 await _protocolEventDebouncer.ShutdownAsync().ConfigureAwait(false);
                 Configuration.Timer.Dispose();
                 Cluster.Logger.Info("Cluster #{0} has been shut down.", GetHashCode());
@@ -591,7 +615,7 @@ namespace Cassandra
             _preparedStatementCache.Clear();
             _unstartedPreparedStatementCacheEntries.Clear();
             _metadata.ShutDown(timeoutMs);
-            _controlConnection.Dispose();
+            DisposeControlConnectionOnce();
             await _protocolEventDebouncer.ShutdownAsync().ConfigureAwait(false);
             Configuration.Timer.Dispose();
 
@@ -609,6 +633,49 @@ namespace Cassandra
 
             Cluster.Logger.Info("Cluster #{0} [{1}] has been shut down.", GetHashCode(), Metadata.ClusterName);
             return;
+        }
+
+        private void DisposeControlConnectionAfterInitFailure()
+        {
+            try
+            {
+                DisposeControlConnectionOnce();
+            }
+            catch (Exception disposeException)
+            {
+                // The initialization exception is the terminal cause. Cleanup failures must not
+                // replace it for either the current caller or later initialization attempts.
+                try
+                {
+                    Cluster.Logger.Error(
+                        "An exception was thrown while disposing the control connection after cluster " +
+                        "initialization failed.",
+                        disposeException);
+                }
+                catch (Exception diagnosticException) when (!Utils.IsFatalException(diagnosticException))
+                {
+                    // A recoverable diagnostic failure must not replace the initialization error.
+                }
+            }
+        }
+
+        private void DisposeControlConnectionOnce()
+        {
+            if (Interlocked.Exchange(ref _controlConnectionDisposed, 1) != 0)
+            {
+                return;
+            }
+
+            // Custom control-connection factories do not necessarily own this cluster-scoped runtime.
+            // Stop it explicitly so a terminal initialization failure cannot leave route retries alive.
+            try
+            {
+                Configuration.ClientRoutesRuntime?.Shutdown();
+            }
+            finally
+            {
+                _controlConnection.Dispose();
+            }
         }
 
         /// <inheritdoc />
