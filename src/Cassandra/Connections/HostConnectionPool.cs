@@ -1101,8 +1101,13 @@ namespace Cassandra.Connections
                 {
                     await CreateOpenConnection(false, false).ConfigureAwait(false);
                 }
-                catch
+                catch (Exception ex) when (!Connection.IsFatalException(ex))
                 {
+                    HostConnectionPool.Logger.Info(
+                        "An optional connection to {0} could not be created during pool warmup: {1}",
+                        _host.Address,
+                        ex);
+                    OnConnectionClosing();
                     break;
                 }
             }

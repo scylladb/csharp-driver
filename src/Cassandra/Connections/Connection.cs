@@ -475,7 +475,7 @@ namespace Cassandra.Connections
             return TaskHelper.Completed;
         }
 
-        private static bool IsFatalException(Exception ex)
+        internal static bool IsFatalException(Exception ex)
         {
             return ex is OutOfMemoryException ||
                    ex is StackOverflowException ||
