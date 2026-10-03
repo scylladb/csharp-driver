@@ -14,8 +14,12 @@
 //   limitations under the License.
 //
 
+using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
 using System.Net;
+using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Connections;
 using Cassandra.Helpers;
@@ -94,7 +98,84 @@ namespace Cassandra.Tests.Connections
             Assert.AreEqual(new IPEndPoint(IPAddress.Parse("127.0.0.99"), 9032), target.ConnectionsSnapshot[1].EndPoint.SocketIpEndPoint);
         }
 
-        private IHostConnectionPool CreatePool(IEndPointResolver res = null)
+        [Test]
+        [NonParallelizable]
+        public async Task Should_LogOptionalConnectionFailureSwallowedByWarmup()
+        {
+            var failure = new InvalidOperationException("optional warmup connection failure");
+            var resolvedEndPoint = new FakeConnectionEndPoint("198.51.100.27", 9042);
+            var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            resolver.Setup(value => value.GetConnectionEndPointAsync(It.IsAny<Host>(), It.IsAny<bool>()))
+                    .ReturnsAsync(resolvedEndPoint);
+            var createdConnections = 0;
+            var target = CreatePool(
+                res: resolver.Object,
+                connectionFactory: new FakeConnectionFactory(endPoint =>
+                {
+                    var attempt = Interlocked.Increment(ref createdConnections);
+                    return CreateConnection(endPoint, attempt == 2 ? failure : null).Object;
+                }),
+                reconnectionPolicy: new ConstantReconnectionPolicy(10));
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            var listener = new LoggingTests.TestTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                await target.Warmup().ConfigureAwait(false);
+                Assert.IsTrue(listener.Messages.Values.Any(message =>
+                    message.Contains("optional warmup connection failure")));
+                TestHelper.RetryAssert(
+                    () => Assert.AreEqual(2, target.OpenConnections),
+                    20,
+                    50);
+                Assert.AreEqual(3, Volatile.Read(ref createdConnections));
+            }
+            finally
+            {
+                target.Dispose();
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+        }
+
+        [Test]
+        public void Should_PropagateFatalOptionalConnectionFailureDuringWarmup()
+        {
+            var failure = new OutOfMemoryException("fatal optional warmup connection failure");
+            var resolvedEndPoint = new FakeConnectionEndPoint("198.51.100.28", 9042);
+            var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            resolver.Setup(value => value.GetConnectionEndPointAsync(It.IsAny<Host>(), It.IsAny<bool>()))
+                    .ReturnsAsync(resolvedEndPoint);
+            var createdConnections = 0;
+            var target = CreatePool(
+                res: resolver.Object,
+                connectionFactory: new FakeConnectionFactory(endPoint =>
+                {
+                    var attempt = Interlocked.Increment(ref createdConnections);
+                    return CreateConnection(endPoint, attempt == 2 ? failure : null).Object;
+                }),
+                reconnectionPolicy: new ConstantReconnectionPolicy(5000));
+
+            try
+            {
+                var ex = Assert.ThrowsAsync<OutOfMemoryException>(async () =>
+                    await target.Warmup().ConfigureAwait(false));
+
+                Assert.AreSame(failure, ex);
+                Assert.AreEqual(2, Volatile.Read(ref createdConnections));
+                Assert.AreEqual(1, target.OpenConnections);
+            }
+            finally
+            {
+                target.Dispose();
+            }
+        }
+
+        private IHostConnectionPool CreatePool(
+            IEndPointResolver res = null,
+            IConnectionFactory connectionFactory = null,
+            IReconnectionPolicy reconnectionPolicy = null)
         {
             _host = new Host(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042), contactPoint: null);
             _resolver = res ?? Mock.Of<IEndPointResolver>();
@@ -102,10 +183,10 @@ namespace Cassandra.Tests.Connections
             var config = new TestConfigurationBuilder
             {
                 EndPointResolver = _resolver,
-                ConnectionFactory = new FakeConnectionFactory(),
+                ConnectionFactory = connectionFactory ?? new FakeConnectionFactory(),
                 Policies = new Cassandra.Policies(
                     new RoundRobinPolicy(),
-                    new ConstantReconnectionPolicy(1),
+                    reconnectionPolicy ?? new ConstantReconnectionPolicy(1),
                     new DefaultRetryPolicy(),
                     NoSpeculativeExecutionPolicy.Instance,
                     new AtomicMonotonicTimestampGenerator(),
@@ -129,6 +210,24 @@ namespace Cassandra.Tests.Connections
             }
 
             return pool;
+        }
+
+        private static Mock<IConnection> CreateConnection(
+            IConnectionEndPoint endPoint,
+            Exception openException = null)
+        {
+            var connection = new Mock<IConnection>();
+            connection.SetupGet(c => c.EndPoint).Returns(endPoint);
+            connection.SetupProperty(c => c.ShardID, -1);
+            if (openException == null)
+            {
+                connection.Setup(c => c.Open()).ReturnsAsync((Cassandra.Responses.Response)null);
+            }
+            else
+            {
+                connection.Setup(c => c.Open()).ThrowsAsync(openException);
+            }
+            return connection;
         }
     }
 }
