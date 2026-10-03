@@ -190,6 +190,37 @@ namespace Cassandra
             }
         }
 
+        public void Shutdown()
+        {
+            lock (_refreshLock)
+            {
+                if (_shutdown)
+                {
+                    return;
+                }
+                _shutdown = true;
+                _needsFullRetry = false;
+                _scheduledRetryGeneration = 0;
+                var exception = CreateShutdownException();
+                _activeRefresh?.Completion.TrySetException(exception);
+                _pendingRefresh?.Completion.TrySetException(exception);
+                _pendingRefresh = null;
+                _initialSnapshotReady.Task.Forget();
+                _initialSnapshotReady.TrySetException(exception);
+            }
+            _shutdownCancellation.Cancel();
+        }
+
+        private static string EscapeCqlString(string value)
+        {
+            return value.Replace("'", "''");
+        }
+
+        private static ObjectDisposedException CreateShutdownException()
+        {
+            return new ObjectDisposedException(nameof(ClientRoutesCache));
+        }
+
         // Callers hold _refreshLock. A running batch is immutable; only pending work coalesces.
         private Task<ClientRoutesRefreshOutcome> QueueRefresh(ClientRoutesRefreshWorkItem work, bool hasCaller)
         {
@@ -522,37 +553,6 @@ namespace Cassandra
             var query = $"SELECT {SelectColumns} FROM {TableName} " +
                         $"WHERE connection_id IN ({connectionIds})";
             return workItem.AppendQueryFilter(query);
-        }
-
-        private static string EscapeCqlString(string value)
-        {
-            return value.Replace("'", "''");
-        }
-
-        public void Shutdown()
-        {
-            lock (_refreshLock)
-            {
-                if (_shutdown)
-                {
-                    return;
-                }
-                _shutdown = true;
-                _needsFullRetry = false;
-                _scheduledRetryGeneration = 0;
-                var exception = CreateShutdownException();
-                _activeRefresh?.Completion.TrySetException(exception);
-                _pendingRefresh?.Completion.TrySetException(exception);
-                _pendingRefresh = null;
-                _initialSnapshotReady.Task.Forget();
-                _initialSnapshotReady.TrySetException(exception);
-            }
-            _shutdownCancellation.Cancel();
-        }
-
-        private static ObjectDisposedException CreateShutdownException()
-        {
-            return new ObjectDisposedException(nameof(ClientRoutesCache));
         }
 
         private sealed class RefreshBatch
