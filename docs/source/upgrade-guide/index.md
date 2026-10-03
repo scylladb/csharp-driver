@@ -8,6 +8,28 @@ The purpose of this guide is to detail the changes made by the successive versio
 
 The driver now treats an advertised IPv6 wildcard RPC address (`::`) like the IPv4 wildcard (`0.0.0.0`), whether client routes are enabled or disabled. When deriving an endpoint from system tables, it uses the peer address for `system.peers`, or the broadcast or listen address for `system.local`. A peer with no fallback address is excluded. If the local endpoint must be derived from `system.local` and no fallback address is available, topology discovery fails.
 
+### Client routes
+
+The driver can now discover Host-ID-based proxy endpoints from ScyllaDB's fixed `system.client_routes` table. Configure the feature with `ClientRoutesConfig`, ordered `ClientRouteProxy` entries, and `Builder.WithClientRoutesConfig`. It is opt-in; clusters that do not configure it keep their existing connection behavior. See [Client routes](../features/client-routes/index) for configuration and routing details.
+
+Before enabling client routes:
+
+- Use a ScyllaDB release that supports `system.client_routes` and the `CLIENT_ROUTES_CHANGE` event with `UPDATE_NODES` updates. Cluster initialization fails if event registration is unsupported.
+- When the server's authorizer enforces table permissions, give the application role `SELECT` on `system.client_routes` or an inherited broader grant. For example, an administrator can run `GRANT SELECT ON TABLE system.client_routes TO client_role;`. Authorization failure during initial route loading prevents startup; authentication alone does not imply this requirement.
+- Keep at least one explicit contact point. Contact points bootstrap the first control connection, bypass route translation during bootstrap, and are not redialed after client-routes initialization. Address overrides apply only to discovered routes and cannot replace contact points.
+- Remove any explicitly configured `IAddressTranslator`. Client routes and a custom address translator are rejected in either builder call order.
+- Confirm the intended fallback policy. A host with no route uses its advertised endpoint, which supports mixed routed/direct clusters. A host that has routes never falls back directly when all of its route candidates fail.
+- For TLS, configure server route rows with the correct `tls_port` and ensure the route hostname or address override matches the certificate and SNI name. Plaintext routes use `port`. `NativeTransportPort`, which defaults to `9042`, is only the fallback port for an advertised node whose topology metadata lacks one.
+- Leave client-routes shard awareness disabled unless the proxy path preserves or correctly forwards the source port selected by the driver. Enabling it retains source-port targeting while connections still use the route's `port` or `tls_port` as their destination.
+
+Route changes apply to new connections. Existing healthy connections remain open until the normal connection-pool lifecycle replaces them.
+
+Control reconnection remains Host-ID routed. Exhausting all routed candidates fails the attempt and follows the normal reconnection schedule; it does not recover through a bootstrap contact point. If every cached route or Host ID becomes stale or unreachable while disconnected, recovery may require a cached endpoint to become reachable again or the application to recreate the cluster with reachable bootstrap contact points. After startup, route refreshes run in the background and connection attempts keep using the last complete snapshot without waiting. Direct fallback is allowed only for Host IDs covered by that snapshot, so a new or replacement Host ID—including one at the same advertised address—remains blocked from direct fallback until a successful full refresh publishes its coverage.
+
+Malformed route rows reject their entire refresh scope, retain cached routes, revoke affected no-route coverage, and trigger a full retry. This can prevent startup and block unrelated updates in a full refresh. A present null `port` or `tls_port` for the active transport skips an otherwise-valid row and can confirm direct fallback immediately after a successful refresh. The connection ID and effective address are checked first, so their failures still reject the scope even with a null port; a missing selected column is malformed. The address check rejects empty or whitespace-containing effective values; other resolution failures can surface at connection time. See [Client routes](../features/client-routes/index) for the snapshot and empty-result rules.
+
+With client routes enabled, non-route events from retired control connections are discarded before lifecycle waiting and checked again before application. Current-source events remain concurrent and unordered; already waiting events remain retained through an outage until the lifecycle wait completes.
+
 ## Our policy regarding API changes and release versioning
 
 The driver versions follow semantic versioning.
