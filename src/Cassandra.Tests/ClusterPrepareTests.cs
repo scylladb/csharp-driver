@@ -475,10 +475,16 @@ namespace Cassandra.Tests
                 var differentCustomPayload = await PrepareAsync(
                     cluster, session, serializerManager, "SELECT * FROM table1", "ks1", differentPayload).ConfigureAwait(false);
 
-                // The calls are not cached even though the legacy ID-based tracking returns the first instance.
-                Assert.AreSame(first, repeated);
+                // Prepared IDs do not include the custom payload, so each call must return its own response.
+                Assert.AreNotSame(first, repeated);
                 Assert.AreNotSame(first, differentKeyspace);
-                Assert.AreSame(first, differentCustomPayload);
+                Assert.AreNotSame(first, differentCustomPayload);
+                CollectionAssert.AreEqual(
+                    equivalentPayload["payload"],
+                    repeated.IncomingPayload["payload"]);
+                CollectionAssert.AreEqual(
+                    differentPayload["payload"],
+                    differentCustomPayload.IncomingPayload["payload"]);
                 Assert.AreEqual(4, attempts);
             }
         }
