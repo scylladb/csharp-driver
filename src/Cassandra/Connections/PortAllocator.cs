@@ -7,7 +7,12 @@ static class PortAllocator
 {
     private static int lastPort = -1;
 
-    public static int GetNextAvailablePort(int shardCount, int shardId, int lowPort, int highPort)
+    public static int GetNextAvailablePort(
+        int shardCount,
+        int shardId,
+        int lowPort,
+        int highPort,
+        AddressFamily addressFamily)
     {
         int foundPort = -1;
         int lastPortValue;
@@ -26,7 +31,7 @@ static class PortAllocator
 
             for (int port = scanStart; port <= highPort; port += shardCount)
             {
-                if (IsTcpPortAvailable(port))
+                if (IsTcpPortAvailable(port, addressFamily))
                 {
                     foundPort = port;
                     break;
@@ -39,7 +44,7 @@ static class PortAllocator
 
                 for (int port = scanStart; port <= highPort; port += shardCount)
                 {
-                    if (IsTcpPortAvailable(port))
+                    if (IsTcpPortAvailable(port, addressFamily))
                     {
                         foundPort = port;
                         break;
@@ -57,18 +62,26 @@ static class PortAllocator
         return foundPort;
     }
 
-    public static bool IsTcpPortAvailable(int port)
+    public static bool IsTcpPortAvailable(int port, AddressFamily addressFamily)
     {
+        Socket socket = null;
         try
         {
-            TcpListener listener = new TcpListener(IPAddress.Loopback, port);
-            listener.Start();
-            listener.Stop();
+            socket = new Socket(addressFamily, SocketType.Stream, ProtocolType.Tcp);
+            var localAddress = addressFamily == AddressFamily.InterNetworkV6
+                ? IPAddress.IPv6Any
+                : IPAddress.Any;
+            socket.Bind(new IPEndPoint(localAddress, port));
+            socket.Listen(1);
             return true;
         }
         catch (SocketException)
         {
             return false;
+        }
+        finally
+        {
+            socket?.Dispose();
         }
     }
 }

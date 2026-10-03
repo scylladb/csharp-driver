@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
@@ -24,6 +25,7 @@ using System.Threading.Tasks;
 using Cassandra.Connections;
 using Cassandra.Connections.Control;
 using Cassandra.ProtocolEvents;
+using Cassandra.Serialization;
 using Cassandra.SessionManagement;
 using Cassandra.Tests.Connections.TestHelpers;
 using Cassandra.Tests.MetadataHelpers.TestHelpers;
@@ -56,7 +58,8 @@ namespace Cassandra.Tests.Connections.Control
             IInternalCluster cluster = null,
             Configuration config = null,
             Metadata metadata = null,
-            Action<TestConfigurationBuilder> configBuilderAct = null)
+            Action<TestConfigurationBuilder> configBuilderAct = null,
+            Func<Configuration, IEnumerable<IContactPoint>> contactPointsFactory = null)
         {
             if (rows == null)
             {
@@ -103,6 +106,16 @@ namespace Cassandra.Tests.Connections.Control
                 metadata = new Metadata(config);
             }
 
+            var contactPoints = contactPointsFactory != null
+                ? contactPointsFactory(config)
+                : new IContactPoint[]
+                {
+                    new IpLiteralContactPoint(
+                        IPAddress.Parse("127.0.0.1"),
+                        config.ProtocolOptions,
+                        config.ServerNameResolver)
+                };
+
             return new ControlConnectionCreateResult
             {
                 ConnectionFactory = connectionFactory,
@@ -115,13 +128,7 @@ namespace Cassandra.Tests.Connections.Control
                     ProtocolVersion.MaxSupported,
                     config,
                     metadata,
-                    new List<IContactPoint>
-                    {
-                        new IpLiteralContactPoint(
-                            IPAddress.Parse("127.0.0.1"),
-                            config.ProtocolOptions,
-                            config.ServerNameResolver)
-                    })
+                    contactPoints)
             };
         }
 
@@ -346,9 +353,333 @@ namespace Cassandra.Tests.Connections.Control
             Assert.AreEqual(2, createResult.ConnectionFactory.CreatedConnections[_endpoint2].Count);
         }
 
-        private ControlConnectionCreateResult CreateForContactPointTest(bool keepContactPointsUnresolved)
+        [Test]
+        public void Should_ContinueControlCandidateFailoverWhenConnectionConstructionThrows()
         {
-            var connectionFactory = new FakeConnectionFactory();
+            var attemptedSockets = new ConcurrentQueue<IPEndPoint>();
+            var firstConstruction = true;
+            var factory = new FakeConnectionFactory(endpoint =>
+            {
+                attemptedSockets.Enqueue(endpoint.SocketIpEndPoint);
+                if (firstConstruction)
+                {
+                    firstConstruction = false;
+                    throw new ObjectDisposedException("candidate");
+                }
+
+                var connection = new Mock<IConnection>();
+                connection.SetupGet(value => value.EndPoint).Returns(endpoint);
+                connection.Setup(value => value.Open())
+                          .ThrowsAsync(new SocketException((int)SocketError.ConnectionRefused));
+                return connection.Object;
+            });
+            var createResult = CreateForContactPointTest(false, factory);
+
+            try
+            {
+                Assert.ThrowsAsync<NoHostAvailableException>(() => createResult.ControlConnection.InitAsync());
+                CollectionAssert.Contains(attemptedSockets.ToArray(), _endpoint1);
+                CollectionAssert.Contains(attemptedSockets.ToArray(), _endpoint2);
+            }
+            finally
+            {
+                createResult.ControlConnection.Dispose();
+            }
+        }
+
+        [Test]
+        public void Should_PreserveEarlierNonSocketFailureWhenLaterCandidateClosesDuringHandoff()
+        {
+            var hostEndPoint = new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042);
+            var firstEndPoint = new SniConnectionEndPoint(
+                new IPEndPoint(IPAddress.Parse("127.0.0.10"), 9042),
+                hostEndPoint,
+                "first.example",
+                null);
+            var secondEndPoint = new SniConnectionEndPoint(
+                new IPEndPoint(IPAddress.Parse("127.0.0.11"), 9042),
+                hostEndPoint,
+                "second.example",
+                null);
+            var authenticationFailure = new AuthenticationException("bad credentials");
+            var connectionFactory = new FakeConnectionFactory(endPoint =>
+            {
+                var connection = new Mock<IConnection>();
+                connection.SetupGet(value => value.EndPoint).Returns(endPoint);
+                if (endPoint.Equals(firstEndPoint))
+                {
+                    connection.Setup(value => value.Open()).ThrowsAsync(authenticationFailure);
+                }
+                else
+                {
+                    connection.Setup(value => value.Open())
+                              .ReturnsAsync((Cassandra.Responses.Response)null);
+                    connection.SetupSequence(value => value.IsClosed)
+                              .Returns(false)
+                              .Returns(true);
+                }
+                return connection.Object;
+            });
+            var topologyRefresher = new Mock<ITopologyRefresher>();
+            topologyRefresher.Setup(value => value.RefreshNodeListAsync(
+                                       It.IsAny<IConnectionEndPoint>(),
+                                       It.IsAny<IConnection>(),
+                                       It.IsAny<ISerializer>()))
+                              .ReturnsAsync((Host)null);
+            var topologyRefresherFactory = new Mock<ITopologyRefresherFactory>();
+            topologyRefresherFactory.Setup(value => value.Create(
+                                               It.IsAny<Metadata>(),
+                                               It.IsAny<Configuration>()))
+                                      .Returns(topologyRefresher.Object);
+            var createResult = NewInstance(
+                configBuilderAct: builder =>
+                {
+                    builder.ConnectionFactory = connectionFactory;
+                    builder.TopologyRefresherFactory = topologyRefresherFactory.Object;
+                },
+                contactPointsFactory: _ => new[]
+                {
+                    new TestContactPoint(new IConnectionEndPoint[] { firstEndPoint, secondEndPoint })
+                });
+
+            try
+            {
+                var exception = Assert.ThrowsAsync<NoHostAvailableException>(
+                    () => createResult.ControlConnection.InitAsync());
+
+                Assert.AreSame(authenticationFailure, exception.Errors[hostEndPoint]);
+                Assert.IsInstanceOf<SocketException>(
+                    ((AggregateException)exception.InnerException).InnerExceptions.Single());
+            }
+            finally
+            {
+                createResult.ControlConnection.Dispose();
+            }
+        }
+
+        [Test]
+        [NonParallelizable]
+        public async Task Should_LogContactPointResolutionFailureOnlyAfterAnotherCandidateConnects()
+        {
+            var resolutionFailure = new InvalidOperationException("recovered contact-point resolution failure");
+            var failingContactPoint = new Mock<IContactPoint>();
+            failingContactPoint.SetupGet(value => value.StringRepresentation).Returns("failing.example");
+            failingContactPoint.Setup(value => value.GetConnectionEndPointsAsync(It.IsAny<bool>()))
+                               .ThrowsAsync(resolutionFailure);
+            var createResult = NewInstance(
+                configBuilderAct: builder => builder.KeepContactPointsUnresolved = true,
+                contactPointsFactory: config => new IContactPoint[]
+                {
+                    failingContactPoint.Object,
+                    new IpLiteralContactPoint(
+                        IPAddress.Parse("127.0.0.1"),
+                        config.ProtocolOptions,
+                        config.ServerNameResolver)
+                });
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            var listener = new LoggingTests.TestTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Warning;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                using (createResult.ControlConnection)
+                {
+                    await createResult.ControlConnection.InitAsync().ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+
+            Assert.IsTrue(listener.Messages.Values.Any(message =>
+                message.Contains("recovered contact-point resolution failure")));
+        }
+
+        [Test]
+        [NonParallelizable]
+        public async Task Should_KeepSuccessfulConnectionWhenRecoveredFailureLoggerThrows()
+        {
+            var resolutionFailure = new InvalidOperationException("recovered resolution failure");
+            var failingContactPoint = new Mock<IContactPoint>();
+            failingContactPoint.SetupGet(value => value.StringRepresentation).Returns("failing.example");
+            failingContactPoint.Setup(value => value.GetConnectionEndPointsAsync(It.IsAny<bool>()))
+                               .ThrowsAsync(resolutionFailure);
+            var createResult = NewInstance(
+                configBuilderAct: builder => builder.KeepContactPointsUnresolved = true,
+                contactPointsFactory: config => new IContactPoint[]
+                {
+                    failingContactPoint.Object,
+                    new IpLiteralContactPoint(
+                        IPAddress.Parse("127.0.0.1"),
+                        config.ProtocolOptions,
+                        config.ServerNameResolver)
+                });
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            var listener = new ThrowingTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Warning;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                await createResult.ControlConnection.InitAsync().ConfigureAwait(false);
+
+                var connection = createResult.ConnectionFactory.CreatedConnections[_endpoint1].Single();
+                Mock.Get(connection).Verify(value => value.Dispose(), Times.Never);
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                createResult.ControlConnection.Dispose();
+            }
+        }
+
+        [Test]
+        [NonParallelizable]
+        public void Should_PropagateUnrecoveredContactPointResolutionFailureWithoutLoggingIt()
+        {
+            var resolutionFailure = new InvalidOperationException("propagated contact-point resolution failure");
+            var failingContactPoint = new Mock<IContactPoint>();
+            failingContactPoint.SetupGet(value => value.StringRepresentation).Returns("failing.example");
+            failingContactPoint.Setup(value => value.GetConnectionEndPointsAsync(It.IsAny<bool>()))
+                               .ThrowsAsync(resolutionFailure);
+            var createResult = NewInstance(
+                configBuilderAct: builder => builder.KeepContactPointsUnresolved = true,
+                contactPointsFactory: _ => new[] { failingContactPoint.Object });
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            var listener = new LoggingTests.TestTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Warning;
+            Trace.Listeners.Add(listener);
+            NoHostAvailableException exception;
+            try
+            {
+                using (createResult.ControlConnection)
+                {
+                    exception = Assert.ThrowsAsync<NoHostAvailableException>(
+                        () => createResult.ControlConnection.InitAsync());
+                }
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+
+            var aggregate = (AggregateException)exception.InnerException;
+            Assert.AreSame(resolutionFailure, aggregate.InnerExceptions.Single());
+            Assert.IsFalse(listener.Messages.Values.Any(message =>
+                message.Contains("propagated contact-point resolution failure")));
+        }
+
+        [Test]
+        [NonParallelizable]
+        public void Should_NotLogEarlierCandidateFailureBeforePropagatingLaterFatalFailure()
+        {
+            var recoveredFailure = new InvalidOperationException("recovered candidate before fatal");
+            var fatalFailure = new OutOfMemoryException("propagated fatal candidate");
+            var firstEndPoint = new IPEndPoint(IPAddress.Parse("127.0.0.10"), 9042);
+            var secondEndPoint = new IPEndPoint(IPAddress.Parse("127.0.0.11"), 9042);
+            var connectionFactory = new FakeConnectionFactory(endPoint =>
+            {
+                var connection = new Mock<IConnection>();
+                connection.SetupGet(value => value.EndPoint).Returns(endPoint);
+                connection.Setup(value => value.Open())
+                          .ThrowsAsync(endPoint.SocketIpEndPoint.Equals(firstEndPoint)
+                              ? (Exception)recoveredFailure
+                              : fatalFailure);
+                return connection.Object;
+            });
+            var createResult = NewInstance(
+                configBuilderAct: builder =>
+                {
+                    builder.ConnectionFactory = connectionFactory;
+                    builder.KeepContactPointsUnresolved = true;
+                },
+                contactPointsFactory: config => new[]
+                {
+                    new TestContactPoint(new IConnectionEndPoint[]
+                    {
+                        new ConnectionEndPoint(firstEndPoint, config.ServerNameResolver, null),
+                        new ConnectionEndPoint(secondEndPoint, config.ServerNameResolver, null)
+                    })
+                });
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            var listener = new LoggingTests.TestTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                using (createResult.ControlConnection)
+                {
+                    var actual = Assert.ThrowsAsync<OutOfMemoryException>(
+                        () => createResult.ControlConnection.InitAsync());
+                    Assert.AreSame(fatalFailure, actual);
+                }
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+
+            Assert.IsFalse(listener.Messages.Values.Any(message =>
+                message.Contains("recovered candidate before fatal")));
+            Assert.IsFalse(listener.Messages.Values.Any(message =>
+                message.Contains("propagated fatal candidate")));
+        }
+
+        [Test]
+        [NonParallelizable]
+        public void Should_NotLogEarlierResolutionFailureBeforePropagatingLaterFatalResolution()
+        {
+            var recoveredFailure = new InvalidOperationException("recovered resolution before fatal");
+            var fatalFailure = new OutOfMemoryException("propagated fatal resolution");
+            var firstContactPoint = new Mock<IContactPoint>();
+            firstContactPoint.SetupGet(value => value.StringRepresentation).Returns("first.example");
+            firstContactPoint.Setup(value => value.GetConnectionEndPointsAsync(It.IsAny<bool>()))
+                             .ThrowsAsync(recoveredFailure);
+            var secondContactPoint = new Mock<IContactPoint>();
+            secondContactPoint.SetupGet(value => value.StringRepresentation).Returns("second.example");
+            secondContactPoint.Setup(value => value.GetConnectionEndPointsAsync(It.IsAny<bool>()))
+                              .ThrowsAsync(fatalFailure);
+            var createResult = NewInstance(
+                configBuilderAct: builder => builder.KeepContactPointsUnresolved = true,
+                contactPointsFactory: _ => new[]
+                {
+                    firstContactPoint.Object,
+                    secondContactPoint.Object
+                });
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            var listener = new LoggingTests.TestTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Warning;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                using (createResult.ControlConnection)
+                {
+                    var actual = Assert.ThrowsAsync<OutOfMemoryException>(
+                        () => createResult.ControlConnection.InitAsync());
+                    Assert.AreSame(fatalFailure, actual);
+                }
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+
+            Assert.IsFalse(listener.Messages.Values.Any(message =>
+                message.Contains("recovered resolution before fatal")));
+            Assert.IsFalse(listener.Messages.Values.Any(message =>
+                message.Contains("propagated fatal resolution")));
+        }
+
+        private ControlConnectionCreateResult CreateForContactPointTest(
+            bool keepContactPointsUnresolved,
+            FakeConnectionFactory connectionFactory = null)
+        {
+            connectionFactory = connectionFactory ?? new FakeConnectionFactory();
             var config = new TestConfigurationBuilder
             {
                 ConnectionFactory = connectionFactory,
@@ -436,6 +767,19 @@ namespace Cassandra.Tests.Connections.Control
             {
                 Calls.Enqueue(refreshCache);
                 return Task.FromResult(_endPoints);
+            }
+        }
+
+        private sealed class ThrowingTraceListener : TraceListener
+        {
+            public override void Write(string message)
+            {
+                throw new InvalidOperationException("trace listener failed");
+            }
+
+            public override void WriteLine(string message)
+            {
+                throw new InvalidOperationException("trace listener failed");
             }
         }
     }

@@ -14,6 +14,7 @@
 //   limitations under the License.
 //
 
+using System.Collections.Generic;
 using System.Threading.Tasks;
 
 namespace Cassandra.Connections
@@ -25,23 +26,27 @@ namespace Cassandra.Connections
     internal interface IEndPointResolver
     {
         /// <summary>
-        /// Gets an instance of <see cref="IConnectionEndPoint"/> to the provided host from the internal cache (if caching is supported by the implementation).
+        /// Gets the <see cref="IConnectionEndPoint"/> candidates for the provided host, using the internal cache
+        /// if caching is supported by the implementation.
         /// </summary>
-        /// <param name="host">Host related to the new endpoint.</param>
+        /// <param name="host">Host related to the new endpoints.</param>
         /// <param name="refreshCache">Whether to refresh the internal cache. If it is false and the cache is populated then
         /// no round trip will occur.</param>
-        /// <returns>Endpoint.</returns>
-        Task<IConnectionEndPoint> GetConnectionEndPointAsync(Host host, bool refreshCache);
+        /// <returns>Endpoint candidates in priority order; callers try each in turn.</returns>
+        Task<IReadOnlyList<IConnectionEndPoint>> GetConnectionEndPointsAsync(Host host, bool refreshCache);
 
         /// <summary>
-        /// Gets an instance of <see cref="IConnectionEndPoint"/> to the provided host from the internal cache (if caching is supported by the implementation).
-        /// It uses provided shard aware port.
+        /// Gets the <see cref="IConnectionEndPoint"/> candidates for the provided host, using the internal cache
+        /// if caching is supported by the implementation. It uses the provided shard-aware port.
         /// </summary>
-        /// <param name="host">Host related to the new endpoint.</param>
+        /// <param name="host">Host related to the new endpoints.</param>
         /// <param name="refreshCache">Whether to refresh the internal cache. If it is false and the cache is populated then
         /// no round trip will occur.</param>
         /// <param name="shardAwarePort">Shard aware port.</param>
-        /// <returns>Endpoint.</returns>
-        Task<IConnectionEndPoint> GetConnectionShardAwareEndPointAsync(Host host, bool refreshCache, int shardAwarePort);
+        /// <returns>Endpoint candidates in priority order; callers try each in turn.</returns>
+        Task<IReadOnlyList<IConnectionEndPoint>> GetConnectionShardAwareEndPointsAsync(
+            Host host,
+            bool refreshCache,
+            int shardAwarePort);
     }
 }
