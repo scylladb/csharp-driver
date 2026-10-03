@@ -7,6 +7,7 @@ The ScyllaDB C# Driver for Scylla is a feature-rich and highly tunable C# client
 - [Address resolution](address-resolution/index)
 - [Authentication](auth/index)
 - [Automatic failover](automatic-failover/index)
+- [Client routes](client-routes/index)
 - [Components](components/index)
   - [Core](components/core/index)
   - [Linq](components/linq/index)
@@ -41,6 +42,7 @@ The ScyllaDB C# Driver for Scylla is a feature-rich and highly tunable C# client
 address-resolution/index
 auth/index
 automatic-failover/index
+client-routes/index
 column-encryption/index
 components/index
 connection-heartbeat/index

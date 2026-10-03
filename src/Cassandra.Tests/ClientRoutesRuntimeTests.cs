@@ -296,9 +296,10 @@ namespace Cassandra.Tests
         private static ClientRoutesRuntime CreateRuntime()
         {
             return new ClientRoutesRuntime(
-                ClientRoutesSelection.Create(
-                    new[] { "route-a" },
-                    new Dictionary<string, string>()),
+                new ClientRoutesOptions(
+                    new[] { new ClientRouteProxy("route-a") },
+                    9042,
+                    false),
                 false);
         }
 

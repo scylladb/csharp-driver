@@ -37,10 +37,10 @@ namespace Cassandra.Connections.Control
 
         private readonly IInternalCluster _cluster;
         private readonly Metadata _metadata;
-        private readonly object _connectionHandoffLock = new object();
         private volatile Host _host;
         private volatile IConnectionEndPoint _currentConnectionEndPoint;
         private volatile IConnection _connection;
+        private volatile IConnection _observedClosingConnection;
 
         internal static readonly Logger Logger = new Logger(typeof(ControlConnection));
 
@@ -55,6 +55,9 @@ namespace Cassandra.Connections.Control
         private readonly IEnumerable<IContactPoint> _contactPoints;
         private readonly ITopologyRefresher _topologyRefresher;
         private readonly ISupportedOptionsInitializer _supportedOptionsInitializer;
+        private readonly ClientRoutesCache _clientRoutesCache;
+        private readonly SemaphoreSlim _controlLifecycleLock = new SemaphoreSlim(1, 1);
+        private readonly object _connectionHandoffLock = new object();
 
         private long _state = ControlConnection.StateRunning;
 
@@ -97,6 +100,7 @@ namespace Cassandra.Connections.Control
             _contactPoints = contactPoints;
             _topologyRefresher = config.TopologyRefresherFactory.Create(metadata, config);
             _supportedOptionsInitializer = config.SupportedOptionsInitializerFactory.Create(metadata);
+            _clientRoutesCache = config.ClientRoutesRuntime?.Bind(this);
 
             if (!_config.KeepContactPointsUnresolved)
             {
@@ -168,7 +172,8 @@ namespace Cassandra.Connections.Control
         private ConnectionEndPointResolutionPlan GetHostContactPointOrConnectionEndpointResolutionPlan(
             ControlConnectionAttempt attempt,
             Host host,
-            bool refreshContactPoints, bool refreshEndpoints)
+            bool refreshContactPoints,
+            bool refreshEndpoints)
         {
             return _config.EndPointResolutionPlanProvider.GetControlConnectionEndPointResolutionPlan(
                 host,
@@ -239,13 +244,14 @@ namespace Cassandra.Connections.Control
             ControlConnectionAttempt attempt,
             bool isInitializing,
             bool refreshContactPoints,
-            bool refreshEndpoints)
+            bool refreshEndpoints,
+            bool allowDownHosts)
         {
             foreach (var hostShard in _config.DefaultRequestOptions.LoadBalancingPolicy.NewQueryPlan(null, null))
             {
                 if (attempt.AttemptedHosts.TryAdd(hostShard.Host, null))
                 {
-                    if (!IsHostValid(hostShard.Host, isInitializing))
+                    if (!IsHostValid(hostShard.Host, isInitializing, allowDownHosts))
                     {
                         continue;
                     }
@@ -259,7 +265,7 @@ namespace Cassandra.Connections.Control
             }
         }
 
-        private bool IsHostValid(Host host, bool initializing)
+        private bool IsHostValid(Host host, bool initializing, bool allowDownHost = false)
         {
             if (initializing)
             {
@@ -272,7 +278,7 @@ namespace Cassandra.Connections.Control
                 return false;
             }
 
-            if (!host.IsUp)
+            if (!host.IsUp && !allowDownHost)
             {
                 ControlConnection.Logger.Verbose("Skipping {0} because it is not UP.", host.Address.ToString());
                 return false;
@@ -293,6 +299,20 @@ namespace Cassandra.Connections.Control
         /// <exception cref="DriverInternalError" />
         private async Task Connect(bool isInitializing)
         {
+            await _controlLifecycleLock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                await ConnectUnsafe(isInitializing).ConfigureAwait(false);
+            }
+            finally
+            {
+                _controlLifecycleLock.Release();
+            }
+        }
+
+        private async Task ConnectUnsafe(bool isInitializing)
+        {
+            BeginClientRoutesLifecyclePass();
             if (isInitializing)
             {
                 ControlConnection.Logger.Verbose("Control Connection {0} connecting.", GetHashCode());
@@ -301,16 +321,18 @@ namespace Cassandra.Connections.Control
             {
                 ControlConnection.Logger.Verbose("Control Connection {0} reconnecting.", GetHashCode());
             }
-            // lazy iterator of endpoint-resolution plans to try for the control connection
+            // lazy iterator of endpoints to try for the control connection
             IEnumerable<ConnectionEndPointResolutionPlan> endPointResolutionPlansLazyIterator =
                 Enumerable.Empty<ConnectionEndPointResolutionPlan>();
 
             var attempt = new ControlConnectionAttempt();
 
-            // start with contact points if it is initializing or there is a total connectivity loss
+            // Bootstrap client routes through explicit contact points. Once initialization has
+            // completed, control-connection recovery remains on the Host-ID routing path.
             var totalConnectivityLoss = TotalConnectivityLoss();
             var addedContactPoints = false;
-            if (isInitializing || totalConnectivityLoss)
+            var clientRoutesEnabled = _clientRoutesCache != null;
+            if (isInitializing || (totalConnectivityLoss && !clientRoutesEnabled))
             {
                 var refresh = true;
                 if (isInitializing)
@@ -326,7 +348,9 @@ namespace Cassandra.Connections.Control
                         "re-resolving the contact points.");
                 }
                 endPointResolutionPlansLazyIterator = endPointResolutionPlansLazyIterator.Concat(
-                    ContactPointResolutionPlansEnumerable(attempt, refresh));
+                    ContactPointResolutionPlansEnumerable(
+                        attempt,
+                        refresh));
             }
 
             // add endpoints from the default LBP if it is already initialized
@@ -337,19 +361,23 @@ namespace Cassandra.Connections.Control
                         attempt,
                         false,
                         _config.KeepContactPointsUnresolved,
-                        true));
+                        true,
+                        clientRoutesEnabled && totalConnectivityLoss));
             }
 
-            // add contact points next if they haven't been added yet (without re-resolving them)
-            if (!addedContactPoints)
+            // Preserve the legacy contact-point tail when client routes are disabled. With client
+            // routes, explicit contact points are bootstrap-only.
+            if (!addedContactPoints && !clientRoutesEnabled)
             {
                 addedContactPoints = true;
                 endPointResolutionPlansLazyIterator = endPointResolutionPlansLazyIterator.Concat(
-                    ContactPointResolutionPlansEnumerable(attempt, _config.KeepContactPointsUnresolved));
+                    ContactPointResolutionPlansEnumerable(
+                        attempt,
+                        totalConnectivityLoss || _config.KeepContactPointsUnresolved));
             }
 
             // add all hosts iterator, this will contain already tried hosts but we will check for it with the concurrent dictionary
-            if (isInitializing)
+            if (isInitializing && !clientRoutesEnabled)
             {
                 endPointResolutionPlansLazyIterator = endPointResolutionPlansLazyIterator.Concat(
                     AllHostsEndPointResolutionPlansEnumerable(
@@ -452,6 +480,9 @@ namespace Cassandra.Connections.Control
 
                             currentHost = await _topologyRefresher.RefreshNodeListAsync(
                                 endPoint, connection, _serializer.GetCurrentSerializer()).ConfigureAwait(false);
+                            var topologyHostIds = _clientRoutesCache == null
+                                ? null
+                                : _metadata.AllHosts().Select(host => host.HostId).ToArray();
 
                             if (isInitializing)
                             {
@@ -481,15 +512,19 @@ namespace Cassandra.Connections.Control
                                 throw new ObjectDisposedException("Connection established successfully but the Control Connection was being disposed.");
                             }
 
-                            lock (_connectionHandoffLock)
+                            if (_clientRoutesCache == null)
                             {
-                                if (IsShutdown || !ReferenceEquals(_connection, connection))
+                                // Preserve the legacy subscription timing when client routes are disabled.
+                                lock (_connectionHandoffLock)
                                 {
-                                    throw new ObjectDisposedException(
-                                        nameof(ControlConnection),
-                                        "The Control Connection was disposed before the connection lifecycle completed.");
+                                    if (IsShutdown || !ReferenceEquals(_connection, connection))
+                                    {
+                                        throw new ObjectDisposedException(
+                                            nameof(ControlConnection),
+                                            "The Control Connection was disposed before the connection lifecycle completed.");
+                                    }
+                                    Subscribe(currentHost, connection, false);
                                 }
-                                Subscribe(currentHost, connection, false);
                             }
 
                             ControlConnection.Logger.Info(
@@ -498,7 +533,57 @@ namespace Cassandra.Connections.Control
                                 _serializer.CurrentProtocolVersion.ToString("D"));
 
                             await _config.ServerEventsSubscriber.SubscribeToServerEvents(connection, OnConnectionCassandraEvent).ConfigureAwait(false);
+                            var waitForInitialClientRoutesSnapshot = false;
+                            if (_clientRoutesCache != null)
+                            {
+                                waitForInitialClientRoutesSnapshot = !_clientRoutesCache.HasCompleteSnapshot;
+                                var routeRefresh = _clientRoutesCache.FullRefreshBarrierAsync(
+                                    topologyHostIds,
+                                    confirmIgnoredEmptyResults: true);
+                                if (waitForInitialClientRoutesSnapshot)
+                                {
+                                    await routeRefresh.ConfigureAwait(false);
+                                }
+                                else
+                                {
+                                    routeRefresh.Forget();
+                                }
+                                if (connection.IsDisposed ||
+                                    connection.IsClosed ||
+                                    ReferenceEquals(_observedClosingConnection, connection))
+                                {
+                                    throw new SocketException((int)SocketError.NotConnected);
+                                }
+                            }
                             await _metadata.RebuildTokenMapAsync(false, _config.MetadataSyncOptions.MetadataSyncEnabled).ConfigureAwait(false);
+                            if (_clientRoutesCache != null && waitForInitialClientRoutesSnapshot)
+                            {
+                                await _clientRoutesCache.QueuedRefreshBarrierAsync().ConfigureAwait(false);
+                            }
+                            if (_clientRoutesCache != null)
+                            {
+                                // A failed REGISTER or initial route load must not launch a recursive reconnect
+                                // through the candidate connection's Closing event.
+                                lock (_connectionHandoffLock)
+                                {
+                                    if (IsShutdown)
+                                    {
+                                        throw new ObjectDisposedException(
+                                            nameof(ControlConnection),
+                                            "The Control Connection was disposed before the client-routes lifecycle completed.");
+                                    }
+                                    Subscribe(currentHost, connection, false);
+                                    if (!ReferenceEquals(_connection, connection) ||
+                                        connection.IsDisposed ||
+                                        connection.IsClosed ||
+                                        ReferenceEquals(_observedClosingConnection, connection))
+                                    {
+                                        Unsubscribe(currentHost, connection);
+                                        throw new SocketException((int)SocketError.NotConnected);
+                                    }
+                                    _config.ClientRoutesRuntime.CompleteLifecyclePass();
+                                }
+                            }
                             attempt.CompleteSuccessfully();
                             return;
                         }
@@ -698,9 +783,11 @@ namespace Cassandra.Connections.Control
                     return;
                 }
 
+                _observedClosingConnection = connection;
                 connection.Closing -= OnConnectionClosing;
                 connection.Dispose();
-                if (IsShutdown)
+                if (IsShutdown ||
+                    (_clientRoutesCache != null && !_config.ClientRoutesRuntime.IsLifecycleReady))
                 {
                     return;
                 }
@@ -744,11 +831,16 @@ namespace Cassandra.Connections.Control
 
         internal async Task<IConnection> Reconnect(IConnection closedConnection)
         {
-            var tcs = new TaskCompletionSource<IConnection>();
-            var currentTask = Interlocked.CompareExchange(ref _reconnectTask, tcs.Task, null);
-            if (currentTask != null)
+            while (true)
             {
-                // If there is another thread reconnecting, use the same task
+                var tcs = new TaskCompletionSource<IConnection>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var currentTask = Interlocked.CompareExchange(ref _reconnectTask, tcs.Task, null);
+                if (currentTask == null)
+                {
+                    return await ReconnectAsOwner(tcs).ConfigureAwait(false);
+                }
+
+                // If there is another thread reconnecting, use the same task.
                 var oldConnectionInPreviousReconnect = await currentTask.ConfigureAwait(false);
 
                 // if his reconnect was triggered by a connection closed event
@@ -757,71 +849,114 @@ namespace Cassandra.Connections.Control
                 if (closedConnection != null && !ReferenceEquals(closedConnection, oldConnectionInPreviousReconnect) && (_connection?.IsDisposed ?? true))
                 {
                     ControlConnection.Logger.Info("Connection was closed while reconnecting, triggering another reconnection.");
-                    return await Reconnect(null).ConfigureAwait(false);
+                    closedConnection = null;
+                    continue;
                 }
+
+                return oldConnectionInPreviousReconnect;
             }
-            var oldConnection = _connection;
-            var oldHost = _host;
-            Unsubscribe(oldHost, oldConnection);
+        }
+
+        private async Task<IConnection> ReconnectAsOwner(TaskCompletionSource<IConnection> tcs)
+        {
+            IConnection oldConnection = null;
             try
             {
-                ControlConnection.Logger.Info("Trying to reconnect the ControlConnection");
-                await Connect(false).ConfigureAwait(false);
+                await _controlLifecycleLock.WaitAsync().ConfigureAwait(false);
+                try
+                {
+                    if (IsShutdown)
+                    {
+                        throw new ObjectDisposedException(nameof(ControlConnection));
+                    }
+
+                    // Capture and retire the connection protected by the same lifecycle gate that
+                    // replaces it. A snapshot taken before waiting can refer to an older lifecycle.
+                    oldConnection = _connection;
+                    var oldHost = _host;
+                    Unsubscribe(oldHost, oldConnection);
+                    try
+                    {
+                        ControlConnection.Logger.Info("Trying to reconnect the ControlConnection");
+                        await ConnectUnsafe(false).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        if (!ReferenceEquals(_connection, oldConnection) || IsShutdown)
+                        {
+                            oldConnection?.Dispose();
+                        }
+                    }
+                }
+                finally
+                {
+                    _controlLifecycleLock.Release();
+                }
             }
             catch (Exception ex)
             {
-                // It failed to reconnect, schedule the timer for next reconnection and let go.
-                var _ = Interlocked.Exchange(ref _reconnectTask, null);
+                // Publish the retry before releasing ownership. A newer owner can then cancel this
+                // exact timer on success, while an older generation can never arm a timer after a
+                // newer connection has already been published.
+                ScheduleNextReconnectIfRunning();
+                var _ = Interlocked.CompareExchange(ref _reconnectTask, null, tcs.Task);
                 tcs.TrySetException(ex);
-                var delay = _reconnectionSchedule.NextDelayMs();
-                ControlConnection.Logger.Error("ControlConnection was not able to reconnect: " + ex);
-                try
-                {
-                    _reconnectionTimer.Change((int)delay, Timeout.Infinite);
-                }
-                catch (ObjectDisposedException)
-                {
-                    //Control connection is being disposed
-                }
 
                 // It will throw the same exception that it was set in the TCS
-                throw;
-            }
-            finally
-            {
-                if (_connection != oldConnection)
-                {
-                    oldConnection?.Dispose();
-                }
+                return await tcs.Task.ConfigureAwait(false);
             }
 
             if (IsShutdown)
             {
+                var _ = Interlocked.CompareExchange(ref _reconnectTask, null, tcs.Task);
                 tcs.TrySetResult(null);
                 return await tcs.Task.ConfigureAwait(false);
             }
             try
             {
+                CancelScheduledReconnect();
                 _reconnectionSchedule = _reconnectionPolicy.NewSchedule();
-                var _ = Interlocked.Exchange(ref _reconnectTask, null);
+                var _ = Interlocked.CompareExchange(ref _reconnectTask, null, tcs.Task);
                 tcs.TrySetResult(oldConnection);
                 ControlConnection.Logger.Info("ControlConnection reconnected to host {0}", _host.Address);
             }
             catch (Exception ex)
             {
-                var _ = Interlocked.Exchange(ref _reconnectTask, null);
+                ScheduleNextReconnectIfRunning();
+                var _ = Interlocked.CompareExchange(ref _reconnectTask, null, tcs.Task);
                 ControlConnection.Logger.Error("There was an error when trying to refresh the ControlConnection", ex);
                 tcs.TrySetException(ex);
-                try
-                {
-                    _reconnectionTimer.Change((int)_reconnectionSchedule.NextDelayMs(), Timeout.Infinite);
-                }
-                catch (ObjectDisposedException)
-                {
-                    //Control connection is being disposed
-                }
             }
             return await tcs.Task.ConfigureAwait(false);
+        }
+
+        private void ScheduleNextReconnectIfRunning()
+        {
+            if (IsShutdown)
+            {
+                return;
+            }
+
+            try
+            {
+                _reconnectionTimer.Change((int)_reconnectionSchedule.NextDelayMs(), Timeout.Infinite);
+            }
+            catch (ObjectDisposedException)
+            {
+                // Control connection is being disposed.
+            }
+        }
+
+        private void CancelScheduledReconnect()
+        {
+            try
+            {
+                _reconnectionTimer.Change(Timeout.Infinite, Timeout.Infinite);
+            }
+            catch (ObjectDisposedException)
+            {
+                // Control connection is being disposed.
+            }
         }
 
         private async Task Refresh()
@@ -832,15 +967,51 @@ namespace Cassandra.Connections.Control
                 return;
             }
             var reconnect = false;
+            await _controlLifecycleLock.WaitAsync().ConfigureAwait(false);
             try
             {
+                BeginClientRoutesLifecyclePass();
                 var currentEndPoint = _currentConnectionEndPoint;
                 var currentHost = await _topologyRefresher.RefreshNodeListAsync(
                     currentEndPoint, _connection, _serializer.GetCurrentSerializer()).ConfigureAwait(false);
 
-                SetCurrentConnectionEndpoint(currentHost, currentEndPoint);
-
+                var waitForInitialClientRoutesSnapshot = false;
+                if (_clientRoutesCache != null)
+                {
+                    var topologyHostIds = _metadata.AllHosts().Select(host => host.HostId).ToArray();
+                    waitForInitialClientRoutesSnapshot = !_clientRoutesCache.HasCompleteSnapshot;
+                    var routeRefresh = _clientRoutesCache.FullRefreshBarrierAsync(
+                        topologyHostIds,
+                        confirmIgnoredEmptyResults: true);
+                    if (waitForInitialClientRoutesSnapshot)
+                    {
+                        await routeRefresh.ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        routeRefresh.Forget();
+                    }
+                }
                 await _metadata.RebuildTokenMapAsync(false, _config.MetadataSyncOptions.MetadataSyncEnabled).ConfigureAwait(false);
+                if (_clientRoutesCache != null && waitForInitialClientRoutesSnapshot)
+                {
+                    await _clientRoutesCache.QueuedRefreshBarrierAsync().ConfigureAwait(false);
+                }
+                lock (_connectionHandoffLock)
+                {
+                    if (IsShutdown)
+                    {
+                        throw new ObjectDisposedException(
+                            nameof(ControlConnection),
+                            "The Control Connection was disposed before the refresh lifecycle completed.");
+                    }
+                    if (_connection?.IsClosed ?? true)
+                    {
+                        throw new SocketException((int)SocketError.NotConnected);
+                    }
+                    SetCurrentConnectionEndpoint(currentHost, currentEndPoint);
+                    _config.ClientRoutesRuntime?.CompleteLifecyclePass();
+                }
                 _reconnectionSchedule = _reconnectionPolicy.NewSchedule();
             }
             catch (SocketException ex)
@@ -855,9 +1026,10 @@ namespace Cassandra.Connections.Control
             }
             finally
             {
+                _controlLifecycleLock.Release();
                 Interlocked.Exchange(ref _refreshFlag, 0);
             }
-            if (reconnect)
+            if (reconnect && !IsShutdown)
             {
                 await Reconnect(null).ConfigureAwait(false);
             }
@@ -877,6 +1049,11 @@ namespace Cassandra.Connections.Control
                 connection = _connection;
                 Unsubscribe(_host, connection);
             }
+
+            // Lifecycle completion uses the same lock. Once shutdown has linearized above, no
+            // connection or route lifecycle can be published. Fault the captured runtime waiters
+            // without holding the connection handoff lock.
+            _config.ClientRoutesRuntime?.Shutdown();
 
             if (connection != null)
             {
@@ -926,6 +1103,10 @@ namespace Cassandra.Connections.Control
         private void OnHostDown(Host h)
         {
             h.Down -= OnHostDown;
+            if (IsShutdown)
+            {
+                return;
+            }
             ControlConnection.Logger.Warning("Host {0} used by the ControlConnection DOWN", h.Address);
             // Queue reconnection to occur in the background
             ReconnectFireAndForget(null);
@@ -936,6 +1117,14 @@ namespace Cassandra.Connections.Control
             try
             {
                 //This event is invoked from a worker thread (not a IO thread)
+                if (_clientRoutesCache != null && !(e is ClientRoutesChangeEventArgs))
+                {
+                    await _config.ClientRoutesRuntime.WaitForLifecycleReadyAsync().ConfigureAwait(false);
+                    if (IsShutdown)
+                    {
+                        return;
+                    }
+                }
                 if (e is TopologyChangeEventArgs tce)
                 {
                     if (tce.What == TopologyChangeEventArgs.Reason.NewNode || tce.What == TopologyChangeEventArgs.Reason.RemovedNode)
@@ -952,10 +1141,20 @@ namespace Cassandra.Connections.Control
                     return;
                 }
 
+                if (e is ClientRoutesChangeEventArgs clientRoutesChange && _clientRoutesCache != null)
+                {
+                    await _clientRoutesCache.RefreshAsync(clientRoutesChange).ConfigureAwait(false);
+                    return;
+                }
+
                 if (e is SchemaChangeEventArgs ssc)
                 {
                     await HandleSchemaChangeEvent(ssc, false).ConfigureAwait(false);
                 }
+            }
+            catch (ObjectDisposedException ex) when (IsShutdown)
+            {
+                ControlConnection.Logger.Verbose("Dropped a cassandra event during shutdown: {0}", ex.Message);
             }
             catch (Exception ex)
             {
@@ -1038,6 +1237,18 @@ namespace Cassandra.Connections.Control
 
         private void SetCurrentConnectionEndpoint(Host host, IConnectionEndPoint endPoint)
         {
+            var previousHost = _host;
+            if (!ReferenceEquals(previousHost, host))
+            {
+                if (previousHost != null)
+                {
+                    previousHost.Down -= OnHostDown;
+                }
+                if (host != null)
+                {
+                    host.Down += OnHostDown;
+                }
+            }
             _host = host;
             _currentConnectionEndPoint = endPoint;
             _metadata.SetCassandraVersion(host.CassandraVersion);
@@ -1061,6 +1272,7 @@ namespace Cassandra.Connections.Control
 
             if (connection != null)
             {
+                _observedClosingConnection = null;
                 _connection = connection;
             }
 
@@ -1074,6 +1286,7 @@ namespace Cassandra.Connections.Control
             IConnectionEndPoint endPoint)
         {
             _connection = connection;
+            _observedClosingConnection = null;
             _host = host;
             _currentConnectionEndPoint = endPoint;
             if (host != null)
@@ -1219,6 +1432,11 @@ namespace Cassandra.Connections.Control
                 return false;
             }
             return _supportedOptionsInitializer.GetShardingInfo().ScyllaNrShards > 0;
+        }
+
+        private void BeginClientRoutesLifecyclePass()
+        {
+            _config.ClientRoutesRuntime?.BeginLifecyclePass();
         }
     }
 }

@@ -19,9 +19,15 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Net;
+using System.Threading;
+using System.Threading.Tasks;
 
+using Cassandra.Connections;
 using Cassandra.Connections.Control;
 using Cassandra.ExecutionProfiles;
+using Cassandra.ProtocolEvents;
+using Cassandra.Serialization;
+using Cassandra.SessionManagement;
 using Cassandra.Tests.Connections.TestHelpers;
 
 using Moq;
@@ -96,6 +102,121 @@ namespace Cassandra.Tests
              .Build();
             Assert.Throws<NoHostAvailableException>(() => cluster.Connect());
             Assert.DoesNotThrow(cluster.Dispose);
+        }
+
+        [Test]
+        public void TerminalInitializationFailureStopsClientRoutesAndDisposesControlConnectionOnce()
+        {
+            var terminalFailure = new InvalidOperationException("terminal initialization failure");
+            var cleanupFailure = new InvalidOperationException("cleanup failure");
+            var disposeCount = 0;
+            ClientRoutesCache routesCache = null;
+            var controlConnection = new Mock<IControlConnection>();
+            controlConnection
+                .Setup(c => c.QueryUnpagedAsync(It.IsAny<string>(), It.IsAny<bool>()))
+                .Returns(Task.FromException<IEnumerable<IRow>>(
+                    new InvalidOperationException("route query failed")));
+            controlConnection
+                .Setup(c => c.InitAsync())
+                .Returns(async () =>
+                {
+                    await routesCache.RefreshAsync().ConfigureAwait(false);
+                    throw terminalFailure;
+                });
+            controlConnection
+                .Setup(c => c.Dispose())
+                .Callback(() =>
+                {
+                    Interlocked.Increment(ref disposeCount);
+                    throw cleanupFailure;
+                });
+            var configuration = CreateClientRoutesClusterConfiguration(
+                controlConnection.Object,
+                runtime => routesCache = runtime.Bind(controlConnection.Object));
+            var cluster = CreateCluster(configuration);
+
+            var thrown = Assert.Throws<InvalidOperationException>(() => _ = cluster.Metadata);
+            Assert.AreSame(terminalFailure, thrown);
+            NUnit.Framework.Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+                await routesCache.RefreshAsync().ConfigureAwait(false));
+
+            var cached = Assert.Throws<InitFatalErrorException>(() => _ = cluster.Metadata);
+            Assert.AreSame(terminalFailure, cached.InnerException);
+            Assert.DoesNotThrow(cluster.Dispose);
+            Assert.AreEqual(1, disposeCount);
+        }
+
+        [Test]
+        public void InitializationTimeoutPreservesTimeoutAndDisposesControlConnectionOnce()
+        {
+            var initCompletion = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var disposeCount = 0;
+            var controlConnection = new Mock<IControlConnection>();
+            controlConnection.Setup(c => c.InitAsync()).Returns(initCompletion.Task);
+            controlConnection
+                .Setup(c => c.Dispose())
+                .Callback(() =>
+                {
+                    Interlocked.Increment(ref disposeCount);
+                    initCompletion.TrySetException(new ObjectDisposedException("control connection"));
+                });
+            var factory = CreateControlConnectionFactory(controlConnection.Object);
+            var configuration = new TestConfigurationBuilder
+            {
+                ControlConnectionFactory = factory,
+                SocketOptions = new SocketOptions()
+                    .SetConnectTimeoutMillis(1)
+                    .SetMetadataAbortTimeout(10)
+            }.Build();
+            var cluster = CreateCluster(configuration);
+
+            var timeout = Assert.Throws<TimeoutException>(() => _ = cluster.Metadata);
+            var cached = Assert.Throws<InitFatalErrorException>(() => _ = cluster.Metadata);
+
+            Assert.AreSame(timeout, cached.InnerException);
+            cluster.Dispose();
+            Assert.AreEqual(1, disposeCount);
+        }
+
+        [Test]
+        public async Task NoHostAvailableInitializationFailureLeavesClientRoutesRecoverable()
+        {
+            var noHost = new NoHostAvailableException(
+                new Dictionary<IPEndPoint, Exception>());
+            var initAttempts = 0;
+            var disposeCount = 0;
+            ClientRoutesCache routesCache = null;
+            var controlConnection = new Mock<IControlConnection>();
+            controlConnection
+                .Setup(c => c.QueryUnpagedAsync(It.IsAny<string>(), It.IsAny<bool>()))
+                .ReturnsAsync(Array.Empty<IRow>());
+            controlConnection
+                .Setup(c => c.InitAsync())
+                .Returns(() => Interlocked.Increment(ref initAttempts) == 1
+                    ? Task.FromException(noHost)
+                    : Task.CompletedTask);
+            controlConnection
+                .SetupGet(c => c.Serializer)
+                .Returns(new SerializerManager(ProtocolVersion.V3));
+            controlConnection
+                .Setup(c => c.Dispose())
+                .Callback(() => Interlocked.Increment(ref disposeCount));
+            var configuration = CreateClientRoutesClusterConfiguration(
+                controlConnection.Object,
+                runtime => routesCache = runtime.Bind(controlConnection.Object));
+            var cluster = CreateCluster(configuration);
+
+            var thrown = Assert.Throws<NoHostAvailableException>(() => _ = cluster.Metadata);
+            Assert.AreSame(noHost, thrown);
+            await routesCache.RefreshAsync().ConfigureAwait(false);
+            Assert.AreEqual(0, disposeCount);
+
+            Assert.DoesNotThrow(() => _ = cluster.Metadata);
+            Assert.AreEqual(2, initAttempts);
+
+            cluster.Dispose();
+            Assert.AreEqual(1, disposeCount);
         }
 
         [Test]
@@ -270,6 +391,71 @@ namespace Cassandra.Tests
                 cluster.Dispose();
             }
             Assert.AreEqual(0, cluster.InternalRef.GetConnectedSessions().Count());
+        }
+
+        private static Configuration CreateClientRoutesClusterConfiguration(
+            IControlConnection controlConnection,
+            Action<ClientRoutesRuntime> initializeRuntime)
+        {
+            return new TestConfigurationBuilder
+            {
+                ControlConnectionFactory = CreateControlConnectionFactory(
+                    controlConnection,
+                    initializeRuntime),
+                Policies = new Cassandra.Policies(
+                    new RoundRobinPolicy(),
+                    new ConstantReconnectionPolicy(50),
+                    new DefaultRetryPolicy(),
+                    NoSpeculativeExecutionPolicy.Instance,
+                    new AtomicMonotonicTimestampGenerator(),
+                    null),
+                ClientRoutesOptions = new ClientRoutesOptions(
+                    new[] { new ClientRouteProxy("connection-a") },
+                    9042,
+                    false)
+            }.Build();
+        }
+
+        private static IControlConnectionFactory CreateControlConnectionFactory(
+            IControlConnection controlConnection,
+            Action<ClientRoutesRuntime> initializeRuntime = null)
+        {
+            var factory = new Mock<IControlConnectionFactory>();
+            factory
+                .Setup(f => f.Create(
+                    It.IsAny<IInternalCluster>(),
+                    It.IsAny<IProtocolEventDebouncer>(),
+                    It.IsAny<ProtocolVersion>(),
+                    It.IsAny<Configuration>(),
+                    It.IsAny<Metadata>(),
+                    It.IsAny<IEnumerable<IContactPoint>>()))
+                .Returns((
+                    IInternalCluster _,
+                    IProtocolEventDebouncer __,
+                    ProtocolVersion ___,
+                    Configuration configuration,
+                    Metadata ____,
+                    IEnumerable<IContactPoint> _____) =>
+                {
+                    initializeRuntime?.Invoke(configuration.ClientRoutesRuntime);
+                    return controlConnection;
+                });
+            return factory.Object;
+        }
+
+        private static Cluster CreateCluster(Configuration configuration)
+        {
+            var initializer = Mock.Of<IInitializer>();
+            Mock.Get(initializer)
+                .Setup(i => i.ContactPoints)
+                .Returns(new List<IPEndPoint>());
+            Mock.Get(initializer)
+                .Setup(i => i.GetConfiguration())
+                .Returns(configuration);
+            return Cluster.BuildFrom(
+                initializer,
+                new List<string> { "127.0.0.1" },
+                configuration);
         }
 
         internal class FakeHostDistanceLbp : ILoadBalancingPolicy

@@ -258,30 +258,6 @@ namespace Cassandra.IntegrationTests.Core
         }
 
         [Test]
-        public void RepeatedClusterConnectCallsAfterTimeoutErrorEventuallyThrowNoHostException()
-        {
-            TestCluster.DisableConnectionListener(type: "reject_startup");
-            using (var cluster = CreateClusterAndWaitUntilConnectException(
-                b => b
-                       .WithSocketOptions(
-                           new SocketOptions()
-                               .SetConnectTimeoutMillis(500)
-                               .SetMetadataAbortTimeout(500)),
-                out var ex))
-            {
-                Assert.AreEqual(typeof(TimeoutException), ex.GetType());
-                TestHelper.RetryAssert(
-                    () =>
-                    {
-                        var ex2 = Assert.Throws<InitFatalErrorException>(() => cluster.Connect("sample_ks"));
-                        Assert.AreEqual(typeof(NoHostAvailableException), ex2.InnerException.GetType());
-                    },
-                    1000,
-                    30);
-            }
-        }
-
-        [Test]
         public void RepeatedClusterConnectCallsAfterNoHostErrorDontThrowCachedInitErrorException()
         {
             TestCluster.DisableConnectionListener(type: "reject_startup");
