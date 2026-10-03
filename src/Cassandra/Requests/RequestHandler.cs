@@ -475,7 +475,7 @@ namespace Cassandra.Requests
                     // A socket exception on the current connection does not mean that all the pool is closed:
                     // Retry on the same host
                     return await RequestHandler.GetConnectionFromHostInternalAsync(
-                        host, distance, session, triedHosts, false, getKeyspaceFunc, routingKey).ConfigureAwait(false);
+                        host, distance, session, triedHosts, false, getKeyspaceFunc, routingKey, shardID).ConfigureAwait(false);
                 }
 
                 throw;
