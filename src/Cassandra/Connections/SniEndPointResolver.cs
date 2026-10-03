@@ -56,22 +56,31 @@ namespace Cassandra.Connections
         {
         }
 
-        public async Task<IConnectionEndPoint> GetConnectionShardAwareEndPointAsync(Host host, bool refreshCache, int shardAwarePort)
+        public async Task<IReadOnlyList<IConnectionEndPoint>> GetConnectionShardAwareEndPointsAsync(
+            Host host,
+            bool refreshCache,
+            int shardAwarePort)
         {
-            return new SniConnectionEndPoint(
-                await GetNextEndPointAsync(refreshCache).ConfigureAwait(false),
-                new IPEndPoint(IPAddress.Parse(host.Address.ToString().Split(':')[0]), shardAwarePort),
-                host.HostId.ToString("D"),
-                host.ContactPoint);
+            return new IConnectionEndPoint[]
+            {
+                new SniConnectionEndPoint(
+                    await GetNextEndPointAsync(refreshCache).ConfigureAwait(false),
+                    new IPEndPoint(host.Address.Address, shardAwarePort),
+                    host.HostId.ToString("D"),
+                    host.ContactPoint)
+            };
         }
 
-        public async Task<IConnectionEndPoint> GetConnectionEndPointAsync(Host host, bool refreshCache)
+        public async Task<IReadOnlyList<IConnectionEndPoint>> GetConnectionEndPointsAsync(Host host, bool refreshCache)
         {
-            return new SniConnectionEndPoint(
-                await GetNextEndPointAsync(refreshCache).ConfigureAwait(false),
-                host.Address,
-                host.HostId.ToString("D"),
-                host.ContactPoint);
+            return new IConnectionEndPoint[]
+            {
+                new SniConnectionEndPoint(
+                    await GetNextEndPointAsync(refreshCache).ConfigureAwait(false),
+                    host.Address,
+                    host.HostId.ToString("D"),
+                    host.ContactPoint)
+            };
         }
 
         public async Task<SniOptions> RefreshAsync(bool refreshSniOptions, bool refreshCache)

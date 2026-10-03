@@ -149,6 +149,8 @@ namespace Cassandra.Connections
             get { return Interlocked.Read(ref _disposed) > 0L; }
         }
 
+        public bool IsClosed => _isClosed;
+
         /// <summary>
         /// Gets the current keyspace.
         /// </summary>
@@ -468,21 +470,11 @@ namespace Cassandra.Connections
             {
                 CassandraEventResponse?.Invoke(this, eventResponse.CassandraEventArgs);
             }
-            catch (Exception ex) when (!Connection.IsFatalException(ex))
+            catch (Exception ex) when (!Utils.IsFatalException(ex))
             {
                 Connection.Logger.Error("Error while handling server event.", ex);
             }
             return TaskHelper.Completed;
-        }
-
-        private static bool IsFatalException(Exception ex)
-        {
-            return ex is OutOfMemoryException ||
-                   ex is StackOverflowException ||
-                   ex is ThreadAbortException ||
-                   ex is AccessViolationException ||
-                   ex is AppDomainUnloadedException ||
-                   ex is BadImageFormatException;
         }
 
         /// <summary>
@@ -573,7 +565,12 @@ namespace Cassandra.Connections
             var protocolVersion = Serializer.ProtocolVersion;
             if (shardID != -1)
             {
-                var localPort = PortAllocator.GetNextAvailablePort(shardCount, shardID, Options.LocalPortLow, Options.LocalPortHigh);
+                var localPort = PortAllocator.GetNextAvailablePort(
+                    shardCount,
+                    shardID,
+                    Options.LocalPortLow,
+                    Options.LocalPortHigh,
+                    EndPoint.SocketIpEndPoint.AddressFamily);
                 if (localPort == -1)
                 {
                     throw new SocketException((int)SocketError.NoData);

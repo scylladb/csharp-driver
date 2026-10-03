@@ -146,7 +146,10 @@ namespace Cassandra.Connections
 
             if (localPort != -1)
             {
-                var localEndPoint = new IPEndPoint(IPAddress.Any, localPort);
+                var localAddress = EndPoint.SocketIpEndPoint.AddressFamily == AddressFamily.InterNetworkV6
+                    ? IPAddress.IPv6Any
+                    : IPAddress.Any;
+                var localEndPoint = new IPEndPoint(localAddress, localPort);
                 _socket.Bind(localEndPoint);
             }
 
