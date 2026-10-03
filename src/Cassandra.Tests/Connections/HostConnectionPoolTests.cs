@@ -378,6 +378,40 @@ namespace Cassandra.Tests.Connections
             }
         }
 
+        [Test]
+        public async Task Should_PropagateFatalOptionalConnectionFailureDuringWarmup()
+        {
+            var failure = new OutOfMemoryException("fatal optional warmup connection failure");
+            var resolvedEndPoint = new FakeConnectionEndPoint("198.51.100.28", 9042);
+            var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            resolver.Setup(value => value.GetConnectionEndPointsAsync(It.IsAny<Host>(), It.IsAny<bool>()))
+                    .ReturnsAsync(new IConnectionEndPoint[] { resolvedEndPoint });
+            var createdConnections = 0;
+            var target = CreatePool(
+                res: resolver.Object,
+                connectionFactory: new FakeConnectionFactory(endPoint =>
+                {
+                    var attempt = Interlocked.Increment(ref createdConnections);
+                    return CreateConnection(endPoint, attempt == 2 ? failure : null).Object;
+                }),
+                coreConnections: 3,
+                reconnectionPolicy: new ConstantReconnectionPolicy(5000));
+
+            try
+            {
+                var ex = await Assert.ThrowsAsync<OutOfMemoryException>(
+                    () => target.Warmup());
+
+                Assert.AreSame(failure, ex);
+                Assert.AreEqual(2, Volatile.Read(ref createdConnections));
+                Assert.AreEqual(1, target.OpenConnections);
+            }
+            finally
+            {
+                target.Dispose();
+            }
+        }
+
         private HostConnectionPool CreatePool(
             IEndPointResolver res = null,
             IConnectionFactory connectionFactory = null,
