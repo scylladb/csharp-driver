@@ -23,12 +23,26 @@ using System.Net;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Threading;
 using Cassandra.Mapping;
 
 namespace Cassandra
 {
     internal static class Utils
     {
+        /// <summary>
+        /// Determines whether an exception indicates a process-level failure that must not be swallowed.
+        /// </summary>
+        public static bool IsFatalException(Exception ex)
+        {
+            return ex is OutOfMemoryException ||
+                   ex is StackOverflowException ||
+                   ex is ThreadAbortException ||
+                   ex is AccessViolationException ||
+                   ex is AppDomainUnloadedException ||
+                   ex is BadImageFormatException;
+        }
+
         /// <summary>
         /// Reads exactly the specified number of bytes from the stream.
         /// Throws an exception if the stream ends before reading all requested bytes.
