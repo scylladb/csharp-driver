@@ -4,7 +4,6 @@
     <TargetFrameworks Condition="'$(BuildTarget)' == ''">net9</TargetFrameworks>
     <TargetFrameworks Condition="'$(BuildTarget)' != 'all' And '$(BuildTarget)' != ''">$(BuildTarget)</TargetFrameworks>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <WarningsNotAsErrors>NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
     <PublicSign>false</PublicSign>
     <AssemblyName>Cassandra.Tests</AssemblyName>
     <AssemblyOriginatorKeyFile>../../build/scylladb.snk</AssemblyOriginatorKeyFile>
