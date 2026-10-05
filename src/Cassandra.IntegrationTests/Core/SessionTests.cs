@@ -22,6 +22,7 @@ using System.Threading;
 using System.Threading.Tasks;
 
 using Cassandra.IntegrationTests.TestBase;
+using Cassandra.IntegrationTests.TestClusterManagement;
 using Cassandra.SessionManagement;
 using Cassandra.Tests;
 
@@ -193,12 +194,11 @@ namespace Cassandra.IntegrationTests.Core
                 localSession1.Execute("SELECT * FROM system.local WHERE key='local'");
             }
 
-            Thread.Sleep(2000);
             var pool11 = localSession1.GetOrCreateConnectionPool(hosts1[0], HostDistance.Local);
             var pool12 = localSession1.GetOrCreateConnectionPool(hosts1[1], HostDistance.Local);
-            var expectedConnections1 = useShardAwareness ? 4 : 3;
-            Assert.That(pool11.OpenConnections, Is.EqualTo(expectedConnections1));
-            Assert.That(pool12.OpenConnections, Is.EqualTo(expectedConnections1));
+            var expectedConnections1 = useShardAwareness && TestClusterManager.IsScylla ? 4 : 3;
+            AssertPoolConnectionCount(pool11, hosts1[0], expectedConnections1);
+            AssertPoolConnectionCount(pool12, hosts1[1], expectedConnections1);
 
             var poolingOptions2 = new PoolingOptions().SetCoreConnectionsPerHost(HostDistance.Local, 1);
             if (!useShardAwareness)
@@ -219,13 +219,25 @@ namespace Cassandra.IntegrationTests.Core
                     localSession2.Execute("SELECT * FROM system.local WHERE key='local'");
                 }
 
-                Thread.Sleep(2000);
                 var pool21 = localSession2.GetOrCreateConnectionPool(hosts2[0], HostDistance.Local);
                 var pool22 = localSession2.GetOrCreateConnectionPool(hosts2[1], HostDistance.Local);
-                var expectedConnections2 = useShardAwareness ? 2 : 1;
-                Assert.That(pool21.OpenConnections, Is.EqualTo(expectedConnections2));
-                Assert.That(pool22.OpenConnections, Is.EqualTo(expectedConnections2));
+                var expectedConnections2 = useShardAwareness && TestClusterManager.IsScylla ? 2 : 1;
+                AssertPoolConnectionCount(pool21, hosts2[0], expectedConnections2);
+                AssertPoolConnectionCount(pool22, hosts2[1], expectedConnections2);
             }
+        }
+
+        private static void AssertPoolConnectionCount(
+            Cassandra.Connections.IHostConnectionPool pool, Host host, int expected)
+        {
+            TestHelper.RetryAssert(() =>
+            {
+                var connections = pool.ConnectionsSnapshot;
+                Assert.That(connections.Length, Is.EqualTo(expected),
+                    "Host " + host.Address + " pool has " + connections.Length + " open connection(s); " +
+                    "target=" + expected + ", shards=[" +
+                    string.Join(", ", connections.Select(connection => connection.ShardID)) + "]");
+            }, 200, 50);
         }
 
         /// <summary>

@@ -705,7 +705,7 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public void Warmup_Should_Succeed_When_The_Second_Connection_Can_Not_Be_Opened()
+        public async Task Warmup_Should_Recover_When_The_Second_Connection_Can_Not_Be_Opened()
         {
             _mock = GetPoolMock(null, GetConfig(4, 4, new ConstantReconnectionPolicy(200)));
             var openConnectionAttempts = 0;
@@ -721,8 +721,44 @@ namespace Cassandra.Tests
 
             var pool = _mock.Object;
             pool.SetDistance(HostDistance.Local);
-            Assert.DoesNotThrowAsync(async () => await pool.Warmup().ConfigureAwait(false));
+            await pool.Warmup().ConfigureAwait(false);
             Assert.AreEqual(2, Volatile.Read(ref openConnectionAttempts));
+            await TestHelper.WaitUntilAsync(() => pool.OpenConnections == 4, 50, 100).ConfigureAwait(false);
+            Assert.AreEqual(5, Volatile.Read(ref openConnectionAttempts));
+        }
+
+        [Test]
+        public async Task Warmup_Should_Recover_Missing_Shard_After_Secondary_Open_Fails()
+        {
+            const int shardCount = 4;
+            _mock = GetPoolMock(null, GetConfig(1, 1, new ConstantReconnectionPolicy(200)));
+            var openConnectionAttempts = 0;
+            var attemptedShards = new List<int>();
+            _mock
+                .Setup(p => p.DoCreateAndOpen(It.IsAny<bool>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>()))
+                .Returns<bool, int, int, int>((isReconnection, shardId, shardAwarePort, count) =>
+                {
+                    attemptedShards.Add(shardId);
+                    if (Interlocked.Increment(ref openConnectionAttempts) == 2)
+                    {
+                        throw new SocketException();
+                    }
+                    return TaskHelper.ToTask(GetShardedConnectionMock(shardId == -1 ? 0 : shardId, shardCount));
+                });
+
+            var pool = _mock.Object;
+            pool.SetDistance(HostDistance.Local);
+            await pool.Warmup().ConfigureAwait(false);
+
+            Assert.AreEqual(1, pool.OpenConnections);
+            await TestHelper.WaitUntilAsync(() => pool.OpenConnections == shardCount, 50, 100).ConfigureAwait(false);
+            Assert.AreEqual(shardCount + 1, Volatile.Read(ref openConnectionAttempts));
+            Assert.AreEqual(2, attemptedShards.Count(shardId => shardId == attemptedShards[1]),
+                "The failed shard should eventually be retried");
+            for (var shardId = 0; shardId < shardCount; shardId++)
+            {
+                Assert.AreEqual(1, pool.ConnectionsSnapshot.Count(c => c.ShardID == shardId));
+            }
         }
 
         [Test]
