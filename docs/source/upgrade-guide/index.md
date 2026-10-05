@@ -66,6 +66,10 @@ The target-framework transition does not remove any public API signatures from
 the `3.22.0.4` assemblies. This includes the protected exception-serialization
 constructors, which remain available for binary and source compatibility.
 
+Version 4 builds use the C# language version supplied by `net10.0`, without a
+project-level `LangVersion` override. The `3.22` branch retains its C# 7.1
+compatibility pins. This changes the build language policy, not the public API.
+
 ### App.Metrics dependency
 
 The `ScyllaDBCSharpDriver.AppMetrics` package now depends on
