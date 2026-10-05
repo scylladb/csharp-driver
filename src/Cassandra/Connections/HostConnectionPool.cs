@@ -1356,8 +1356,15 @@ namespace Cassandra.Connections
                 {
                     await CreateOpenConnection(false, false).ConfigureAwait(false);
                 }
-                catch
+                catch (Exception ex)
                 {
+                    HostConnectionPool.Logger.Warning(
+                        "Pool #{0} for host {1} failed to open a warmup connection: {2} of {3} open, " +
+                        "attempted shard: {4}, shard count: {5}, error: {6}",
+                        GetHashCode(), _host.Address, _connections.Count, _expectedConnectionLength,
+                        shardingInfo == null ? "unknown" : lastAttemptedShard.ToString(),
+                        shardingInfo == null ? "unknown" : shardingInfo.ScyllaNrShards.ToString(), ex);
+                    OnConnectionClosing();
                     break;
                 }
             }
