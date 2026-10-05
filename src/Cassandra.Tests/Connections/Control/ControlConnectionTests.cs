@@ -21,12 +21,15 @@ using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading;
 using System.Threading.Tasks;
+using Cassandra.Responses;
 using Cassandra.Connections;
 using Cassandra.Connections.Control;
 using Cassandra.ProtocolEvents;
 using Cassandra.Serialization;
 using Cassandra.SessionManagement;
+using Cassandra.Tasks;
 using Cassandra.Tests.Connections.TestHelpers;
 using Cassandra.Tests.MetadataHelpers.TestHelpers;
 using Moq;
@@ -158,6 +161,102 @@ namespace Cassandra.Tests.Connections.Control
             }
 
             Assert.AreEqual(-1, requestHandler.Requests.Single().QueryProtocolOptions.PageSize);
+        }
+
+        [Test]
+        public async Task Should_CoalesceTwoConcurrentReconnectCallers()
+        {
+            await AssertConcurrentReconnectsShareOwner(2).ConfigureAwait(false);
+        }
+
+        [TestCase(3)]
+        [TestCase(4)]
+        public async Task Should_NotLetReconnectWaitersBecomeOwners(int callerCount)
+        {
+            await AssertConcurrentReconnectsShareOwner(callerCount).ConfigureAwait(false);
+        }
+
+        [Test]
+        public async Task Should_NotLetFailedReconnectOwnerScheduleOverNewSuccessfulOwner()
+        {
+            var retrySchedulingStarted = NewSignal();
+            var releaseRetryScheduling = NewSignal();
+            var schedule = new Mock<IReconnectionSchedule>(MockBehavior.Strict);
+            schedule.Setup(value => value.NextDelayMs()).Returns(() =>
+            {
+                retrySchedulingStarted.TrySetResult(true);
+                releaseRetryScheduling.Task.GetAwaiter().GetResult();
+                return 500L;
+            });
+            var reconnectionPolicy = new Mock<IReconnectionPolicy>(MockBehavior.Strict);
+            reconnectionPolicy.Setup(value => value.NewSchedule()).Returns(schedule.Object);
+            var reconnectFailure = new SocketException((int)SocketError.ConnectionRefused);
+            var createdConnectionCount = 0;
+            var allowReconnectSuccess = false;
+            var connectionFactory = new FakeConnectionFactory(endPoint =>
+            {
+                var connectionNumber = Interlocked.Increment(ref createdConnectionCount);
+                var connection = new Mock<IConnection>();
+                connection.SetupGet(value => value.EndPoint).Returns(endPoint);
+                if (connectionNumber > 1 && !Volatile.Read(ref allowReconnectSuccess))
+                {
+                    connection.Setup(value => value.Open()).ThrowsAsync(reconnectFailure);
+                }
+                return connection.Object;
+            });
+            var cluster = new Mock<IInternalCluster>();
+            var loadBalancingPolicy = new TestHelper.CustomLoadBalancingPolicy();
+            var createResult = NewInstance(
+                cluster: cluster.Object,
+                configBuilderAct: builder =>
+                {
+                    builder.ConnectionFactory = connectionFactory;
+                    builder.Policies = new Cassandra.Policies(
+                        loadBalancingPolicy,
+                        reconnectionPolicy.Object,
+                        new DefaultRetryPolicy());
+                });
+
+            try
+            {
+                cluster.Setup(value => value.AllHosts()).Returns(() => createResult.Metadata.AllHosts());
+                cluster.Setup(value => value.AnyOpenConnections(It.IsAny<Host>())).Returns(true);
+                cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+                loadBalancingPolicy.Initialize(cluster.Object);
+                await createResult.ControlConnection.InitAsync().ConfigureAwait(false);
+
+                var failedGeneration = new List<Task<IConnection>>
+                {
+                    Task.Run(() => createResult.ControlConnection.Reconnect(null))
+                };
+                await retrySchedulingStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                for (var i = 1; i < 4; i++)
+                {
+                    failedGeneration.Add(createResult.ControlConnection.Reconnect(null));
+                }
+                Assert.IsTrue(failedGeneration.All(task => !task.IsCompleted));
+
+                releaseRetryScheduling.TrySetResult(true);
+                foreach (var reconnect in failedGeneration)
+                {
+                    var ex = Assert.ThrowsAsync<NoHostAvailableException>(async () =>
+                        await reconnect.ConfigureAwait(false));
+                    Assert.AreSame(reconnectFailure, ex.Errors.Values.Single());
+                }
+
+                Volatile.Write(ref allowReconnectSuccess, true);
+                await createResult.ControlConnection.Reconnect(null).ConfigureAwait(false);
+                var createdAfterSuccessfulReconnect = Volatile.Read(ref createdConnectionCount);
+                await Task.Delay(750).ConfigureAwait(false);
+
+                Assert.AreEqual(createdAfterSuccessfulReconnect, Volatile.Read(ref createdConnectionCount));
+                reconnectionPolicy.Verify(value => value.NewSchedule(), Times.Exactly(2));
+            }
+            finally
+            {
+                releaseRetryScheduling.TrySetResult(true);
+                createResult.ControlConnection.Dispose();
+            }
         }
 
         [Test]
@@ -715,6 +814,81 @@ namespace Cassandra.Tests.Connections.Control
                         _localhost
                     })
             };
+        }
+
+        private async Task AssertConcurrentReconnectsShareOwner(int callerCount)
+        {
+            var reconnectOpenStarted = NewSignal();
+            var releaseReconnectOpen = NewSignal();
+            var connections = new ConcurrentQueue<Mock<IConnection>>();
+            var createdConnectionCount = 0;
+            var connectionFactory = new FakeConnectionFactory(endPoint =>
+            {
+                var connectionNumber = Interlocked.Increment(ref createdConnectionCount);
+                var connection = new Mock<IConnection>();
+                connection.SetupGet(value => value.EndPoint).Returns(endPoint);
+                connection.Setup(value => value.Open()).Returns(async () =>
+                {
+                    if (connectionNumber == 2)
+                    {
+                        reconnectOpenStarted.TrySetResult(true);
+                        await releaseReconnectOpen.Task.ConfigureAwait(false);
+                    }
+                    return (Response)null;
+                });
+                connections.Enqueue(connection);
+                return connection.Object;
+            });
+            var cluster = new Mock<IInternalCluster>();
+            var loadBalancingPolicy = new TestHelper.CustomLoadBalancingPolicy();
+            var createResult = NewInstance(
+                cluster: cluster.Object,
+                configBuilderAct: builder =>
+                {
+                    builder.ConnectionFactory = connectionFactory;
+                    builder.Policies = new Cassandra.Policies(
+                        loadBalancingPolicy,
+                        new ConstantReconnectionPolicy(1000),
+                        new DefaultRetryPolicy());
+                });
+
+            try
+            {
+                cluster.Setup(value => value.AllHosts()).Returns(() => createResult.Metadata.AllHosts());
+                cluster.Setup(value => value.AnyOpenConnections(It.IsAny<Host>())).Returns(true);
+                cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+                loadBalancingPolicy.Initialize(cluster.Object);
+                await createResult.ControlConnection.InitAsync().ConfigureAwait(false);
+                var initialConnection = connections.Single().Object;
+
+                var reconnects = new List<Task<IConnection>>
+                {
+                    createResult.ControlConnection.Reconnect(null)
+                };
+                await reconnectOpenStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                for (var i = 1; i < callerCount; i++)
+                {
+                    reconnects.Add(createResult.ControlConnection.Reconnect(null));
+                }
+
+                Assert.IsTrue(reconnects.All(task => !task.IsCompleted));
+                releaseReconnectOpen.TrySetResult(true);
+                var replacedConnections = await Task.WhenAll(reconnects).ConfigureAwait(false);
+
+                Assert.AreEqual(2, Volatile.Read(ref createdConnectionCount));
+                Assert.IsTrue(replacedConnections.All(connection => ReferenceEquals(connection, initialConnection)));
+                Mock.Get(initialConnection).Verify(value => value.Dispose(), Times.Once);
+            }
+            finally
+            {
+                releaseReconnectOpen.TrySetResult(true);
+                createResult.ControlConnection.Dispose();
+            }
+        }
+
+        private static TaskCompletionSource<bool> NewSignal()
+        {
+            return new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
         private class ControlConnectionCreateResult

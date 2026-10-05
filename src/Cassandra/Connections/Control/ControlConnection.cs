@@ -55,6 +55,7 @@ namespace Cassandra.Connections.Control
         private readonly IEnumerable<IContactPoint> _contactPoints;
         private readonly ITopologyRefresher _topologyRefresher;
         private readonly ISupportedOptionsInitializer _supportedOptionsInitializer;
+        private readonly SemaphoreSlim _controlLifecycleLock = new SemaphoreSlim(1, 1);
 
         private long _state = ControlConnection.StateRunning;
 
@@ -292,6 +293,19 @@ namespace Cassandra.Connections.Control
         /// <exception cref="NoHostAvailableException" />
         /// <exception cref="DriverInternalError" />
         private async Task Connect(bool isInitializing)
+        {
+            await _controlLifecycleLock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                await ConnectUnsafe(isInitializing).ConfigureAwait(false);
+            }
+            finally
+            {
+                _controlLifecycleLock.Release();
+            }
+        }
+
+        private async Task ConnectUnsafe(bool isInitializing)
         {
             if (isInitializing)
             {
@@ -752,11 +766,16 @@ namespace Cassandra.Connections.Control
 
         internal async Task<IConnection> Reconnect(IConnection closedConnection)
         {
-            var tcs = new TaskCompletionSource<IConnection>();
-            var currentTask = Interlocked.CompareExchange(ref _reconnectTask, tcs.Task, null);
-            if (currentTask != null)
+            while (true)
             {
-                // If there is another thread reconnecting, use the same task
+                var tcs = new TaskCompletionSource<IConnection>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var currentTask = Interlocked.CompareExchange(ref _reconnectTask, tcs.Task, null);
+                if (currentTask == null)
+                {
+                    return await ReconnectAsOwner(tcs).ConfigureAwait(false);
+                }
+
+                // If there is another thread reconnecting, use the same task.
                 var oldConnectionInPreviousReconnect = await currentTask.ConfigureAwait(false);
 
                 // if his reconnect was triggered by a connection closed event
@@ -765,71 +784,114 @@ namespace Cassandra.Connections.Control
                 if (closedConnection != null && !ReferenceEquals(closedConnection, oldConnectionInPreviousReconnect) && (_connection?.IsDisposed ?? true))
                 {
                     ControlConnection.Logger.Info("Connection was closed while reconnecting, triggering another reconnection.");
-                    return await Reconnect(null).ConfigureAwait(false);
+                    closedConnection = null;
+                    continue;
                 }
+
+                return oldConnectionInPreviousReconnect;
             }
-            var oldConnection = _connection;
-            var oldHost = _host;
-            Unsubscribe(oldHost, oldConnection);
+        }
+
+        private async Task<IConnection> ReconnectAsOwner(TaskCompletionSource<IConnection> tcs)
+        {
+            IConnection oldConnection = null;
             try
             {
-                ControlConnection.Logger.Info("Trying to reconnect the ControlConnection");
-                await Connect(false).ConfigureAwait(false);
+                await _controlLifecycleLock.WaitAsync().ConfigureAwait(false);
+                try
+                {
+                    if (IsShutdown)
+                    {
+                        throw new ObjectDisposedException(nameof(ControlConnection));
+                    }
+
+                    // Capture and retire the connection protected by the same lifecycle gate that
+                    // replaces it. A snapshot taken before waiting can refer to an older lifecycle.
+                    oldConnection = _connection;
+                    var oldHost = _host;
+                    Unsubscribe(oldHost, oldConnection);
+                    try
+                    {
+                        ControlConnection.Logger.Info("Trying to reconnect the ControlConnection");
+                        await ConnectUnsafe(false).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        if (!ReferenceEquals(_connection, oldConnection) || IsShutdown)
+                        {
+                            oldConnection?.Dispose();
+                        }
+                    }
+                }
+                finally
+                {
+                    _controlLifecycleLock.Release();
+                }
             }
             catch (Exception ex)
             {
-                // It failed to reconnect, schedule the timer for next reconnection and let go.
-                var _ = Interlocked.Exchange(ref _reconnectTask, null);
+                // Publish the retry before releasing ownership. A newer owner can then cancel this
+                // exact timer on success, while an older generation can never arm a timer after a
+                // newer connection has already been published.
+                ScheduleNextReconnectIfRunning();
+                var _ = Interlocked.CompareExchange(ref _reconnectTask, null, tcs.Task);
                 tcs.TrySetException(ex);
-                var delay = _reconnectionSchedule.NextDelayMs();
-                ControlConnection.Logger.Error("ControlConnection was not able to reconnect: " + ex);
-                try
-                {
-                    _reconnectionTimer.Change((int)delay, Timeout.Infinite);
-                }
-                catch (ObjectDisposedException)
-                {
-                    //Control connection is being disposed
-                }
 
                 // It will throw the same exception that it was set in the TCS
-                throw;
-            }
-            finally
-            {
-                if (_connection != oldConnection)
-                {
-                    oldConnection?.Dispose();
-                }
+                return await tcs.Task.ConfigureAwait(false);
             }
 
             if (IsShutdown)
             {
+                var _ = Interlocked.CompareExchange(ref _reconnectTask, null, tcs.Task);
                 tcs.TrySetResult(null);
                 return await tcs.Task.ConfigureAwait(false);
             }
             try
             {
+                CancelScheduledReconnect();
                 _reconnectionSchedule = _reconnectionPolicy.NewSchedule();
-                var _ = Interlocked.Exchange(ref _reconnectTask, null);
+                var _ = Interlocked.CompareExchange(ref _reconnectTask, null, tcs.Task);
                 tcs.TrySetResult(oldConnection);
                 ControlConnection.Logger.Info("ControlConnection reconnected to host {0}", _host.Address);
             }
             catch (Exception ex)
             {
-                var _ = Interlocked.Exchange(ref _reconnectTask, null);
+                ScheduleNextReconnectIfRunning();
+                var _ = Interlocked.CompareExchange(ref _reconnectTask, null, tcs.Task);
                 ControlConnection.Logger.Error("There was an error when trying to refresh the ControlConnection", ex);
                 tcs.TrySetException(ex);
-                try
-                {
-                    _reconnectionTimer.Change((int)_reconnectionSchedule.NextDelayMs(), Timeout.Infinite);
-                }
-                catch (ObjectDisposedException)
-                {
-                    //Control connection is being disposed
-                }
             }
             return await tcs.Task.ConfigureAwait(false);
+        }
+
+        private void ScheduleNextReconnectIfRunning()
+        {
+            if (IsShutdown)
+            {
+                return;
+            }
+
+            try
+            {
+                _reconnectionTimer.Change((int)_reconnectionSchedule.NextDelayMs(), Timeout.Infinite);
+            }
+            catch (ObjectDisposedException)
+            {
+                // Control connection is being disposed.
+            }
+        }
+
+        private void CancelScheduledReconnect()
+        {
+            try
+            {
+                _reconnectionTimer.Change(Timeout.Infinite, Timeout.Infinite);
+            }
+            catch (ObjectDisposedException)
+            {
+                // Control connection is being disposed.
+            }
         }
 
         private async Task Refresh()
