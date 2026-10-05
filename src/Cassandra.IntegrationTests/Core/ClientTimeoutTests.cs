@@ -171,7 +171,7 @@ namespace Cassandra.IntegrationTests.Core
                 simulacronCluster.PrimeFluent(
                     b => b.WhenQuery(cql)
                           .ThenRowsSuccess(new[] { ("key", DataType.Ascii) }, rows => rows.WithRow("123"))
-                          .WithDelayInMs(14000));
+                          .WithDelayInMs(18000));
 
                 using (var cluster = ClusterBuilder().AddContactPoint(simulacronCluster.InitialContactPoint).WithSocketOptions(socketOptions).Build())
                 {

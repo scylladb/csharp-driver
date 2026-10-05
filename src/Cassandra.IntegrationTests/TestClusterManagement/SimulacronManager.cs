@@ -53,7 +53,7 @@ namespace Cassandra.IntegrationTests.TestClusterManagement
         private static int _workerSlot;
 
         public static SimulacronManager InstancePeersV2Tests { get; } =
-            new SimulacronManager(8298, "127.0.200.101", 9011);
+            new SimulacronManager(8298, "127.0.0.101", 9011);
 
         public Uri BaseAddress => new Uri($"http://127.0.0.1:{HttpPort}");
 
