@@ -53,6 +53,8 @@ namespace Cassandra.IntegrationTests.Core
             _session.ChangeKeyspace(KeyspaceName);
         }
 
+        // NUnit 5 deprecates Order; preserve existing cluster-test execution order.
+#pragma warning disable CS0618
         // ordering for efficiency, it's not required
         [Test, Order(1)]
         public async Task Should_CheckSchemaAgreementReturnTrueAndSchemaInAgreementReturnTrue_When_AllNodesUp()
@@ -111,6 +113,8 @@ namespace Cassandra.IntegrationTests.Core
             Assert.IsFalse(await _cluster.Metadata.CheckSchemaAgreementAsync().ConfigureAwait(false));
         }
 
+
+#pragma warning restore CS0618
         public override void OneTimeTearDown()
         {
             _cluster.Dispose();

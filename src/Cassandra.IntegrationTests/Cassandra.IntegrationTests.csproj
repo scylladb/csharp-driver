@@ -18,13 +18,13 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="App.Metrics" Version="3.2.0" />
+    <PackageReference Include="App.Metrics" Version="4.3.0" />
     <PackageReference Include="OpenTelemetry.Exporter.InMemory" Version="1.19.1" />
     <PackageReference Include="SSH.NET" Version="2026.0.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
     <PackageReference Include="Moq" Version="4.21.0" />
-    <PackageReference Include="NUnit" Version="4.5.0" />
+    <PackageReference Include="NUnit" Version="5.0.0" />
     <PackageReference Include="NUnit3TestAdapter" Version="6.3.0" />
   </ItemGroup>
   <ItemGroup>

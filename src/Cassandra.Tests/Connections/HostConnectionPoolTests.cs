@@ -32,7 +32,7 @@ using Cassandra.Tests.Connections.TestHelpers;
 using Moq;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
-using CollectionAssert = NUnit.Framework.Legacy.CollectionAssert;
+using CollectionAssert = NUnit.Framework.CollectionAssert;
 
 namespace Cassandra.Tests.Connections
 {
@@ -158,7 +158,7 @@ namespace Cassandra.Tests.Connections
         }
 
         [Test]
-        public void Should_NormalizeLastNonSocketFailureAndRetainSupersededFailure()
+        public async Task Should_NormalizeLastNonSocketFailureAndRetainSupersededFailure()
         {
             var firstEndPoint = new FakeConnectionEndPoint("198.51.100.3", 9042);
             var secondEndPoint = new FakeConnectionEndPoint("198.51.100.4", 9042);
@@ -175,7 +175,7 @@ namespace Cassandra.Tests.Connections
             resolver.Setup(r => r.GetConnectionEndPointsAsync(_host, false))
                     .ReturnsAsync(new IConnectionEndPoint[] { firstEndPoint, secondEndPoint });
 
-            var failure = Assert.ThrowsAsync<ConnectionFailure>(async () =>
+            var failure = await Assert.ThrowsAsync<ConnectionFailure>(async () =>
                 await target.DoCreateAndOpen(false).ConfigureAwait(false));
             var ex = new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>
             {
@@ -190,7 +190,7 @@ namespace Cassandra.Tests.Connections
         }
 
         [Test]
-        public void Should_SurfaceNonSocketFailure_WhenLaterCandidateFailsWithSocketError()
+        public async Task Should_SurfaceNonSocketFailure_WhenLaterCandidateFailsWithSocketError()
         {
             var firstEndPoint = new FakeConnectionEndPoint("198.51.100.5", 9042);
             var secondEndPoint = new FakeConnectionEndPoint("198.51.100.6", 9042);
@@ -204,7 +204,7 @@ namespace Cassandra.Tests.Connections
             resolver.Setup(r => r.GetConnectionEndPointsAsync(_host, false))
                     .ReturnsAsync(new IConnectionEndPoint[] { firstEndPoint, secondEndPoint });
 
-            var failure = Assert.ThrowsAsync<ConnectionFailure>(async () =>
+            var failure = await Assert.ThrowsAsync<ConnectionFailure>(async () =>
                 await target.DoCreateAndOpen(false).ConfigureAwait(false));
             var ex = new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>
             {
@@ -217,7 +217,7 @@ namespace Cassandra.Tests.Connections
         }
 
         [Test]
-        public void Should_RetainResolutionAndConnectionFailuresTogether()
+        public async Task Should_RetainResolutionAndConnectionFailuresTogether()
         {
             var resolutionFailure = new InvalidOperationException("DNS failed");
             var connectionFailure = new AuthenticationException("bad credentials");
@@ -245,7 +245,7 @@ namespace Cassandra.Tests.Connections
                 resolver.Object,
                 new FakeConnectionFactory((IConnectionEndPoint _) => connection.Object));
 
-            var failure = Assert.ThrowsAsync<ConnectionFailure>(
+            var failure = await Assert.ThrowsAsync<ConnectionFailure>(
                 () => target.DoCreateAndOpen(false));
             var exception = new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>
             {
@@ -331,7 +331,7 @@ namespace Cassandra.Tests.Connections
         }
 
         [Test]
-        public void Should_RemovePublishedConnectionWhenFatalRecoveryCallbackThrows()
+        public async Task Should_RemovePublishedConnectionWhenFatalRecoveryCallbackThrows()
         {
             var resolutionFailure = new InvalidOperationException("resolution failed");
             var callbackFailure = new OutOfMemoryException("diagnostic callback failed fatally");
@@ -364,7 +364,7 @@ namespace Cassandra.Tests.Connections
 
             try
             {
-                var actual = Assert.ThrowsAsync<OutOfMemoryException>(
+                var actual = await Assert.ThrowsAsync<OutOfMemoryException>(
                     () => target.BorrowConnectionAsync());
 
                 Assert.AreSame(callbackFailure, actual);

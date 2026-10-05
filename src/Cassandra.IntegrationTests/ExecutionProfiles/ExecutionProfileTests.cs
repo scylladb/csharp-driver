@@ -48,7 +48,7 @@ namespace Cassandra.IntegrationTests.ExecutionProfiles
         [Test]
         [TestCase(true)]
         [TestCase(false)]
-        public void Should_UseDerivedProfileConsistency_When_DerivedProfileIsProvided(bool async)
+        public async Task Should_UseDerivedProfileConsistency_When_DerivedProfileIsProvided(bool async)
         {
             using (var cluster =
                 ClusterBuilder()
@@ -69,7 +69,7 @@ namespace Cassandra.IntegrationTests.ExecutionProfiles
                           .ThenUnavailable("unavailable", (int)ConsistencyLevel.Two, 3, 2));
 
                 var exception = async
-                    ? Assert.ThrowsAsync<UnavailableException>(() => session.ExecuteAsync(new SimpleStatement("SELECT * from test.test"), "read"))
+                    ? await Assert.ThrowsAsync<UnavailableException>(() => session.ExecuteAsync(new SimpleStatement("SELECT * from test.test"), "read"))
                     : Assert.Throws<UnavailableException>(() => session.Execute("SELECT * from test.test", "read"));
             }
         }
@@ -142,7 +142,7 @@ namespace Cassandra.IntegrationTests.ExecutionProfiles
                 Assert.AreEqual("test10", rows[0].GetValue<string>("text"));
                 Assert.AreEqual("test60", rows[1].GetValue<string>("text"));
                 var exception = async
-                    ? Assert.ThrowsAsync<UnavailableException>(() => session.ExecuteAsync(new SimpleStatement("SELECT * from test.test"), "read"))
+                    ? await Assert.ThrowsAsync<UnavailableException>(() => session.ExecuteAsync(new SimpleStatement("SELECT * from test.test"), "read"))
                     : Assert.Throws<UnavailableException>(() => session.Execute("SELECT * from test.test", "read"));
             }
         }
@@ -188,7 +188,7 @@ namespace Cassandra.IntegrationTests.ExecutionProfiles
                 Assert.AreEqual("test12", rows[0].GetValue<string>("text"));
                 Assert.AreEqual("test62", rows[1].GetValue<string>("text"));
                 var exception = async
-                    ? Assert.ThrowsAsync<UnavailableException>(() => session.ExecuteAsync(new SimpleStatement("SELECT * from test.test")))
+                    ? await Assert.ThrowsAsync<UnavailableException>(() => session.ExecuteAsync(new SimpleStatement("SELECT * from test.test")))
                     : Assert.Throws<UnavailableException>(() => session.Execute("SELECT * from test.test"));
             }
         }

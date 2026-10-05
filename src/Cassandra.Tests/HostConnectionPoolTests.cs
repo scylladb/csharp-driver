@@ -37,7 +37,7 @@ using Moq;
 
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
-using CollectionAssert = NUnit.Framework.Legacy.CollectionAssert;
+using CollectionAssert = NUnit.Framework.CollectionAssert;
 
 // ReSharper disable AccessToModifiedClosure
 
@@ -684,7 +684,7 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public void Warmup_Should_Throw_When_The_First_Connection_Can_Not_Be_Opened()
+        public async Task Warmup_Should_Throw_When_The_First_Connection_Can_Not_Be_Opened()
         {
             _mock = GetPoolMock(null, GetConfig(4, 4, new ConstantReconnectionPolicy(200)));
             var openConnectionAttempts = 0;
@@ -700,12 +700,12 @@ namespace Cassandra.Tests
 
             var pool = _mock.Object;
             pool.SetDistance(HostDistance.Local);
-            Assert.ThrowsAsync<SocketException>(async () => await pool.Warmup().ConfigureAwait(false));
+            await Assert.ThrowsAsync<SocketException>(async () => await pool.Warmup().ConfigureAwait(false));
             Assert.AreEqual(1, Volatile.Read(ref openConnectionAttempts));
         }
 
         [Test]
-        public void Warmup_Should_Succeed_When_The_Second_Connection_Can_Not_Be_Opened()
+        public async Task Warmup_Should_Succeed_When_The_Second_Connection_Can_Not_Be_Opened()
         {
             _mock = GetPoolMock(null, GetConfig(4, 4, new ConstantReconnectionPolicy(200)));
             var openConnectionAttempts = 0;
@@ -721,12 +721,12 @@ namespace Cassandra.Tests
 
             var pool = _mock.Object;
             pool.SetDistance(HostDistance.Local);
-            Assert.DoesNotThrowAsync(async () => await pool.Warmup().ConfigureAwait(false));
+            await Assert.DoesNotThrowAsync(async () => await pool.Warmup().ConfigureAwait(false));
             Assert.AreEqual(2, Volatile.Read(ref openConnectionAttempts));
         }
 
         [Test]
-        public void Warmup_Should_Succeed_When_All_Connections_Can_Be_Opened()
+        public async Task Warmup_Should_Succeed_When_All_Connections_Can_Be_Opened()
         {
             _mock = GetPoolMock(null, GetConfig(4, 4, new ConstantReconnectionPolicy(200)));
             var openConnectionAttempts = 0;
@@ -738,7 +738,7 @@ namespace Cassandra.Tests
 
             var pool = _mock.Object;
             pool.SetDistance(HostDistance.Local);
-            Assert.DoesNotThrowAsync(async () => await pool.Warmup().ConfigureAwait(false));
+            await Assert.DoesNotThrowAsync(async () => await pool.Warmup().ConfigureAwait(false));
             Assert.AreEqual(4, Volatile.Read(ref openConnectionAttempts));
         }
     }

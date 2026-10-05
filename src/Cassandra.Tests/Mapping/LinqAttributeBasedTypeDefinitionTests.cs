@@ -16,7 +16,7 @@
 
 using System;
 using Cassandra.Data.Linq;
-using CollectionAssert = NUnit.Framework.Legacy.CollectionAssert;
+using CollectionAssert = NUnit.Framework.CollectionAssert;
 using NUnit.Framework;
 using NUnit.Framework.Legacy;
 using SortOrder = Cassandra.Mapping.SortOrder;

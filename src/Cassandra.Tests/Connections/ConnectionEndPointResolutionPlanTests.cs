@@ -23,7 +23,7 @@ using Cassandra.Connections;
 using Moq;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
-using CollectionAssert = NUnit.Framework.Legacy.CollectionAssert;
+using CollectionAssert = NUnit.Framework.CollectionAssert;
 
 namespace Cassandra.Tests.Connections
 {
@@ -98,7 +98,7 @@ namespace Cassandra.Tests.Connections
         }
 
         [Test]
-        public void Should_NotNotifyFailedSteps_WhenAllStepsFail()
+        public async Task Should_NotNotifyFailedSteps_WhenAllStepsFail()
         {
             var firstFailure = new InvalidOperationException("first failed");
             var secondFailure = new ArgumentException("second failed");
@@ -117,7 +117,7 @@ namespace Cassandra.Tests.Connections
                     return terminalFailure;
                 });
 
-            var actual = Assert.ThrowsAsync<DriverException>(async () =>
+            var actual = await Assert.ThrowsAsync<DriverException>(async () =>
                 await target.ResolveNextAsync().ConfigureAwait(false));
 
             Assert.AreSame(terminalFailure, actual);
@@ -126,7 +126,7 @@ namespace Cassandra.Tests.Connections
         }
 
         [Test]
-        public void Should_PropagateFatalFailureWithoutCallbackOrLaterResolution()
+        public async Task Should_PropagateFatalFailureWithoutCallbackOrLaterResolution()
         {
             var fatalFailure = new OutOfMemoryException("fatal");
             var recovered = new List<Exception>();
@@ -148,7 +148,7 @@ namespace Cassandra.Tests.Connections
                     return new DriverException("nothing resolved");
                 });
 
-            var actual = Assert.ThrowsAsync<OutOfMemoryException>(async () =>
+            var actual = await Assert.ThrowsAsync<OutOfMemoryException>(async () =>
                 await target.ResolveNextAsync().ConfigureAwait(false));
 
             Assert.AreSame(fatalFailure, actual);
@@ -158,7 +158,7 @@ namespace Cassandra.Tests.Connections
         }
 
         [Test]
-        public void Should_RetainEarlierRecoverableFailureWhenLaterResolutionFailsFatally()
+        public async Task Should_RetainEarlierRecoverableFailureWhenLaterResolutionFailsFatally()
         {
             var recoveredFailure = new InvalidOperationException("recovered before fatal");
             var fatalFailure = new OutOfMemoryException("fatal");
@@ -173,7 +173,7 @@ namespace Cassandra.Tests.Connections
                 },
                 errors => new DriverException("nothing resolved"));
 
-            var actual = Assert.ThrowsAsync<OutOfMemoryException>(async () =>
+            var actual = await Assert.ThrowsAsync<OutOfMemoryException>(async () =>
                 await target.ResolveNextAsync().ConfigureAwait(false));
 
             Assert.AreSame(fatalFailure, actual);

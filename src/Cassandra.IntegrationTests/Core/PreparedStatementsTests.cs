@@ -22,7 +22,7 @@ using System.Threading.Tasks;
 using Cassandra.IntegrationTests.TestClusterManagement;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
-using CollectionAssert = NUnit.Framework.Legacy.CollectionAssert;
+using CollectionAssert = NUnit.Framework.CollectionAssert;
 using System.Net;
 using System.Collections;
 using System.Threading;

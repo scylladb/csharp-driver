@@ -17,8 +17,8 @@
 using Cassandra.IntegrationTests.TestClusterManagement;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
-using StringAssert = NUnit.Framework.Legacy.StringAssert;
-using CollectionAssert = NUnit.Framework.Legacy.CollectionAssert;
+using StringAssert = NUnit.Framework.StringAssert;
+using CollectionAssert = NUnit.Framework.CollectionAssert;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -713,7 +713,7 @@ namespace Cassandra.IntegrationTests.Core
                 await Task.Delay(1000).ConfigureAwait(false);
 
                 //A new call to write will be called back immediately with an exception
-                Assert.ThrowsAsync<SocketException>(async () => await Query(connection, "SELECT * FROM system.local WHERE key='local'").ConfigureAwait(false));
+                await Assert.ThrowsAsync<SocketException>(async () => await Query(connection, "SELECT * FROM system.local WHERE key='local'").ConfigureAwait(false));
             }
         }
 

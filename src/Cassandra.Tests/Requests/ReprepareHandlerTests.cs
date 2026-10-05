@@ -33,7 +33,7 @@ using Moq;
 using NUnit.Framework;
 
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
-using CollectionAssert = NUnit.Framework.Legacy.CollectionAssert;
+using CollectionAssert = NUnit.Framework.CollectionAssert;
 
 namespace Cassandra.Tests.Requests
 {
@@ -44,7 +44,7 @@ namespace Cassandra.Tests.Requests
         private const string Keyspace = "ks1";
 
         [Test]
-        public void ReprepareOnSingleNodeAsync_Should_Invalidate_And_Report_Error_When_FanOut_Id_Changes()
+        public async Task ReprepareOnSingleNodeAsync_Should_Invalidate_And_Report_Error_When_FanOut_Id_Changes()
         {
             var context = CreateContext();
             var observer = new Mock<IRequestObserver>();
@@ -59,7 +59,7 @@ namespace Cassandra.Tests.Requests
 
             using (var semaphore = new SemaphoreSlim(0, 1))
             {
-                var ex = Assert.ThrowsAsync<PreparedStatementIdMismatchException>(async () =>
+                var ex = await Assert.ThrowsAsync<PreparedStatementIdMismatchException>(async () =>
                     await new ReprepareHandler().ReprepareOnSingleNodeAsync(
                         context.Cluster.Object,
                         observer.Object,
@@ -87,13 +87,13 @@ namespace Cassandra.Tests.Requests
         }
 
         [Test]
-        public void ReprepareOnSingleNodeAsync_Should_Invalidate_Background_Reprepare_When_Id_Changes()
+        public async Task ReprepareOnSingleNodeAsync_Should_Invalidate_Background_Reprepare_When_Id_Changes()
         {
             var context = CreateContext();
 
             using (var semaphore = new SemaphoreSlim(0, 1))
             {
-                var ex = Assert.ThrowsAsync<PreparedStatementIdMismatchException>(async () =>
+                var ex = await Assert.ThrowsAsync<PreparedStatementIdMismatchException>(async () =>
                     await new ReprepareHandler().ReprepareOnSingleNodeAsync(
                         context.Cluster.Object,
                         context.Pool,

@@ -66,6 +66,13 @@ The target-framework transition does not remove any public API signatures from
 the `3.22.0.4` assemblies. This includes the protected exception-serialization
 constructors, which remain available for binary and source compatibility.
 
+### App.Metrics dependency
+
+The `ScyllaDBCSharpDriver.AppMetrics` package now depends on
+`App.Metrics.Abstractions` 4.3.0, matching its `App.Metrics.Concurrency` dependency.
+Applications that reference App.Metrics packages directly should use the 4.3.0
+package family together. The App.Metrics Graphite example also uses 4.3.0.
+
 ### TLS protocol selection
 
 The parameterless `SSLOptions` now uses `SslProtocols.None` instead of explicitly

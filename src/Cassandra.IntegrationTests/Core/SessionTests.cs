@@ -463,9 +463,9 @@ namespace Cassandra.IntegrationTests.Core
                                            .WithDefaultKeyspace("system").Build())
             {
                 ISession session = await cluster.ConnectAsync().ConfigureAwait(false);
-                Assert.DoesNotThrowAsync(async () =>
+                await Assert.DoesNotThrowAsync(async () =>
                     await session.ExecuteAsync(new SimpleStatement(query)).ConfigureAwait(false));
-                Assert.DoesNotThrowAsync(async () =>
+                await Assert.DoesNotThrowAsync(async () =>
                     await session.ExecuteAsync(new SimpleStatement(query)).ConfigureAwait(false));
                 await cluster.ShutdownAsync().ConfigureAwait(false);
             }
@@ -474,9 +474,9 @@ namespace Cassandra.IntegrationTests.Core
             using (var cluster = ClusterBuilder().AddContactPoint(TestCluster.InitialContactPoint).Build())
             {
                 ISession session = await cluster.ConnectAsync("system").ConfigureAwait(false);
-                Assert.DoesNotThrowAsync(async () =>
+                await Assert.DoesNotThrowAsync(async () =>
                     await session.ExecuteAsync(new SimpleStatement(query)).ConfigureAwait(false));
-                Assert.DoesNotThrowAsync(async () =>
+                await Assert.DoesNotThrowAsync(async () =>
                     await session.ExecuteAsync(new SimpleStatement(query)).ConfigureAwait(false));
                 await cluster.ShutdownAsync().ConfigureAwait(false);
             }
@@ -485,7 +485,7 @@ namespace Cassandra.IntegrationTests.Core
             using (var cluster = ClusterBuilder().AddContactPoint(TestCluster.InitialContactPoint).Build())
             {
                 ISession session = await cluster.ConnectAsync().ConfigureAwait(false);
-                Assert.DoesNotThrowAsync(async () =>
+                await Assert.DoesNotThrowAsync(async () =>
                     await session.ExecuteAsync(new SimpleStatement("SELECT * FROM system.local WHERE key='local'"))
                                  .ConfigureAwait(false));
                 await cluster.ShutdownAsync().ConfigureAwait(false);

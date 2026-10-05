@@ -22,7 +22,7 @@ using System.Threading;
 using Cassandra.Tasks;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
-using CollectionAssert = NUnit.Framework.Legacy.CollectionAssert;
+using CollectionAssert = NUnit.Framework.CollectionAssert;
 using Bucket = Cassandra.Tasks.HashedWheelTimer.Bucket;
 using TimeoutItem = Cassandra.Tasks.HashedWheelTimer.TimeoutItem;
 

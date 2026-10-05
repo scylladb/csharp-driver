@@ -23,7 +23,7 @@ using Cassandra.Mapping;
 using Cassandra.Tests;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
-using StringAssert = NUnit.Framework.Legacy.StringAssert;
+using StringAssert = NUnit.Framework.StringAssert;
 
 namespace Cassandra.IntegrationTests.Mapping.Tests
 {

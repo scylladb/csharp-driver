@@ -56,7 +56,7 @@ PACKAGE_CONTRACTS = (
         assembly_name="Cassandra.AppMetrics",
         dependencies={
             "ScyllaDBCSharpDriver": CANDIDATE_VERSION,
-            "App.Metrics.Abstractions": "3.2.0",
+            "App.Metrics.Abstractions": "4.3.0",
             "App.Metrics.Concurrency": "4.3.0",
         },
     ),

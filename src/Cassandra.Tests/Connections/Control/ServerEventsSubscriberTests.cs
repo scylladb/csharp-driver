@@ -61,13 +61,13 @@ namespace Cassandra.Tests.Connections.Control
         }
 
         [Test]
-        public void Should_TranslateProtocolError_WhenClientRoutesAreEnabled()
+        public async Task Should_TranslateProtocolError_WhenClientRoutesAreEnabled()
         {
             var protocolError = new ProtocolErrorException("Unsupported event");
             var connection = new Mock<IConnection>();
             connection.Setup(value => value.Send(It.IsAny<IRequest>())).ThrowsAsync(protocolError);
 
-            var exception = Assert.ThrowsAsync<NotSupportedException>(
+            var exception = await Assert.ThrowsAsync<NotSupportedException>(
                 () => new ServerEventsSubscriber(true)
                     .SubscribeToServerEvents(connection.Object, (sender, args) => { }));
 
@@ -80,13 +80,13 @@ namespace Cassandra.Tests.Connections.Control
         }
 
         [Test]
-        public void Should_NotTranslateOtherConnectionFailures()
+        public async Task Should_NotTranslateOtherConnectionFailures()
         {
             var connectionError = new InvalidOperationException("Connection failed");
             var connection = new Mock<IConnection>();
             connection.Setup(value => value.Send(It.IsAny<IRequest>())).ThrowsAsync(connectionError);
 
-            var exception = Assert.ThrowsAsync<InvalidOperationException>(
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => new ServerEventsSubscriber(true)
                     .SubscribeToServerEvents(connection.Object, (sender, args) => { }));
 
