@@ -814,6 +814,10 @@ namespace Cassandra.Connections.Control
                 var _ = Interlocked.Exchange(ref _reconnectTask, null);
                 tcs.TrySetResult(oldConnection);
                 ControlConnection.Logger.Info("ControlConnection reconnected to host {0}", _host.Address);
+
+                // A topology event may have been sent before the new connection
+                // registered for events. Refresh after the peers query can settle.
+                await ScheduleHostsRefreshAsync().ConfigureAwait(false);
             }
             catch (Exception ex)
             {
