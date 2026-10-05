@@ -494,6 +494,8 @@ namespace Cassandra.Connections.Control
                     ControlConnection.Logger.Info("Connection was closed while reconnecting, triggering another reconnection.");
                     return await Reconnect(null).ConfigureAwait(false);
                 }
+
+                return oldConnectionInPreviousReconnect;
             }
             var oldConnection = _connection;
             var oldHost = _host;
