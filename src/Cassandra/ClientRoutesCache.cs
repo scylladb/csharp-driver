@@ -33,78 +33,107 @@ namespace Cassandra
     internal sealed class ClientRoutesCache
     {
         private const string SelectColumns = "host_id, address, port, tls_port, connection_id";
+        private const string TableName = "system.client_routes";
         private const int EmptyFullRefreshThreshold = 3;
         private const int CarryOversBeforeEscalation = 3;
+        private const int MaxFailedRefreshRetryBackoffExponent = 6;
+        private static readonly TimeSpan DefaultFailedRefreshRetryDelay = TimeSpan.FromSeconds(1);
+        private static readonly Logger DefaultLogger = new Logger(typeof(ClientRoutesCache));
 
         private readonly IMetadataQueryProvider _queryProvider;
         private readonly Logger _logger;
-        private readonly string[] _connectionIds;
-        private readonly ImmutableDictionary<string, string> _addressOverrides;
-        private readonly ImmutableDictionary<string, int> _connectionPriorities;
+        private readonly ClientRoutesSelection _selection;
         private readonly bool _useTls;
+        private readonly bool _retryQueries;
         private readonly object _refreshLock = new object();
-        private readonly HashSet<Guid> _pendingHostIds = new HashSet<Guid>();
+        private readonly List<FullRefreshWaiter> _fullRefreshWaiters = new List<FullRefreshWaiter>();
+        private readonly List<QueuedRefreshWaiter> _queuedRefreshWaiters = new List<QueuedRefreshWaiter>();
+        private readonly TimeSpan _failedRefreshRetryDelay;
+        private readonly Func<TimeSpan, CancellationToken, Task> _failedRefreshRetryDelayFactory;
+        private readonly CancellationTokenSource _shutdownCancellation = new CancellationTokenSource();
+        private readonly TaskCompletionSource<bool> _initialSnapshotReady =
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         private RoutesSnapshot _snapshot = RoutesSnapshot.Empty;
         private ImmutableDictionary<ClientRouteKey, int> _unconfirmedRouteCounts =
             ImmutableDictionary<ClientRouteKey, int>.Empty;
         private TaskCompletionSource<bool> _inFlightRefresh;
-        private bool _pendingFullRefresh;
+        private ClientRoutesRefreshWorkItem _pendingRefresh;
+        private long _pendingRefreshMaximumSequence;
+        private ClientRoutesRefreshWorkItem _failedRefreshRetry;
+        private bool _shutdown;
+        private long _requestedRefreshSequence;
+        private long _completedRefreshSequence;
+        private long _requestedFullRefreshGeneration;
+        private long _completedFullRefreshGeneration;
         private int _consecutiveEmptyFullRefreshes;
+        private bool _hasSuccessfulFullRefresh;
+        private long _nextFailedRefreshRetryGeneration;
+        private long _scheduledFailedRefreshRetryGeneration;
+        private int _consecutiveFailedRefreshes;
 
         public ClientRoutesCache(
             IMetadataQueryProvider queryProvider,
             IEnumerable<string> connectionIds,
             IReadOnlyDictionary<string, string> addressOverrides,
             bool useTls,
-            Logger logger = null)
+            Logger logger = null,
+            bool retryQueries = true,
+            TimeSpan? failedRefreshRetryDelay = null,
+            Func<TimeSpan, CancellationToken, Task> failedRefreshRetryDelayFactory = null)
+            : this(
+                queryProvider,
+                ClientRoutesSelection.Create(connectionIds, addressOverrides),
+                useTls,
+                logger,
+                retryQueries,
+                failedRefreshRetryDelay,
+                failedRefreshRetryDelayFactory)
+        {
+        }
+
+        internal ClientRoutesCache(
+            IMetadataQueryProvider queryProvider,
+            ClientRoutesSelection selection,
+            bool useTls,
+            Logger logger = null,
+            bool retryQueries = true,
+            TimeSpan? failedRefreshRetryDelay = null,
+            Func<TimeSpan, CancellationToken, Task> failedRefreshRetryDelayFactory = null)
         {
             _queryProvider = queryProvider ?? throw new ArgumentNullException(nameof(queryProvider));
-            _logger = logger ?? new Logger(typeof(ClientRoutesCache));
-            if (connectionIds == null)
-            {
-                throw new ArgumentNullException(nameof(connectionIds));
-            }
-
-            _connectionIds = connectionIds.ToArray();
-            if (_connectionIds.Length == 0)
-            {
-                throw new ArgumentException("At least one connection ID must be configured.", nameof(connectionIds));
-            }
-
-            var priorities = ImmutableDictionary.CreateBuilder<string, int>(StringComparer.Ordinal);
-            for (var i = 0; i < _connectionIds.Length; i++)
-            {
-                var connectionId = _connectionIds[i];
-                if (string.IsNullOrWhiteSpace(connectionId))
-                {
-                    throw new ArgumentException("Connection IDs must not be null, empty, or whitespace.", nameof(connectionIds));
-                }
-                if (priorities.ContainsKey(connectionId))
-                {
-                    throw new ArgumentException("Connection IDs must be unique.", nameof(connectionIds));
-                }
-                priorities.Add(connectionId, i);
-            }
-            _connectionPriorities = priorities.ToImmutable();
-
-            var overrides = ImmutableDictionary.CreateBuilder<string, string>(StringComparer.Ordinal);
-            if (addressOverrides != null)
-            {
-                foreach (var item in addressOverrides)
-                {
-                    overrides.Add(item.Key, item.Value);
-                }
-            }
-            _addressOverrides = overrides.ToImmutable();
+            _logger = logger ?? ClientRoutesCache.DefaultLogger;
+            _selection = selection ?? throw new ArgumentNullException(nameof(selection));
             _useTls = useTls;
+            _retryQueries = retryQueries;
+            _failedRefreshRetryDelay = failedRefreshRetryDelay ?? DefaultFailedRefreshRetryDelay;
+            _failedRefreshRetryDelayFactory = failedRefreshRetryDelayFactory ?? Task.Delay;
+            if (_failedRefreshRetryDelay != Timeout.InfiniteTimeSpan && _failedRefreshRetryDelay <= TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(failedRefreshRetryDelay),
+                    "The retry delay must be positive, or Timeout.InfiniteTimeSpan to disable retries.");
+            }
         }
 
         public ImmutableDictionary<Guid, ImmutableArray<ClientRouteEndpoint>> Routes =>
             Volatile.Read(ref _snapshot).ByHost;
 
+        public bool HasCompleteSnapshot => Volatile.Read(ref _snapshot).IsComplete;
+
         internal ImmutableDictionary<ClientRouteKey, int> UnconfirmedRouteCounts =>
             Volatile.Read(ref _unconfirmedRouteCounts);
+
+        internal int PendingQueuedRefreshBarrierCount
+        {
+            get
+            {
+                lock (_refreshLock)
+                {
+                    return _queuedRefreshWaiters.Count;
+                }
+            }
+        }
 
         public bool TryGetRoutes(Guid hostId, out ImmutableArray<ClientRouteEndpoint> routes)
         {
@@ -116,16 +145,137 @@ namespace Cassandra
             return false;
         }
 
+        public bool TryGetHostSnapshot(
+            Guid hostId,
+            out ImmutableArray<ClientRouteEndpoint> routes,
+            out bool isComplete,
+            out bool isCovered)
+        {
+            var snapshot = Volatile.Read(ref _snapshot);
+            isComplete = snapshot.IsComplete;
+            isCovered = snapshot.CoveredHostIds.Contains(hostId);
+            if (snapshot.ByHost.TryGetValue(hostId, out routes))
+            {
+                return true;
+            }
+
+            routes = ImmutableArray<ClientRouteEndpoint>.Empty;
+            return false;
+        }
+
+        public Task WaitForInitialSnapshotAsync()
+        {
+            return _initialSnapshotReady.Task;
+        }
+
+        /// <summary>
+        /// Requests a full refresh. The returned task completes with the in-flight pass, so it may complete
+        /// before the requested full pass has run. A failed query does not fault it: the previous routes are
+        /// retained and the query is retried in the background.
+        /// </summary>
         public Task RefreshAsync()
         {
             lock (_refreshLock)
             {
-                _pendingFullRefresh = true;
-                _pendingHostIds.Clear();
+                if (_shutdown)
+                {
+                    return CreateShutdownTask();
+                }
+                QueueFullRefresh();
                 return StartDrainIfNeeded();
             }
         }
 
+        /// <summary>
+        /// Requests a full refresh and completes only after a full pass requested by this call has run.
+        /// Unlike <see cref="RefreshAsync()"/>, this is a barrier when another pass is already active.
+        /// </summary>
+        public Task FullRefreshBarrierAsync()
+        {
+            return FullRefreshBarrierAsync(false);
+        }
+
+        /// <summary>
+        /// Requests a full refresh and completes only after a full pass requested by this call has run.
+        /// When <paramref name="confirmIgnoredEmptyResults"/> is true, an empty result ignored by the
+        /// empty-refresh threshold is confirmed with additional full passes before completion.
+        /// </summary>
+        /// <returns>
+        /// A task that faults when the pass fails before any full refresh has ever succeeded, or with
+        /// <see cref="ObjectDisposedException"/> on shutdown. After a successful full refresh, a failed query
+        /// completes the task successfully with the previous routes retained and a retry scheduled in the
+        /// background, so completion means a usable snapshot exists, not that it was reloaded.
+        /// </returns>
+        public Task FullRefreshBarrierAsync(bool confirmIgnoredEmptyResults)
+        {
+            return FullRefreshBarrierAsync(null, confirmIgnoredEmptyResults);
+        }
+
+        /// <summary>
+        /// Requests a topology-coupled full refresh. The supplied Host IDs become eligible for
+        /// direct fallback only if this refresh, or a later refresh carrying newer topology,
+        /// successfully publishes a complete snapshot.
+        /// </summary>
+        public Task FullRefreshBarrierAsync(
+            IEnumerable<Guid> topologyHostIds,
+            bool confirmIgnoredEmptyResults)
+        {
+            lock (_refreshLock)
+            {
+                if (_shutdown)
+                {
+                    return CreateShutdownTask();
+                }
+
+                var generation = ++_requestedFullRefreshGeneration;
+                var coverage = topologyHostIds == null
+                    ? null
+                    : new ClientRoutesCoverage(generation, topologyHostIds);
+                QueueFullRefresh(generation, coverage);
+                var completion = CreateRefreshCompletionSource();
+                _fullRefreshWaiters.Add(new FullRefreshWaiter(
+                    generation,
+                    completion,
+                    confirmIgnoredEmptyResults,
+                    coverage));
+                StartDrainIfNeeded();
+                return completion.Task;
+            }
+        }
+
+        /// <summary>
+        /// Completes after every refresh request accepted before this call has received a nonfatal
+        /// query attempt. Requests accepted later do not extend this fixed-watermark barrier.
+        /// </summary>
+        /// <returns>
+        /// A task that completes successfully after applied, ignored-empty, and recoverably failed
+        /// attempts, or faults on a fatal refresh failure or shutdown.
+        /// </returns>
+        public Task QueuedRefreshBarrierAsync()
+        {
+            lock (_refreshLock)
+            {
+                if (_shutdown)
+                {
+                    return CreateShutdownTask();
+                }
+
+                var maximumSequence = _requestedRefreshSequence;
+                if (_completedRefreshSequence >= maximumSequence)
+                {
+                    return Task.CompletedTask;
+                }
+
+                var completion = CreateRefreshCompletionSource();
+                _queuedRefreshWaiters.Add(new QueuedRefreshWaiter(maximumSequence, completion));
+                return completion.Task;
+            }
+        }
+
+        /// <summary>
+        /// Re-queries the hosts named by a client-routes change event, or every route when the event names
+        /// no host. Completes like <see cref="RefreshAsync()"/>.
+        /// </summary>
         public Task RefreshAsync(ClientRoutesChangeEventArgs eventArgs)
         {
             if (!TryGetAffectedHostIds(eventArgs, out var hostIds))
@@ -139,12 +289,77 @@ namespace Cassandra
 
             lock (_refreshLock)
             {
-                if (!_pendingFullRefresh)
+                if (_shutdown)
                 {
-                    _pendingHostIds.UnionWith(hostIds);
+                    return CreateShutdownTask();
                 }
+                QueueTargetedRefresh(hostIds);
                 return StartDrainIfNeeded();
             }
+        }
+
+        private void QueueFullRefresh()
+        {
+            var generation = ++_requestedFullRefreshGeneration;
+            QueueFullRefresh(generation, null);
+        }
+
+        private void QueueFullRefresh(long generation, ClientRoutesCoverage coverage)
+        {
+            QueueRefresh(
+                ClientRoutesRefreshWorkItem.CreateFull(generation, coverage),
+                NextRefreshSequence());
+        }
+
+        private void EnsureCoverageConfirmationPending(ClientRoutesCoverage coverage)
+        {
+            if (_shutdown ||
+                (_pendingRefresh?.Coverage != null &&
+                 _pendingRefresh.Coverage.Generation >= coverage.Generation))
+            {
+                return;
+            }
+
+            var generation = ++_requestedFullRefreshGeneration;
+            QueueFullRefresh(generation, coverage);
+        }
+
+        private void QueueTargetedRefresh(IEnumerable<Guid> hostIds)
+        {
+            QueueRefresh(ClientRoutesRefreshWorkItem.CreateTargeted(hostIds), NextRefreshSequence());
+        }
+
+        private long NextRefreshSequence()
+        {
+            return ++_requestedRefreshSequence;
+        }
+
+        private void QueueRefresh(ClientRoutesRefreshWorkItem requestedRefresh, long refreshSequence)
+        {
+            _pendingRefresh = requestedRefresh.MergePending(_pendingRefresh);
+            _pendingRefreshMaximumSequence = Math.Max(_pendingRefreshMaximumSequence, refreshSequence);
+        }
+
+        private ClientRoutesRefreshWorkItem TakePendingRefresh(out long maximumSequence)
+        {
+            var workItem = _pendingRefresh;
+            _pendingRefresh = null;
+            maximumSequence = _pendingRefreshMaximumSequence;
+            _pendingRefreshMaximumSequence = 0;
+            if (workItem == null)
+            {
+                return null;
+            }
+
+            var retry = _failedRefreshRetry;
+            var result = workItem.AbsorbRetry(retry, out _failedRefreshRetry);
+            if (retry != null && _failedRefreshRetry == null)
+            {
+                // The pending pass now owns all failed work. Its result must schedule a new
+                // delay if it fails; the callback for the absorbed work is stale.
+                InvalidateFailedRefreshRetrySchedule();
+            }
+            return result;
         }
 
         private Task StartDrainIfNeeded()
@@ -159,23 +374,21 @@ namespace Cassandra
 
         private async Task DrainRefreshesAsync(TaskCompletionSource<bool> completion)
         {
-            bool fullRefresh;
-            HashSet<Guid> hostIds;
+            ClientRoutesRefreshWorkItem workItem;
+            long maximumRefreshSequence;
             lock (_refreshLock)
             {
-                fullRefresh = _pendingFullRefresh;
-                if (fullRefresh)
+                if (_shutdown)
                 {
-                    _pendingFullRefresh = false;
-                    _pendingHostIds.Clear();
-                    hostIds = null;
+                    if (ReferenceEquals(_inFlightRefresh, completion))
+                    {
+                        _inFlightRefresh = null;
+                    }
+                    completion.TrySetException(CreateShutdownException());
+                    return;
                 }
-                else if (_pendingHostIds.Count > 0)
-                {
-                    hostIds = new HashSet<Guid>(_pendingHostIds);
-                    _pendingHostIds.Clear();
-                }
-                else
+                workItem = TakePendingRefresh(out maximumRefreshSequence);
+                if (workItem == null)
                 {
                     if (ReferenceEquals(_inFlightRefresh, completion))
                     {
@@ -186,49 +399,213 @@ namespace Cassandra
                 }
             }
 
+            RefreshResult refreshResult;
             try
             {
-                await ExecuteRefreshAsync(fullRefresh, hostIds).ConfigureAwait(false);
+                refreshResult = await ExecuteRefreshAsync(workItem).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
-                lock (_refreshLock)
-                {
-                    _pendingFullRefresh = false;
-                    _pendingHostIds.Clear();
-                    if (ReferenceEquals(_inFlightRefresh, completion))
-                    {
-                        _inFlightRefresh = null;
-                    }
-                }
-                completion.TrySetException(ex);
+                CompleteFatalDrain(completion, ex);
                 return;
             }
 
             TaskCompletionSource<bool> nextCompletion = null;
+            List<TaskCompletionSource<bool>> completedBarriers = null;
+            List<TaskCompletionSource<bool>> failedBarriers = null;
+            List<TaskCompletionSource<bool>> completedQueuedRefreshBarriers;
             lock (_refreshLock)
             {
-                if (_pendingFullRefresh || _pendingHostIds.Count > 0)
+                if (refreshResult.Outcome == RefreshOutcome.QueryFailed)
                 {
-                    nextCompletion = CreateRefreshCompletionSource();
-                    _inFlightRefresh = nextCompletion;
+                    RecordFailedRefresh(workItem);
+                    _consecutiveFailedRefreshes++;
                 }
-                else if (ReferenceEquals(_inFlightRefresh, completion))
+                else
                 {
-                    _inFlightRefresh = null;
+                    _consecutiveFailedRefreshes = 0;
                 }
+
+                if (refreshResult.FullRefreshGeneration.HasValue)
+                {
+                    _completedFullRefreshGeneration = Math.Max(
+                        _completedFullRefreshGeneration,
+                        refreshResult.FullRefreshGeneration.Value);
+                    if (refreshResult.Outcome == RefreshOutcome.Applied)
+                    {
+                        _hasSuccessfulFullRefresh = true;
+                    }
+                    completedBarriers = CompleteFullRefreshPass(
+                        _completedFullRefreshGeneration,
+                        refreshResult.Outcome,
+                        out failedBarriers);
+                    if (refreshResult.Outcome == RefreshOutcome.EmptyFullRefreshIgnored &&
+                        workItem.Coverage != null)
+                    {
+                        EnsureCoverageConfirmationPending(workItem.Coverage);
+                    }
+                }
+
+                _completedRefreshSequence = Math.Max(
+                    _completedRefreshSequence,
+                    maximumRefreshSequence);
+                completedQueuedRefreshBarriers = CompleteQueuedRefreshPass(_completedRefreshSequence);
             }
 
+            // The query attempt has completed, so fixed-watermark waiters must not be left
+            // detached if retry scheduling or logging fails below.
+            CompleteWaiters(completedQueuedRefreshBarriers, null);
+
+            try
+            {
+                if (refreshResult.Outcome == RefreshOutcome.QueryFailed &&
+                    (failedBarriers == null || failedBarriers.Count == 0))
+                {
+                    LogRecoveredQueryFailure(workItem, refreshResult.Exception);
+                }
+
+                lock (_refreshLock)
+                {
+                    if (!_shutdown && _pendingRefresh != null)
+                    {
+                        nextCompletion = CreateRefreshCompletionSource();
+                        _inFlightRefresh = nextCompletion;
+                    }
+                    else
+                    {
+                        // Keep ownership of _inFlightRefresh until this potentially injected
+                        // scheduler returns, so fatal cleanup cannot clobber a newer drain.
+                        ScheduleFailedRefreshRetry();
+                        // A synchronous scheduler callback can re-enter RefreshAsync() and queue
+                        // work behind this completion, so hand that work to a successor drain.
+                        if (!_shutdown && _pendingRefresh != null)
+                        {
+                            nextCompletion = CreateRefreshCompletionSource();
+                            _inFlightRefresh = nextCompletion;
+                        }
+                        else if (ReferenceEquals(_inFlightRefresh, completion))
+                        {
+                            _inFlightRefresh = null;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // These waiters were detached while recording the completed query attempt.
+                // Finish them according to that attempt before the outer fatal cleanup runs.
+                CompleteWaiters(completedBarriers, null);
+                CompleteWaiters(failedBarriers, refreshResult.Exception);
+                throw;
+            }
+
+            CompleteWaiters(completedBarriers, null);
+            CompleteWaiters(failedBarriers, refreshResult.Exception);
             // Match the Java driver's completion contract: callers that queued during this
             // refresh complete with it, even though their coalesced work runs in the next query.
             completion.TrySetResult(true);
             if (nextCompletion != null)
             {
-                // This completion can be internally owned when no request arrives during the
-                // follow-up refresh, so observe any fatal exception that faults it.
-                nextCompletion.Task.Forget();
-                StartRefresh(nextCompletion);
+                try
+                {
+                    // This completion can be internally owned when no request arrives during the
+                    // follow-up refresh, so observe any fatal exception that faults it.
+                    nextCompletion.Task.Forget();
+                    StartRefresh(nextCompletion);
+                }
+                catch (Exception ex)
+                {
+                    CompleteFatalDrain(nextCompletion, ex);
+                    return;
+                }
             }
+        }
+
+        private void RecordFailedRefresh(ClientRoutesRefreshWorkItem workItem)
+        {
+            _failedRefreshRetry = workItem.MergePending(_failedRefreshRetry);
+        }
+
+        private void LogRecoveredQueryFailure(ClientRoutesRefreshWorkItem workItem, Exception exception)
+        {
+            _logger.Warning(workItem.Scope.FormatFailure(exception));
+        }
+
+        private void ScheduleFailedRefreshRetry()
+        {
+            if (_shutdown || _scheduledFailedRefreshRetryGeneration != 0 ||
+                _failedRefreshRetryDelay == Timeout.InfiniteTimeSpan ||
+                _failedRefreshRetry == null)
+            {
+                return;
+            }
+
+            var generation = NextFailedRefreshRetryGeneration();
+            _scheduledFailedRefreshRetryGeneration = generation;
+            try
+            {
+                var exponent = Math.Min(
+                    Math.Max(_consecutiveFailedRefreshes - 1, 0),
+                    MaxFailedRefreshRetryBackoffExponent);
+                var delay = TimeSpan.FromTicks(_failedRefreshRetryDelay.Ticks * (1L << exponent));
+                _logger.Info(
+                    "Retrying the failed client routes refresh in {0}ms ({1} consecutive failure(s)).",
+                    delay.TotalMilliseconds,
+                    _consecutiveFailedRefreshes);
+                _failedRefreshRetryDelayFactory(delay, _shutdownCancellation.Token)
+                    .ContinueWith(
+                        _ => RetryFailedRefresh(generation),
+                        CancellationToken.None,
+                        TaskContinuationOptions.OnlyOnRanToCompletion,
+                        TaskScheduler.Default)
+                    .Forget();
+            }
+            catch
+            {
+                if (_scheduledFailedRefreshRetryGeneration == generation)
+                {
+                    _scheduledFailedRefreshRetryGeneration = 0;
+                }
+                throw;
+            }
+        }
+
+        private void RetryFailedRefresh(long generation)
+        {
+            lock (_refreshLock)
+            {
+                if (_scheduledFailedRefreshRetryGeneration != generation)
+                {
+                    return;
+                }
+
+                _scheduledFailedRefreshRetryGeneration = 0;
+                if (_shutdown || _failedRefreshRetry == null)
+                {
+                    return;
+                }
+
+                _pendingRefresh = _failedRefreshRetry.RequeueRetry(_pendingRefresh);
+                _failedRefreshRetry = null;
+
+                // Nobody awaits a background retry, so observe any fatal exception that faults it.
+                StartDrainIfNeeded().Forget();
+            }
+        }
+
+        private long NextFailedRefreshRetryGeneration()
+        {
+            do
+            {
+                _nextFailedRefreshRetryGeneration++;
+            }
+            while (_nextFailedRefreshRetryGeneration == 0);
+            return _nextFailedRefreshRetryGeneration;
+        }
+
+        private void InvalidateFailedRefreshRetrySchedule()
+        {
+            _scheduledFailedRefreshRetryGeneration = 0;
         }
 
         private static TaskCompletionSource<bool> CreateRefreshCompletionSource()
@@ -238,51 +615,106 @@ namespace Cassandra
 
         private void StartRefresh(TaskCompletionSource<bool> completion)
         {
-            _ = Task.Run(() => DrainRefreshesAsync(completion));
+            _ = Task.Run(() => DrainRefreshesSafeAsync(completion));
         }
 
-        private async Task ExecuteRefreshAsync(bool fullRefresh, HashSet<Guid> hostIds)
+        private async Task DrainRefreshesSafeAsync(TaskCompletionSource<bool> completion)
+        {
+            try
+            {
+                await DrainRefreshesAsync(completion).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                // Never leave the in-flight refresh or its waiters pending, or every later refresh
+                // and barrier would wait on a drain that no longer runs.
+                CompleteFatalDrain(completion, ex);
+            }
+        }
+
+        private void CompleteFatalDrain(TaskCompletionSource<bool> completion, Exception exception)
+        {
+            List<TaskCompletionSource<bool>> fullRefreshWaiters = null;
+            List<TaskCompletionSource<bool>> queuedRefreshWaiters = null;
+            lock (_refreshLock)
+            {
+                if (ReferenceEquals(_inFlightRefresh, completion))
+                {
+                    _pendingRefresh = null;
+                    _pendingRefreshMaximumSequence = 0;
+                    _inFlightRefresh = null;
+                    fullRefreshWaiters = RemoveAllFullRefreshWaiters();
+                    queuedRefreshWaiters = RemoveAllQueuedRefreshWaiters();
+                    _completedRefreshSequence = Math.Max(
+                        _completedRefreshSequence,
+                        _requestedRefreshSequence);
+                }
+            }
+            CompleteWaiters(fullRefreshWaiters, exception);
+            CompleteWaiters(queuedRefreshWaiters, exception);
+            completion.TrySetException(exception);
+        }
+
+        private async Task<RefreshResult> ExecuteRefreshAsync(ClientRoutesRefreshWorkItem workItem)
         {
             ParsedRoutes parsedRoutes;
             try
             {
                 var rows = await _queryProvider
-                    .QueryUnpagedAsync(BuildQuery(hostIds), true)
+                    .QueryUnpagedAsync(BuildQuery(workItem), _retryQueries)
                     .ConfigureAwait(false);
                 if (rows == null)
                 {
                     throw new InvalidOperationException("The client routes query returned a null result.");
                 }
-                parsedRoutes = ParseRows(rows, hostIds);
-                LogUnattributedMalformedRows(parsedRoutes, fullRefresh ? null : hostIds);
+                parsedRoutes = ParseRows(rows, workItem);
+                LogUnattributedMalformedRows(parsedRoutes, workItem);
             }
-            catch (Exception ex) when (!IsFatalException(ex))
+            catch (Exception ex) when (!Utils.IsFatalException(ex))
             {
-                _logger.Warning("Could not refresh client routes. The previous routes will be retained. Exception: {0}", ex);
-                return;
+                return new RefreshResult(
+                    RefreshOutcome.QueryFailed,
+                    workItem.FullRefreshGeneration,
+                    ex);
             }
 
-            if (fullRefresh)
+            if (workItem.FullRefreshGeneration.HasValue)
             {
-                ApplyFullRefresh(parsedRoutes);
+                return new RefreshResult(
+                    ApplyFullRefresh(parsedRoutes, workItem),
+                    workItem.FullRefreshGeneration);
             }
-            else
-            {
-                ApplyTargetedRefresh(parsedRoutes, hostIds);
-            }
+
+            ApplyTargetedRefresh(parsedRoutes, workItem);
+            return new RefreshResult(RefreshOutcome.Applied, null);
         }
 
-        private void ApplyFullRefresh(ParsedRoutes parsedRoutes)
+        private RefreshOutcome ApplyFullRefresh(
+            ParsedRoutes parsedRoutes,
+            ClientRoutesRefreshWorkItem workItem)
         {
-            var currentRoutes = Volatile.Read(ref _snapshot).ByKey;
+            var currentSnapshot = Volatile.Read(ref _snapshot);
+            var currentRoutes = currentSnapshot.ByKey;
             if (parsedRoutes.RowCount == 0 && currentRoutes.Count > 0)
             {
                 _consecutiveEmptyFullRefreshes++;
                 if (_consecutiveEmptyFullRefreshes < EmptyFullRefreshThreshold)
                 {
-                    return;
+                    _logger.Warning(
+                        "The client routes query returned no rows ({0} of {1} consecutive empty results). " +
+                        "Keeping the {2} cached route(s) until the empty result is confirmed.",
+                        _consecutiveEmptyFullRefreshes,
+                        EmptyFullRefreshThreshold,
+                        currentRoutes.Count);
+                    return RefreshOutcome.EmptyFullRefreshIgnored;
                 }
                 _consecutiveEmptyFullRefreshes = 0;
+                _logger.Error(
+                    "The client routes query returned no rows {0} consecutive times. Removing all {1} cached " +
+                    "route(s); hosts without routes will be connected to directly. Check system.client_routes " +
+                    "and the configured connection IDs.",
+                    EmptyFullRefreshThreshold,
+                    currentRoutes.Count);
             }
             else
             {
@@ -290,17 +722,34 @@ namespace Cassandra
             }
 
             var updatedRoutes = parsedRoutes.Routes.ToBuilder();
-            RetainUnsafeRoutes(currentRoutes, updatedRoutes, parsedRoutes);
-            var updatedSnapshot = CreateSnapshot(updatedRoutes.ToImmutable());
-            Volatile.Write(ref _snapshot, updatedSnapshot);
-            RecordCarryOvers(updatedSnapshot.ByKey, parsedRoutes.Routes);
+            RetainUnsafeRoutes(currentRoutes, updatedRoutes, parsedRoutes, workItem);
+            var coverage = workItem.Coverage != null &&
+                           workItem.Coverage.Generation > currentSnapshot.CoverageGeneration
+                ? workItem.Coverage
+                : null;
+            var coveredHostIds = RemoveUnsafeCoverage(
+                coverage?.HostIds ?? currentSnapshot.CoveredHostIds,
+                parsedRoutes);
+            var updatedSnapshot = CreateSnapshot(
+                updatedRoutes.ToImmutable(),
+                coveredHostIds,
+                coverage?.Generation ?? currentSnapshot.CoverageGeneration,
+                currentSnapshot.IsComplete || coverage != null);
+            if (PublishSnapshot(updatedSnapshot))
+            {
+                RecordCarryOvers(updatedSnapshot.ByKey, parsedRoutes.Routes, workItem);
+            }
+            return RefreshOutcome.Applied;
         }
 
-        private void ApplyTargetedRefresh(ParsedRoutes parsedRoutes, HashSet<Guid> hostIds)
+        private void ApplyTargetedRefresh(
+            ParsedRoutes parsedRoutes,
+            ClientRoutesRefreshWorkItem workItem)
         {
-            var currentRoutes = Volatile.Read(ref _snapshot).ByKey;
+            var currentSnapshot = Volatile.Read(ref _snapshot);
+            var currentRoutes = currentSnapshot.ByKey;
             var updatedRoutes = currentRoutes.ToBuilder();
-            foreach (var routeKey in currentRoutes.Keys.Where(key => hostIds.Contains(key.HostId)))
+            foreach (var routeKey in currentRoutes.Keys.Where(key => workItem.Scope.IncludesHost(key.HostId)))
             {
                 updatedRoutes.Remove(routeKey);
             }
@@ -308,22 +757,43 @@ namespace Cassandra
             {
                 updatedRoutes[route.Key] = route.Value;
             }
-            RetainUnsafeRoutes(currentRoutes, updatedRoutes, parsedRoutes, hostIds);
-            var updatedSnapshot = CreateSnapshot(updatedRoutes.ToImmutable());
-            Volatile.Write(ref _snapshot, updatedSnapshot);
-            RecordCarryOvers(updatedSnapshot.ByKey, parsedRoutes.Routes, hostIds);
+            RetainUnsafeRoutes(currentRoutes, updatedRoutes, parsedRoutes, workItem);
+            var updatedSnapshot = CreateSnapshot(
+                updatedRoutes.ToImmutable(),
+                RemoveUnsafeCoverage(currentSnapshot.CoveredHostIds, parsedRoutes),
+                currentSnapshot.CoverageGeneration,
+                currentSnapshot.IsComplete);
+            if (PublishSnapshot(updatedSnapshot))
+            {
+                RecordCarryOvers(updatedSnapshot.ByKey, parsedRoutes.Routes, workItem);
+            }
+        }
+
+        private static ImmutableHashSet<Guid> RemoveUnsafeCoverage(
+            ImmutableHashSet<Guid> coveredHostIds,
+            ParsedRoutes parsedRoutes)
+        {
+            if (parsedRoutes.HasUnattributedMalformedRows)
+            {
+                return ImmutableHashSet<Guid>.Empty;
+            }
+
+            return coveredHostIds
+                .Except(parsedRoutes.UnsafeHostIds)
+                .Except(parsedRoutes.UnsafeRouteKeys.Select(routeKey => routeKey.HostId))
+                .ToImmutableHashSet();
         }
 
         private static void RetainUnsafeRoutes(
             ImmutableDictionary<ClientRouteKey, ClientRouteEndpoint> currentRoutes,
             ImmutableDictionary<ClientRouteKey, ClientRouteEndpoint>.Builder updatedRoutes,
             ParsedRoutes parsedRoutes,
-            HashSet<Guid> refreshScope = null)
+            ClientRoutesRefreshWorkItem workItem)
         {
             foreach (var route in currentRoutes)
             {
                 var retainWholeScope = parsedRoutes.HasUnattributedMalformedRows &&
-                                       (refreshScope == null || refreshScope.Contains(route.Key.HostId));
+                                       workItem.Scope.IncludesHost(route.Key.HostId);
                 if ((retainWholeScope ||
                      parsedRoutes.UnsafeHostIds.Contains(route.Key.HostId) ||
                      parsedRoutes.UnsafeRouteKeys.Contains(route.Key)) &&
@@ -337,7 +807,7 @@ namespace Cassandra
         private void RecordCarryOvers(
             ImmutableDictionary<ClientRouteKey, ClientRouteEndpoint> installedRoutes,
             ImmutableDictionary<ClientRouteKey, ClientRouteEndpoint> freshRoutes,
-            HashSet<Guid> refreshScope = null)
+            ClientRoutesRefreshWorkItem workItem)
         {
             // A retained route is safer than falling back to an address that may be unreachable,
             // but repeated carry-over must not remain silent. Only advance hosts this refresh
@@ -353,7 +823,7 @@ namespace Cassandra
                     continue;
                 }
 
-                if (refreshScope != null && !refreshScope.Contains(routeKey.HostId))
+                if (!workItem.Scope.IncludesHost(routeKey.HostId))
                 {
                     if (previousCounts.TryGetValue(routeKey, out var previousCount))
                     {
@@ -381,9 +851,9 @@ namespace Cassandra
                     ", ",
                     escalatedRouteKeys
                         .OrderBy(key => key.HostId)
-                        .ThenBy(key => _connectionPriorities[key.ConnectionId])
+                        .ThenBy(key => _selection.ConnectionPriorities[key.ConnectionId])
                         .Select(key => $"{key}={updatedSnapshot[key]}"));
-                _logger.Error(
+                _logger.Warning(
                     "Serving {0} client route(s) that this refresh could not rebuild. " +
                     "Consecutive unconfirmed refresh counts: {1}. Check system.client_routes " +
                     "for unreadable connection_id, host_id, address, or port values.",
@@ -392,7 +862,7 @@ namespace Cassandra
             }
         }
 
-        private ParsedRoutes ParseRows(IEnumerable<IRow> rows, HashSet<Guid> requestedHostIds)
+        private ParsedRoutes ParseRows(IEnumerable<IRow> rows, ClientRoutesRefreshWorkItem workItem)
         {
             var parsedRoutes = new ParsedRoutes();
             foreach (var row in rows)
@@ -404,14 +874,14 @@ namespace Cassandra
                 {
                     hostId = row.GetValue<Guid>("host_id");
                 }
-                catch (Exception ex) when (!IsFatalException(ex))
+                catch (Exception ex) when (!Utils.IsFatalException(ex))
                 {
                     _logger.Warning("Could not read a client route host ID. The row will be ignored. Exception: {0}", ex);
                     parsedRoutes.UnattributedMalformedRowCount++;
                     continue;
                 }
 
-                if (requestedHostIds != null && !requestedHostIds.Contains(hostId))
+                if (!workItem.Scope.IncludesHost(hostId))
                 {
                     continue;
                 }
@@ -421,12 +891,12 @@ namespace Cassandra
                 try
                 {
                     connectionId = row.GetValue<string>("connection_id");
-                    if (connectionId == null || !_connectionPriorities.ContainsKey(connectionId))
+                    if (connectionId == null || !_selection.ConnectionPriorities.ContainsKey(connectionId))
                     {
                         throw new FormatException("The client route connection ID is not configured.");
                     }
                 }
-                catch (Exception ex) when (!IsFatalException(ex))
+                catch (Exception ex) when (!Utils.IsFatalException(ex))
                 {
                     _logger.Warning(
                         "Could not read a client route connection ID for host {0}. The row will be ignored. Exception: {1}",
@@ -439,7 +909,7 @@ namespace Cassandra
                 var routeKey = new ClientRouteKey(hostId, connectionId);
                 try
                 {
-                    var address = _addressOverrides.TryGetValue(connectionId, out var addressOverride)
+                    var address = _selection.AddressOverrides.TryGetValue(connectionId, out var addressOverride)
                         ? addressOverride
                         : row.GetValue<string>("address");
                     if (!IsValidAddress(address))
@@ -457,7 +927,7 @@ namespace Cassandra
                         routeKey,
                         new ClientRouteEndpoint(connectionId, address, port));
                 }
-                catch (Exception ex) when (!IsFatalException(ex))
+                catch (Exception ex) when (!Utils.IsFatalException(ex))
                 {
                     _logger.Warning(
                         "Could not read a client route endpoint for host {0} and connection {1}. " +
@@ -472,20 +942,48 @@ namespace Cassandra
         }
 
         private RoutesSnapshot CreateSnapshot(
-            ImmutableDictionary<ClientRouteKey, ClientRouteEndpoint> routesByKey)
+            ImmutableDictionary<ClientRouteKey, ClientRouteEndpoint> routesByKey,
+            ImmutableHashSet<Guid> coveredHostIds,
+            long coverageGeneration,
+            bool isComplete)
         {
             var routesByHost = ImmutableDictionary.CreateBuilder<Guid, ImmutableArray<ClientRouteEndpoint>>();
             foreach (var routesForHost in routesByKey.GroupBy(route => route.Key.HostId))
             {
                 routesByHost[routesForHost.Key] = routesForHost
-                    .OrderBy(route => _connectionPriorities[route.Key.ConnectionId])
+                    .OrderBy(route => _selection.ConnectionPriorities[route.Key.ConnectionId])
                     .Select(route => route.Value)
                     .ToImmutableArray();
             }
-            return new RoutesSnapshot(routesByKey, routesByHost.ToImmutable());
+            return new RoutesSnapshot(
+                routesByKey,
+                routesByHost.ToImmutable(),
+                coveredHostIds,
+                coverageGeneration,
+                isComplete);
         }
 
-        private void LogUnattributedMalformedRows(ParsedRoutes parsedRoutes, HashSet<Guid> refreshScope)
+        private bool PublishSnapshot(RoutesSnapshot snapshot)
+        {
+            lock (_refreshLock)
+            {
+                if (_shutdown)
+                {
+                    return false;
+                }
+
+                Volatile.Write(ref _snapshot, snapshot);
+                if (snapshot.IsComplete)
+                {
+                    _initialSnapshotReady.TrySetResult(true);
+                }
+                return true;
+            }
+        }
+
+        private void LogUnattributedMalformedRows(
+            ParsedRoutes parsedRoutes,
+            ClientRoutesRefreshWorkItem workItem)
         {
             if (parsedRoutes.UnattributedMalformedRowCount == 0)
             {
@@ -493,9 +991,7 @@ namespace Cassandra
             }
 
             var cachedRoutes = Volatile.Read(ref _snapshot).ByKey;
-            var cachedRouteCount = refreshScope == null
-                ? cachedRoutes.Count
-                : cachedRoutes.Keys.Count(key => refreshScope.Contains(key.HostId));
+            var cachedRouteCount = cachedRoutes.Keys.Count(key => workItem.Scope.IncludesHost(key.HostId));
             if (parsedRoutes.ReadableHostIds.Count == 0)
             {
                 if (cachedRouteCount == 0)
@@ -507,7 +1003,7 @@ namespace Cassandra
                 }
                 else
                 {
-                    _logger.Error(
+                    _logger.Warning(
                         "None of the {0} client route rows named a readable host ID. Keeping all " +
                         "{1} cached routes in the refresh scope.",
                         parsedRoutes.RowCount,
@@ -540,35 +1036,25 @@ namespace Cassandra
 
             if (eventArgs.ConnectionIds.Length > 0 &&
                 !eventArgs.ConnectionIds.Any(connectionId =>
-                    connectionId != null && _connectionPriorities.ContainsKey(connectionId)))
+                    connectionId != null && _selection.ConnectionPriorities.ContainsKey(connectionId)))
             {
                 return false;
             }
 
             // For refresh purposes, treat the lists as independent scopes rather than positional
             // pairs, matching the Java driver. Connection IDs only decide whether the event
-            // concerns this cache; all named hosts are re-queried across every configured
-            // connection so absence is safe to interpret as deletion.
+            // concerns this cache, and an empty list is unscoped. All named hosts are re-queried
+            // across every configured connection so absence is safe to interpret as deletion.
             hostIds.UnionWith(eventArgs.HostIds);
             return true;
         }
 
-        private string BuildQuery(HashSet<Guid> hostIds)
+        private string BuildQuery(ClientRoutesRefreshWorkItem workItem)
         {
-            var connectionIds = string.Join(", ", _connectionIds.Select(id => $"'{EscapeCqlString(id)}'"));
-            var query = $"SELECT {SelectColumns} FROM system.client_routes " +
+            var connectionIds = string.Join(", ", _selection.ConnectionIds.Select(id => $"'{EscapeCqlString(id)}'"));
+            var query = $"SELECT {SelectColumns} FROM {TableName} " +
                         $"WHERE connection_id IN ({connectionIds})";
-            if (hostIds != null)
-            {
-                query += " AND host_id IN (" +
-                         string.Join(", ", hostIds.OrderBy(id => id).Select(id => id.ToString())) + ")";
-            }
-            else
-            {
-                // Match the Java driver and the server's full client-routes query convention.
-                query += " ALLOW FILTERING";
-            }
-            return query;
+            return workItem.Scope.AppendQueryFilter(query);
         }
 
         private static string EscapeCqlString(string value)
@@ -576,14 +1062,246 @@ namespace Cassandra
             return value.Replace("'", "''");
         }
 
-        private static bool IsFatalException(Exception ex)
+        public void Shutdown()
         {
-            return ex is OutOfMemoryException ||
-                   ex is StackOverflowException ||
-                   ex is ThreadAbortException ||
-                   ex is AccessViolationException ||
-                   ex is AppDomainUnloadedException ||
-                   ex is BadImageFormatException;
+            List<TaskCompletionSource<bool>> waiters;
+            List<TaskCompletionSource<bool>> queuedRefreshWaiters;
+            lock (_refreshLock)
+            {
+                if (_shutdown)
+                {
+                    return;
+                }
+
+                _shutdown = true;
+                _pendingRefresh = null;
+                _pendingRefreshMaximumSequence = 0;
+                _failedRefreshRetry = null;
+                InvalidateFailedRefreshRetrySchedule();
+                waiters = RemoveAllFullRefreshWaiters();
+                queuedRefreshWaiters = RemoveAllQueuedRefreshWaiters();
+            }
+
+            var shutdownException = CreateShutdownException();
+            try
+            {
+                _shutdownCancellation.Cancel();
+            }
+            finally
+            {
+                _initialSnapshotReady.TrySetException(shutdownException);
+                CompleteWaiters(waiters, shutdownException);
+                CompleteWaiters(queuedRefreshWaiters, shutdownException);
+            }
+        }
+
+        private List<TaskCompletionSource<bool>> RemoveAllFullRefreshWaiters()
+        {
+            var completions = _fullRefreshWaiters.Select(waiter => waiter.Completion).ToList();
+            _fullRefreshWaiters.Clear();
+            return completions;
+        }
+
+        private List<TaskCompletionSource<bool>> RemoveAllQueuedRefreshWaiters()
+        {
+            var completions = _queuedRefreshWaiters.Select(waiter => waiter.Completion).ToList();
+            _queuedRefreshWaiters.Clear();
+            return completions;
+        }
+
+        private List<TaskCompletionSource<bool>> CompleteQueuedRefreshPass(long maximumSequence)
+        {
+            var completions = new List<TaskCompletionSource<bool>>();
+            for (var i = _queuedRefreshWaiters.Count - 1; i >= 0; i--)
+            {
+                var waiter = _queuedRefreshWaiters[i];
+                if (waiter.MaximumSequence > maximumSequence)
+                {
+                    continue;
+                }
+
+                completions.Add(waiter.Completion);
+                _queuedRefreshWaiters.RemoveAt(i);
+            }
+            return completions;
+        }
+
+        private List<TaskCompletionSource<bool>> CompleteFullRefreshPass(
+            long maximumGeneration,
+            RefreshOutcome refreshOutcome,
+            out List<TaskCompletionSource<bool>> failedCompletions)
+        {
+            var completions = new List<TaskCompletionSource<bool>>();
+            failedCompletions = null;
+            var confirmationWaiters = new List<FullRefreshWaiter>();
+            for (var i = _fullRefreshWaiters.Count - 1; i >= 0; i--)
+            {
+                var waiter = _fullRefreshWaiters[i];
+                if (waiter.Generation > maximumGeneration)
+                {
+                    continue;
+                }
+
+                if (waiter.ConfirmIgnoredEmptyResults &&
+                    refreshOutcome == RefreshOutcome.EmptyFullRefreshIgnored)
+                {
+                    confirmationWaiters.Add(waiter);
+                    continue;
+                }
+
+                var hasUsableSnapshot = waiter.Coverage == null
+                    ? _hasSuccessfulFullRefresh
+                    : Volatile.Read(ref _snapshot).IsComplete;
+                if (refreshOutcome == RefreshOutcome.QueryFailed && !hasUsableSnapshot)
+                {
+                    if (failedCompletions == null)
+                    {
+                        failedCompletions = new List<TaskCompletionSource<bool>>();
+                    }
+                    failedCompletions.Add(waiter.Completion);
+                    _fullRefreshWaiters.RemoveAt(i);
+                    continue;
+                }
+
+                completions.Add(waiter.Completion);
+                _fullRefreshWaiters.RemoveAt(i);
+            }
+
+            if (confirmationWaiters.Count == 0)
+            {
+                return completions;
+            }
+
+            var pendingFullRefreshGeneration = _pendingRefresh?.FullRefreshGeneration;
+            var confirmationCoverage = confirmationWaiters
+                .Where(waiter => waiter.Coverage != null)
+                .Select(waiter => waiter.Coverage)
+                .OrderByDescending(coverage => coverage.Generation)
+                .FirstOrDefault();
+            long confirmationGeneration;
+            if (!pendingFullRefreshGeneration.HasValue)
+            {
+                confirmationGeneration = ++_requestedFullRefreshGeneration;
+                QueueFullRefresh(confirmationGeneration, confirmationCoverage);
+            }
+            else
+            {
+                confirmationGeneration = pendingFullRefreshGeneration.Value;
+                if (confirmationCoverage != null)
+                {
+                    _pendingRefresh = _pendingRefresh.MergePending(
+                        ClientRoutesRefreshWorkItem.CreateFull(
+                            confirmationGeneration,
+                            confirmationCoverage));
+                }
+                _pendingRefreshMaximumSequence = Math.Max(
+                    _pendingRefreshMaximumSequence,
+                    NextRefreshSequence());
+            }
+
+            foreach (var waiter in confirmationWaiters)
+            {
+                waiter.Generation = confirmationGeneration;
+            }
+            return completions;
+        }
+
+        private static void CompleteWaiters(
+            IEnumerable<TaskCompletionSource<bool>> waiters,
+            Exception exception)
+        {
+            if (waiters == null)
+            {
+                return;
+            }
+
+            foreach (var waiter in waiters)
+            {
+                if (exception == null)
+                {
+                    waiter.TrySetResult(true);
+                }
+                else
+                {
+                    waiter.TrySetException(exception);
+                }
+            }
+        }
+
+        private static Task CreateShutdownTask()
+        {
+            var completion = CreateRefreshCompletionSource();
+            completion.TrySetException(CreateShutdownException());
+            return completion.Task;
+        }
+
+        private static ObjectDisposedException CreateShutdownException()
+        {
+            return new ObjectDisposedException(nameof(ClientRoutesCache));
+        }
+
+        private sealed class FullRefreshWaiter
+        {
+            public FullRefreshWaiter(
+                long generation,
+                TaskCompletionSource<bool> completion,
+                bool confirmIgnoredEmptyResults,
+                ClientRoutesCoverage coverage)
+            {
+                Generation = generation;
+                Completion = completion;
+                ConfirmIgnoredEmptyResults = confirmIgnoredEmptyResults;
+                Coverage = coverage;
+            }
+
+            public long Generation { get; set; }
+
+            public TaskCompletionSource<bool> Completion { get; }
+
+            public bool ConfirmIgnoredEmptyResults { get; }
+
+            public ClientRoutesCoverage Coverage { get; }
+        }
+
+        private sealed class QueuedRefreshWaiter
+        {
+            public QueuedRefreshWaiter(
+                long maximumSequence,
+                TaskCompletionSource<bool> completion)
+            {
+                MaximumSequence = maximumSequence;
+                Completion = completion;
+            }
+
+            public long MaximumSequence { get; }
+
+            public TaskCompletionSource<bool> Completion { get; }
+        }
+
+        private enum RefreshOutcome
+        {
+            Applied,
+            EmptyFullRefreshIgnored,
+            QueryFailed
+        }
+
+        private sealed class RefreshResult
+        {
+            public RefreshResult(
+                RefreshOutcome outcome,
+                long? fullRefreshGeneration,
+                Exception exception = null)
+            {
+                Outcome = outcome;
+                FullRefreshGeneration = fullRefreshGeneration;
+                Exception = exception;
+            }
+
+            public RefreshOutcome Outcome { get; }
+
+            public long? FullRefreshGeneration { get; }
+
+            public Exception Exception { get; }
         }
 
         private sealed class ParsedRoutes
@@ -608,19 +1326,34 @@ namespace Cassandra
         {
             public static readonly RoutesSnapshot Empty = new RoutesSnapshot(
                 ImmutableDictionary<ClientRouteKey, ClientRouteEndpoint>.Empty,
-                ImmutableDictionary<Guid, ImmutableArray<ClientRouteEndpoint>>.Empty);
+                ImmutableDictionary<Guid, ImmutableArray<ClientRouteEndpoint>>.Empty,
+                ImmutableHashSet<Guid>.Empty,
+                0,
+                false);
 
             public RoutesSnapshot(
                 ImmutableDictionary<ClientRouteKey, ClientRouteEndpoint> byKey,
-                ImmutableDictionary<Guid, ImmutableArray<ClientRouteEndpoint>> byHost)
+                ImmutableDictionary<Guid, ImmutableArray<ClientRouteEndpoint>> byHost,
+                ImmutableHashSet<Guid> coveredHostIds,
+                long coverageGeneration,
+                bool isComplete)
             {
                 ByKey = byKey;
                 ByHost = byHost;
+                CoveredHostIds = coveredHostIds;
+                CoverageGeneration = coverageGeneration;
+                IsComplete = isComplete;
             }
 
             public ImmutableDictionary<ClientRouteKey, ClientRouteEndpoint> ByKey { get; }
 
             public ImmutableDictionary<Guid, ImmutableArray<ClientRouteEndpoint>> ByHost { get; }
+
+            public ImmutableHashSet<Guid> CoveredHostIds { get; }
+
+            public long CoverageGeneration { get; }
+
+            public bool IsComplete { get; }
         }
     }
 }
