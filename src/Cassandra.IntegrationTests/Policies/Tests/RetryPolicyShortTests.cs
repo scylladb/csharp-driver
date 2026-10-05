@@ -176,7 +176,7 @@ namespace Cassandra.IntegrationTests.Policies.Tests
 
                     if (async)
                     {
-                        Assert.ThrowsAsync<OverloadedException>(() => session.ExecuteAsync(new SimpleStatement(cql).SetConsistencyLevel(ConsistencyLevel.One)));
+                        await Assert.ThrowsAsync<OverloadedException>(() => session.ExecuteAsync(new SimpleStatement(cql).SetConsistencyLevel(ConsistencyLevel.One)));
                     }
                     else
                     {

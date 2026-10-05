@@ -16,6 +16,7 @@
 
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 
 using Cassandra.Data.Linq;
 using Cassandra.IntegrationTests.Linq.Structures;
@@ -100,14 +101,14 @@ namespace Cassandra.IntegrationTests.Linq.LinqMethods
         }
 
         [Test]
-        public void LinqOrderBy_Unrestricted_Async()
+        public async Task LinqOrderBy_Unrestricted_Async()
         {
             TestCluster.PrimeFluent(
                 b => b.WhenQuery(
                           "SELECT \"director\", \"list\", \"mainGuy\", \"movie_maker\", \"unique_movie_title\", \"yearMade\" " +
                           $"FROM \"{Movie.TableName}\" ORDER BY \"mainGuy\" ALLOW FILTERING")
                       .ThenServerError(ServerError.Invalid, "ORDER BY is only supported when the partition key is restricted by an EQ or an IN."));
-            var ex = Assert.ThrowsAsync<InvalidQueryException>(
+            var ex = await Assert.ThrowsAsync<InvalidQueryException>(
                 async () => await _movieTable.OrderBy(m => m.MainActor).ExecuteAsync().ConfigureAwait(false));
             const string expectedException = "ORDER BY is only supported when the partition key is restricted by an EQ or an IN.";
             Assert.AreEqual(expectedException, ex.Message);

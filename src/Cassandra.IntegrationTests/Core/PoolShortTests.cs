@@ -423,10 +423,10 @@ namespace Cassandra.IntegrationTests.Core
                         Assert.AreEqual(4, serverConnections.Count, string.Join(",", serverConnections.Select(ip => (ip?.ToString()) ?? "null")));
                     }, 100, 100).ConfigureAwait(false);
 
-                    TestHelper.RetryAssert(() =>
+                    await TestHelper.RetryAssertAsync(async () =>
                     {
-                        Assert.DoesNotThrowAsync(() => cluster.InternalRef.GetControlConnection().QueryAsync("SELECT * FROM system.local WHERE key='local'"));
-                    }, 100, 100);
+                        await Assert.DoesNotThrowAsync(() => cluster.InternalRef.GetControlConnection().QueryAsync("SELECT * FROM system.local WHERE key='local'"));
+                    }, 100, 100).ConfigureAwait(false);
                 }
 
             }
@@ -599,7 +599,7 @@ namespace Cassandra.IntegrationTests.Core
         }
 
         [Test]
-        public void Should_Throw_NoHostAvailableException_When_Targeting_Single_Ignored_Host()
+        public async Task Should_Throw_NoHostAvailableException_When_Targeting_Single_Ignored_Host()
         {
             const string query = "SELECT * FROM system.local WHERE key='local'";
             // Mark the last host as ignored
@@ -616,12 +616,12 @@ namespace Cassandra.IntegrationTests.Core
 
                 // Use the last host
                 var statement = new SimpleStatement(query).SetHost(lastHost);
-                Parallel.For(0, 10, _ =>
+                await Task.WhenAll(Enumerable.Range(0, 10).Select(async _ =>
                 {
-                    var ex = Assert.ThrowsAsync<NoHostAvailableException>(() => session.ExecuteAsync(statement));
+                    var ex = await Assert.ThrowsAsync<NoHostAvailableException>(() => session.ExecuteAsync(statement));
                     Assert.That(ex.Errors.Count, Is.EqualTo(1));
                     Assert.That(ex.Errors.First().Key, Is.EqualTo(lastHost.Address));
-                });
+                })).ConfigureAwait(false);
             }
         }
 
@@ -674,15 +674,15 @@ namespace Cassandra.IntegrationTests.Core
                     Assert.AreEqual(3, ports.Count);
                 }, 100, 200).ConfigureAwait(false);
 
-                Parallel.For(0, 10, _ =>
+                await Task.WhenAll(Enumerable.Range(0, 10).Select(async _ =>
                 {
                     var statement = new SimpleStatement("SELECT * FROM system.local WHERE key='local'").SetHost(lastHost)
                                                                                      .SetIdempotence(true);
 
-                    var ex = Assert.ThrowsAsync<NoHostAvailableException>(() => session.ExecuteAsync(statement));
+                    var ex = await Assert.ThrowsAsync<NoHostAvailableException>(() => session.ExecuteAsync(statement));
                     Assert.That(ex.Errors.Count, Is.EqualTo(1));
                     Assert.That(ex.Errors.First().Key, Is.EqualTo(lastHost.Address));
-                });
+                })).ConfigureAwait(false);
             }
         }
 

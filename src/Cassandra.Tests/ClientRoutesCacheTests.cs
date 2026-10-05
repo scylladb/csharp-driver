@@ -1093,13 +1093,13 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public void Should_PropagateFatalQueryFailure()
+        public async Task Should_PropagateFatalQueryFailure()
         {
             var fatal = new OutOfMemoryException("fatal query failure");
             var provider = CreateProvider((_, __) => Task.FromException<IEnumerable<IRow>>(fatal));
             var cache = CreateCache(provider.Object);
 
-            var thrown = Assert.ThrowsAsync<OutOfMemoryException>(async () =>
+            var thrown = await Assert.ThrowsAsync<OutOfMemoryException>(async () =>
                 await cache.RefreshAsync().ConfigureAwait(false));
 
             Assert.That(thrown, Is.SameAs(fatal));
@@ -1126,7 +1126,7 @@ namespace Cassandra.Tests
             });
             var cache = CreateCache(provider.Object);
 
-            var thrown = Assert.ThrowsAsync<OutOfMemoryException>(async () =>
+            var thrown = await Assert.ThrowsAsync<OutOfMemoryException>(async () =>
                 await cache.RefreshAsync().ConfigureAwait(false));
             await cache.RefreshAsync().ConfigureAwait(false);
 
@@ -1136,7 +1136,7 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public void Should_PropagateFatalRowDecodingFailure()
+        public async Task Should_PropagateFatalRowDecodingFailure()
         {
             var fatal = new OutOfMemoryException("fatal row failure");
             var row = new Mock<IRow>(MockBehavior.Strict);
@@ -1144,7 +1144,7 @@ namespace Cassandra.Tests
             var provider = CreateProvider((_, __) => Task.FromResult(Rows(row.Object)));
             var cache = CreateCache(provider.Object);
 
-            var thrown = Assert.ThrowsAsync<OutOfMemoryException>(async () =>
+            var thrown = await Assert.ThrowsAsync<OutOfMemoryException>(async () =>
                 await cache.RefreshAsync().ConfigureAwait(false));
 
             Assert.That(thrown, Is.SameAs(fatal));

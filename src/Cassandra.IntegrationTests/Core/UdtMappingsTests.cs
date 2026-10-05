@@ -17,7 +17,7 @@
 using Cassandra.IntegrationTests.TestClusterManagement;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
-using CollectionAssert = NUnit.Framework.Legacy.CollectionAssert;
+using CollectionAssert = NUnit.Framework.CollectionAssert;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -148,7 +148,7 @@ namespace Cassandra.IntegrationTests.Core
         }
 
         [Test]
-        public void MappingDifferentKeyspaceWithoutSpecifyingIt()
+        public async Task MappingDifferentKeyspaceWithoutSpecifyingIt()
         {
             const string cqlType1 = "CREATE TYPE phone2 (alias2 text, number2 text, country_code2 int, verified_at timestamp, phone_type text)";
             const string cqlTable1 = "CREATE TABLE users2 (id int PRIMARY KEY, main_phone frozen<phone2>)";
@@ -162,7 +162,7 @@ namespace Cassandra.IntegrationTests.Core
             session.Execute(cqlType1);
             session.Execute(cqlTable1);
 
-            Assert.ThrowsAsync<InvalidTypeException>(() => session.UserDefinedTypes.DefineAsync(
+            await Assert.ThrowsAsync<InvalidTypeException>(() => session.UserDefinedTypes.DefineAsync(
                 UdtMap.For<Phone>("phone")
                       .Map(v => v.Alias, "alias")
                       .Map(v => v.CountryCode, "country_code")

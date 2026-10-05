@@ -24,7 +24,7 @@ using Cassandra.Tests.ExecutionProfiles;
 using Moq;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
-using CollectionAssert = NUnit.Framework.Legacy.CollectionAssert;
+using CollectionAssert = NUnit.Framework.CollectionAssert;
 #pragma warning disable 618
 
 namespace Cassandra.Tests

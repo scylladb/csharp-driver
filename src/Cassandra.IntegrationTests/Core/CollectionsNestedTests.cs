@@ -21,8 +21,8 @@ using Cassandra.IntegrationTests.TestBase;
 using Cassandra.Tests;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
-using StringAssert = NUnit.Framework.Legacy.StringAssert;
-using CollectionAssert = NUnit.Framework.Legacy.CollectionAssert;
+using StringAssert = NUnit.Framework.StringAssert;
+using CollectionAssert = NUnit.Framework.CollectionAssert;
 #pragma warning disable 618
 
 namespace Cassandra.IntegrationTests.Core

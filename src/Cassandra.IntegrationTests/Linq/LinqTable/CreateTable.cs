@@ -16,6 +16,7 @@
 
 using System;
 using System.Linq;
+using System.Threading.Tasks;
 using Cassandra.Data.Linq;
 using Cassandra.IntegrationTests.Linq.Structures;
 using Cassandra.IntegrationTests.SimulacronAPI;
@@ -347,7 +348,7 @@ namespace Cassandra.IntegrationTests.Linq.LinqTable
         }
 
         [Test, TestCassandraVersion(2, 0)]
-        public void TableCreateAsync_Create_KeyspaceOverride_NoSuchKeyspace()
+        public async Task TableCreateAsync_Create_KeyspaceOverride_NoSuchKeyspace()
         {
             var uniqueTableName = TestUtils.GetUniqueTableName();
             var uniqueKsName = TestUtils.GetUniqueKeyspaceName();
@@ -356,7 +357,7 @@ namespace Cassandra.IntegrationTests.Linq.LinqTable
                     .ThenServerError(ServerError.ConfigError, "msg"));
 
             var table = new Table<AllDataTypesEntity>(Session, new MappingConfiguration(), uniqueTableName, uniqueKsName);
-            Assert.ThrowsAsync<InvalidConfigurationInQueryException>(() => table.CreateAsync());
+            await Assert.ThrowsAsync<InvalidConfigurationInQueryException>(() => table.CreateAsync());
         }
 
         /// <summary>
@@ -378,7 +379,7 @@ namespace Cassandra.IntegrationTests.Linq.LinqTable
         }
 
         [Test, TestCassandraVersion(2, 0)]
-        public void TableCreateAsync_CreateIfNotExists_KeyspaceOverride_NoSuchKeyspace()
+        public async Task TableCreateAsync_CreateIfNotExists_KeyspaceOverride_NoSuchKeyspace()
         {
             var uniqueTableName = TestUtils.GetUniqueTableName();
             var uniqueKsName = TestUtils.GetUniqueKeyspaceName();
@@ -388,7 +389,7 @@ namespace Cassandra.IntegrationTests.Linq.LinqTable
                       .ThenServerError(ServerError.ConfigError, "msg"));
 
             var table = new Table<AllDataTypesEntity>(Session, new MappingConfiguration(), uniqueTableName, uniqueKsName);
-            Assert.ThrowsAsync<InvalidConfigurationInQueryException>(() => table.CreateIfNotExistsAsync());
+            await Assert.ThrowsAsync<InvalidConfigurationInQueryException>(() => table.CreateIfNotExistsAsync());
         }
 
         /// <summary>

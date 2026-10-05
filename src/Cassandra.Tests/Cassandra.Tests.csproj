@@ -15,7 +15,7 @@
     <ProjectReference Include="..\Extensions\Cassandra.AppMetrics\Cassandra.AppMetrics.csproj" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
     <PackageReference Include="Moq" Version="4.21.0" />
-    <PackageReference Include="NUnit" Version="4.5.0" />
+    <PackageReference Include="NUnit" Version="5.0.0" />
     <PackageReference Include="NUnit3TestAdapter" Version="6.3.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     <!-- Validates the DRIVER_CONFIG report against the normative v1 schema shipped alongside it. Version 9.4.0

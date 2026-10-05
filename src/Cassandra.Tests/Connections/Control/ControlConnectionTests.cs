@@ -32,7 +32,7 @@ using Cassandra.Tests.MetadataHelpers.TestHelpers;
 using Moq;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
-using CollectionAssert = NUnit.Framework.Legacy.CollectionAssert;
+using CollectionAssert = NUnit.Framework.CollectionAssert;
 
 namespace Cassandra.Tests.Connections.Control
 {
@@ -181,7 +181,7 @@ namespace Cassandra.Tests.Connections.Control
         }
 
         [Test]
-        public void Should_NotAttemptDownOrIgnoredHosts()
+        public async Task Should_NotAttemptDownOrIgnoredHosts()
         {
             var connectionOpenEnabled = true;
             Action<TestConfigurationBuilder> configAct = builder =>
@@ -254,7 +254,7 @@ namespace Cassandra.Tests.Connections.Control
 
                 connectionOpenEnabled = false;
 
-                var ex = Assert.ThrowsAsync<NoHostAvailableException>(() => cc.Reconnect(null));
+                var ex = await Assert.ThrowsAsync<NoHostAvailableException>(() => cc.Reconnect(null));
                 CollectionAssert.AreEquivalent(new[] { "127.0.0.1", "127.0.0.4" }, ex.Errors.Keys.Select(e => e.Address.ToString()));
             }
             finally
@@ -346,12 +346,12 @@ namespace Cassandra.Tests.Connections.Control
         [Test]
         [TestCase(true)]
         [TestCase(false)]
-        public void Should_ResolveContactPointsAndAttemptEveryOne_When_ContactPointResolutionReturnsMultiple(bool keepContactPointsUnresolved)
+        public async Task Should_ResolveContactPointsAndAttemptEveryOne_When_ContactPointResolutionReturnsMultiple(bool keepContactPointsUnresolved)
         {
             var createResult = CreateForContactPointTest(keepContactPointsUnresolved);
             var target = createResult.ControlConnection;
 
-            Assert.ThrowsAsync<NoHostAvailableException>(() => target.InitAsync());
+            await Assert.ThrowsAsync<NoHostAvailableException>(() => target.InitAsync());
 
             if (keepContactPointsUnresolved)
             {
@@ -374,7 +374,7 @@ namespace Cassandra.Tests.Connections.Control
         }
 
         [Test]
-        public void Should_ContinueControlCandidateFailoverWhenConnectionConstructionThrows()
+        public async Task Should_ContinueControlCandidateFailoverWhenConnectionConstructionThrows()
         {
             var attemptedSockets = new ConcurrentQueue<IPEndPoint>();
             var firstConstruction = true;
@@ -397,7 +397,7 @@ namespace Cassandra.Tests.Connections.Control
 
             try
             {
-                Assert.ThrowsAsync<NoHostAvailableException>(() => createResult.ControlConnection.InitAsync());
+                await Assert.ThrowsAsync<NoHostAvailableException>(() => createResult.ControlConnection.InitAsync());
                 CollectionAssert.Contains(attemptedSockets.ToArray(), _endpoint1);
                 CollectionAssert.Contains(attemptedSockets.ToArray(), _endpoint2);
             }
@@ -408,7 +408,7 @@ namespace Cassandra.Tests.Connections.Control
         }
 
         [Test]
-        public void Should_PreserveEarlierNonSocketFailureWhenLaterCandidateClosesDuringHandoff()
+        public async Task Should_PreserveEarlierNonSocketFailureWhenLaterCandidateClosesDuringHandoff()
         {
             var hostEndPoint = new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042);
             var firstEndPoint = new SniConnectionEndPoint(
@@ -464,7 +464,7 @@ namespace Cassandra.Tests.Connections.Control
 
             try
             {
-                var exception = Assert.ThrowsAsync<NoHostAvailableException>(
+                var exception = await Assert.ThrowsAsync<NoHostAvailableException>(
                     () => createResult.ControlConnection.InitAsync());
 
                 Assert.AreSame(authenticationFailure, exception.Errors[hostEndPoint]);
@@ -557,7 +557,7 @@ namespace Cassandra.Tests.Connections.Control
 
         [Test]
         [NonParallelizable]
-        public void Should_PropagateUnrecoveredContactPointResolutionFailureWithoutLoggingIt()
+        public async Task Should_PropagateUnrecoveredContactPointResolutionFailureWithoutLoggingIt()
         {
             var resolutionFailure = new InvalidOperationException("propagated contact-point resolution failure");
             var failingContactPoint = new Mock<IContactPoint>();
@@ -576,7 +576,7 @@ namespace Cassandra.Tests.Connections.Control
             {
                 using (createResult.ControlConnection)
                 {
-                    exception = Assert.ThrowsAsync<NoHostAvailableException>(
+                    exception = await Assert.ThrowsAsync<NoHostAvailableException>(
                         () => createResult.ControlConnection.InitAsync());
                 }
             }
@@ -594,7 +594,7 @@ namespace Cassandra.Tests.Connections.Control
 
         [Test]
         [NonParallelizable]
-        public void Should_NotLogEarlierCandidateFailureBeforePropagatingLaterFatalFailure()
+        public async Task Should_NotLogEarlierCandidateFailureBeforePropagatingLaterFatalFailure()
         {
             var recoveredFailure = new InvalidOperationException("recovered candidate before fatal");
             var fatalFailure = new OutOfMemoryException("propagated fatal candidate");
@@ -632,7 +632,7 @@ namespace Cassandra.Tests.Connections.Control
             {
                 using (createResult.ControlConnection)
                 {
-                    var actual = Assert.ThrowsAsync<OutOfMemoryException>(
+                    var actual = await Assert.ThrowsAsync<OutOfMemoryException>(
                         () => createResult.ControlConnection.InitAsync());
                     Assert.AreSame(fatalFailure, actual);
                 }
@@ -651,7 +651,7 @@ namespace Cassandra.Tests.Connections.Control
 
         [Test]
         [NonParallelizable]
-        public void Should_NotLogEarlierResolutionFailureBeforePropagatingLaterFatalResolution()
+        public async Task Should_NotLogEarlierResolutionFailureBeforePropagatingLaterFatalResolution()
         {
             var recoveredFailure = new InvalidOperationException("recovered resolution before fatal");
             var fatalFailure = new OutOfMemoryException("propagated fatal resolution");
@@ -678,7 +678,7 @@ namespace Cassandra.Tests.Connections.Control
             {
                 using (createResult.ControlConnection)
                 {
-                    var actual = Assert.ThrowsAsync<OutOfMemoryException>(
+                    var actual = await Assert.ThrowsAsync<OutOfMemoryException>(
                         () => createResult.ControlConnection.InitAsync());
                     Assert.AreSame(fatalFailure, actual);
                 }

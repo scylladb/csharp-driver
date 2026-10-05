@@ -25,7 +25,7 @@ using Cassandra.Serialization;
 
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
-using CollectionAssert = NUnit.Framework.Legacy.CollectionAssert;
+using CollectionAssert = NUnit.Framework.CollectionAssert;
 
 using PrepareFlags = Cassandra.Requests.InternalPrepareRequest.PrepareFlags;
 using QueryFlags = Cassandra.QueryProtocolOptions.QueryFlags;

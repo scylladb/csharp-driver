@@ -74,7 +74,7 @@ namespace Cassandra.Tests.Mapping
                 MaxPreparedStatementsThreshold = 0
             };
 
-            Assert.ThrowsAsync<InvalidQueryException>(async () =>
+            await Assert.ThrowsAsync<InvalidQueryException>(async () =>
                 await sf.GetStatementAsync(sessionMock.Object, cql).ConfigureAwait(false));
             Assert.AreEqual(0, Interlocked.Read(ref loggerHandler.WarningCount));
 

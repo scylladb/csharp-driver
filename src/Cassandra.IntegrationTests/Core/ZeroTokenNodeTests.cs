@@ -21,7 +21,7 @@ using Cassandra.IntegrationTests.TestClusterManagement;
 using Cassandra.Tests;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
-using CollectionAssert = NUnit.Framework.Legacy.CollectionAssert;
+using CollectionAssert = NUnit.Framework.CollectionAssert;
 
 namespace Cassandra.IntegrationTests.Core
 {
@@ -117,6 +117,8 @@ namespace Cassandra.IntegrationTests.Core
                 "{'class': 'NetworkTopologyStrategy', 'replication_factor': '3'}");
         }
 
+        // NUnit 5 deprecates Order; preserve the existing sequence of cluster tests.
+#pragma warning disable CS0618
         [Test]
         [Order(1)]
         public void Should_DiscoverZeroTokenNode_Without_Tokens()
@@ -320,6 +322,8 @@ namespace Cassandra.IntegrationTests.Core
         }
     }
 
+
+#pragma warning restore CS0618
     [TestFixture]
     [Category(TestCategory.RealCluster), Category(TestCategory.RealClusterLong)]
     [TestScyllaVersion(2025, 1)]

@@ -203,7 +203,7 @@ namespace Cassandra.Tests.Requests
                             .ConfigureAwait(false);
             var request = new InternalPrepareRequest(_serializer, "TEST", null, null);
 
-            var ex = Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
                 await mockResult.PrepareHandler.Prepare(
                     request,
                     mockResult.Session,

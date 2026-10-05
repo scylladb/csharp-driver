@@ -35,7 +35,7 @@ using Moq;
 using NUnit.Framework;
 
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
-using CollectionAssert = NUnit.Framework.Legacy.CollectionAssert;
+using CollectionAssert = NUnit.Framework.CollectionAssert;
 
 namespace Cassandra.Tests
 {
@@ -356,7 +356,7 @@ namespace Cassandra.Tests
             using (var cluster = CreateCluster(handlerMock.Object))
             using (var session = CreateSession(cluster, serializerManager, "ks1"))
             {
-                Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await Assert.ThrowsAsync<InvalidOperationException>(async () =>
                     await PrepareAsync(cluster, session, serializerManager, "SELECT * FROM table1").ConfigureAwait(false));
 
                 Assert.AreSame(
@@ -412,7 +412,7 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public void PrepareAsync_Should_Unregister_Preparation_When_Handler_Creation_Fails()
+        public async Task PrepareAsync_Should_Unregister_Preparation_When_Handler_Creation_Fails()
         {
             var serializerManager = new SerializerManager(ProtocolVersion.V4);
             var prepareHandlerFactory = new Mock<IPrepareHandlerFactory>();
@@ -428,7 +428,7 @@ namespace Cassandra.Tests
             using (var cluster = CreateCluster(prepareHandlerFactory.Object))
             using (var session = CreateSession(cluster, serializerManager, "ks1"))
             {
-                Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await Assert.ThrowsAsync<InvalidOperationException>(async () =>
                     await PrepareAsync(
                         cluster, session, serializerManager, "SELECT * FROM table1").ConfigureAwait(false));
 
@@ -587,7 +587,7 @@ namespace Cassandra.Tests
                 firstPrepareCompletion.SetResult(CreatePreparedStatement(
                     serializerManager, 1, query, keyspace, payload));
 
-                Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await Assert.ThrowsAsync<InvalidOperationException>(async () =>
                     await inFlight.ConfigureAwait(false));
                 Assert.IsFalse(cluster.InternalRef.PreparedQueries.ContainsKey(new byte[] { 1 }));
                 Assert.AreSame(
@@ -1008,7 +1008,7 @@ namespace Cassandra.Tests
                     serializerManager, 1, query, "ks2"));
 
                 // A caller that was already awaiting the invalidated task must not receive its invalid result.
-                Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await Assert.ThrowsAsync<InvalidOperationException>(async () =>
                     await preInvalidationPrepare.ConfigureAwait(false));
                 Assert.AreSame(
                     replacement,
@@ -1047,7 +1047,7 @@ namespace Cassandra.Tests
                 firstPrepareCompletion.SetResult(CreatePreparedStatement(
                     serializerManager, 1, query, "ks1"));
 
-                Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await Assert.ThrowsAsync<InvalidOperationException>(async () =>
                     await prepareTask.ConfigureAwait(false));
                 Assert.AreSame(
                     replacement,
@@ -1132,7 +1132,7 @@ namespace Cassandra.Tests
                 cluster.InternalRef.InvalidatePreparedStatement(first.Id, first.Cql, first.Keyspace);
                 secondPrepareCompletion.SetResult(CreatePreparedStatement(
                     serializerManager, 1, "SELECT * FROM table1", "ks1"));
-                Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await Assert.ThrowsAsync<InvalidOperationException>(async () =>
                     await inFlight.ConfigureAwait(false));
 
                 var replacement = await PrepareAsync(
@@ -1291,7 +1291,7 @@ namespace Cassandra.Tests
                 secondPrepareCompletion.SetResult(CreatePreparedStatement(
                     serializerManager, 2, "SELECT * FROM table1", "ks1"));
 
-                Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await Assert.ThrowsAsync<InvalidOperationException>(async () =>
                     await inFlight.ConfigureAwait(false));
                 Assert.IsFalse(cluster.InternalRef.PreparedQueries.ContainsKey(new byte[] { 2 }));
                 Assert.AreEqual(0, GetPrivateCollectionCount(cluster, "_preparedStatementCache"));
@@ -1340,7 +1340,7 @@ namespace Cassandra.Tests
 
                 firstPrepareCompletion.SetResult(CreatePreparedStatement(
                     serializerManager, 1, "SELECT * FROM table1", "ks1"));
-                Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await Assert.ThrowsAsync<InvalidOperationException>(async () =>
                     await invalidatedPrepare.ConfigureAwait(false));
 
                 Assert.AreSame(
@@ -1414,7 +1414,7 @@ namespace Cassandra.Tests
                     Monitor.Exit(trackingLock);
                 }
 
-                Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await Assert.ThrowsAsync<InvalidOperationException>(async () =>
                     await detachedPrepare.ConfigureAwait(false));
                 Assert.IsFalse(cluster.InternalRef.PreparedQueries.ContainsKey(new byte[] { 2 }));
                 Assert.AreSame(
@@ -1430,7 +1430,7 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public void PrepareAsync_Should_Not_Track_An_Orphaned_Prepare_Invalidated_Before_Registration()
+        public async Task PrepareAsync_Should_Not_Track_An_Orphaned_Prepare_Invalidated_Before_Registration()
         {
             var serializerManager = new SerializerManager(ProtocolVersion.V4);
             var prepareCompletion =
@@ -1466,7 +1466,7 @@ namespace Cassandra.Tests
                 prepareCompletion.SetResult(CreatePreparedStatement(
                     serializerManager, 1, "SELECT * FROM table1", "ks1"));
 
-                Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await Assert.ThrowsAsync<InvalidOperationException>(async () =>
                     await prepareTask.ConfigureAwait(false));
                 Assert.IsFalse(cluster.InternalRef.PreparedQueries.ContainsKey(new byte[] { 1 }));
                 Assert.AreEqual(0, GetPrivateCollectionCount(cluster, "_preparedStatementCache"));
