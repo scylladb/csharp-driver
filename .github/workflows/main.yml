@@ -96,6 +96,9 @@ jobs:
       - name: Run unit tests
         run: TARGET_FRAMEWORK=all make test-unit
 
+      - name: Test 3.22 package validation
+        run: python3 -m unittest discover -s build/tests -p 'test_validate_packages.py' -v
+
   build-examples:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
