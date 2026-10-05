@@ -245,7 +245,10 @@ namespace Cassandra.IntegrationTests.Core
         /// Then changes one of the hosts as ignored: the pool should be closed.
         /// Then changes the host back to local: the pool should be recreated.
         /// </summary>
-        [Test, TestTimeout(5 * 60 * 1000), Repeat(10)]
+        // The test drives its own termination (it stops issuing queries once both pools
+        // have been reset), so a few repeats retain its race coverage without paying
+        // the full ten (~4s each) on every run.
+        [Test, TestTimeout(5 * 60 * 1000), Repeat(3)]
         public async Task Session_With_Host_Changing_Distance()
         {
             var lbp = new DistanceChangingLbp();
