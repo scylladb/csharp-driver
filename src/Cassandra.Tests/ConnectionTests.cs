@@ -20,6 +20,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Connections;
@@ -50,6 +51,22 @@ namespace Cassandra.Tests
                 config,
                 new StartupRequestFactory(config.StartupOptionsFactory, isControlConnection: false),
                 NullConnectionObserver.Instance);
+        }
+
+        [Test]
+        public async Task SetKeyspace_Closes_Connection_When_Operations_Do_Not_Drain()
+        {
+            var config = new Configuration();
+            config.SocketOptions.SetReadTimeoutMillis(50);
+            var connection = GetConnectionMock(config).Object;
+            typeof(Connection).GetField("_keyspaceOperationsDrained", BindingFlags.Instance | BindingFlags.NonPublic)
+                .SetValue(connection, new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously));
+
+            var exception = await NUnit.Framework.Assert.ThrowsAsync<OperationTimedOutException>(
+                async () => await connection.SetKeyspace("other").ConfigureAwait(false));
+
+            Assert.IsTrue(exception.Message.Contains("50ms"), exception.ToString());
+            Assert.IsTrue(connection.IsClosed);
         }
 
         [Test]

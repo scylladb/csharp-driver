@@ -1109,11 +1109,34 @@ namespace Cassandra.Connections
             };
         }
 
-        private Task WaitForKeyspaceOperationsToDrainAsync()
+        private async Task WaitForKeyspaceOperationsToDrainAsync()
         {
+            Task drained;
             lock (_keyspaceOperationsLock)
             {
-                return _keyspaceOperationsDrained?.Task ?? TaskHelper.Completed;
+                drained = _keyspaceOperationsDrained?.Task;
+            }
+
+            if (drained == null)
+            {
+                return;
+            }
+
+            var timeoutMillis = Configuration.SocketOptions.ReadTimeoutMillis;
+            if (timeoutMillis <= 0)
+            {
+                // A disabled request read timeout must not leave the keyspace switch lock held forever.
+                timeoutMillis = SocketOptions.DefaultReadTimeoutMillis;
+            }
+
+            try
+            {
+                await drained.WaitAsync(TimeSpan.FromMilliseconds(timeoutMillis)).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                Close();
+                throw new OperationTimedOutException(EndPoint, timeoutMillis);
             }
         }
 
