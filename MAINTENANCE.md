@@ -69,9 +69,11 @@ prevent a dry run. Production runs fail closed while any selected-milestone
 individual package upload.
 
 Production requires a protected `release` environment restricted to `master`
-and approved by a reviewer who did not start the run. Store `SNK_KEY`,
-`NUGET_API_KEY`, and `RELEASE_GITHUB_TOKEN` as environment secrets. The last
-secret is a fine-grained personal access token for a designated release
+and approved by a reviewer who did not start the run. Store
+`RELEASE_GITHUB_TOKEN` as an environment secret. The existing repository
+secrets `SNK_KEY` and `NUGET_API_KEY` remain available to the release jobs;
+they can be moved to the release environment separately. The release token
+is a fine-grained personal access token for a designated release
 user, scoped to this repository with Contents write and Workflows write
 permissions. The workflow uses its default read-only token for gates and
 the release token only to create the tag and GitHub Release. Rotate the
