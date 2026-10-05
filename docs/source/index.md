@@ -247,6 +247,7 @@ ICluster cluster = Cluster.Builder()
 - ScyllaDB 5.x and above.
 - ScyllaDB Enterprise 2021.x and above.
 - Version 4 of the driver and its extension packages target .NET 10 (`net10.0`).
+- Builds from `master` use the C# language version supplied by the .NET 10 target framework.
 
 Applications that cannot target .NET 10 should remain on the latest 3.22.x
 release of all the packages they use: `ScyllaDBCSharpDriver`,

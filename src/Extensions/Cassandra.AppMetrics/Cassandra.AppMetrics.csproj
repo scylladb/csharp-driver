@@ -21,7 +21,6 @@
     <PackageLicenseFile>LICENSE.md</PackageLicenseFile>
     <RepositoryUrl>https://github.com/scylladb/csharp-driver</RepositoryUrl>
     <PackageProjectUrl>https://github.com/scylladb/csharp-driver</PackageProjectUrl>
-    <LangVersion>7.1</LangVersion>
   </PropertyGroup>
 
   <ItemGroup>

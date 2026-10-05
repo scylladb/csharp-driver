@@ -678,6 +678,18 @@ namespace Cassandra.Data.Linq
                 EvaluateCompositeColumn(columnExpression);
             }
 
+            // C# 14 can bind array.Contains to MemoryExtensions.Contains and insert
+            // an array-to-ReadOnlySpan conversion. Evaluate the array instead: a
+            // ReadOnlySpan cannot be boxed by DynamicInvoke.
+            if (parameterExpression is MethodCallExpression conversion &&
+                conversion.Type.IsByRefLike &&
+                conversion.Method.Name == "op_Implicit" &&
+                conversion.Arguments.Count == 1 &&
+                typeof(IEnumerable).IsAssignableFrom(conversion.Arguments[0].Type))
+            {
+                parameterExpression = conversion.Arguments[0];
+            }
+
             var values = Expression.Lambda(parameterExpression).Compile().DynamicInvoke() as IEnumerable;
             if (values == null)
             {
