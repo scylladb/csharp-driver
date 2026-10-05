@@ -704,7 +704,6 @@ def ensure_release(
         "/releases",
         {
             "tag_name": tag,
-            "target_commitish": target_commit,
             "name": tag,
             "draft": False,
             "prerelease": False,
