@@ -398,30 +398,23 @@ def require_release_tag_ruleset(api: Any) -> dict[str, Any]:
             isinstance(includes, list)
             and RELEASE_TAG_RULESET_PATTERN in includes
             and excludes == []
-            and {"creation", "update", "deletion"}.issubset(rule_types)
+            and {"update", "deletion"}.issubset(rule_types)
+            and "creation" not in rule_types
         ):
             protected.append(detail)
     require(
         len(protected) == 1,
-        "Expected exactly one active create/update/delete ruleset for "
+        "Expected exactly one active update/delete ruleset for "
         f"{RELEASE_TAG_RULESET_PATTERN}, found {len(protected)}",
     )
     return protected[0]
 
 
-def audit_release_tag_ruleset_bypass(api: Any, *, release_app_id: int) -> None:
-    require(release_app_id > 0, "Release App ID must be positive")
+def audit_release_tag_ruleset_bypass(api: Any) -> None:
     detail = require_release_tag_ruleset(api)
-    expected_bypass = [
-        {
-            "actor_id": release_app_id,
-            "actor_type": "Integration",
-            "bypass_mode": "always",
-        }
-    ]
     require(
-        detail.get("bypass_actors") == expected_bypass,
-        "Release tag ruleset must allow only the designated release App to bypass",
+        detail.get("bypass_actors") == [],
+        "Release tag ruleset must not have bypass actors",
     )
 
 
@@ -438,10 +431,13 @@ def preflight(
     branch = branch_for_version(version)
     target_commit = validate_commit(target_commit)
     workflow_sha = validate_commit(workflow_sha, "workflow SHA")
-    require(workflow_ref == "refs/heads/master", "Release workflow must run from master")
     require(
-        branch_tip(api, "master") == workflow_sha,
-        "Release workflow must run from the current protected master tip",
+        workflow_ref == f"refs/heads/{branch}",
+        f"Release workflow must run from {branch}",
+    )
+    require(
+        branch_tip(api, branch) == workflow_sha,
+        f"Release workflow must run from the current protected {branch} tip",
     )
     require(
         not (allow_blockers and recovery),
@@ -522,18 +518,16 @@ def verify_source(
         require(project_value(project, "Version") == version, f"Unexpected Version in {project}")
         require(project_value(project, "FileVersion") == version, f"Unexpected FileVersion in {project}")
     publish_workflow = source / ".github/workflows/publish.yml"
-    if branch == "3.22":
-        require(
-            not publish_workflow.exists(),
-            "3.22 still contains the legacy tag-triggered publish workflow",
-        )
-    else:
-        require(publish_workflow.is_file(), "Master release workflow is missing")
-        workflow_text = publish_workflow.read_text(encoding="utf-8")
-        require(
-            re.search(r"(?m)^\s{2}push:\s*$", workflow_text) is None,
-            "Master release workflow still has a push trigger",
-        )
+    require(publish_workflow.is_file(), f"{branch} release workflow is missing")
+    workflow_text = publish_workflow.read_text(encoding="utf-8")
+    require(
+        re.search(r"(?m)^\s{2}workflow_dispatch:\s*$", workflow_text) is not None,
+        f"{branch} release workflow must be manually dispatched",
+    )
+    require(
+        re.search(r"(?m)^\s{2}(push|release):\s*$", workflow_text) is None,
+        f"{branch} release workflow has an automatic publication trigger",
+    )
 
 
 def xml_child_text(parent: ElementTree.Element, name: str) -> str:
@@ -704,7 +698,6 @@ def ensure_release(
         "/releases",
         {
             "tag_name": tag,
-            "target_commitish": target_commit,
             "name": tag,
             "draft": False,
             "prerelease": False,
@@ -786,7 +779,6 @@ def parse_arguments(arguments: list[str] | None = None) -> argparse.Namespace:
 
     audit_parser = subparsers.add_parser("audit-ruleset")
     audit_parser.add_argument("--repository", required=True)
-    audit_parser.add_argument("--release-app-id", type=int, required=True)
 
     return parser.parse_args(arguments)
 
@@ -864,10 +856,7 @@ def main(arguments: list[str] | None = None) -> None:
             recovery=options.recovery,
         )
     elif options.command == "audit-ruleset":
-        audit_release_tag_ruleset_bypass(
-            github_api(options.repository),
-            release_app_id=options.release_app_id,
-        )
+        audit_release_tag_ruleset_bypass(github_api(options.repository))
     else:
         raise ReleaseError(f"Unknown command {options.command}")
 

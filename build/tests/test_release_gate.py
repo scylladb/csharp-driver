@@ -57,17 +57,10 @@ class FakeApi:
                     }
                 },
                 "rules": [
-                    {"type": "creation"},
                     {"type": "update"},
                     {"type": "deletion"},
                 ],
-                "bypass_actors": [
-                    {
-                        "actor_id": 12345,
-                        "actor_type": "Integration",
-                        "bypass_mode": "always",
-                    }
-                ],
+                "bypass_actors": [],
             }
         }
         self.tags = {}
@@ -154,8 +147,8 @@ class ReleaseGateTests(unittest.TestCase):
             api,
             version="3.22.0.5",
             target_commit=MAINTENANCE_SHA,
-            workflow_ref="refs/heads/master",
-            workflow_sha=MASTER_SHA,
+            workflow_ref="refs/heads/3.22",
+            workflow_sha=MAINTENANCE_SHA,
             allow_blockers=False,
             recovery=False,
         )
@@ -165,6 +158,23 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertEqual(1, context.milestone_number)
         self.assertEqual(1, api.issue_queries[-1]["milestone"])
         self.assertEqual(MAINTENANCE_SHA, api.last_run_query["head_sha"])
+
+    def test_preflight_accepts_master_dispatch_for_v4(self):
+        api = FakeApi()
+        api.milestones = [{"title": "v4.0.0.0", "state": "open", "number": 2}]
+
+        context = release_gate.preflight(
+            api,
+            version="4.0.0.0",
+            target_commit=MASTER_SHA,
+            workflow_ref="refs/heads/master",
+            workflow_sha=MASTER_SHA,
+            allow_blockers=False,
+            recovery=False,
+        )
+
+        self.assertEqual("master", context.branch)
+        self.assertEqual(MASTER_SHA, api.last_run_query["head_sha"])
 
     def test_dry_run_reports_but_allows_issue_and_pull_request_blockers(self):
         api = FakeApi()
@@ -183,8 +193,8 @@ class ReleaseGateTests(unittest.TestCase):
                 api,
                 version="3.22.0.5",
                 target_commit=MAINTENANCE_SHA,
-                workflow_ref="refs/heads/master",
-                workflow_sha=MASTER_SHA,
+                workflow_ref="refs/heads/3.22",
+                workflow_sha=MAINTENANCE_SHA,
                 allow_blockers=True,
                 recovery=False,
             )
@@ -204,8 +214,8 @@ class ReleaseGateTests(unittest.TestCase):
                 api,
                 version="3.22.0.5",
                 target_commit=MAINTENANCE_SHA,
-                workflow_ref="refs/heads/master",
-                workflow_sha=MASTER_SHA,
+                workflow_ref="refs/heads/3.22",
+                workflow_sha=MAINTENANCE_SHA,
                 allow_blockers=False,
                 recovery=False,
             )
@@ -229,9 +239,9 @@ class ReleaseGateTests(unittest.TestCase):
     def test_preflight_rejects_wrong_workflow_or_target_sha(self):
         api = FakeApi()
         for workflow_ref, workflow_sha, target_commit in (
-            ("refs/heads/topic", MASTER_SHA, MAINTENANCE_SHA),
-            ("refs/heads/master", "d" * 40, MAINTENANCE_SHA),
-            ("refs/heads/master", MASTER_SHA, "d" * 40),
+            ("refs/heads/topic", MAINTENANCE_SHA, MAINTENANCE_SHA),
+            ("refs/heads/3.22", "d" * 40, MAINTENANCE_SHA),
+            ("refs/heads/3.22", MAINTENANCE_SHA, "d" * 40),
         ):
             with self.subTest(
                 workflow_ref=workflow_ref,
@@ -265,8 +275,8 @@ class ReleaseGateTests(unittest.TestCase):
                 api,
                 version="3.22.0.5",
                 target_commit=MAINTENANCE_SHA,
-                workflow_ref="refs/heads/master",
-                workflow_sha=MASTER_SHA,
+                workflow_ref="refs/heads/3.22",
+                workflow_sha=MAINTENANCE_SHA,
                 allow_blockers=True,
                 recovery=False,
             )
@@ -275,13 +285,13 @@ class ReleaseGateTests(unittest.TestCase):
         api = FakeApi()
         api.rulesets = []
 
-        with self.assertRaisesRegex(release_gate.ReleaseError, "create/update/delete"):
+        with self.assertRaisesRegex(release_gate.ReleaseError, "update/delete"):
             release_gate.preflight(
                 api,
                 version="3.22.0.5",
                 target_commit=MAINTENANCE_SHA,
-                workflow_ref="refs/heads/master",
-                workflow_sha=MASTER_SHA,
+                workflow_ref="refs/heads/3.22",
+                workflow_sha=MAINTENANCE_SHA,
                 allow_blockers=False,
                 recovery=False,
             )
@@ -293,9 +303,15 @@ class ReleaseGateTests(unittest.TestCase):
         with self.assertRaises(release_gate.ReleaseError):
             release_gate.require_release_tag_ruleset(api)
 
-    def test_admin_ruleset_audit_requires_only_designated_app(self):
+    def test_tag_ruleset_must_allow_creation_by_actions_token(self):
         api = FakeApi()
-        release_gate.audit_release_tag_ruleset_bypass(api, release_app_id=12345)
+        api.ruleset_details[7]["rules"].append({"type": "creation"})
+        with self.assertRaisesRegex(release_gate.ReleaseError, "update/delete"):
+            release_gate.require_release_tag_ruleset(api)
+
+    def test_admin_ruleset_audit_rejects_bypass_actors(self):
+        api = FakeApi()
+        release_gate.audit_release_tag_ruleset_bypass(api)
         api.ruleset_details[7]["bypass_actors"].append(
             {
                 "actor_id": 5,
@@ -303,10 +319,8 @@ class ReleaseGateTests(unittest.TestCase):
                 "bypass_mode": "always",
             }
         )
-        with self.assertRaisesRegex(release_gate.ReleaseError, "only the designated"):
-            release_gate.audit_release_tag_ruleset_bypass(
-                api, release_app_id=12345
-            )
+        with self.assertRaisesRegex(release_gate.ReleaseError, "must not have bypass actors"):
+            release_gate.audit_release_tag_ruleset_bypass(api)
 
     def test_recovery_accepts_exact_tagged_ancestor_after_branch_advances(self):
         api = FakeApi()
@@ -321,8 +335,8 @@ class ReleaseGateTests(unittest.TestCase):
             api,
             version="3.22.0.5",
             target_commit=OLDER_MAINTENANCE_SHA,
-            workflow_ref="refs/heads/master",
-            workflow_sha=MASTER_SHA,
+            workflow_ref="refs/heads/3.22",
+            workflow_sha=MAINTENANCE_SHA,
             allow_blockers=False,
             recovery=True,
         )
@@ -368,7 +382,7 @@ class ReleaseGateTests(unittest.TestCase):
                     api.get("/milestones")
                 self.assertNotIn("secret-token", str(raised.exception))
 
-    def test_verify_source_checks_versions_and_disables_legacy_maintenance_workflow(self):
+    def test_verify_source_requires_manual_release_workflow(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory)
             self._write_projects(source, "3.22.0.5")
@@ -376,17 +390,26 @@ class ReleaseGateTests(unittest.TestCase):
                 ["git", "rev-parse"], 0, stdout=f"{MAINTENANCE_SHA}\n", stderr=""
             )
             with mock.patch.object(release_gate.subprocess, "run", return_value=completed):
+                with self.assertRaisesRegex(release_gate.ReleaseError, "workflow is missing"):
+                    release_gate.verify_source(
+                        source,
+                        version="3.22.0.5",
+                        branch="3.22",
+                        target_commit=MAINTENANCE_SHA,
+                    )
+            workflow = source / ".github/workflows/publish.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text("on:\n  workflow_dispatch:\n", encoding="utf-8")
+            with mock.patch.object(release_gate.subprocess, "run", return_value=completed):
                 release_gate.verify_source(
                     source,
                     version="3.22.0.5",
                     branch="3.22",
                     target_commit=MAINTENANCE_SHA,
                 )
-            workflow = source / ".github/workflows/publish.yml"
-            workflow.parent.mkdir(parents=True)
-            workflow.write_text("on:\n  push:\n", encoding="utf-8")
+            workflow.write_text("on:\n  workflow_dispatch:\n  push:\n", encoding="utf-8")
             with mock.patch.object(release_gate.subprocess, "run", return_value=completed):
-                with self.assertRaisesRegex(release_gate.ReleaseError, "legacy"):
+                with self.assertRaisesRegex(release_gate.ReleaseError, "automatic"):
                     release_gate.verify_source(
                         source,
                         version="3.22.0.5",
@@ -655,6 +678,7 @@ class ReleaseGateTests(unittest.TestCase):
             recovery=False,
         )
         self.assertIn("v3.22.0.5", api.releases)
+        self.assertNotIn("target_commitish", api.posts[-1][1])
         with self.assertRaisesRegex(release_gate.ReleaseError, "recovery mode"):
             release_gate.ensure_release(
                 api,
