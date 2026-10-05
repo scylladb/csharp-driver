@@ -409,19 +409,19 @@ def require_release_tag_ruleset(api: Any) -> dict[str, Any]:
     return protected[0]
 
 
-def audit_release_tag_ruleset_bypass(api: Any, *, release_app_id: int) -> None:
-    require(release_app_id > 0, "Release App ID must be positive")
+def audit_release_tag_ruleset_bypass(api: Any, *, release_user_id: int) -> None:
+    require(release_user_id > 0, "Release user ID must be positive")
     detail = require_release_tag_ruleset(api)
     expected_bypass = [
         {
-            "actor_id": release_app_id,
-            "actor_type": "Integration",
+            "actor_id": release_user_id,
+            "actor_type": "User",
             "bypass_mode": "always",
         }
     ]
     require(
         detail.get("bypass_actors") == expected_bypass,
-        "Release tag ruleset must allow only the designated release App to bypass",
+        "Release tag ruleset must allow only the designated release user to bypass",
     )
 
 
@@ -786,7 +786,7 @@ def parse_arguments(arguments: list[str] | None = None) -> argparse.Namespace:
 
     audit_parser = subparsers.add_parser("audit-ruleset")
     audit_parser.add_argument("--repository", required=True)
-    audit_parser.add_argument("--release-app-id", type=int, required=True)
+    audit_parser.add_argument("--release-user-id", type=int, required=True)
 
     return parser.parse_args(arguments)
 
@@ -866,7 +866,7 @@ def main(arguments: list[str] | None = None) -> None:
     elif options.command == "audit-ruleset":
         audit_release_tag_ruleset_bypass(
             github_api(options.repository),
-            release_app_id=options.release_app_id,
+            release_user_id=options.release_user_id,
         )
     else:
         raise ReleaseError(f"Unknown command {options.command}")

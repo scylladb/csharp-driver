@@ -64,7 +64,7 @@ class FakeApi:
                 "bypass_actors": [
                     {
                         "actor_id": 12345,
-                        "actor_type": "Integration",
+                        "actor_type": "User",
                         "bypass_mode": "always",
                     }
                 ],
@@ -293,9 +293,9 @@ class ReleaseGateTests(unittest.TestCase):
         with self.assertRaises(release_gate.ReleaseError):
             release_gate.require_release_tag_ruleset(api)
 
-    def test_admin_ruleset_audit_requires_only_designated_app(self):
+    def test_admin_ruleset_audit_requires_only_designated_user(self):
         api = FakeApi()
-        release_gate.audit_release_tag_ruleset_bypass(api, release_app_id=12345)
+        release_gate.audit_release_tag_ruleset_bypass(api, release_user_id=12345)
         api.ruleset_details[7]["bypass_actors"].append(
             {
                 "actor_id": 5,
@@ -305,7 +305,7 @@ class ReleaseGateTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(release_gate.ReleaseError, "only the designated"):
             release_gate.audit_release_tag_ruleset_bypass(
-                api, release_app_id=12345
+                api, release_user_id=12345
             )
 
     def test_recovery_accepts_exact_tagged_ancestor_after_branch_advances(self):

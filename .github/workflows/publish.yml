@@ -192,19 +192,11 @@ jobs:
             --version "$RELEASE_VERSION" \
             --github-output "$GITHUB_OUTPUT"
 
-      - name: Create short-lived release App token
-        id: release-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-          permission-contents: write
-
       - name: Recheck gate and create immutable tag
         env:
           GATE_TOKEN: ${{ github.token }}
           RECOVERY: ${{ inputs.resume_partial_publication }}
-          RELEASE_TOKEN: ${{ steps.release-token.outputs.token }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
           RELEASE_VERSION: ${{ inputs.version }}
           TARGET_COMMIT: ${{ inputs.target_commit }}
         run: |
@@ -273,7 +265,7 @@ jobs:
         env:
           GATE_TOKEN: ${{ github.token }}
           RECOVERY: ${{ inputs.resume_partial_publication }}
-          RELEASE_TOKEN: ${{ steps.release-token.outputs.token }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
           RELEASE_VERSION: ${{ inputs.version }}
           TARGET_COMMIT: ${{ inputs.target_commit }}
         run: |

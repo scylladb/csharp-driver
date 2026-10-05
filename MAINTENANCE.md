@@ -69,12 +69,18 @@ prevent a dry run. Production runs fail closed while any selected-milestone
 individual package upload.
 
 Production requires a protected `release` environment restricted to `master`
-and approved by a reviewer who did not start the run. Store
-`RELEASE_APP_PRIVATE_KEY`, `SNK_KEY`, and `NUGET_API_KEY` in that environment,
-with `RELEASE_APP_CLIENT_ID` as an environment variable. The release App must
-have repository Contents write permission only. An active tag ruleset must
-restrict creation, update, and deletion of `refs/tags/v*.*.*.*`, with only that
-App as a bypass actor.
+and approved by a reviewer who did not start the run. Store `SNK_KEY`,
+`NUGET_API_KEY`, and `RELEASE_GITHUB_TOKEN` as environment secrets. The last
+secret is a fine-grained personal access token for a designated release
+user, scoped to this repository with Contents write and Workflows write
+permissions. The workflow uses its default read-only token for gates and
+the release token only to create the tag and GitHub Release. Rotate the
+personal access token before it expires.
+
+An active tag ruleset must restrict creation, update, and deletion of
+`refs/tags/v*.*.*.*`, with only the designated release user as a bypass
+actor. This grants that user direct tag access, so keep the token in the
+protected environment and do not use it for routine repository work.
 
 After configuring the ruleset, an administrator with ruleset write access must
 verify the otherwise-hidden bypass list before production use:
@@ -82,7 +88,7 @@ verify the otherwise-hidden bypass list before production use:
 ```bash
 GITHUB_TOKEN=<admin-token> python3 build/release-gate.py audit-ruleset \
   --repository scylladb/csharp-driver \
-  --release-app-id <numeric-app-id>
+  --release-user-id <numeric-user-id>
 ```
 
 ### Partial-publication recovery
