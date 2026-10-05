@@ -7,7 +7,7 @@ This is the maintained 3.22 release line. It receives security and correctness
 fixes only; features and new public APIs belong on
 [`master`](https://github.com/scylladb/csharp-driver/tree/master). Maintenance
 continues until the project announces an end-of-life date in advance. See the
-[maintenance policy](https://github.com/scylladb/csharp-driver/blob/3.22/MAINTENANCE.md).
+[maintenance policy](https://github.com/scylladb/csharp-driver/blob/branch-3.22/MAINTENANCE.md).
 :::
 
 The driver targets .NET Standard 2.0. For more detailed information about platform compatibility, check [this section](#compatibility).

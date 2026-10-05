@@ -1,7 +1,7 @@
 # 3.22 maintenance policy
 
-The `3.22` branch is the maintained compatibility line for version 3 of the
-ScyllaDB C# Driver. It will remain supported until the project announces its
+The `branch-3.22` branch is the maintained compatibility line for version 3
+of the ScyllaDB C# Driver. It will remain supported until the project announces its
 end-of-life date in advance.
 
 Version 4 development takes place on
@@ -45,11 +45,11 @@ must not remove or break an API present in the previous 3.22 release.
    problem and its acceptance criteria.
 2. Fix and review the problem on `master` first.
 3. Cherry-pick only the focused fix and its tests with `git cherry-pick -x` to
-   a pull request targeting `3.22`.
-4. If the affected code exists only on `3.22`, link an issue that explains why
-   a `master` change is not applicable.
+   a pull request targeting `branch-3.22`.
+4. If the affected code exists only on `branch-3.22`, link an issue that
+   explains why a `master` change is not applicable.
 5. Run the maintenance validation matrix and resolve conflicts without merging
-   post-cut `master` into `3.22`.
+   post-cut `master` into `branch-3.22`.
 
 ## Release process
 
@@ -66,7 +66,7 @@ together. After publication, the GitHub Release and the `master` branch's
 documentation catalog must point to the same artifacts.
 
 Run the manual **Release NuGet packages** workflow from the protected
-`3.22` branch with the four-part version and its full tip commit SHA. The
+`branch-3.22` branch with the four-part version and its full tip commit SHA. The
 branch workflow calls the canonical release implementation on protected
 `master`; the branch-local dispatch lets its built-in Actions token tag the
 3.22 tip. A dry run signs, packs, validates, and retains all three packages
