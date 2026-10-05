@@ -5,7 +5,7 @@
   ],
   "baseBranchPatterns": [
     "master",
-    "3.22"
+    "branch-3.22"
   ],
   "osvVulnerabilityAlerts": true,
   "packageRules": [
@@ -21,7 +21,7 @@
     },
     {
       "description": "Allow only security updates on the 3.22 maintenance branch",
-      "matchBaseBranches": ["3.22"],
+      "matchBaseBranches": ["branch-3.22"],
       "matchPackageNames": ["*"],
       "enabled": false
     }

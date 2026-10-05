@@ -8,7 +8,7 @@ Version 4 of the driver targets .NET 10 (`net10.0`). For more detailed informati
 
 | Line | Status | Branch | Package target | Validated runtime |
 |---|---|---|---|---|
-| 3.22.x | Maintained; security and correctness fixes only | [`3.22`][branch-3-22] | `netstandard2.0` | .NET 6–.NET 9 |
+| 3.22.x | Maintained; security and correctness fixes only | [`branch-3.22`][branch-3-22] | `netstandard2.0` | .NET 6–.NET 9 |
 | 4.x | Active development; not yet released | [`master`][branch-master] | `net10.0` | .NET 10 |
 
 The 3.22.x line remains maintained until the project announces an end-of-life
@@ -289,7 +289,7 @@ Unless required by applicable law or agreed to in writing, software distributed 
 [implicit]: https://docs.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/implicit
 [dynamic]: https://msdn.microsoft.com/en-us/library/dd264736.aspx
 [dev-guide]: https://docs.scylladb.com/stable/get-started/develop-with-scylladb/index.html
-[branch-3-22]: https://github.com/scylladb/csharp-driver/tree/3.22
+[branch-3-22]: https://github.com/scylladb/csharp-driver/tree/branch-3.22
 [branch-master]: https://github.com/scylladb/csharp-driver/tree/master
 [maintenance-policy]: https://github.com/scylladb/csharp-driver/blob/master/MAINTENANCE.md
 

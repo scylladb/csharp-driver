@@ -5,7 +5,7 @@ and version 4 development.
 
 | Line | Status | Branch | Package target | Validated runtime |
 |---|---|---|---|---|
-| 3.22.x | Maintained; security and correctness fixes only | [`3.22`](https://github.com/scylladb/csharp-driver/tree/3.22) | `netstandard2.0` | .NET 6–.NET 9 |
+| 3.22.x | Maintained; security and correctness fixes only | [`branch-3.22`](https://github.com/scylladb/csharp-driver/tree/branch-3.22) | `netstandard2.0` | .NET 6–.NET 9 |
 | 4.x | Active development; not yet released | [`master`](https://github.com/scylladb/csharp-driver/tree/master) | `net10.0` | .NET 10 |
 
 The 3.22.x line remains supported until the project announces an end-of-life
@@ -14,7 +14,7 @@ announced date takes effect.
 
 ## 3.22 change policy
 
-The `3.22` branch accepts fixes for security vulnerabilities and incorrect
+The `branch-3.22` branch accepts fixes for security vulnerabilities and incorrect
 behavior, including regressions, data loss, resource leaks, and reliability
 defects. It also accepts the tests and documentation needed to demonstrate
 those fixes and the minimum compatible dependency update they require.
@@ -29,11 +29,11 @@ must not remove or break an existing public API.
    problem and its acceptance criteria.
 2. Fix and review the problem on `master` first.
 3. Cherry-pick only the focused fix and its tests with `git cherry-pick -x` to
-   a pull request targeting `3.22`.
-4. If affected code exists only on `3.22`, link an issue that explains why a
-   `master` change is not applicable.
+   a pull request targeting `branch-3.22`.
+4. If affected code exists only on `branch-3.22`, link an issue that explains
+   why a `master` change is not applicable.
 5. Resolve conflicts in the backport. Never merge post-cut `master` into
-   `3.22`.
+   `branch-3.22`.
 
 ## Releases
 
@@ -57,7 +57,7 @@ Release, then update the documentation catalog and `stable` pointer.
 ### Canonical release workflow
 
 Run **Release NuGet packages** from the protected branch being released:
-`3.22` for version 3.22.x, or `master` for version 4. The manual dispatch
+`branch-3.22` for version 3.22.x, or `master` for version 4. The manual dispatch
 must name the four-part version and the full commit SHA at that branch tip.
 The workflow uses release tooling checked out from protected `master`,
 resolves the exact `v<version>` milestone, verifies successful CI for that
@@ -72,7 +72,7 @@ prevent a dry run. Production runs fail closed while any selected-milestone
 individual package upload.
 
 Production requires a protected `release` environment restricted to
-`master` and `3.22`, approved by a reviewer who did not start the run. The
+`master` and `branch-3.22`, approved by a reviewer who did not start the run. The
 existing `SNK_KEY` and `NUGET_API_KEY` secrets are available to release jobs.
 The publishing job gives its built-in `GITHUB_TOKEN` Contents write only;
 other jobs retain read-only access. No GitHub App or personal access token
