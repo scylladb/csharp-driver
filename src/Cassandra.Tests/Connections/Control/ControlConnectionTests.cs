@@ -56,7 +56,8 @@ namespace Cassandra.Tests.Connections.Control
             IInternalCluster cluster = null,
             Configuration config = null,
             Metadata metadata = null,
-            Action<TestConfigurationBuilder> configBuilderAct = null)
+            Action<TestConfigurationBuilder> configBuilderAct = null,
+            IProtocolEventDebouncer eventDebouncer = null)
         {
             if (rows == null)
             {
@@ -111,7 +112,7 @@ namespace Cassandra.Tests.Connections.Control
                 Config = config,
                 ControlConnection = new ControlConnection(
                     cluster,
-                    GetEventDebouncer(config),
+                    eventDebouncer ?? GetEventDebouncer(config),
                     ProtocolVersion.MaxSupported,
                     config,
                     metadata,
