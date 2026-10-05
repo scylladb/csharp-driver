@@ -171,6 +171,25 @@ namespace Cassandra.Tests.Connections.Control
         }
 
         [Test]
+        public async Task Should_ScheduleHostsRefresh_AfterSuccessfulReconnect()
+        {
+            var eventDebouncer = new Mock<IProtocolEventDebouncer>();
+            eventDebouncer
+                .Setup(d => d.ScheduleEventAsync(It.IsAny<ProtocolEvent>(), false))
+                .Returns(Task.CompletedTask);
+
+            using (var cc = NewInstance(eventDebouncer: eventDebouncer.Object).ControlConnection)
+            {
+                await cc.InitAsync().ConfigureAwait(false);
+                await cc.Reconnect(null).ConfigureAwait(false);
+
+                eventDebouncer.Verify(
+                    d => d.ScheduleEventAsync(It.IsAny<ProtocolEvent>(), false),
+                    Times.Once());
+            }
+        }
+
+        [Test]
         public async Task Should_SetCurrentHost_When_ANewConnectionIsOpened()
         {
             using (var cc = NewInstance().ControlConnection)
