@@ -134,18 +134,88 @@ namespace Cassandra.Tests.Connections.Control
         }
 
         [Test]
-        public async Task Should_ScheduleHostsRefresh_AfterSuccessfulReconnect()
+        public async Task Should_RemoveStaleHost_AfterReconnectMissesTopologyEvent()
         {
+            // Issue #202: the reconnect's peers query still contains the removed node,
+            // and its REMOVED_NODE event was sent before the new subscription.
+            var refreshCount = 0;
+            var nodeDecommissioned = false;
+            Metadata metadata = null;
+            var connectionFactory = new FakeConnectionFactory(endpoint =>
+            {
+                var connection = new Mock<IConnection>();
+                connection.SetupGet(c => c.EndPoint).Returns(endpoint);
+                connection.Setup(c => c.Open()).Returns(() =>
+                    nodeDecommissioned && endpoint.SocketIpEndPoint.Equals(_endpoint1)
+                        ? Task.FromException<Cassandra.Responses.Response>(
+                            new SocketException((int)SocketError.ConnectionRefused))
+                        : Task.FromResult<Cassandra.Responses.Response>(null));
+                return connection.Object;
+            });
+            var topologyRefresher = new Mock<ITopologyRefresher>();
+            topologyRefresher
+                .Setup(r => r.RefreshNodeListAsync(
+                    It.IsAny<IConnectionEndPoint>(),
+                    It.IsAny<IConnection>(),
+                    It.IsAny<ISerializer>()))
+                .Returns<IConnectionEndPoint, IConnection, ISerializer>((endpoint, _, __) =>
+                {
+                    refreshCount++;
+                    if (refreshCount == 3)
+                    {
+                        // The delayed post-reconnect query now sees the new peers list.
+                        metadata.RemoveHost(_endpoint1);
+                    }
+                    return Task.FromResult(metadata.GetHost(endpoint.SocketIpEndPoint));
+                });
+            var topologyRefresherFactory = new Mock<ITopologyRefresherFactory>();
+            topologyRefresherFactory
+                .Setup(f => f.Create(It.IsAny<Metadata>(), It.IsAny<Configuration>()))
+                .Returns(topologyRefresher.Object);
             var eventDebouncer = new Mock<IProtocolEventDebouncer>();
             eventDebouncer
                 .Setup(d => d.ScheduleEventAsync(It.IsAny<ProtocolEvent>(), false))
-                .Returns(Task.CompletedTask);
+                .Returns<ProtocolEvent, bool>((ev, _) =>
+                {
+                    Assert.AreEqual(2, refreshCount);
+                    Assert.IsNotNull(metadata.GetHost(_endpoint1));
+                    return ev.Handler();
+                });
 
-            using (var cc = NewInstance(eventDebouncer: eventDebouncer.Object).ControlConnection)
+            var createResult = NewInstance(
+                configBuilderAct: builder =>
+                {
+                    builder.ConnectionFactory = connectionFactory;
+                    builder.TopologyRefresherFactory = topologyRefresherFactory.Object;
+                },
+                contactPointsFactory: config => new IContactPoint[]
+                {
+                    new IpLiteralContactPoint(_endpoint1.Address, config.ProtocolOptions, config.ServerNameResolver),
+                    new IpLiteralContactPoint(_endpoint2.Address, config.ProtocolOptions, config.ServerNameResolver)
+                },
+                eventDebouncer: eventDebouncer.Object);
+            metadata = createResult.Metadata;
+            metadata.Partitioner = "Murmur3Partitioner";
+            var row = TestHelper.CreateRow(new Dictionary<string, object>
+            {
+                { "data_center", "ut-dc" },
+                { "rack", "ut-rack" },
+                { "tokens", new string[0] }
+            });
+            metadata.AddHost(_endpoint1).SetInfo(row);
+            metadata.AddHost(_endpoint2).SetInfo(row);
+
+            using (var cc = createResult.ControlConnection)
             {
                 await cc.InitAsync().ConfigureAwait(false);
+                Assert.AreEqual(2, metadata.Hosts.Count);
+
+                nodeDecommissioned = true;
                 await cc.Reconnect(null).ConfigureAwait(false);
 
+                Assert.AreEqual(_endpoint2, cc.Host.Address);
+                Assert.AreEqual(3, refreshCount);
+                Assert.IsNull(metadata.GetHost(_endpoint1));
                 eventDebouncer.Verify(
                     d => d.ScheduleEventAsync(It.IsAny<ProtocolEvent>(), false),
                     Times.Once());
