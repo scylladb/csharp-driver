@@ -59,7 +59,8 @@ namespace Cassandra.Tests.Connections.Control
             Configuration config = null,
             Metadata metadata = null,
             Action<TestConfigurationBuilder> configBuilderAct = null,
-            Func<Configuration, IEnumerable<IContactPoint>> contactPointsFactory = null)
+            Func<Configuration, IEnumerable<IContactPoint>> contactPointsFactory = null,
+            IProtocolEventDebouncer eventDebouncer = null)
         {
             if (rows == null)
             {
@@ -124,12 +125,31 @@ namespace Cassandra.Tests.Connections.Control
                 Config = config,
                 ControlConnection = new ControlConnection(
                     cluster,
-                    GetEventDebouncer(config),
+                    eventDebouncer ?? GetEventDebouncer(config),
                     ProtocolVersion.MaxSupported,
                     config,
                     metadata,
                     contactPoints)
             };
+        }
+
+        [Test]
+        public async Task Should_ScheduleHostsRefresh_AfterSuccessfulReconnect()
+        {
+            var eventDebouncer = new Mock<IProtocolEventDebouncer>();
+            eventDebouncer
+                .Setup(d => d.ScheduleEventAsync(It.IsAny<ProtocolEvent>(), false))
+                .Returns(Task.CompletedTask);
+
+            using (var cc = NewInstance(eventDebouncer: eventDebouncer.Object).ControlConnection)
+            {
+                await cc.InitAsync().ConfigureAwait(false);
+                await cc.Reconnect(null).ConfigureAwait(false);
+
+                eventDebouncer.Verify(
+                    d => d.ScheduleEventAsync(It.IsAny<ProtocolEvent>(), false),
+                    Times.Once());
+            }
         }
 
         [Test]
