@@ -15,6 +15,7 @@
 //
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -26,6 +27,8 @@ using Cassandra.IntegrationTests.TestClusterManagement.Simulacron;
 using Cassandra.Tasks;
 
 using Newtonsoft.Json.Linq;
+
+using NUnit.Framework;
 
 namespace Cassandra.IntegrationTests.TestClusterManagement
 {
@@ -40,32 +43,47 @@ namespace Cassandra.IntegrationTests.TestClusterManagement
 
         private volatile bool _initialized;
 
-        private static volatile SimulacronManager _currentInstance = null;
-
-        private static readonly object GlobalLock = new object();
+        private readonly object _startLock = new object();
 
         private readonly TestHttpClient _testHttpClient;
 
-        public static SimulacronManager DefaultInstance { get; } = new SimulacronManager();
+        private static readonly ConcurrentDictionary<string, SimulacronManager> WorkerInstances =
+            new ConcurrentDictionary<string, SimulacronManager>();
 
-        public static SimulacronManager InstancePeersV2Tests { get; } = new SimulacronManager(9011);
+        private static int _workerSlot;
+
+        public static SimulacronManager InstancePeersV2Tests { get; } =
+            new SimulacronManager(8298, "127.0.0.101", 9011);
 
         public Uri BaseAddress => new Uri($"http://127.0.0.1:{HttpPort}");
 
-        public int? StartPort { get; } = null;
+        public int? StartPort { get; }
 
-        public string StartIp { get; } = "127.0.0.101";
+        public string StartIp { get; }
 
-        public int HttpPort { get; } = 8188;
+        public int HttpPort { get; }
 
-        private SimulacronManager()
+        /// <summary>
+        /// One simulacron JVM per NUnit worker, on its own HTTP port and node IP range, so
+        /// parallelizable fixtures neither share a process nor collide on node addresses.
+        /// <see cref="TestContext.WorkerId"/> is null for tests on the non-parallel queue,
+        /// which all share slot 0.
+        /// </summary>
+        public static SimulacronManager DefaultInstance =>
+            WorkerInstances.GetOrAdd(
+                TestContext.CurrentContext?.WorkerId ?? "0",
+                _ =>
+                {
+                    var slot = Interlocked.Increment(ref _workerSlot);
+                    return new SimulacronManager(8188 + slot, "127.0." + slot + ".101", null);
+                });
+
+        private SimulacronManager(int httpPort, string startIp, int? startPort)
         {
-            _testHttpClient = new TestHttpClient(BaseAddress);
-        }
-
-        private SimulacronManager(int? startPort) : this()
-        {
+            HttpPort = httpPort;
+            StartIp = startIp;
             StartPort = startPort;
+            _testHttpClient = new TestHttpClient(BaseAddress);
         }
 
         public static SimulacronManager GetForPeersTests()
@@ -80,19 +98,12 @@ namespace Cassandra.IntegrationTests.TestClusterManagement
                 return;
             }
 
-            lock (SimulacronManager.GlobalLock)
+            lock (_startLock)
             {
                 if (_initialized)
                 {
                     return;
                 }
-
-                if (SimulacronManager._currentInstance != null)
-                {
-                    SimulacronManager._currentInstance.Stop();
-                }
-
-                SimulacronManager._currentInstance = this;
 
                 var started = false;
                 var errorMessage = "Simulacron is taking too long to start. Aborting initialization...";
@@ -154,12 +165,21 @@ namespace Cassandra.IntegrationTests.TestClusterManagement
                 {
                     Trace.TraceError(errorMessage);
                     Stop();
-                    SimulacronManager._currentInstance = null;
                     throw new Exception("Simulacron failed to start! " + Environment.NewLine + errorMessage);
                 }
                 _initialized = true;
                 Trace.TraceInformation("Simulacron started");
             }
+        }
+
+        /// <summary>Stops every per-worker simulacron JVM (no-op for ones never started).</summary>
+        public static void StopAll()
+        {
+            foreach (var instance in WorkerInstances.Values)
+            {
+                instance.Stop();
+            }
+            InstancePeersV2Tests.Stop();
         }
 
         public void Stop()

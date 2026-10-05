@@ -29,27 +29,30 @@ using Assert = NUnit.Framework.Legacy.ClassicAssert;
 
 namespace Cassandra.IntegrationTests
 {
-    [TestFixture, Category(TestCategory.Short)]
+    // Simulacron fixtures are self-contained: unless a fixture opts into a shared
+    // cluster, every test creates and disposes its own simulacron cluster, and
+    // SimulacronManager.DefaultInstance gives each NUnit worker its own JVM (its own
+    // HTTP port and node IP range), so these run in parallel safely. Each test gets
+    // its own fixture instance so the TestCluster/Session fields do not race.
+    [TestFixture, Category(TestCategory.Short), Parallelizable(ParallelScope.All)]
+    [FixtureLifeCycle(LifeCycle.InstancePerTestCase)]
     public abstract class SimulacronTest : TestGlobals
     {
-        private readonly bool _shared;
         private readonly SimulacronOptions _options;
         private readonly bool _connect;
         private readonly string _keyspace;
         private readonly SimulacronManager _simulacronManager;
 
-        protected SimulacronTest() : this(false, null, true, null, null)
+        protected SimulacronTest() : this(null, true, null, null)
         {
         }
 
         protected SimulacronTest(
-            bool shared = false,
             SimulacronOptions options = null,
             bool connect = true,
             string keyspace = null,
             SimulacronManager simulacronManager = null)
         {
-            _shared = shared;
             _options = options ?? new SimulacronOptions();
             _connect = connect;
             _keyspace = keyspace;
@@ -151,40 +154,16 @@ namespace Cassandra.IntegrationTests
             throw new NotSupportedException("Unrecognized cassandra version: " + cassandraVersion);
         }
 
-        [OneTimeSetUp]
-        public virtual void OneTimeSetUp()
-        {
-            if (_shared)
-            {
-                Init();
-            }
-        }
-
-        [OneTimeTearDown]
-        public virtual void OneTimeTearDown()
-        {
-            if (_shared)
-            {
-                Dispose();
-            }
-        }
-
         [SetUp]
         public virtual void SetUp()
         {
-            if (!_shared)
-            {
-                Init();
-            }
+            Init();
         }
 
         [TearDown]
         public virtual void TearDown()
         {
-            if (!_shared)
-            {
-                Dispose();
-            }
+            Dispose();
         }
 
         private void Init()
