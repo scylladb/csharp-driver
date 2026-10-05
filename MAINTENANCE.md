@@ -65,12 +65,14 @@ Release tags use the four-part package version prefixed with `v`, for example
 together. After publication, the GitHub Release and the `master` branch's
 documentation catalog must point to the same artifacts.
 
-Release orchestration lives only on the protected `master` branch. Run the
-manual **Release NuGet packages** workflow there with the four-part version and
-the full commit SHA at the tip of `3.22`. A dry run signs, packs, validates, and
-retains all three packages without creating a tag, NuGet package, or GitHub
-Release. Production remains blocked until the selected milestone has no open
-`release-blocker` issue or pull request.
+Run the manual **Release NuGet packages** workflow from the protected
+`3.22` branch with the four-part version and its full tip commit SHA. The
+branch workflow calls the canonical release implementation on protected
+`master`; the branch-local dispatch lets its built-in Actions token tag the
+3.22 tip. A dry run signs, packs, validates, and retains all three packages
+without creating a tag, NuGet package, or GitHub Release. Production remains
+blocked until the selected milestone has no open `release-blocker` issue or
+pull request.
 
 If publication stops after creating the immutable tag or publishing one of the
 packages, fix any newly opened blocker and rerun the same version and tagged

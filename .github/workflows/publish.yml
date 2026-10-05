@@ -1,0 +1,44 @@
+name: Release NuGet packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Four-part 3.22 package version without the v prefix
+        type: string
+        required: true
+      target_commit:
+        description: Full 40-character SHA at the protected 3.22 branch tip
+        type: string
+        required: true
+      dry_run:
+        description: Sign, pack, validate, and retain artifacts without publishing
+        type: boolean
+        required: true
+        default: true
+      resume_partial_publication:
+        description: Resume the exact tagged commit after a partial NuGet publication
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  actions: read
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  release:
+    permissions:
+      actions: read
+      contents: write
+      issues: read
+      pull-requests: read
+    uses: scylladb/csharp-driver/.github/workflows/publish.yml@master
+    with:
+      version: ${{ inputs.version }}
+      target_commit: ${{ inputs.target_commit }}
+      dry_run: ${{ inputs.dry_run }}
+      resume_partial_publication: ${{ inputs.resume_partial_publication }}
+    secrets: inherit
