@@ -1,16 +1,16 @@
 # 3.22 maintenance policy
 
-The `3.22` branch is the compatibility maintenance line. It accepts security
-and correctness fixes only until end of life is announced. Do not add features
+The `branch-3.22` branch is the compatibility maintenance line. It accepts
+security and correctness fixes only until end of life is announced. Do not add features
 or new public APIs.
 
 ## Change admission
 
 - Implement fixes on `master` first, then cherry-pick the focused commits to
-  `3.22`.
-- A fix that applies only to legacy code may start on `3.22` when its pull
+  `branch-3.22`.
+- A fix that applies only to legacy code may start on `branch-3.22` when its pull
   request links an issue explaining why no `master` change applies.
-- Never merge `master` into `3.22` after the branch cut. Backport individual
+- Never merge `master` into `branch-3.22` after the branch cut. Backport individual
   reviewed commits instead.
 - Do not remove or break public APIs. Dependency changes must be required for a
   security or correctness fix and should use the smallest compatible update.

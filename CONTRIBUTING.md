@@ -2,7 +2,7 @@
 
 When contributing to this repository, please first discuss the changes you wish to make via [Scylla Slack channel][scylla-slack]
 
-Changes targeting the `3.22` branch must also follow the
+Changes targeting the `branch-3.22` branch must also follow the
 [3.22 maintenance policy](MAINTENANCE.md).
 
 ## Automated checks - Code Analyzers

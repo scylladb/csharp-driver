@@ -8,7 +8,7 @@ on:
         type: string
         required: true
       target_commit:
-        description: Full 40-character SHA at the protected 3.22 branch tip
+        description: Full 40-character SHA at the protected branch-3.22 tip
         type: string
         required: true
       dry_run:
