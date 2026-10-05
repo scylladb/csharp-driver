@@ -22,6 +22,7 @@ using System.Threading;
 using System.Threading.Tasks;
 
 using Cassandra.IntegrationTests.TestBase;
+using Cassandra.IntegrationTests.TestClusterManagement;
 using Cassandra.SessionManagement;
 using Cassandra.Tests;
 
