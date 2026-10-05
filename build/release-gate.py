@@ -224,7 +224,7 @@ def normalized_package_version(version: str) -> str:
 def branch_for_version(version: str) -> str:
     major, minor, _, _ = parse_version(version)
     if (major, minor) == (3, 22):
-        return "3.22"
+        return "branch-3.22"
     if major == 4:
         return "master"
     raise ReleaseError(f"Version {version} does not belong to a releasable branch")

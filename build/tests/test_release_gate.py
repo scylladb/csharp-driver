@@ -24,7 +24,7 @@ OLDER_MAINTENANCE_SHA = "c" * 40
 
 class FakeApi:
     def __init__(self):
-        self.branches = {"master": MASTER_SHA, "3.22": MAINTENANCE_SHA}
+        self.branches = {"master": MASTER_SHA, "branch-3.22": MAINTENANCE_SHA}
         self.milestones = [
             {"title": "v3.22.0.5", "state": "open", "number": 1},
             {"title": "v4.0.0.0", "state": "open", "number": 2},
@@ -34,7 +34,7 @@ class FakeApi:
         self.runs = [
             {
                 "head_sha": MAINTENANCE_SHA,
-                "head_branch": "3.22",
+                "head_branch": "branch-3.22",
                 "event": "push",
                 "conclusion": "success",
             },
@@ -129,7 +129,7 @@ class FakeApi:
 
 class ReleaseGateTests(unittest.TestCase):
     def test_version_mapping_and_nuget_normalization(self):
-        self.assertEqual("3.22", release_gate.branch_for_version("3.22.0.5"))
+        self.assertEqual("branch-3.22", release_gate.branch_for_version("3.22.0.5"))
         self.assertEqual("master", release_gate.branch_for_version("4.0.0.0"))
         self.assertEqual("4.0.0", release_gate.normalized_package_version("4.0.0.0"))
         self.assertEqual(
@@ -147,13 +147,13 @@ class ReleaseGateTests(unittest.TestCase):
             api,
             version="3.22.0.5",
             target_commit=MAINTENANCE_SHA,
-            workflow_ref="refs/heads/3.22",
+            workflow_ref="refs/heads/branch-3.22",
             workflow_sha=MAINTENANCE_SHA,
             allow_blockers=False,
             recovery=False,
         )
 
-        self.assertEqual("3.22", context.branch)
+        self.assertEqual("branch-3.22", context.branch)
         self.assertEqual("v3.22.0.5", context.tag)
         self.assertEqual(1, context.milestone_number)
         self.assertEqual(1, api.issue_queries[-1]["milestone"])
@@ -193,7 +193,7 @@ class ReleaseGateTests(unittest.TestCase):
                 api,
                 version="3.22.0.5",
                 target_commit=MAINTENANCE_SHA,
-                workflow_ref="refs/heads/3.22",
+                workflow_ref="refs/heads/branch-3.22",
                 workflow_sha=MAINTENANCE_SHA,
                 allow_blockers=True,
                 recovery=False,
@@ -214,7 +214,7 @@ class ReleaseGateTests(unittest.TestCase):
                 api,
                 version="3.22.0.5",
                 target_commit=MAINTENANCE_SHA,
-                workflow_ref="refs/heads/3.22",
+                workflow_ref="refs/heads/branch-3.22",
                 workflow_sha=MAINTENANCE_SHA,
                 allow_blockers=False,
                 recovery=False,
@@ -240,8 +240,9 @@ class ReleaseGateTests(unittest.TestCase):
         api = FakeApi()
         for workflow_ref, workflow_sha, target_commit in (
             ("refs/heads/topic", MAINTENANCE_SHA, MAINTENANCE_SHA),
-            ("refs/heads/3.22", "d" * 40, MAINTENANCE_SHA),
-            ("refs/heads/3.22", MAINTENANCE_SHA, "d" * 40),
+            ("refs/heads/3.22", MAINTENANCE_SHA, MAINTENANCE_SHA),
+            ("refs/heads/branch-3.22", "d" * 40, MAINTENANCE_SHA),
+            ("refs/heads/branch-3.22", MAINTENANCE_SHA, "d" * 40),
         ):
             with self.subTest(
                 workflow_ref=workflow_ref,
@@ -264,7 +265,7 @@ class ReleaseGateTests(unittest.TestCase):
         api.runs = [
             {
                 "head_sha": MAINTENANCE_SHA,
-                "head_branch": "3.22",
+                "head_branch": "branch-3.22",
                 "event": "pull_request",
                 "conclusion": "success",
             }
@@ -275,7 +276,7 @@ class ReleaseGateTests(unittest.TestCase):
                 api,
                 version="3.22.0.5",
                 target_commit=MAINTENANCE_SHA,
-                workflow_ref="refs/heads/3.22",
+                workflow_ref="refs/heads/branch-3.22",
                 workflow_sha=MAINTENANCE_SHA,
                 allow_blockers=True,
                 recovery=False,
@@ -290,7 +291,7 @@ class ReleaseGateTests(unittest.TestCase):
                 api,
                 version="3.22.0.5",
                 target_commit=MAINTENANCE_SHA,
-                workflow_ref="refs/heads/3.22",
+                workflow_ref="refs/heads/branch-3.22",
                 workflow_sha=MAINTENANCE_SHA,
                 allow_blockers=False,
                 recovery=False,
@@ -324,7 +325,7 @@ class ReleaseGateTests(unittest.TestCase):
 
     def test_recovery_accepts_exact_tagged_ancestor_after_branch_advances(self):
         api = FakeApi()
-        api.branches["3.22"] = MAINTENANCE_SHA
+        api.branches["branch-3.22"] = MAINTENANCE_SHA
         api.tags["v3.22.0.5"] = {
             "object": {"type": "commit", "sha": OLDER_MAINTENANCE_SHA}
         }
@@ -335,7 +336,7 @@ class ReleaseGateTests(unittest.TestCase):
             api,
             version="3.22.0.5",
             target_commit=OLDER_MAINTENANCE_SHA,
-            workflow_ref="refs/heads/3.22",
+            workflow_ref="refs/heads/branch-3.22",
             workflow_sha=MAINTENANCE_SHA,
             allow_blockers=False,
             recovery=True,
@@ -351,7 +352,7 @@ class ReleaseGateTests(unittest.TestCase):
         with self.assertRaisesRegex(release_gate.ReleaseError, "Recovery tag"):
             release_gate.require_release_target(
                 api,
-                branch="3.22",
+                branch="branch-3.22",
                 tag="v3.22.0.5",
                 target_commit=OLDER_MAINTENANCE_SHA,
                 recovery=True,
@@ -394,7 +395,7 @@ class ReleaseGateTests(unittest.TestCase):
                     release_gate.verify_source(
                         source,
                         version="3.22.0.5",
-                        branch="3.22",
+                        branch="branch-3.22",
                         target_commit=MAINTENANCE_SHA,
                     )
             workflow = source / ".github/workflows/publish.yml"
@@ -404,7 +405,7 @@ class ReleaseGateTests(unittest.TestCase):
                 release_gate.verify_source(
                     source,
                     version="3.22.0.5",
-                    branch="3.22",
+                    branch="branch-3.22",
                     target_commit=MAINTENANCE_SHA,
                 )
             workflow.write_text("on:\n  workflow_dispatch:\n  push:\n", encoding="utf-8")
@@ -413,7 +414,7 @@ class ReleaseGateTests(unittest.TestCase):
                     release_gate.verify_source(
                         source,
                         version="3.22.0.5",
-                        branch="3.22",
+                        branch="branch-3.22",
                         target_commit=MAINTENANCE_SHA,
                     )
 
