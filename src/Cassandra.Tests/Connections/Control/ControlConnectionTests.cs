@@ -56,7 +56,8 @@ namespace Cassandra.Tests.Connections.Control
             IInternalCluster cluster = null,
             Configuration config = null,
             Metadata metadata = null,
-            Action<TestConfigurationBuilder> configBuilderAct = null)
+            Action<TestConfigurationBuilder> configBuilderAct = null,
+            IProtocolEventDebouncer eventDebouncer = null)
         {
             if (rows == null)
             {
@@ -111,7 +112,7 @@ namespace Cassandra.Tests.Connections.Control
                 Config = config,
                 ControlConnection = new ControlConnection(
                     cluster,
-                    GetEventDebouncer(config),
+                    eventDebouncer ?? GetEventDebouncer(config),
                     ProtocolVersion.MaxSupported,
                     config,
                     metadata,
@@ -123,6 +124,50 @@ namespace Cassandra.Tests.Connections.Control
                             config.ServerNameResolver)
                     })
             };
+        }
+
+        [Test]
+        public async Task Should_ShareReconnect_When_ConnectionClosesDuringHostDownRecovery()
+        {
+            var reconnectOpen = new TaskCompletionSource<Cassandra.Responses.Response>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var createdCount = 0;
+            var connectionFactory = new FakeConnectionFactory(endpoint =>
+            {
+                var connection = new Mock<IConnection>();
+                connection.SetupGet(c => c.EndPoint).Returns(endpoint);
+                if (System.Threading.Interlocked.Increment(ref createdCount) == 2)
+                {
+                    connection.Setup(c => c.Open()).Returns(reconnectOpen.Task);
+                }
+                return connection.Object;
+            });
+            var eventDebouncer = new Mock<IProtocolEventDebouncer>();
+            eventDebouncer.Setup(d => d.ScheduleEventAsync(It.IsAny<ProtocolEvent>(), false))
+                .Returns(Task.CompletedTask);
+            var createResult = NewInstance(
+                configBuilderAct: builder => builder.ConnectionFactory = connectionFactory,
+                eventDebouncer: eventDebouncer.Object);
+
+            using (var cc = createResult.ControlConnection)
+            {
+                await cc.InitAsync().ConfigureAwait(false);
+                var firstConnection = connectionFactory.CreatedConnections[_endpoint1].Single();
+
+                // Host-down recovery and the old connection's closing notification overlap.
+                cc.Host.SetDown();
+                cc.OnConnectionClosing(firstConnection);
+                var joinedReconnect = cc.Reconnect(firstConnection);
+                Assert.AreEqual(2, createdCount);
+
+                reconnectOpen.SetResult(null);
+                await joinedReconnect.ConfigureAwait(false);
+                Assert.AreEqual(2, createdCount);
+
+                var secondConnection = connectionFactory.CreatedConnections[_endpoint1].Last();
+                cc.OnConnectionClosing(secondConnection);
+                TestHelper.RetryAssert(() => Assert.AreEqual(3, createdCount), 100, 20);
+            }
         }
 
         [Test]
