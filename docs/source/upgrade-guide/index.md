@@ -49,6 +49,14 @@ Example: `3.4.1`
 
 These releases only contain bug fixes so they will never contain changes to the driver's public API.
 
+## 3.22.0.5
+
+This maintenance release keeps the `netstandard2.0` shipping target and the public APIs from `3.22.0.4`. It adds driver configuration reporting on the control connection, server result-metadata ID handling, client routes discovery, and a cluster-scoped prepared-statement cache. These changes entered the 3.22 branch before its maintenance policy was established.
+
+Two public configuration members are available: `Builder.WithDriverConfigReporting(bool)` and `Configuration.DriverConfigReportingEnabled`. Reporting is enabled by default and can be disabled with the builder method.
+
+Invalid query, connect, and request-maximum settings that would make every request fail are now rejected when configured. The release also fixes target-shard preservation during connection retries, custom-payload prepare responses, control-connection recovery, and shard-aware pool recovery.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.
