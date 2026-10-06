@@ -1,0 +1,87 @@
+name: Label support-only release changes
+
+on:
+  pull_request_target:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Merged PR number to classify again
+        required: true
+        type: number
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Label support-only PRs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
+        run: |
+          api_with_retry() {
+            local attempt delay output
+            output=$(mktemp "$RUNNER_TEMP/gh-api.XXXXXX")
+            for ((attempt = 1; attempt <= 10; attempt++)); do
+              if gh api "$@" > "$output"; then
+                cat "$output"
+                rm -f "$output"
+                return 0
+              fi
+              if ((attempt == 10)); then
+                rm -f "$output"
+                echo "GitHub API request failed after 10 attempts" >&2
+                return 1
+              fi
+              delay=$((1 << (attempt - 1)))
+              if ((delay > 16)); then delay=16; fi
+              echo "GitHub API request failed (attempt $attempt/10); retrying in ${delay}s" >&2
+              sleep "$delay"
+            done
+          }
+
+          api_with_retry "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" > "$RUNNER_TEMP/pr.json"
+          if [[ $(jq -r .merged_at "$RUNNER_TEMP/pr.json") == null ]]; then
+            echo "PR #$PR_NUMBER has not been merged" >&2
+            exit 1
+          fi
+          changed_files=$(jq -r .changed_files "$RUNNER_TEMP/pr.json")
+          echo "PR #$PR_NUMBER has $changed_files changed files"
+          api_with_retry --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files?per_page=100" \
+            > "$RUNNER_TEMP/pr-files.json"
+          echo "Fetched changed file list for PR #$PR_NUMBER"
+
+          # A mixed driver/support PR stays in the notes. Check both sides of
+          # renames and the API file count so a truncated list cannot qualify.
+          eligible=$(jq -r --argjson expected "$changed_files" '
+            def support_path:
+              test("^docs/|^ci/|^build/|^tools/|^\\.github/|^src/Cassandra\\.(Integration)?Tests/|\\.md$|^(\\.editorconfig|\\.gitattributes|\\.gitignore|Makefile|renovate\\.json)$");
+            [.[][]] as $files
+            | ($files | length) == $expected
+              and ($files | length) > 0
+              and all($files[];
+                (.filename | support_path)
+                and ((.previous_filename // .filename) | support_path))
+          ' "$RUNNER_TEMP/pr-files.json")
+
+          if [[ "$eligible" == true ]]; then
+            echo "Adding omit-from-release-notes to PR #$PR_NUMBER"
+            api_with_retry --method POST \
+              "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/labels" \
+              -f 'labels[]=omit-from-release-notes' --silent
+            echo "Excluded PR #$PR_NUMBER from generated release notes"
+          else
+            if jq -e 'any(.labels[]; .name == "omit-from-release-notes")' \
+              "$RUNNER_TEMP/pr.json" > /dev/null; then
+              api_with_retry --method DELETE \
+                "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/labels/omit-from-release-notes" \
+                --silent
+            fi
+            echo "Kept PR #$PR_NUMBER in generated release notes"
+          fi
