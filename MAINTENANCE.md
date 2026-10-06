@@ -54,6 +54,13 @@ Release tags prefix that package version with `v`, for example `v3.22.0.5` or
 `v4.0.0.0`. After publication, maintainers verify the NuGet packages and GitHub
 Release, then update the documentation catalog and `stable` pointer.
 
+GitHub generates the Release notes from merged pull requests. A merge-time
+workflow adds `omit-from-release-notes` when every changed file is in docs,
+tests, CI, build tooling, or repository metadata; PRs that also change driver
+or extension code remain in the notes. Maintainers can reclassify a merged PR
+with **Actions → Label support-only release changes → Run workflow** and its
+PR number before publishing a release.
+
 ### Canonical release workflow
 
 Run **Release NuGet packages** from the protected branch being released:
