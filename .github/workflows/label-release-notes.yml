@@ -61,7 +61,7 @@ jobs:
           # renames and the API file count so a truncated list cannot qualify.
           eligible=$(jq -r --argjson expected "$changed_files" '
             def support_path:
-              test("^docs/|^ci/|^build/|^tools/|^\\.github/|^src/Cassandra\\.(Integration)?Tests/|\\.md$|^(\\.editorconfig|\\.gitattributes|\\.gitignore|Makefile|renovate\\.json)$");
+              test("^docs/|^ci/|^build/|^tools/|^examples/|^\\.github/|^src/Cassandra\\.(Integration)?Tests/|\\.md$|^(\\.editorconfig|\\.gitattributes|\\.gitignore|Makefile|renovate\\.json)$");
             [.[][]] as $files
             | ($files | length) == $expected
               and ($files | length) > 0
