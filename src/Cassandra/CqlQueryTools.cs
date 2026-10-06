@@ -93,6 +93,51 @@ namespace Cassandra
                 , QuoteIdentifier(keyspace));
         }
 
+        internal static bool IsUseKeyspaceCql(string query)
+        {
+            if (query == null)
+            {
+                return false;
+            }
+
+            var index = 0;
+            while (index < query.Length)
+            {
+                if (char.IsWhiteSpace(query[index]))
+                {
+                    index++;
+                }
+                else if (index + 1 < query.Length
+                    && (query[index] == '-' && query[index + 1] == '-'
+                        || query[index] == '/' && query[index + 1] == '/'))
+                {
+                    index += 2;
+                    while (index < query.Length && query[index] != '\n' && query[index] != '\r')
+                    {
+                        index++;
+                    }
+                }
+                else if (index + 1 < query.Length && query[index] == '/' && query[index + 1] == '*')
+                {
+                    var end = query.IndexOf("*/", index + 2, StringComparison.Ordinal);
+                    if (end < 0)
+                    {
+                        return false;
+                    }
+                    index = end + 2;
+                }
+                else
+                {
+                    break;
+                }
+            }
+
+            return index + 3 < query.Length
+                && string.Compare(query, index, "USE", 0, 3, StringComparison.OrdinalIgnoreCase) == 0
+                && (char.IsWhiteSpace(query[index + 3]) || query[index + 3] == '"'
+                    || query[index + 3] == '/' || query[index + 3] == '-');
+        }
+
         public static string GetDropKeyspaceCql(string keyspace, bool ifExists)
         {
             return string.Format(

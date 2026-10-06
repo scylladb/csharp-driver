@@ -134,7 +134,7 @@ namespace Cassandra.Requests
                 try
                 {
                     await observer.OnNodeStartAsync(info, nodeRequestInfo).ConfigureAwait(false);
-                    var result = await connection.Send(request).ConfigureAwait(false);
+                    var result = await connection.SendWithKeyspace(request, connectionKeyspace).ConfigureAwait(false);
                     responseReceived = true;
                     var preparedStatement = await GetPreparedStatement(
                         result,

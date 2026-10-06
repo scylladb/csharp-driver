@@ -175,7 +175,7 @@ namespace Cassandra.Tests.Requests
                     new RowSetMetadata { Columns = Array.Empty<CqlColumn>() }));
             var connection = new Mock<IConnection>();
             connection
-                .Setup(value => value.Send(request))
+                .Setup(value => value.SendWithKeyspace(request, It.IsAny<string>()))
                 .ReturnsAsync(response);
 
             var pool = new Mock<IHostConnectionPool>();
