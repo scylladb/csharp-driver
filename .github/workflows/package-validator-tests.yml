@@ -1,0 +1,34 @@
+name: Test 3.22 package validator
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Branch, commit, or refs/pull/N/head to test
+        type: string
+        required: true
+        default: branch-3.22
+
+permissions:
+  contents: read
+
+jobs:
+  test-validator:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout selected source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.11'
+
+      - name: Test package validator
+        run: |
+          test -f build/tests/test_validate_packages.py
+          python3 -B -m unittest discover -s build/tests -p 'test_validate_packages.py' -v
