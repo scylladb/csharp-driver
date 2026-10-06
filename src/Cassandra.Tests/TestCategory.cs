@@ -32,6 +32,11 @@ namespace Cassandra.Tests
         public const string Short = "short";
 
         /// <summary>
+        /// Parallel Simulacron fixtures, run in a separate process from CCM tests.
+        /// </summary>
+        public const string Simulacron = "simulacron";
+
+        /// <summary>
         /// These tests run once in Appveyor per commit (not for the entire matrix) and in all Jenkins schedules.
         /// </summary>
         public const string RealCluster = "realcluster";

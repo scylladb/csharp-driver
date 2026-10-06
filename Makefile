@@ -74,7 +74,9 @@ test-integration-scylla: .use-development-snk .prepare-scylla-ccm
 
 .PHONY: test-integration-cassandra
 test-integration-cassandra: .use-development-snk .prepare-cassandra-ccm
-	env -u SCYLLA_VERSION CCM_DISTRIBUTION=cassandra dotnet test --configuration Release --maxcpucount:1 $(TEST_TARGET_OPTIONS) $(TEST_INTEGRATION_CSPROJ) $(TEST_INTEGRATION_OPTIONS) -- NUnit.NumberOfTestWorkers=$(TEST_WORKERS)
+	# Stop the parallel Simulacron JVMs before the CCM tests start.
+	env -u SCYLLA_VERSION CCM_DISTRIBUTION=cassandra dotnet test --configuration Release --maxcpucount:1 $(TEST_TARGET_OPTIONS) $(TEST_INTEGRATION_CSPROJ) $(TEST_INTEGRATION_OPTIONS) --filter "TestCategory=simulacron" -- NUnit.NumberOfTestWorkers=$(TEST_WORKERS)
+	env -u SCYLLA_VERSION CCM_DISTRIBUTION=cassandra dotnet test --configuration Release --maxcpucount:1 $(TEST_TARGET_OPTIONS) $(TEST_INTEGRATION_CSPROJ) $(TEST_INTEGRATION_OPTIONS) --filter "TestCategory!=simulacron" -- NUnit.NumberOfTestWorkers=$(TEST_WORKERS)
 
 .prepare-cassandra-ccm:
 	@ccm --help 2>/dev/null 1>&2; if [[ $$? -lt 127 ]] && grep CASSANDRA ${CCM_CONFIG_DIR}/ccm-type 2>/dev/null 1>&2 && grep ${CCM_CASSANDRA_VERSION} ${CCM_CONFIG_DIR}/ccm-version 2>/dev//null  1>&2; then \
