@@ -95,7 +95,7 @@ namespace Cassandra.Tests.Requests
                         ? actualKeyspace
                         : expectedKeyspace);
                 Mock.Get(connection)
-                    .Setup(c => c.Send(It.IsAny<IRequest>()))
+                    .Setup(c => c.SendWithKeyspace(It.IsAny<IRequest>(), It.IsAny<string>()))
                     .ReturnsAsync(new ProxyResultResponse(
                         ResultResponse.ResultResponseKind.Void,
                         new OutputPrepared(
@@ -182,7 +182,7 @@ namespace Cassandra.Tests.Requests
                     .SetupGet(c => c.Keyspace)
                     .Returns(keyspace);
                 Mock.Get(connection)
-                    .Setup(c => c.Send(It.IsAny<IRequest>()))
+                    .Setup(c => c.SendWithKeyspace(It.IsAny<IRequest>(), It.IsAny<string>()))
                     .ReturnsAsync(new ProxyResultResponse(
                         ResultResponse.ResultResponseKind.Void,
                         new OutputPrepared(
@@ -260,7 +260,7 @@ namespace Cassandra.Tests.Requests
                         : Task.FromException<bool>(new InvalidQueryException(
                             $"Unexpected connection keyspace '{keyspace}'")));
                 Mock.Get(connection)
-                    .Setup(c => c.Send(It.IsAny<IRequest>()))
+                    .Setup(c => c.SendWithKeyspace(It.IsAny<IRequest>(), It.IsAny<string>()))
                     .ReturnsAsync(new ProxyResultResponse(
                         ResultResponse.ResultResponseKind.Void,
                         new OutputPrepared(
@@ -326,7 +326,7 @@ namespace Cassandra.Tests.Requests
                     })
                     .ReturnsAsync(true);
                 Mock.Get(connection)
-                    .Setup(c => c.Send(It.IsAny<IRequest>()))
+                    .Setup(c => c.SendWithKeyspace(It.IsAny<IRequest>(), It.IsAny<string>()))
                     .ReturnsAsync(new ProxyResultResponse(
                         ResultResponse.ResultResponseKind.Void,
                         new OutputPrepared(
@@ -394,8 +394,8 @@ namespace Cassandra.Tests.Requests
             mockResult.ConnectionFactory.OnCreate += connection =>
             {
                 Mock.Get(connection)
-                    .Setup(c => c.Send(It.IsAny<IRequest>()))
-                    .Returns<IRequest>(async req =>
+                    .Setup(c => c.SendWithKeyspace(It.IsAny<IRequest>(), It.IsAny<string>()))
+                    .Returns<IRequest, string>(async (req, _) =>
                     {
                         mockResult.SendResults.Enqueue(new ConnectionSendResult { Connection = connection, Request = req });
                         await Task.Delay(1).ConfigureAwait(false);
@@ -438,7 +438,7 @@ namespace Cassandra.Tests.Requests
             Assert.AreEqual(2, poolConnections.Count);
             foreach (var pool in poolConnections)
             {
-                Mock.Get(pool.Single()).Verify(c => c.Send(request), Times.Once);
+                Mock.Get(pool.Single()).Verify(c => c.SendWithKeyspace(request, It.IsAny<string>()), Times.Once);
             }
         }
 
@@ -467,8 +467,8 @@ namespace Cassandra.Tests.Requests
             mockResult.ConnectionFactory.OnCreate += connection =>
             {
                 Mock.Get(connection)
-                    .Setup(c => c.Send(It.IsAny<IRequest>()))
-                    .Returns<IRequest>(async req =>
+                    .Setup(c => c.SendWithKeyspace(It.IsAny<IRequest>(), It.IsAny<string>()))
+                    .Returns<IRequest, string>(async (req, _) =>
                     {
                         mockResult.SendResults.Enqueue(new ConnectionSendResult { Connection = connection, Request = req });
                         await Task.Delay(1).ConfigureAwait(false);
@@ -512,7 +512,7 @@ namespace Cassandra.Tests.Requests
             Assert.AreEqual(2, poolConnections.Count);
             foreach (var pool in poolConnections)
             {
-                Mock.Get(pool.Single()).Verify(c => c.Send(request), Times.Once);
+                Mock.Get(pool.Single()).Verify(c => c.SendWithKeyspace(request, It.IsAny<string>()), Times.Once);
             }
         }
 
@@ -541,8 +541,8 @@ namespace Cassandra.Tests.Requests
             mockResult.ConnectionFactory.OnCreate += connection =>
             {
                 Mock.Get(connection)
-                    .Setup(c => c.Send(It.IsAny<IRequest>()))
-                    .Returns<IRequest>(async req =>
+                    .Setup(c => c.SendWithKeyspace(It.IsAny<IRequest>(), It.IsAny<string>()))
+                    .Returns<IRequest, string>(async (req, _) =>
                     {
                         mockResult.SendResults.Enqueue(new ConnectionSendResult { Connection = connection, Request = req });
                         await Task.Delay(1).ConfigureAwait(false);
@@ -588,7 +588,7 @@ namespace Cassandra.Tests.Requests
             Assert.AreEqual(3, poolConnections.Count);
             foreach (var pool in poolConnections)
             {
-                Mock.Get(pool.Single()).Verify(c => c.Send(request), Times.Once);
+                Mock.Get(pool.Single()).Verify(c => c.SendWithKeyspace(request, It.IsAny<string>()), Times.Once);
             }
         }
 
@@ -617,8 +617,8 @@ namespace Cassandra.Tests.Requests
             mockResult.ConnectionFactory.OnCreate += connection =>
             {
                 Mock.Get(connection)
-                    .Setup(c => c.Send(It.IsAny<IRequest>()))
-                    .Returns<IRequest>(async req =>
+                    .Setup(c => c.SendWithKeyspace(It.IsAny<IRequest>(), It.IsAny<string>()))
+                    .Returns<IRequest, string>(async (req, _) =>
                     {
                         mockResult.SendResults.Enqueue(new ConnectionSendResult { Connection = connection, Request = req });
                         await Task.Delay(1).ConfigureAwait(false);
@@ -662,7 +662,7 @@ namespace Cassandra.Tests.Requests
             Assert.AreEqual(3, poolConnections.Count);
             foreach (var pool in poolConnections)
             {
-                Mock.Get(pool.Single()).Verify(c => c.Send(request), Times.Once);
+                Mock.Get(pool.Single()).Verify(c => c.SendWithKeyspace(request, It.IsAny<string>()), Times.Once);
             }
         }
 
@@ -691,8 +691,8 @@ namespace Cassandra.Tests.Requests
             mockResult.ConnectionFactory.OnCreate += connection =>
             {
                 Mock.Get(connection)
-                    .Setup(c => c.Send(It.IsAny<IRequest>()))
-                    .Returns<IRequest>(async req =>
+                    .Setup(c => c.SendWithKeyspace(It.IsAny<IRequest>(), It.IsAny<string>()))
+                    .Returns<IRequest, string>(async (req, _) =>
                     {
                         mockResult.SendResults.Enqueue(new ConnectionSendResult { Connection = connection, Request = req });
                         await Task.Delay(1).ConfigureAwait(false);
@@ -736,7 +736,7 @@ namespace Cassandra.Tests.Requests
             Assert.AreEqual(3, poolConnections.Count);
             foreach (var pool in poolConnections)
             {
-                Mock.Get(pool.Single()).Verify(c => c.Send(request), Times.Once);
+                Mock.Get(pool.Single()).Verify(c => c.SendWithKeyspace(request, It.IsAny<string>()), Times.Once);
             }
         }
 
@@ -766,8 +766,8 @@ namespace Cassandra.Tests.Requests
             mockResult.ConnectionFactory.OnCreate += connection =>
             {
                 Mock.Get(connection)
-                    .Setup(c => c.Send(It.IsAny<IRequest>()))
-                    .Returns<IRequest>(async req =>
+                    .Setup(c => c.SendWithKeyspace(It.IsAny<IRequest>(), It.IsAny<string>()))
+                    .Returns<IRequest, string>(async (req, _) =>
                     {
                         mockResult.SendResults.Enqueue(new ConnectionSendResult { Connection = connection, Request = req });
                         await Task.Delay(1).ConfigureAwait(false);
@@ -815,7 +815,7 @@ namespace Cassandra.Tests.Requests
             Assert.AreEqual(1, poolConnections.Count);
             foreach (var pool in poolConnections)
             {
-                Mock.Get(pool.Single()).Verify(c => c.Send(request), Times.Once);
+                Mock.Get(pool.Single()).Verify(c => c.SendWithKeyspace(request, It.IsAny<string>()), Times.Once);
             }
         }
 

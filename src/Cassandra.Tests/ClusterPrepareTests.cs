@@ -1185,7 +1185,7 @@ namespace Cassandra.Tests
                 connection.Setup(value => value.Open()).Returns(Task.FromResult<Response>(null));
                 connection.Setup(value => value.SetKeyspace(It.IsAny<string>())).ReturnsAsync(true);
                 connection
-                    .Setup(value => value.Send(It.IsAny<IRequest>()))
+                    .Setup(value => value.SendWithKeyspace(It.IsAny<IRequest>(), It.IsAny<string>()))
                     .Returns(() =>
                     {
                         var requestNumber = Interlocked.Increment(ref prepareRequests);
