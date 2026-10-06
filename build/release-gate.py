@@ -405,10 +405,23 @@ def signature_fingerprint(payload: str, signature: str) -> str:
         except OSError as error:
             raise ReleaseError(f"Could not verify release commit signature: {error}") from error
         require(verified.returncode == 0, "Release commit GPG signature is invalid")
-        fingerprints = [
-            line.split()[2]
+        statuses = [
+            line.split()
             for line in verified.stdout.splitlines()
-            if line.startswith("[GNUPG:] VALIDSIG ") and len(line.split()) >= 3
+            if line.startswith("[GNUPG:] ") and len(line.split()) > 1
+        ]
+        require(
+            sum(status[1] == "GOODSIG" for status in statuses) == 1
+            and not any(
+                status[1] in {"BADSIG", "EXPSIG", "EXPKEYSIG", "REVKEYSIG", "ERRSIG"}
+                for status in statuses
+            ),
+            "Release commit GPG signature is not a good signature",
+        )
+        fingerprints = [
+            status[-1]
+            for status in statuses
+            if status[1] == "VALIDSIG" and len(status) == 12
         ]
         require(len(fingerprints) == 1, "Release commit GPG signer is ambiguous")
         return fingerprints[0]

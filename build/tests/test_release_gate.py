@@ -142,6 +142,34 @@ class FakeApi:
         return self.runs
 
 
+class SignatureVerificationTests(unittest.TestCase):
+    def test_signature_requires_good_status_and_primary_fingerprint(self):
+        primary = release_gate.RELEASE_SIGNER_FINGERPRINT
+        signing_subkey = "A" * 40
+        valid = (
+            f"[GNUPG:] GOODSIG {signing_subkey} Publisher\n"
+            f"[GNUPG:] VALIDSIG {signing_subkey} 2026-10-06 1791320000 0 4 0 1 8 00 {primary}\n"
+        )
+        bad_statuses = ("BADSIG", "EXPSIG", "EXPKEYSIG", "REVKEYSIG", "ERRSIG")
+        cases = [(valid, True), (valid.replace("GOODSIG", "TRUST_UNDEFINED"), False)]
+        cases.extend((valid + f"[GNUPG:] {status} key\n", False) for status in bad_statuses)
+
+        for output, accepted in cases:
+            with self.subTest(output=output):
+                results = [
+                    subprocess.CompletedProcess(["gpg"], 0, stdout="", stderr=""),
+                    subprocess.CompletedProcess(["gpg"], 0, stdout=output, stderr=""),
+                ]
+                with mock.patch.object(release_gate.subprocess, "run", side_effect=results):
+                    if accepted:
+                        self.assertEqual(
+                            primary, release_gate.signature_fingerprint("payload", "signature")
+                        )
+                    else:
+                        with self.assertRaises(release_gate.ReleaseError):
+                            release_gate.signature_fingerprint("payload", "signature")
+
+
 class ReleaseGateTests(unittest.TestCase):
     def setUp(self):
         signature = mock.patch.object(
