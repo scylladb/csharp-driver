@@ -122,10 +122,13 @@ jobs:
           git config user.name 'ScyllaDB Publisher'
           git config user.email 'publish.code@scylladb.com'
           git config user.signingkey "$fingerprint"
-          git -c commit.gpgsign=true commit --allow-empty -m "Release v$RELEASE_VERSION"
+          printf 'v%s\n' "$RELEASE_VERSION" > build/release-version.txt
+          git add build/release-version.txt
+          [[ "$(git diff --cached --name-only)" == 'build/release-version.txt' ]]
+          git -c commit.gpgsign=true commit -m "Release v$RELEASE_VERSION"
           git verify-commit --raw HEAD > "$RUNNER_TEMP/release-signature-status" 2>&1
           grep -Fq "[GNUPG:] VALIDSIG $fingerprint " "$RUNNER_TEMP/release-signature-status"
-          git diff --exit-code "$TARGET_COMMIT" HEAD
+          [[ "$(git diff --name-only "$TARGET_COMMIT" HEAD)" == 'build/release-version.txt' ]]
 
           current=$(git ls-remote origin "refs/heads/$RELEASE_BRANCH" | cut -f1)
           [[ "$current" == "$TARGET_COMMIT" ]]

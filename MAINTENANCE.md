@@ -68,9 +68,11 @@ Run **Prepare signed release commit** from the protected branch being released:
 must name the four-part version and the full SHA of the current branch tip. It
 checks source versions, the milestone, successful CI, and the absence of an
 existing release tag or GitHub Release. After approval in the protected
-`release` environment, it creates an empty `Release v<version>` commit signed
-with the ScyllaDB Publisher GPG key `BF4BF97A8D4DF1AA` and pushes it to that
-branch. No tag or package is published by this preparation step.
+`release` environment, it updates `build/release-version.txt` and creates a
+`Release v<version>` commit signed with the ScyllaDB Publisher GPG key
+`BF4BF97A8D4DF1AA`. The marker file makes the push run CI on the signed SHA
+without changing shipping projects. No tag or package is published by this
+preparation step.
 
 Wait for successful push CI on the signed commit. Then run **Release NuGet
 packages** from the same branch with that signed commit's full SHA. The
