@@ -56,10 +56,13 @@ Release, then update the documentation catalog and `stable` pointer.
 
 GitHub generates the Release notes from merged pull requests. A merge-time
 workflow adds `omit-from-release-notes` when every changed file is in docs,
-tests, CI, build tooling, or repository metadata; PRs that also change driver
-or extension code remain in the notes. Maintainers can reclassify a merged PR
-with **Actions → Label support-only release changes → Run workflow** and its
-PR number before publishing a release.
+examples, tests, CI, build tooling, or repository metadata; PRs that also
+change driver or extension code remain in the notes.
+
+Maintainers can rerun the classifier for a merged PR with **Actions → Label
+support-only release changes → Run workflow** and its PR number before
+publishing a release. The run reapplies the path rule. To override its
+decision, edit the PR label directly after the last classifier run.
 
 ### Canonical release workflow
 
