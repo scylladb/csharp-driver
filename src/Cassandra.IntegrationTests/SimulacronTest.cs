@@ -34,7 +34,7 @@ namespace Cassandra.IntegrationTests
     // SimulacronManager.DefaultInstance gives each NUnit worker its own JVM (its own
     // HTTP port and node IP range), so these run in parallel safely. Each test gets
     // its own fixture instance so the TestCluster/Session fields do not race.
-    [TestFixture, Category(TestCategory.Short), Parallelizable(ParallelScope.All)]
+    [TestFixture, Category(TestCategory.Short), Category(TestCategory.Simulacron), Parallelizable(ParallelScope.All)]
     [FixtureLifeCycle(LifeCycle.InstancePerTestCase)]
     public abstract class SimulacronTest : TestGlobals
     {
