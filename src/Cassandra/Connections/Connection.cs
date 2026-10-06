@@ -69,8 +69,9 @@ namespace Cassandra.Connections
         private volatile string _keyspace;
         private readonly SemaphoreSlim _keyspaceSwitchLock = new SemaphoreSlim(1, 1);
         private readonly object _keyspaceOperationsLock = new object();
+        private readonly Dictionary<long, int> _keyspaceOperationTimeouts = new Dictionary<long, int>();
         private TaskCompletionSource<bool> _keyspaceOperationsDrained;
-        private int _keyspaceOperationCount;
+        private long _nextKeyspaceOperationId;
 
         /// <summary>
         /// Small buffer (less than 8 bytes) that is used when the next received message is smaller than 8 bytes,
@@ -988,7 +989,7 @@ namespace Cassandra.Connections
                     request, keyspace, callback, timeoutMillis).ConfigureAwait(false);
             }
 
-            var releaseKeyspace = await AcquireKeyspaceAsync(keyspace).ConfigureAwait(false);
+            var releaseKeyspace = await AcquireKeyspaceAsync(keyspace, timeoutMillis).ConfigureAwait(false);
             try
             {
                 var operation = Send(
@@ -1063,9 +1064,10 @@ namespace Cassandra.Connections
             }
         }
 
-        private async Task<Action> AcquireKeyspaceAsync(string keyspace)
+        private async Task<Action> AcquireKeyspaceAsync(string keyspace, int timeoutMillis)
         {
             await _keyspaceSwitchLock.WaitAsync().ConfigureAwait(false);
+            long operationId;
             try
             {
                 if (!string.Equals(_keyspace, keyspace, StringComparison.Ordinal))
@@ -1076,11 +1078,13 @@ namespace Cassandra.Connections
 
                 lock (_keyspaceOperationsLock)
                 {
-                    if (_keyspaceOperationCount++ == 0)
+                    if (_keyspaceOperationTimeouts.Count == 0)
                     {
                         _keyspaceOperationsDrained =
                             new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                     }
+                    operationId = ++_nextKeyspaceOperationId;
+                    _keyspaceOperationTimeouts.Add(operationId, timeoutMillis);
                 }
             }
             finally
@@ -1099,7 +1103,8 @@ namespace Cassandra.Connections
                 TaskCompletionSource<bool> operationsDrained = null;
                 lock (_keyspaceOperationsLock)
                 {
-                    if (--_keyspaceOperationCount == 0)
+                    _keyspaceOperationTimeouts.Remove(operationId);
+                    if (_keyspaceOperationTimeouts.Count == 0)
                     {
                         operationsDrained = _keyspaceOperationsDrained;
                         _keyspaceOperationsDrained = null;
@@ -1112,21 +1117,25 @@ namespace Cassandra.Connections
         private async Task WaitForKeyspaceOperationsToDrainAsync()
         {
             Task drained;
+            int timeoutMillis;
             lock (_keyspaceOperationsLock)
             {
                 drained = _keyspaceOperationsDrained?.Task;
+                var defaultTimeoutMillis = Configuration.SocketOptions.ReadTimeoutMillis;
+                if (defaultTimeoutMillis <= 0)
+                {
+                    // A disabled request read timeout must not leave the keyspace switch lock held forever.
+                    defaultTimeoutMillis = SocketOptions.DefaultReadTimeoutMillis;
+                }
+                // Give every active request at least its full timeout from the start of the drain.
+                timeoutMillis = Math.Max(
+                    defaultTimeoutMillis,
+                    _keyspaceOperationTimeouts.Count == 0 ? 0 : _keyspaceOperationTimeouts.Values.Max());
             }
 
             if (drained == null)
             {
                 return;
-            }
-
-            var timeoutMillis = Configuration.SocketOptions.ReadTimeoutMillis;
-            if (timeoutMillis <= 0)
-            {
-                // A disabled request read timeout must not leave the keyspace switch lock held forever.
-                timeoutMillis = SocketOptions.DefaultReadTimeoutMillis;
             }
 
             try

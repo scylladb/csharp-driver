@@ -70,6 +70,32 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public async Task SetKeyspace_Waits_For_Active_Request_Timeout_Beyond_Connection_Default()
+        {
+            var config = new Configuration();
+            config.SocketOptions.SetReadTimeoutMillis(50);
+            var connection = GetConnectionMock(config).Object;
+            var acquire = typeof(Connection).GetMethod("AcquireKeyspaceAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+            var release = await (Task<Action>)acquire.Invoke(connection, new object[] { null, 500 });
+
+            try
+            {
+                var switchKeyspace = connection.SetKeyspace(string.Empty);
+                await Task.Delay(125).ConfigureAwait(false);
+                Assert.IsFalse(switchKeyspace.IsCompleted);
+                Assert.IsFalse(connection.IsClosed);
+
+                release();
+                Assert.IsTrue(await switchKeyspace.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false));
+                Assert.IsFalse(connection.IsClosed);
+            }
+            finally
+            {
+                release();
+            }
+        }
+
+        [Test]
         public void ReadParse_Handles_Complete_Frames_In_Different_Buffers()
         {
             var connectionMock = GetConnectionMock();
