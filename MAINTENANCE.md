@@ -67,9 +67,10 @@ documentation catalog must point to the same artifacts.
 
 Run **Prepare signed release commit** from protected `branch-3.22` with the
 four-part version and the full current tip SHA. After approval in the protected
-`release` environment, the canonical workflow on `master` creates an empty
-`Release v<version>` commit signed by ScyllaDB Publisher GPG key
-`BF4BF97A8D4DF1AA` and pushes it to the maintenance branch. This requires
+`release` environment, the canonical workflow on `master` updates
+`build/release-version.txt` and creates a `Release v<version>` commit signed by
+ScyllaDB Publisher GPG key `BF4BF97A8D4DF1AA`. This marker makes the push
+run CI on the signed SHA without changing shipping projects. This requires
 `RELEASE_GPG_PRIVATE_KEY` and `RELEASE_BOT_TOKEN` in the `release` environment;
 the `scylladb-publisher` account needs write access and an individual-user
 bypass on the protected branch ruleset. Preparation creates no tag or package.
