@@ -113,7 +113,18 @@ namespace Cassandra.IntegrationTests
                                           .WithSocketOptions(new SocketOptions().SetConnectTimeoutMillis(30000).SetReadTimeoutMillis(22000));
             Cluster = builder.Build();
             Session = (Session)Cluster.Connect();
-            Session.CreateKeyspace(KeyspaceName, null, false);
+            if (TestClusterManager.IsScylla)
+            {
+                // Shared fixtures include token-based placement and LWT tests. Scylla's
+                // default tablets use different placement and do not support every LWT case.
+                var createKeyspace = string.Format(TestUtils.CreateKeyspaceSimpleFormat, KeyspaceName, 1) +
+                                     " AND durable_writes = false";
+                Session.Execute(createKeyspace);
+            }
+            else
+            {
+                Session.CreateKeyspace(KeyspaceName, null, false);
+            }
             Session.ChangeKeyspace(KeyspaceName);
         }
 
