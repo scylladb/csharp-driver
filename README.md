@@ -78,6 +78,10 @@ foreach (var row in rs)
 }
 ```
 
+### Driver configuration reporting
+
+By default, the driver reports its effective configuration to ScyllaDB when the control connection starts. Operators can inspect it in the `client_options` column of the clients table. Use `Builder.WithDriverConfigReporting(false)` to disable this report. `Configuration.DriverConfigReportingEnabled` shows the setting captured when the cluster was built.
+
 ### Prepared statements
 
 Prepare your query **once** and bind different parameters to obtain best performance.
