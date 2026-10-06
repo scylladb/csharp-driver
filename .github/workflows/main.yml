@@ -11,6 +11,9 @@ on:
       - "docs/**"
       - .github/workflows/docs-pages.yml
       - .github/workflows/docs-pr.yml
+      - .github/workflows/package-validator-tests.yml
+      - build/validate-packages.py
+      - build/tests/test_validate_packages.py
       - .gitignore
       - .gitattributes
       - "**/*.md"
@@ -26,6 +29,9 @@ on:
       - "docs/**"
       - .github/workflows/docs-pages.yml
       - .github/workflows/docs-pr.yml
+      - .github/workflows/package-validator-tests.yml
+      - build/validate-packages.py
+      - build/tests/test_validate_packages.py
       - .gitignore
       - .gitattributes
       - "**/*.md"
