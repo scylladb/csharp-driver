@@ -14,7 +14,7 @@ on:
         type: string
         required: true
       target_commit:
-        description: Full 40-character SHA at the protected release branch tip
+        description: Full SHA at the branch tip; a signed release commit is required to publish
         type: string
         required: true
       dry_run:

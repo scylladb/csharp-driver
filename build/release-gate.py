@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -19,6 +20,9 @@ from typing import Any
 
 API_VERSION = "2022-11-28"
 RELEASE_TAG_RULESET_PATTERN = "refs/tags/v*.*.*.*"
+RELEASE_SIGNER_FINGERPRINT = "71A6D22711CDB7C2446D21CFBF4BF97A8D4DF1AA"
+RELEASE_SIGNER_EMAIL = "publish.code@scylladb.com"
+RELEASE_SIGNER_PUBLIC_KEY = Path(__file__).with_name("release-publisher.asc")
 VERSION_PATTERN = re.compile(
     r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\."
     r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
@@ -370,6 +374,72 @@ def require_successful_ci(api: Any, branch: str, target_commit: str) -> None:
     )
 
 
+def signature_fingerprint(payload: str, signature: str) -> str:
+    with tempfile.TemporaryDirectory(prefix="csharp-driver-release-gpg-") as directory:
+        home = Path(directory)
+        home.chmod(0o700)
+        payload_file = home / "payload"
+        signature_file = home / "signature.asc"
+        payload_file.write_text(payload, encoding="utf-8")
+        signature_file.write_text(signature, encoding="utf-8")
+        environment = dict(os.environ, GNUPGHOME=str(home))
+        try:
+            imported = subprocess.run(
+                ["gpg", "--batch", "--import", str(RELEASE_SIGNER_PUBLIC_KEY)],
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            require(imported.returncode == 0, "Could not import release signer public key")
+            verified = subprocess.run(
+                [
+                    "gpg", "--batch", "--status-fd=1", "--verify",
+                    str(signature_file), str(payload_file),
+                ],
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as error:
+            raise ReleaseError(f"Could not verify release commit signature: {error}") from error
+        require(verified.returncode == 0, "Release commit GPG signature is invalid")
+        fingerprints = [
+            line.split()[2]
+            for line in verified.stdout.splitlines()
+            if line.startswith("[GNUPG:] VALIDSIG ") and len(line.split()) >= 3
+        ]
+        require(len(fingerprints) == 1, "Release commit GPG signer is ambiguous")
+        return fingerprints[0]
+
+
+def require_signed_release_commit(api: Any, version: str, target_commit: str) -> None:
+    commit = api.get(f"/git/commits/{validate_commit(target_commit)}")
+    require(isinstance(commit, dict), "Release commit response was not an object")
+    require(commit.get("message") == f"Release v{version}", "Target is not the release commit")
+    parents = commit.get("parents")
+    require(isinstance(parents, list) and len(parents) == 1, "Release commit needs one parent")
+    committer = commit.get("committer")
+    require(
+        isinstance(committer, dict) and committer.get("email") == RELEASE_SIGNER_EMAIL,
+        "Release commit has the wrong committer",
+    )
+    verification = commit.get("verification")
+    require(
+        isinstance(verification, dict)
+        and verification.get("verified") is True
+        and verification.get("reason") == "valid",
+        "Release commit is not verified by GitHub",
+    )
+    payload = require_string(verification.get("payload"), "release signature payload")
+    signature = require_string(verification.get("signature"), "release signature")
+    require(
+        signature_fingerprint(payload, signature) == RELEASE_SIGNER_FINGERPRINT,
+        "Release commit was not signed by the publisher key",
+    )
+
+
 def require_release_tag_ruleset(api: Any) -> dict[str, Any]:
     rulesets = api.paginate("/rulesets", query={"includes_parents": "true"})
     candidates = [
@@ -458,8 +528,45 @@ def preflight(
         require(allow_blockers, f"Milestone {tag} has {len(blockers)} open release blocker(s)")
     require_successful_ci(api, branch, target_commit)
     if not allow_blockers:
+        require_signed_release_commit(api, version, target_commit)
         require_release_tag_ruleset(api)
     return ReleaseContext(version, branch, tag, milestone_number, target_commit)
+
+
+def prepare_release_commit(
+    api: Any,
+    *,
+    version: str,
+    target_commit: str,
+    workflow_ref: str,
+    workflow_sha: str,
+) -> ReleaseContext:
+    context = preflight(
+        api,
+        version=version,
+        target_commit=target_commit,
+        workflow_ref=workflow_ref,
+        workflow_sha=workflow_sha,
+        allow_blockers=True,
+        recovery=False,
+    )
+    require_release_tag_ruleset(api)
+    require(
+        tag_target(api, context.tag, missing_ok=True) is None,
+        f"Tag {context.tag} already exists; do not create another release commit",
+    )
+    encoded_tag = urllib.parse.quote(context.tag, safe="")
+    require(
+        api.get(f"/releases/tags/{encoded_tag}", missing_ok=True) is None,
+        f"GitHub Release {context.tag} already exists",
+    )
+    commit = api.get(f"/git/commits/{target_commit}")
+    require(isinstance(commit, dict), "Target commit response was not an object")
+    require(
+        commit.get("message") != f"Release {context.tag}",
+        f"Release commit {context.tag} already exists at the branch tip",
+    )
+    return context
 
 
 def gate(
@@ -484,6 +591,7 @@ def gate(
     if blockers:
         report_blockers(blockers)
     require(not blockers, f"Milestone {tag} has {len(blockers)} open release blocker(s)")
+    require_signed_release_commit(api, version, target_commit)
     require_release_tag_ruleset(api)
     return ReleaseContext(version, branch, tag, milestone_number, target_commit)
 
@@ -745,9 +853,18 @@ def parse_arguments(arguments: list[str] | None = None) -> argparse.Namespace:
     preflight_parser.add_argument("--recovery", action="store_true")
     preflight_parser.add_argument("--github-output")
 
+    prepare_parser = subparsers.add_parser("prepare")
+    add_common_release_arguments(prepare_parser)
+    prepare_parser.add_argument("--workflow-ref", required=True)
+    prepare_parser.add_argument("--workflow-sha", required=True)
+    prepare_parser.add_argument("--github-output")
+
     gate_parser = subparsers.add_parser("gate")
     add_common_release_arguments(gate_parser)
     gate_parser.add_argument("--recovery", action="store_true")
+
+    signed_commit_parser = subparsers.add_parser("verify-release-commit")
+    add_common_release_arguments(signed_commit_parser)
 
     source_parser = subparsers.add_parser("verify-source")
     source_parser.add_argument("--source", type=Path, required=True)
@@ -803,12 +920,28 @@ def main(arguments: list[str] | None = None) -> None:
                 "milestone_number": str(context.milestone_number),
             },
         )
+    elif options.command == "prepare":
+        context = prepare_release_commit(
+            github_api(options.repository),
+            version=options.version,
+            target_commit=options.target_commit,
+            workflow_ref=options.workflow_ref,
+            workflow_sha=options.workflow_sha,
+        )
+        write_github_outputs(
+            options.github_output,
+            {"branch": context.branch, "tag": context.tag},
+        )
     elif options.command == "gate":
         gate(
             github_api(options.repository),
             version=options.version,
             target_commit=options.target_commit,
             recovery=options.recovery,
+        )
+    elif options.command == "verify-release-commit":
+        require_signed_release_commit(
+            github_api(options.repository), options.version, options.target_commit
         )
     elif options.command == "verify-source":
         verify_source(
