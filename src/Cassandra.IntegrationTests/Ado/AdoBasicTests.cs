@@ -34,8 +34,9 @@ namespace Cassandra.IntegrationTests.Data
             base.SetUp();
             var cb = new CassandraConnectionStringBuilder
             {
+                ClusterName = $"AdoBasicTests-{Guid.NewGuid():N}",
                 ContactPoints = new[] { TestCluster.InitialContactPoint.Address.ToString() },
-                Port = 9042
+                Port = TestCluster.InitialContactPoint.Port
             };
             _connection = new CqlConnection(cb.ToString());
         }
