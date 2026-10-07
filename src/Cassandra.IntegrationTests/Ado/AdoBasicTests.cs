@@ -27,7 +27,7 @@ namespace Cassandra.IntegrationTests.Data
 {
     public class AdoBasicTests : SimulacronTest
     {
-        private CqlConnection _connection;
+        private TestCqlConnection _connection;
 
         public override void SetUp()
         {
@@ -35,15 +35,46 @@ namespace Cassandra.IntegrationTests.Data
             var cb = new CassandraConnectionStringBuilder
             {
                 ContactPoints = new[] { TestCluster.InitialContactPoint.Address.ToString() },
-                Port = 9042
+                Port = TestCluster.InitialContactPoint.Port
             };
-            _connection = new CqlConnection(cb.ToString());
+            _connection = new TestCqlConnection(cb.ToString());
         }
 
         public override void TearDown()
         {
             _connection?.Dispose();
             base.TearDown();
+        }
+
+        private sealed class TestCqlConnection : CqlConnection
+        {
+            private Cluster _cluster;
+
+            public TestCqlConnection(string connectionString) : base(connectionString)
+            {
+            }
+
+            protected override Cluster CreateCluster(CassandraConnectionStringBuilder connectionStringBuilder)
+            {
+                _cluster = connectionStringBuilder.MakeClusterBuilder().Build();
+                return _cluster;
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                try
+                {
+                    base.Dispose(disposing);
+                }
+                finally
+                {
+                    if (disposing)
+                    {
+                        _cluster?.Shutdown();
+                        _cluster = null;
+                    }
+                }
+            }
         }
 
         [Test]
