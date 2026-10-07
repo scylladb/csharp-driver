@@ -1054,6 +1054,13 @@ namespace Cassandra.Connections
                 else
                 {
                     operation.SetWireCompletionHandler(releaseLock);
+                    operation.SetCancellationHandler(() =>
+                    {
+                        // Cancellation suppresses the request timeout. A sent USE may still
+                        // change server-side keyspace, so retire the connection immediately.
+                        Close();
+                        releaseLock();
+                    });
                 }
                 return operation;
             }

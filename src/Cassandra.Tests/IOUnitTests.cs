@@ -148,6 +148,19 @@ namespace Cassandra.Tests
             Assert.AreEqual(0, clientCallbackCounter);
         }
 
+        [Test]
+        public void OperationState_Cancel_Invokes_Cancellation_Handler_Once()
+        {
+            var state = OperationStateExtensions.CreateMock((ex, response) => { });
+            var calls = 0;
+            state.SetCancellationHandler(() => Interlocked.Increment(ref calls));
+
+            state.Cancel();
+            state.Cancel();
+
+            Assert.AreEqual(1, calls);
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         public void OperationState_Cancel_Should_Keep_Wire_Handler_Until_Operation_Is_Terminal(bool cancelFirst)
