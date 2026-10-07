@@ -152,7 +152,55 @@ namespace Cassandra.IntegrationTests.TestClusterManagement
             }
             else
             {
-                return ExecuteCcm(string.Join(" ", parameters));
+                try
+                {
+                    return ExecuteCcm(string.Join(" ", parameters));
+                }
+                catch (TestInfrastructureException)
+                {
+                    try
+                    {
+                        PrintStartupLogs();
+                    }
+                    catch (IOException ex)
+                    {
+                        Console.Error.WriteLine("Could not read Cassandra startup logs: " + ex.Message);
+                    }
+                    catch (UnauthorizedAccessException ex)
+                    {
+                        Console.Error.WriteLine("Could not read Cassandra startup logs: " + ex.Message);
+                    }
+                    throw;
+                }
+            }
+        }
+
+        private void PrintStartupLogs()
+        {
+            var logs = Path.Combine(GetHomePath(), ".ccm", Name, "node1", "logs");
+            if (!Directory.Exists(logs))
+            {
+                return;
+            }
+
+            foreach (var file in Directory.GetFiles(logs, "startup-*-stderr.log")
+                .Concat(Directory.GetFiles(logs, "startup-*-stdout.log"))
+                .Concat(Directory.GetFiles(logs, "system.log")))
+            {
+                var lastLines = new Queue<string>();
+                foreach (var line in File.ReadLines(file))
+                {
+                    if (lastLines.Count == 100)
+                    {
+                        lastLines.Dequeue();
+                    }
+                    lastLines.Enqueue(line);
+                }
+                Console.Error.WriteLine(file);
+                foreach (var line in lastLines)
+                {
+                    Console.Error.WriteLine(line);
+                }
             }
         }
 
