@@ -528,6 +528,17 @@ class ReleaseGateTests(unittest.TestCase):
                     branch="branch-3.22",
                     target_commit=MAINTENANCE_SHA,
                 )
+            workflow.write_text(
+                "on:\n  workflow_dispatch:\n\njobs:\n  release:\n    runs-on: ubuntu-latest\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(release_gate.subprocess, "run", return_value=completed):
+                release_gate.verify_source(
+                    source,
+                    version="3.22.0.5",
+                    branch="branch-3.22",
+                    target_commit=MAINTENANCE_SHA,
+                )
             workflow.write_text("on:\n  workflow_dispatch:\n  push:\n", encoding="utf-8")
             with mock.patch.object(release_gate.subprocess, "run", return_value=completed):
                 with self.assertRaisesRegex(release_gate.ReleaseError, "automatic"):

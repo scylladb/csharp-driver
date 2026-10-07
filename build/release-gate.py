@@ -619,6 +619,23 @@ def project_value(project: Path, name: str) -> str:
     return element.text.strip()
 
 
+def workflow_events(workflow_text: str) -> set[str]:
+    """Read top-level event names without treating job names as triggers."""
+    lines = workflow_text.splitlines()
+    for index, line in enumerate(lines):
+        if not re.fullmatch(r"on:\s*", line):
+            continue
+        events = set()
+        for child in lines[index + 1:]:
+            if child.strip() and not child[0].isspace():
+                break
+            match = re.match(r"^  ([^:\s]+):(?:\s|$)", child)
+            if match:
+                events.add(match.group(1))
+        return events
+    return set()
+
+
 def verify_source(
     source: Path, *, version: str, branch: str, target_commit: str
 ) -> None:
@@ -641,12 +658,13 @@ def verify_source(
     publish_workflow = source / ".github/workflows/publish.yml"
     require(publish_workflow.is_file(), f"{branch} release workflow is missing")
     workflow_text = publish_workflow.read_text(encoding="utf-8")
+    events = workflow_events(workflow_text)
     require(
-        re.search(r"(?m)^\s{2}workflow_dispatch:\s*$", workflow_text) is not None,
+        "workflow_dispatch" in events,
         f"{branch} release workflow must be manually dispatched",
     )
     require(
-        re.search(r"(?m)^\s{2}(push|release):\s*$", workflow_text) is None,
+        events <= {"workflow_dispatch", "workflow_call"},
         f"{branch} release workflow has an automatic publication trigger",
     )
 
