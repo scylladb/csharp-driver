@@ -54,7 +54,7 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public async Task SetKeyspace_Closes_Connection_When_Operations_Do_Not_Drain()
+        public void SetKeyspace_Closes_Connection_When_Operations_Do_Not_Drain()
         {
             var config = new Configuration();
             config.SocketOptions.SetReadTimeoutMillis(50);
@@ -62,11 +62,11 @@ namespace Cassandra.Tests
             typeof(Connection).GetField("_keyspaceOperationsDrained", BindingFlags.Instance | BindingFlags.NonPublic)
                 .SetValue(connection, new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously));
 
-            var exception = await NUnit.Framework.Assert.ThrowsAsync<OperationTimedOutException>(
+            var exception = NUnit.Framework.Assert.ThrowsAsync<OperationTimedOutException>(
                 async () => await connection.SetKeyspace("other").ConfigureAwait(false));
 
             Assert.IsTrue(exception.Message.Contains("50ms"), exception.ToString());
-            Assert.IsTrue(connection.IsClosed);
+            Assert.IsTrue(IsConnectionClosed(connection));
         }
 
         [Test]
@@ -83,16 +83,22 @@ namespace Cassandra.Tests
                 var switchKeyspace = connection.SetKeyspace(string.Empty);
                 await Task.Delay(125).ConfigureAwait(false);
                 Assert.IsFalse(switchKeyspace.IsCompleted);
-                Assert.IsFalse(connection.IsClosed);
+                Assert.IsFalse(IsConnectionClosed(connection));
 
                 release();
                 Assert.IsTrue(await switchKeyspace.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false));
-                Assert.IsFalse(connection.IsClosed);
+                Assert.IsFalse(IsConnectionClosed(connection));
             }
             finally
             {
                 release();
             }
+        }
+
+        private static bool IsConnectionClosed(Connection connection)
+        {
+            return (bool)typeof(Connection).GetField("_isClosed", BindingFlags.Instance | BindingFlags.NonPublic)
+                .GetValue(connection);
         }
 
         [Test]
