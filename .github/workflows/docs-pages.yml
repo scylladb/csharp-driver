@@ -3,12 +3,6 @@ name: "Docs / Publish"
 # see https://sphinx-theme.scylladb.com/stable/deployment/production.html#available-workflows
 
 on:
-  push:
-    branches:
-      - master
-      - 'branch-**'
-    paths:
-      - "docs/**"
   workflow_dispatch:
 
 concurrency:
