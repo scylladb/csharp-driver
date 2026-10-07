@@ -87,6 +87,12 @@ SHA, signs and validates all three packages, and retains their hashes as a
 workflow artifact. The branch-local dispatch lets the publishing job use
 the built-in Actions token to tag its own branch tip.
 
+The release workflow also runs the C# driver matrix against the exact target
+commit and intended package version before publication. It checks the DataStax
+driver against Scylla LATEST and the Scylla driver against LATEST, PRIOR,
+LTS-LATEST, and LTS-PRIOR. The matrix repository must contain the candidate version's patch and ignore configuration before dispatch. A failing lane blocks
+publication; the matrix also runs during dry runs.
+
 A dry run performs that complete package path but creates no tag, NuGet
 package, or GitHub Release. A preliminary dry run may use the source commit;
 the final production-key dry run uses the signed release commit. Open milestone

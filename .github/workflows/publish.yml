@@ -92,6 +92,13 @@ jobs:
             --github-output "$GITHUB_OUTPUT" \
             "${options[@]}"
 
+  pre-release-integration:
+    needs: preflight
+    uses: scylladb/csharp-driver-matrix/.github/workflows/driver-integration-matrix.yml@master
+    with:
+      driver_ref: ${{ inputs.target_commit }}
+      driver_version: ${{ inputs.version }}
+
   package:
     needs: preflight
     runs-on: ubuntu-24.04
@@ -186,7 +193,7 @@ jobs:
 
   publish:
     if: ${{ !inputs.dry_run }}
-    needs: [preflight, package]
+    needs: [preflight, pre-release-integration, package]
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     environment: release
