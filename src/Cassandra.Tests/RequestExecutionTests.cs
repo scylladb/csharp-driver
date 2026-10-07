@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Generic;
 using System.Net;
+using System.Reflection;
 using System.Threading.Tasks;
 using Cassandra.Connections;
 using Cassandra.ExecutionProfiles;
@@ -36,6 +37,55 @@ namespace Cassandra.Tests
     [TestFixture]
     public class RequestExecutionTests
     {
+        [Test]
+        public async Task Should_Cancel_Operation_When_Cancelled_Before_Keyspace_Send_Completes()
+        {
+            var serializer = new SerializerManager(ProtocolVersion.V4).GetCurrentSerializer();
+            var request = new QueryRequest(serializer, "USE ks2", QueryProtocolOptions.Default, false, null);
+            var parent = new Mock<IRequestHandler>();
+            parent.SetupGet(value => value.RequestOptions)
+                .Returns(new TestConfigurationBuilder().Build().DefaultRequestOptions);
+            var pendingSend = new TaskCompletionSource<OperationState>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var connection = new Mock<IConnection>();
+            connection.Setup(value => value.SendWithKeyspace(
+                    request, It.IsAny<string>(), It.IsAny<Func<IRequestError, Response, Task>>(),
+                    It.IsAny<int>(), true))
+                .Returns(pendingSend.Task);
+            var execution = new RequestExecution(
+                parent.Object, Mock.Of<IInternalSession>(), request, NullRequestObserver.Instance,
+                new SessionRequestInfo(Mock.Of<IStatement>(), null));
+            typeof(RequestExecution).GetField("_connection", BindingFlags.Instance | BindingFlags.NonPublic)
+                .SetValue(execution, connection.Object);
+            var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), new ConstantReconnectionPolicy(1));
+            var send = (Task)typeof(RequestExecution)
+                .GetMethod("SendAsync", BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(execution, new object[]
+                {
+                    request, host, (Func<IRequestError, Response, NodeRequestInfo, Task>)((_, __, ___) => Task.CompletedTask)
+                });
+            var operation = OperationStateExtensions.CreateMock((ex, response) => { });
+
+            execution.Cancel();
+            pendingSend.SetResult(operation);
+            await send.ConfigureAwait(false);
+
+            Assert.IsFalse(operation.CanBeWritten());
+        }
+
+        [TestCase("USE ks2", true)]
+        [TestCase("  use \"ks2\";", true)]
+        [TestCase("USE\"ks2\"", true)]
+        [TestCase("/* leading comment */ -- another comment\nUSE ks2", true)]
+        [TestCase("// leading comment\r\nUSE ks2", true)]
+        [TestCase("SELECT * FROM ks2.table", false)]
+        [TestCase("USEFUL ks2", false)]
+        [TestCase("/* unfinished comment", false)]
+        public void Should_Recognize_Keyspace_Switch_Queries(string query, bool expected)
+        {
+            Assert.AreEqual(expected, CqlQueryTools.IsUseKeyspaceCql(query));
+        }
+
         [Test, TestCase(true), TestCase(false)]
         public void Should_ThrowException_When_NoValidHosts(bool currentHostRetry)
         {
@@ -103,13 +153,16 @@ namespace Cassandra.Tests
             sut.Start(currentHostRetry);
         }
 
-        [Test, TestCase(true), TestCase(false)]
-        public void Should_SendRequest_When_AConnectionIsObtained(bool currentHostRetry)
+        [TestCase(true, false)]
+        [TestCase(false, false)]
+        [TestCase(true, true)]
+        [TestCase(false, true)]
+        public void Should_SendRequest_When_AConnectionIsObtained(bool currentHostRetry, bool useKeyspaceSwitch)
         {
             var mockSession = Mock.Of<IInternalSession>();
             var requestHandlerFactory = Mock.Of<IRequestHandlerFactory>();
             var mockStatement = Mock.Of<IStatement>();
-            var requestTrackingInfo = new SessionRequestInfo(mockStatement, null);
+            var requestTrackingInfo = new SessionRequestInfo(mockStatement, "ks1");
             Mock.Get(requestHandlerFactory)
                 .Setup(r => r.CreateAsync(
                     It.IsAny<IInternalSession>(),
@@ -123,7 +176,11 @@ namespace Cassandra.Tests
                 RequestHandlerFactory = requestHandlerFactory
             }.Build();
             Mock.Get(mockSession).SetupGet(m => m.Cluster.Configuration).Returns(config);
-            var mockRequest = Mock.Of<IRequest>();
+            var mockRequest = useKeyspaceSwitch
+                ? (IRequest)new QueryRequest(
+                    new SerializerManager(ProtocolVersion.V4).GetCurrentSerializer(),
+                    "USE ks2", QueryProtocolOptions.Default, false, null)
+                : Mock.Of<IRequest>();
             var mockParent = Mock.Of<IRequestHandler>();
             var connection = Mock.Of<IConnection>();
             var host = new Host(
@@ -141,6 +198,14 @@ namespace Cassandra.Tests
             Mock.Get(mockParent)
                 .Setup(m => m.RequestOptions)
                 .Returns(config.DefaultRequestOptions);
+            Mock.Get(connection)
+                .Setup(c => c.SendWithKeyspace(
+                    It.IsAny<IRequest>(),
+                    It.IsAny<string>(),
+                    It.IsAny<Func<IRequestError, Response, Task>>(),
+                    It.IsAny<int>(),
+                    It.IsAny<bool>()))
+                .ReturnsAsync((OperationState)null);
             var sut = new RequestExecution(mockParent, mockSession, mockRequest, NullRequestObserver.Instance, requestTrackingInfo);
 
             sut.Start(currentHostRetry);
@@ -149,7 +214,12 @@ namespace Cassandra.Tests
                 {
                     Mock.Get(connection)
                         .Verify(
-                            c => c.Send(mockRequest, It.IsAny<Func<IRequestError, Response, Task>>(), It.IsAny<int>()),
+                            c => c.SendWithKeyspace(
+                                mockRequest,
+                                "ks1",
+                                It.IsAny<Func<IRequestError, Response, Task>>(),
+                                It.IsAny<int>(),
+                                useKeyspaceSwitch),
                             Times.Once);
                 });
         }
@@ -222,6 +292,14 @@ namespace Cassandra.Tests
             Mock.Get(mockParent)
                 .Setup(m => m.RequestOptions)
                 .Returns(config.DefaultRequestOptions);
+            Mock.Get(connection)
+                .Setup(c => c.SendWithKeyspace(
+                    It.IsAny<IRequest>(),
+                    It.IsAny<string>(),
+                    It.IsAny<Func<IRequestError, Response, Task>>(),
+                    It.IsAny<int>(),
+                    It.IsAny<bool>()))
+                .ReturnsAsync((OperationState)null);
 
             var sut = new RequestExecution(mockParent, mockSession, mockRequest, NullRequestObserver.Instance, requestTrackingInfo);
             sut.Start(false);
@@ -231,7 +309,12 @@ namespace Cassandra.Tests
                 () =>
                 {
                     Mock.Get(connection).Verify(
-                        c => c.Send(mockRequest, It.IsAny<Func<IRequestError, Response, Task>>(), It.IsAny<int>()),
+                        c => c.SendWithKeyspace(
+                            mockRequest,
+                            null,
+                            It.IsAny<Func<IRequestError, Response, Task>>(),
+                            It.IsAny<int>(),
+                            false),
                         Times.Once);
                 });
 
@@ -270,9 +353,10 @@ namespace Cassandra.Tests
             connectionEndPoint.SetupGet(value => value.EndpointFriendlyName).Returns("test-node");
             connection.SetupGet(value => value.EndPoint).Returns(connectionEndPoint.Object);
             connection
-                .Setup(value => value.Send(
-                    It.IsAny<IRequest>(), It.IsAny<Func<IRequestError, Response, Task>>(), It.IsAny<int>()))
-                .Returns<IRequest, Func<IRequestError, Response, Task>, int>((sentRequest, callback, _) =>
+                .Setup(value => value.SendWithKeyspace(
+                    It.IsAny<IRequest>(), It.IsAny<string>(),
+                    It.IsAny<Func<IRequestError, Response, Task>>(), It.IsAny<int>(), It.IsAny<bool>()))
+                .Returns<IRequest, string, Func<IRequestError, Response, Task>, int, bool>((sentRequest, _, callback, __, ___) =>
                 {
                     if (sentRequest is InternalPrepareRequest)
                     {
@@ -282,7 +366,7 @@ namespace Cassandra.Tests
                     {
                         executeSent.SetResult(callback);
                     }
-                    return null;
+                    return Task.FromResult<OperationState>(null);
                 });
 
             byte[] invalidatedId = null;

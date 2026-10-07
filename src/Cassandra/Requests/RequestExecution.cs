@@ -21,6 +21,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Connections;
 using Cassandra.Observers.Abstractions;
@@ -40,6 +41,7 @@ namespace Cassandra.Requests
         private volatile IConnection _connection;
         private volatile int _retryCount;
         private volatile OperationState _operation;
+        private int _cancelled;
         private readonly IRequestObserver _requestObserver;
         private readonly SessionRequestInfo _sessionRequestInfo;
 
@@ -60,6 +62,7 @@ namespace Cassandra.Requests
 
         public void Cancel()
         {
+            Interlocked.Exchange(ref _cancelled, 1);
             // if null then the request has not been sent yet
             _operation?.Cancel();
         }
@@ -182,7 +185,24 @@ namespace Cassandra.Requests
 
             try
             {
-                _operation = _connection.Send(request, (error, response) => callback(error, response, nodeRequestInfo), timeoutMillis);
+                var isKeyspaceSwitch = request is QueryRequest queryRequest
+                    && CqlQueryTools.IsUseKeyspaceCql(queryRequest.Query);
+                var keyspace = _sessionRequestInfo.SessionKeyspace;
+                if (request is InternalPrepareRequest prepareRequest
+                    && !_parent.Serializer.ProtocolVersion.SupportsKeyspaceInRequest())
+                {
+                    keyspace = prepareRequest.Keyspace ?? keyspace;
+                }
+                _operation = await _connection.SendWithKeyspace(
+                    request,
+                    keyspace,
+                    (error, response) => callback(error, response, nodeRequestInfo),
+                    timeoutMillis,
+                    isKeyspaceSwitch).ConfigureAwait(false);
+                if (Volatile.Read(ref _cancelled) != 0)
+                {
+                    _operation?.Cancel();
+                }
             }
             catch (Exception ex)
             {
@@ -616,8 +636,9 @@ namespace Cassandra.Requests
             var preparedKeyspace = boundStatement.PreparedStatement.Keyspace;
             var request = new InternalPrepareRequest(_parent.Serializer, boundStatement.PreparedStatement.Cql, preparedKeyspace, null);
 
-            if (!_parent.Serializer.ProtocolVersion.SupportsKeyspaceInRequest() &&
-                preparedKeyspace != null && _session.Keyspace != preparedKeyspace)
+            if (!_parent.Serializer.ProtocolVersion.SupportsKeyspaceInRequest()
+                && preparedKeyspace != null
+                && _session.Keyspace != preparedKeyspace)
             {
                 Logger.Warning(string.Format("The statement was prepared using another keyspace, changing the keyspace temporarily to" +
                                               " {0} and back to {1}. Use keyspace and table identifiers in your queries and avoid switching keyspaces.",

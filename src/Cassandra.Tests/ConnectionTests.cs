@@ -20,6 +20,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Connections;
@@ -50,6 +51,54 @@ namespace Cassandra.Tests
                 config,
                 new StartupRequestFactory(config.StartupOptionsFactory, isControlConnection: false),
                 NullConnectionObserver.Instance);
+        }
+
+        [Test]
+        public void SetKeyspace_Closes_Connection_When_Operations_Do_Not_Drain()
+        {
+            var config = new Configuration();
+            config.SocketOptions.SetReadTimeoutMillis(50);
+            var connection = GetConnectionMock(config).Object;
+            typeof(Connection).GetField("_keyspaceOperationsDrained", BindingFlags.Instance | BindingFlags.NonPublic)
+                .SetValue(connection, new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously));
+
+            var exception = NUnit.Framework.Assert.ThrowsAsync<OperationTimedOutException>(
+                async () => await connection.SetKeyspace("other").ConfigureAwait(false));
+
+            Assert.IsTrue(exception.Message.Contains("50ms"), exception.ToString());
+            Assert.IsTrue(IsConnectionClosed(connection));
+        }
+
+        [Test]
+        public async Task SetKeyspace_Waits_For_Active_Request_Timeout_Beyond_Connection_Default()
+        {
+            var config = new Configuration();
+            config.SocketOptions.SetReadTimeoutMillis(50);
+            var connection = GetConnectionMock(config).Object;
+            var acquire = typeof(Connection).GetMethod("AcquireKeyspaceAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+            var release = await (Task<Action>)acquire.Invoke(connection, new object[] { null, 500 });
+
+            try
+            {
+                var switchKeyspace = connection.SetKeyspace(string.Empty);
+                await Task.Delay(125).ConfigureAwait(false);
+                Assert.IsFalse(switchKeyspace.IsCompleted);
+                Assert.IsFalse(IsConnectionClosed(connection));
+
+                release();
+                Assert.IsTrue(await switchKeyspace.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false));
+                Assert.IsFalse(IsConnectionClosed(connection));
+            }
+            finally
+            {
+                release();
+            }
+        }
+
+        private static bool IsConnectionClosed(Connection connection)
+        {
+            return (bool)typeof(Connection).GetField("_isClosed", BindingFlags.Instance | BindingFlags.NonPublic)
+                .GetValue(connection);
         }
 
         [Test]
@@ -438,6 +487,28 @@ namespace Cassandra.Tests
             CollectionAssert.AreEqual(new short[] { 128, 100, 129 }, streamIds);
             TestHelper.WaitUntil(() => responses.Count == 3);
             Assert.AreEqual(3, responses.Count);
+        }
+
+        [Test]
+        public void ReadParse_Should_Update_Connection_Keyspace_From_SetKeyspace_Response()
+        {
+            var serializer = new SerializerManager(ProtocolVersion.V4);
+            var connectionMock = GetConnectionMock(null, serializer);
+            connectionMock
+                .Setup(c => c.RemoveFromPending(It.IsAny<short>()))
+                .Returns(() => OperationStateExtensions.CreateMock((_, __) => { }));
+            var buffer = new byte[]
+            {
+                // v4 response header: stream 1, RESULT opcode, body length 9
+                0x84, 0, 0, 1, ResultResponse.OpCode, 0, 0, 0, 9,
+                // SET_KEYSPACE result followed by the string "ks1"
+                0, 0, 0, 3, 0, 3, (byte)'k', (byte)'s', (byte)'1'
+            };
+
+            connectionMock.Object.ReadParse(buffer, buffer.Length);
+
+            TestHelper.WaitUntil(() => connectionMock.Object.Keyspace == "ks1");
+            Assert.AreEqual("ks1", connectionMock.Object.Keyspace);
         }
 
         /// <summary>
