@@ -1143,7 +1143,7 @@ namespace Cassandra.Connections
 
             try
             {
-                await drained.WaitAsync(TimeSpan.FromMilliseconds(timeoutMillis)).ConfigureAwait(false);
+                await drained.WaitToCompleteAsync(timeoutMillis).ConfigureAwait(false);
             }
             catch (TimeoutException)
             {
