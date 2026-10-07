@@ -35,6 +35,10 @@ def inspect(repository):
     branch_policy = environment["deployment_branch_policy"]
     if branch_policy != {"protected_branches": False, "custom_branch_policies": True}:
         raise ValueError("release environment must use custom deployment branch policies")
+    # GitHub may omit the target type from a policy response. Do not remove
+    # reviewer protection unless every policy explicitly identifies a branch.
+    if any(entry.get("type") != "branch" for entry in policies["branch_policies"]):
+        raise ValueError("Release deployment policy target type is not confirmed as branch")
     branches = {entry["name"] for entry in policies["branch_policies"]}
     if branches != EXPECTED_BRANCHES:
         raise ValueError(f"Unexpected release deployment branches: {sorted(branches)}")
@@ -43,7 +47,7 @@ def inspect(repository):
         raise ValueError("Release environment is missing publisher credentials")
 
     rules = environment["protection_rules"]
-    unexpected = {rule["type"] for rule in rules} - {"branch_policy", "required_reviewers"}
+    unexpected = {rule["type"] for rule in rules} - {"branch_policy", "required_reviewers", "wait_timer"}
     if unexpected:
         raise ValueError(f"Unexpected release protection rules: {sorted(unexpected)}")
     return path, environment, branches, secret_names
@@ -51,10 +55,15 @@ def inspect(repository):
 
 def remove_review(repository, *, apply):
     path, environment, branches, secret_names = inspect(repository)
-    has_reviewers = any(rule["type"] == "required_reviewers" for rule in environment["protection_rules"])
-    if not has_reviewers:
+    reviewer_rules = [rule for rule in environment["protection_rules"] if rule["type"] == "required_reviewers"]
+    if not reviewer_rules:
         print("Release environment already has no required reviewers")
         return
+    wait_rules = [rule for rule in environment["protection_rules"] if rule["type"] == "wait_timer"]
+    if len(reviewer_rules) != 1 or len(wait_rules) > 1:
+        raise ValueError("Unexpected duplicate release environment protection rules")
+    wait_timer = wait_rules[0]["wait_timer"] if wait_rules else 0
+    prevent_self_review = reviewer_rules[0]["prevent_self_review"]
     if not apply:
         print("Would remove required reviewers from the release environment; use --apply to update GitHub")
         return
@@ -62,8 +71,8 @@ def remove_review(repository, *, apply):
     gh_api(
         path,
         payload={
-            "wait_timer": 0,
-            "prevent_self_review": False,
+            "wait_timer": wait_timer,
+            "prevent_self_review": prevent_self_review,
             "reviewers": [],
             "deployment_branch_policy": environment["deployment_branch_policy"],
         },
@@ -71,6 +80,9 @@ def remove_review(repository, *, apply):
     _, updated, updated_branches, updated_secrets = inspect(repository)
     if any(rule["type"] == "required_reviewers" for rule in updated["protection_rules"]):
         raise RuntimeError("Required reviewers are still configured")
+    updated_wait_rules = [rule for rule in updated["protection_rules"] if rule["type"] == "wait_timer"]
+    if (updated_wait_rules[0]["wait_timer"] if updated_wait_rules else 0) != wait_timer:
+        raise RuntimeError("Release wait timer changed unexpectedly")
     if updated_branches != branches or updated_secrets != secret_names:
         raise RuntimeError("Release branches or environment secrets changed unexpectedly")
     print("Removed required reviewers; preserved release branches and environment secrets")
