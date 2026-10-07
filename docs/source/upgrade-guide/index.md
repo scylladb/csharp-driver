@@ -85,6 +85,12 @@ selecting TLS 1.0. As a result, `Builder.WithSSL()` and
 policy to the operating system. Applications that construct `SSLOptions` with an
 explicit `SslProtocols` value continue to use that configured value.
 
+### Host distance changes
+
+Connection pools now recover when a load balancing policy temporarily ignores a
+host and later treats it as local or remote again, including when the pool was
+empty or still draining its old connections.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.
