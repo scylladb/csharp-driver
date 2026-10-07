@@ -21,6 +21,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Connections;
 using Cassandra.Observers.Abstractions;
@@ -40,6 +41,7 @@ namespace Cassandra.Requests
         private volatile IConnection _connection;
         private volatile int _retryCount;
         private volatile OperationState _operation;
+        private int _cancelled;
         private readonly IRequestObserver _requestObserver;
         private readonly SessionRequestInfo _sessionRequestInfo;
 
@@ -60,6 +62,7 @@ namespace Cassandra.Requests
 
         public void Cancel()
         {
+            Interlocked.Exchange(ref _cancelled, 1);
             // if null then the request has not been sent yet
             _operation?.Cancel();
         }
@@ -196,6 +199,10 @@ namespace Cassandra.Requests
                     (error, response) => callback(error, response, nodeRequestInfo),
                     timeoutMillis,
                     isKeyspaceSwitch).ConfigureAwait(false);
+                if (Volatile.Read(ref _cancelled) != 0)
+                {
+                    _operation?.Cancel();
+                }
             }
             catch (Exception ex)
             {

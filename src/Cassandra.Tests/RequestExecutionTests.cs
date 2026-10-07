@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Generic;
 using System.Net;
+using System.Reflection;
 using System.Threading.Tasks;
 using Cassandra.Connections;
 using Cassandra.ExecutionProfiles;
@@ -36,6 +37,42 @@ namespace Cassandra.Tests
     [TestFixture]
     public class RequestExecutionTests
     {
+        [Test]
+        public async Task Should_Cancel_Operation_When_Cancelled_Before_Keyspace_Send_Completes()
+        {
+            var serializer = new SerializerManager(ProtocolVersion.V4).GetCurrentSerializer();
+            var request = new QueryRequest(serializer, "USE ks2", QueryProtocolOptions.Default, false, null);
+            var parent = new Mock<IRequestHandler>();
+            parent.SetupGet(value => value.RequestOptions)
+                .Returns(new TestConfigurationBuilder().Build().DefaultRequestOptions);
+            var pendingSend = new TaskCompletionSource<OperationState>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var connection = new Mock<IConnection>();
+            connection.Setup(value => value.SendWithKeyspace(
+                    request, It.IsAny<string>(), It.IsAny<Func<IRequestError, Response, Task>>(),
+                    It.IsAny<int>(), true))
+                .Returns(pendingSend.Task);
+            var execution = new RequestExecution(
+                parent.Object, Mock.Of<IInternalSession>(), request, NullRequestObserver.Instance,
+                new SessionRequestInfo(Mock.Of<IStatement>(), null));
+            typeof(RequestExecution).GetField("_connection", BindingFlags.Instance | BindingFlags.NonPublic)
+                .SetValue(execution, connection.Object);
+            var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), new ConstantReconnectionPolicy(1));
+            var send = (Task)typeof(RequestExecution)
+                .GetMethod("SendAsync", BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(execution, new object[]
+                {
+                    request, host, (Func<IRequestError, Response, NodeRequestInfo, Task>)((_, __, ___) => Task.CompletedTask)
+                });
+            var operation = OperationStateExtensions.CreateMock((ex, response) => { });
+
+            execution.Cancel();
+            pendingSend.SetResult(operation);
+            await send.ConfigureAwait(false);
+
+            Assert.IsFalse(operation.CanBeWritten());
+        }
+
         [TestCase("USE ks2", true)]
         [TestCase("  use \"ks2\";", true)]
         [TestCase("USE\"ks2\"", true)]
