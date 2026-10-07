@@ -311,6 +311,50 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public async Task DistanceChange_Reopens_An_Empty_Pool_When_Host_Returns_To_Local()
+        {
+            var host = TestHelper.CreateHost("127.0.0.2");
+            host.SetDistance(HostDistance.Local);
+            _mock = GetPoolMock(host, GetConfig(1, 1));
+            _mock.Setup(p => p.DoCreateAndOpen(It.IsAny<bool>(), -1, 0, 0))
+                .Returns(() => TaskHelper.ToTask(CreateConnection()));
+            var pool = _mock.Object;
+            pool.SetDistance(HostDistance.Local);
+
+            host.SetDistance(HostDistance.Ignored);
+            host.SetDistance(HostDistance.Local);
+
+            var connections = await pool.EnsureCreate().ConfigureAwait(false);
+            Assert.AreEqual(1, connections.Length);
+        }
+
+        [Test]
+        public async Task DistanceChange_Reopens_Pool_After_Draining_Old_Connections()
+        {
+            var host = TestHelper.CreateHost("127.0.0.2");
+            host.SetDistance(HostDistance.Local);
+            _mock = GetPoolMock(host, GetConfig(1, 1));
+            var created = 0;
+            _mock.Setup(p => p.DoCreateAndOpen(It.IsAny<bool>(), -1, 0, 0))
+                .Returns(() =>
+                {
+                    Interlocked.Increment(ref created);
+                    return TaskHelper.ToTask(CreateConnection());
+                });
+            var pool = _mock.Object;
+            pool.SetDistance(HostDistance.Local);
+            await pool.EnsureCreate().ConfigureAwait(false);
+
+            host.SetDistance(HostDistance.Ignored);
+            Assert.AreEqual(0, pool.OpenConnections);
+            host.SetDistance(HostDistance.Local);
+
+            await TestHelper.WaitUntilAsync(() => pool.OpenConnections == 1, 50, 80).ConfigureAwait(false);
+            Assert.AreEqual(1, pool.OpenConnections);
+            Assert.AreEqual(2, Volatile.Read(ref created));
+        }
+
+        [Test]
         public void OnHostUp_Does_Not_Recreates_Pool_For_Ignored_Hosts()
         {
             _mock = GetPoolMock(null, GetConfig(2, 2));
