@@ -52,7 +52,10 @@ together:
 
 Release tags prefix that package version with `v`, for example `v3.22.0.5` or
 `v4.0.0.0`. After publication, maintainers verify the NuGet packages and GitHub
-Release, then update the documentation catalog and `stable` pointer.
+Release, then verify that the release workflow published the versioned docs and
+kept the `stable` pointer on the highest released version. A failed docs
+deployment can be retried with
+**Docs / Publish** after the release succeeds.
 
 GitHub generates the Release notes from merged pull requests. A merge-time
 workflow adds `omit-from-release-notes` when every changed file is in docs,
@@ -91,7 +94,11 @@ The release workflow also runs the C# driver matrix against the exact target
 commit and intended package version before publication. It checks the DataStax
 driver against Scylla LATEST and the Scylla driver against LATEST, PRIOR,
 LTS-LATEST, and LTS-PRIOR. The matrix repository must contain the candidate version's patch and ignore configuration before dispatch. A failing lane blocks
-publication; the matrix also runs during dry runs.
+publication; the matrix also runs during dry runs. The exact release source
+must also pass the API documentation and Sphinx build before publication.
+The workflow also builds the versioned Pages artifact with the candidate
+release tag before publication, then deploys that checked artifact after the
+GitHub Release succeeds. Dry runs never deploy docs.
 
 A dry run performs that complete package path but creates no tag, NuGet
 package, or GitHub Release. A preliminary dry run may use the source commit;
