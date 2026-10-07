@@ -73,8 +73,8 @@ Run **Prepare signed release commit** from the protected branch being released:
 `branch-3.22` for version 3.22.x, or `master` for version 4. The manual dispatch
 must name the four-part version and the full SHA of the current branch tip. It
 checks source versions, the milestone, successful CI, and the absence of an
-existing release tag or GitHub Release. After approval in the protected
-`release` environment, it updates `build/release-version.txt` and creates a
+existing release tag or GitHub Release. In the branch-restricted `release`
+environment, it updates `build/release-version.txt` and creates a
 `Release v<version>` commit signed with the ScyllaDB Publisher GPG key
 `BF4BF97A8D4DF1AA`. The marker file makes the push run CI on the signed SHA
 without changing shipping projects. No tag or package is published by this
@@ -108,8 +108,8 @@ commit. Production runs fail closed while any selected-milestone
 `release-blocker` remains, and recheck the gate before the tag and before each
 individual package upload.
 
-Production requires a protected `release` environment restricted to
-`master` and `branch-3.22`, approved by a reviewer who did not start the run. The
+Production requires a `release` environment restricted to `master` and
+`branch-3.22`, with no required-reviewer rule. The
 existing `SNK_KEY` and `NUGET_API_KEY` secrets are available to release jobs.
 Commit preparation also requires `RELEASE_GPG_PRIVATE_KEY` for the publisher
 key and `RELEASE_BOT_TOKEN` for the `scylladb-publisher` account, both scoped to
@@ -118,6 +118,23 @@ and an individual-user bypass for the protected `master` and `branch-3.22`
 ruleset. This token pushes only the signed release commit so its push triggers
 CI. The publishing job gives its built-in `GITHUB_TOKEN` Contents write only;
 other jobs retain read-only access.
+
+The release environment is a GitHub repository setting, so merging a pull
+request does not change its reviewer rule. After this policy change is merged,
+an administrator removes that rule while retaining the branch restriction and
+environment secrets:
+
+```bash
+python3 build/remove-release-review.py --repository scylladb/csharp-driver
+python3 build/remove-release-review.py --repository scylladb/csharp-driver --apply
+```
+
+The first command inspects the current configuration; `--apply` updates it and
+verifies the branch policies and secret names afterward. The release workflow
+still requires explicit manual dispatch, the selected milestone gate, exact
+branch-tip CI, signed release commit, and package validation. A release run
+that was already waiting for approval may need to be rerun after the setting
+changes.
 
 An active tag ruleset must restrict update and deletion of
 `refs/tags/v*.*.*.*` and have no bypass actors. It cannot restrict tag
