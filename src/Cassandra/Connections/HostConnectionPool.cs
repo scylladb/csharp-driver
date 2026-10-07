@@ -522,8 +522,14 @@ namespace Cassandra.Connections
             HostConnectionPool.Logger.Info("Host ignored. Closing pool #{0} to {1}", GetHashCode(), _host.Address);
             DrainConnections(() =>
             {
-                // After draining, set the pool back to init state
-                Interlocked.CompareExchange(ref _state, PoolState.Init, PoolState.Closing);
+                // A host can become local again while the old connections are draining.
+                // The immediate reconnect is skipped while the pool is Closing, so retry
+                // once the pool can accept connections again.
+                if (Interlocked.CompareExchange(ref _state, PoolState.Init, PoolState.Closing) ==
+                    PoolState.Closing && _distance != HostDistance.Ignored)
+                {
+                    ScheduleReconnection(true);
+                }
             });
             CancelNewConnectionTimeout();
         }
@@ -538,6 +544,7 @@ namespace Cassandra.Connections
             if (connections.Length == 0)
             {
                 HostConnectionPool.Logger.Info("Pool #{0} to {1} had no connections", GetHashCode(), _host.Address);
+                afterDrainHandler?.Invoke();
                 return;
             }
             // The request handler might execute up to 2 queries with a single connection:
