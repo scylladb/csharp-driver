@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 import os
+import re
+import subprocess
 import sys
 import warnings
 from datetime import date
@@ -11,12 +13,26 @@ from redirects_cli import cli as redirects_cli
 # -- Global variables
 
 # Builds documentation for the following tags and branches.
-TAGS = ["v3.22.0.1", "v3.22.0.2", "v3.22.0.3", "v3.22.0.4"]
+def released_tags():
+    output = os.environ.get("SPHINX_RELEASED_TAGS")
+    if output is None:
+        output = subprocess.check_output(["git", "tag", "--list", "v*"], text=True)
+    versions = []
+    for tag in output.splitlines():
+        if not re.fullmatch(r"v\d+\.\d+\.\d+\.\d+", tag):
+            continue
+        version = tuple(int(part) for part in tag[1:].split("."))
+        if version[:2] == (3, 22) or version[0] == 4:
+            versions.append((version, tag))
+    return [tag for _, tag in sorted(versions)]
+
+
+TAGS = released_tags()
 BRANCHES = [
     "master",
 ]
 # Sets the latest version.
-LATEST_VERSION = "v3.22.0.4"
+LATEST_VERSION = TAGS[-1] if TAGS else "master"
 # Set which versions are not released yet.
 UNSTABLE_VERSIONS = ["master"]
 # Set which versions are deprecated

@@ -35,6 +35,8 @@ jobs:
       contents: write
       issues: read
       pull-requests: read
+      pages: write
+      id-token: write
     uses: scylladb/csharp-driver/.github/workflows/publish.yml@master
     with:
       version: ${{ inputs.version }}
