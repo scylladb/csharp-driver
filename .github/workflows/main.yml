@@ -296,6 +296,8 @@ jobs:
 
     env:
       CASSANDRA_VERSION: 4.0.21
+      # Avoid Cassandra's recursive jemalloc lookup, which can outlast CCM's 30-second pidfile wait on hosted runners.
+      CASSANDRA_LIBJEMALLOC: "-"
       TARGET_FRAMEWORK: net10.0
       PIP_USER: "1"
 
