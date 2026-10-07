@@ -65,6 +65,7 @@ class FakeApi:
         }
         self.tags = {}
         self.releases = {}
+        self.commit_messages = {}
         self.merge_base = OLDER_MAINTENANCE_SHA
         self.posts = []
         self.post_error = None
@@ -73,6 +74,20 @@ class FakeApi:
         if path.startswith("/git/ref/heads/"):
             branch = path.rsplit("/", 1)[1]
             return {"object": {"type": "commit", "sha": self.branches[branch]}}
+        if path.startswith("/git/commits/"):
+            sha = path.rsplit("/", 1)[1]
+            version = "4.0.0.0" if sha == MASTER_SHA else "3.22.0.5"
+            return {
+                "message": self.commit_messages.get(sha, f"Release v{version}"),
+                "parents": [{"sha": OLDER_MAINTENANCE_SHA}],
+                "committer": {"email": release_gate.RELEASE_SIGNER_EMAIL},
+                "verification": {
+                    "verified": True,
+                    "reason": "valid",
+                    "payload": "signed commit payload",
+                    "signature": "signed commit signature",
+                },
+            }
         if path.startswith("/git/ref/tags/"):
             tag = path.rsplit("/", 1)[1]
             if tag not in self.tags:
@@ -127,7 +142,44 @@ class FakeApi:
         return self.runs
 
 
+class SignatureVerificationTests(unittest.TestCase):
+    def test_signature_requires_good_status_and_primary_fingerprint(self):
+        primary = release_gate.RELEASE_SIGNER_FINGERPRINT
+        signing_subkey = "A" * 40
+        valid = (
+            f"[GNUPG:] GOODSIG {signing_subkey} Publisher\n"
+            f"[GNUPG:] VALIDSIG {signing_subkey} 2026-10-06 1791320000 0 4 0 1 8 00 {primary}\n"
+        )
+        bad_statuses = ("BADSIG", "EXPSIG", "EXPKEYSIG", "REVKEYSIG", "ERRSIG")
+        cases = [(valid, True), (valid.replace("GOODSIG", "TRUST_UNDEFINED"), False)]
+        cases.extend((valid + f"[GNUPG:] {status} key\n", False) for status in bad_statuses)
+
+        for output, accepted in cases:
+            with self.subTest(output=output):
+                results = [
+                    subprocess.CompletedProcess(["gpg"], 0, stdout="", stderr=""),
+                    subprocess.CompletedProcess(["gpg"], 0, stdout=output, stderr=""),
+                ]
+                with mock.patch.object(release_gate.subprocess, "run", side_effect=results):
+                    if accepted:
+                        self.assertEqual(
+                            primary, release_gate.signature_fingerprint("payload", "signature")
+                        )
+                    else:
+                        with self.assertRaises(release_gate.ReleaseError):
+                            release_gate.signature_fingerprint("payload", "signature")
+
+
 class ReleaseGateTests(unittest.TestCase):
+    def setUp(self):
+        signature = mock.patch.object(
+            release_gate,
+            "signature_fingerprint",
+            return_value=release_gate.RELEASE_SIGNER_FINGERPRINT,
+        )
+        signature.start()
+        self.addCleanup(signature.stop)
+
     def test_version_mapping_and_nuget_normalization(self):
         self.assertEqual("branch-3.22", release_gate.branch_for_version("3.22.0.5"))
         self.assertEqual("master", release_gate.branch_for_version("4.0.0.0"))
@@ -175,6 +227,44 @@ class ReleaseGateTests(unittest.TestCase):
 
         self.assertEqual("master", context.branch)
         self.assertEqual(MASTER_SHA, api.last_run_query["head_sha"])
+
+    def test_prepare_accepts_current_ci_tip_but_rejects_repeat_or_existing_tag(self):
+        api = FakeApi()
+        api.commit_messages[MAINTENANCE_SHA] = "Validated release source"
+        api.blockers = [
+            {"number": 326, "title": "artifact checks", "html_url": "https://example/326"}
+        ]
+        with mock.patch("sys.stderr", new_callable=io.StringIO):
+            context = release_gate.prepare_release_commit(
+                api,
+                version="3.22.0.5",
+                target_commit=MAINTENANCE_SHA,
+                workflow_ref="refs/heads/branch-3.22",
+                workflow_sha=MAINTENANCE_SHA,
+            )
+        self.assertEqual("branch-3.22", context.branch)
+
+        api.commit_messages[MAINTENANCE_SHA] = "Release v3.22.0.5"
+        with mock.patch("sys.stderr", new_callable=io.StringIO):
+            with self.assertRaisesRegex(release_gate.ReleaseError, "already exists"):
+                release_gate.prepare_release_commit(
+                    api,
+                    version="3.22.0.5",
+                    target_commit=MAINTENANCE_SHA,
+                    workflow_ref="refs/heads/branch-3.22",
+                    workflow_sha=MAINTENANCE_SHA,
+                )
+
+        api.tags["v3.22.0.5"] = {"object": {"type": "commit", "sha": MAINTENANCE_SHA}}
+        with mock.patch("sys.stderr", new_callable=io.StringIO):
+            with self.assertRaisesRegex(release_gate.ReleaseError, "Tag.*already exists"):
+                release_gate.prepare_release_commit(
+                    api,
+                    version="3.22.0.5",
+                    target_commit=MAINTENANCE_SHA,
+                    workflow_ref="refs/heads/branch-3.22",
+                    workflow_sha=MAINTENANCE_SHA,
+                )
 
     def test_dry_run_reports_but_allows_issue_and_pull_request_blockers(self):
         api = FakeApi()
@@ -296,6 +386,36 @@ class ReleaseGateTests(unittest.TestCase):
                 allow_blockers=False,
                 recovery=False,
             )
+
+    def test_production_rejects_unsigned_or_wrongly_signed_release_commit(self):
+        api = FakeApi()
+        original_get = api.get
+
+        for change, expected in (
+            ({"message": "ordinary commit"}, "not the release commit"),
+            ({"verification": {"verified": False}}, "not verified"),
+            ({"committer": {"email": "other@example.com"}}, "wrong committer"),
+        ):
+            with self.subTest(change=change):
+                def changed_get(path, **kwargs):
+                    result = original_get(path, **kwargs)
+                    if path.startswith("/git/commits/"):
+                        result.update(change)
+                    return result
+
+                with mock.patch.object(api, "get", side_effect=changed_get):
+                    with self.assertRaisesRegex(release_gate.ReleaseError, expected):
+                        release_gate.require_signed_release_commit(
+                            api, "3.22.0.5", MAINTENANCE_SHA
+                        )
+
+        with mock.patch.object(
+            release_gate, "signature_fingerprint", return_value="0" * 40
+        ):
+            with self.assertRaisesRegex(release_gate.ReleaseError, "publisher key"):
+                release_gate.require_signed_release_commit(
+                    api, "3.22.0.5", MAINTENANCE_SHA
+                )
 
     def test_tag_ruleset_rejects_matching_exclusion(self):
         api = FakeApi()
@@ -753,6 +873,12 @@ class ReleaseGateTests(unittest.TestCase):
 
         def read(self):
             return self._body
+
+
+class ReleaseSignatureTests(unittest.TestCase):
+    def test_invalid_gpg_signature_fails_closed(self):
+        with self.assertRaisesRegex(release_gate.ReleaseError, "GPG signature is invalid"):
+            release_gate.signature_fingerprint("payload", "not a PGP signature")
 
 
 if __name__ == "__main__":

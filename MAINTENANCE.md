@@ -66,9 +66,21 @@ decision, edit the PR label directly after the last classifier run.
 
 ### Canonical release workflow
 
-Run **Release NuGet packages** from the protected branch being released:
+Run **Prepare signed release commit** from the protected branch being released:
 `branch-3.22` for version 3.22.x, or `master` for version 4. The manual dispatch
-must name the four-part version and the full commit SHA at that branch tip.
+must name the four-part version and the full SHA of the current branch tip. It
+checks source versions, the milestone, successful CI, and the absence of an
+existing release tag or GitHub Release. After approval in the protected
+`release` environment, it updates `build/release-version.txt` and creates a
+`Release v<version>` commit signed with the ScyllaDB Publisher GPG key
+`BF4BF97A8D4DF1AA`. The marker file makes the push run CI on the signed SHA
+without changing shipping projects. No tag or package is published by this
+preparation step.
+
+Wait for successful push CI on the signed commit. Then run **Release NuGet
+packages** from the same branch with that signed commit's full SHA. The
+publication gate verifies the commit message, publisher identity, GitHub
+verification, and the exact GPG fingerprint before creating the tag.
 The workflow uses release tooling checked out from protected `master`,
 resolves the exact `v<version>` milestone, verifies successful CI for that
 SHA, signs and validates all three packages, and retains their hashes as a
@@ -76,17 +88,23 @@ workflow artifact. The branch-local dispatch lets the publishing job use
 the built-in Actions token to tag its own branch tip.
 
 A dry run performs that complete package path but creates no tag, NuGet
-package, or GitHub Release. Open milestone blockers are reported but do not
-prevent a dry run. Production runs fail closed while any selected-milestone
+package, or GitHub Release. A preliminary dry run may use the source commit;
+the final production-key dry run uses the signed release commit. Open milestone
+blockers are reported but do not prevent a dry run or creation of the signed
+commit. Production runs fail closed while any selected-milestone
 `release-blocker` remains, and recheck the gate before the tag and before each
 individual package upload.
 
 Production requires a protected `release` environment restricted to
 `master` and `branch-3.22`, approved by a reviewer who did not start the run. The
 existing `SNK_KEY` and `NUGET_API_KEY` secrets are available to release jobs.
-The publishing job gives its built-in `GITHUB_TOKEN` Contents write only;
-other jobs retain read-only access. No GitHub App or personal access token
-is required.
+Commit preparation also requires `RELEASE_GPG_PRIVATE_KEY` for the publisher
+key and `RELEASE_BOT_TOKEN` for the `scylladb-publisher` account, both scoped to
+the `release` environment. The publisher must have repository write access
+and an individual-user bypass for the protected `master` and `branch-3.22`
+ruleset. This token pushes only the signed release commit so its push triggers
+CI. The publishing job gives its built-in `GITHUB_TOKEN` Contents write only;
+other jobs retain read-only access.
 
 An active tag ruleset must restrict update and deletion of
 `refs/tags/v*.*.*.*` and have no bypass actors. It cannot restrict tag
