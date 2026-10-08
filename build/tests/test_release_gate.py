@@ -46,7 +46,8 @@ class FakeApi:
             },
         ]
         self.rulesets = [
-            {"id": 7, "target": "tag", "enforcement": "active"}
+            {"id": 7, "target": "tag", "enforcement": "active"},
+            {"id": 8, "target": "tag", "enforcement": "active"},
         ]
         self.ruleset_details = {
             7: {
@@ -61,9 +62,24 @@ class FakeApi:
                     {"type": "deletion"},
                 ],
                 "bypass_actors": [],
+            },
+            8: {
+                "conditions": {
+                    "ref_name": {
+                        "include": [release_gate.RELEASE_TAG_RULESET_PATTERN],
+                        "exclude": [],
+                    }
+                },
+                "rules": [{"type": "creation"}],
+                "bypass_actors": [{
+                    "actor_id": release_gate.RELEASE_TAG_BOT_ID,
+                    "actor_type": "User",
+                    "bypass_mode": "always",
+                }],
             }
         }
         self.tags = {}
+        self.tag_objects = {}
         self.releases = {}
         self.commit_messages = {}
         self.merge_base = OLDER_MAINTENANCE_SHA
@@ -95,6 +111,8 @@ class FakeApi:
                     return None
                 raise AssertionError(f"missing tag {tag}")
             return self.tags[tag]
+        if path.startswith("/git/tags/"):
+            return self.tag_objects[path.rsplit("/", 1)[1]]
         if path.startswith("/compare/"):
             return {"merge_base_commit": {"sha": self.merge_base}}
         if path.startswith("/rulesets/"):
@@ -125,6 +143,21 @@ class FakeApi:
             payload["published_at"] = "2026-10-02T00:00:00Z"
             self.releases[payload["tag_name"]] = payload
         return payload
+
+    def add_signed_tag(self, tag, target_commit, *, object_sha="e" * 40):
+        self.tags[tag] = {"object": {"type": "tag", "sha": object_sha}}
+        self.tag_objects[object_sha] = {
+            "tag": tag,
+            "message": f"Release {tag}",
+            "tagger": {"email": release_gate.RELEASE_SIGNER_EMAIL},
+            "object": {"type": "commit", "sha": target_commit},
+            "verification": {
+                "verified": True,
+                "reason": "valid",
+                "payload": "signed tag payload",
+                "signature": "signed tag signature",
+            },
+        }
 
     def paginate(self, path, *, query=None):
         if path == "/milestones":
@@ -255,7 +288,7 @@ class ReleaseGateTests(unittest.TestCase):
                     workflow_sha=MAINTENANCE_SHA,
                 )
 
-        api.tags["v3.22.0.5"] = {"object": {"type": "commit", "sha": MAINTENANCE_SHA}}
+        api.add_signed_tag("v3.22.0.5", MAINTENANCE_SHA)
         with mock.patch("sys.stderr", new_callable=io.StringIO):
             with self.assertRaisesRegex(release_gate.ReleaseError, "Tag.*already exists"):
                 release_gate.prepare_release_commit(
@@ -264,6 +297,104 @@ class ReleaseGateTests(unittest.TestCase):
                     target_commit=MAINTENANCE_SHA,
                     workflow_ref="refs/heads/branch-3.22",
                     workflow_sha=MAINTENANCE_SHA,
+                )
+
+    def test_single_pipeline_rejects_blockers_before_creating_commit(self):
+        api = FakeApi()
+        api.blockers = [
+            {"number": 326, "title": "artifact checks", "html_url": "https://example/326"}
+        ]
+        with mock.patch("sys.stderr", new_callable=io.StringIO):
+            with self.assertRaisesRegex(release_gate.ReleaseError, "open release blocker"):
+                release_gate.prepare_release_commit(
+                    api,
+                    version="3.22.0.5",
+                    target_commit=MAINTENANCE_SHA,
+                    workflow_ref="refs/heads/branch-3.22",
+                    workflow_sha=MAINTENANCE_SHA,
+                    require_no_blockers=True,
+                )
+
+    def test_wait_for_ci_polls_exact_signed_sha(self):
+        api = FakeApi()
+        api.runs = []
+        original = api.paginate_key
+        calls = 0
+
+        def runs(path, key, *, query=None):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                api.runs = [{
+                    "head_sha": MAINTENANCE_SHA,
+                    "head_branch": "branch-3.22",
+                    "event": "push",
+                    "conclusion": "success",
+                }]
+            return original(path, key, query=query)
+
+        with mock.patch.object(api, "paginate_key", side_effect=runs), mock.patch.object(
+            release_gate.time, "sleep"
+        ) as sleep:
+            release_gate.wait_for_successful_ci(api, "branch-3.22", MAINTENANCE_SHA, attempts=3)
+        sleep.assert_called_once_with(15)
+
+    def test_wait_for_ci_fails_when_signed_sha_never_passes(self):
+        api = FakeApi()
+        api.runs = [{
+            "head_sha": MASTER_SHA,
+            "head_branch": "master",
+            "event": "push",
+            "conclusion": "success",
+        }]
+        with mock.patch.object(release_gate.time, "sleep") as sleep:
+            with self.assertRaisesRegex(release_gate.ReleaseError, "Timed out"):
+                release_gate.wait_for_successful_ci(
+                    api, "branch-3.22", MAINTENANCE_SHA, attempts=2
+                )
+        sleep.assert_called_once_with(15)
+
+    def test_wait_for_ci_fails_immediately_on_failed_push(self):
+        api = FakeApi()
+        api.runs = [{
+            "head_sha": MAINTENANCE_SHA,
+            "head_branch": "branch-3.22",
+            "event": "push",
+            "conclusion": "failure",
+        }]
+        with mock.patch.object(release_gate.time, "sleep") as sleep:
+            with self.assertRaisesRegex(release_gate.ReleaseError, "Push CI failed"):
+                release_gate.wait_for_successful_ci(api, "branch-3.22", MAINTENANCE_SHA)
+        sleep.assert_not_called()
+
+    def test_wait_for_ci_retries_transient_api_errors(self):
+        api = FakeApi()
+        error = release_gate.GitHubApiError(
+            "GET", "/actions/workflows/main.yml/runs", 503, "temporarily unavailable"
+        )
+        with mock.patch.object(api, "paginate_key", side_effect=[error, api.runs]), mock.patch.object(
+            release_gate.time, "sleep"
+        ) as sleep:
+            release_gate.wait_for_successful_ci(api, "branch-3.22", MAINTENANCE_SHA, attempts=2)
+        sleep.assert_called_once_with(15)
+
+    def test_signed_tip_can_defer_ci_but_not_skip_signature(self):
+        api = FakeApi()
+        api.runs = []
+        release_gate.preflight(
+            api, version="3.22.0.5", target_commit=MAINTENANCE_SHA,
+            workflow_ref="refs/heads/branch-3.22", workflow_sha=MAINTENANCE_SHA,
+            allow_blockers=False, recovery=False, skip_ci=True,
+        )
+        with mock.patch.object(
+            release_gate, "require_signed_release_commit",
+            side_effect=release_gate.ReleaseError("unsigned"),
+        ):
+            with self.assertRaisesRegex(release_gate.ReleaseError, "unsigned"):
+                release_gate.preflight(
+                    api, version="3.22.0.5", target_commit=MAINTENANCE_SHA,
+                    workflow_ref="refs/heads/branch-3.22", workflow_sha=MAINTENANCE_SHA,
+                    allow_blockers=False, recovery=False, skip_ci=True,
                 )
 
     def test_dry_run_reports_but_allows_issue_and_pull_request_blockers(self):
@@ -372,11 +503,25 @@ class ReleaseGateTests(unittest.TestCase):
                 recovery=False,
             )
 
+    def test_initial_production_rejects_existing_tag_before_validation(self):
+        api = FakeApi()
+        api.add_signed_tag("v3.22.0.5", MAINTENANCE_SHA)
+        with self.assertRaisesRegex(release_gate.ReleaseError, "explicit recovery mode"):
+            release_gate.preflight(
+                api,
+                version="3.22.0.5",
+                target_commit=MAINTENANCE_SHA,
+                workflow_ref="refs/heads/branch-3.22",
+                workflow_sha=MAINTENANCE_SHA,
+                allow_blockers=False,
+                recovery=False,
+            )
+
     def test_production_requires_active_tag_ruleset(self):
         api = FakeApi()
         api.rulesets = []
 
-        with self.assertRaisesRegex(release_gate.ReleaseError, "update/delete"):
+        with self.assertRaisesRegex(release_gate.ReleaseError, "immutable"):
             release_gate.preflight(
                 api,
                 version="3.22.0.5",
@@ -424,11 +569,33 @@ class ReleaseGateTests(unittest.TestCase):
         with self.assertRaises(release_gate.ReleaseError):
             release_gate.require_release_tag_ruleset(api)
 
-    def test_tag_ruleset_must_allow_creation_by_actions_token(self):
+    def test_tag_ruleset_requires_creation_protection(self):
         api = FakeApi()
-        api.ruleset_details[7]["rules"].append({"type": "creation"})
-        with self.assertRaisesRegex(release_gate.ReleaseError, "update/delete"):
+        api.ruleset_details[8]["rules"] = []
+        with self.assertRaisesRegex(release_gate.ReleaseError, "creation ruleset"):
             release_gate.require_release_tag_ruleset(api)
+
+    def test_tag_creation_ruleset_requires_only_publisher_bypass(self):
+        api = FakeApi()
+        api.ruleset_details[8]["bypass_actors"] = []
+        with self.assertRaisesRegex(release_gate.ReleaseError, "scylladb-publisher"):
+            release_gate.audit_release_tag_ruleset_bypass(api)
+
+    def test_automated_gate_accepts_rulesets_without_hidden_bypass_actors(self):
+        api = FakeApi()
+        for detail in api.ruleset_details.values():
+            del detail["bypass_actors"]
+        release_gate.preflight(
+            api,
+            version="3.22.0.5",
+            target_commit=MAINTENANCE_SHA,
+            workflow_ref="refs/heads/branch-3.22",
+            workflow_sha=MAINTENANCE_SHA,
+            allow_blockers=False,
+            recovery=False,
+        )
+        with self.assertRaisesRegex(release_gate.ReleaseError, "bypass actors"):
+            release_gate.audit_release_tag_ruleset_bypass(api)
 
     def test_admin_ruleset_audit_rejects_bypass_actors(self):
         api = FakeApi()
@@ -440,15 +607,13 @@ class ReleaseGateTests(unittest.TestCase):
                 "bypass_mode": "always",
             }
         )
-        with self.assertRaisesRegex(release_gate.ReleaseError, "must not have bypass actors"):
+        with self.assertRaisesRegex(release_gate.ReleaseError, "Immutable"):
             release_gate.audit_release_tag_ruleset_bypass(api)
 
     def test_recovery_accepts_exact_tagged_ancestor_after_branch_advances(self):
         api = FakeApi()
         api.branches["branch-3.22"] = MAINTENANCE_SHA
-        api.tags["v3.22.0.5"] = {
-            "object": {"type": "commit", "sha": OLDER_MAINTENANCE_SHA}
-        }
+        api.add_signed_tag("v3.22.0.5", OLDER_MAINTENANCE_SHA)
         api.merge_base = OLDER_MAINTENANCE_SHA
         api.runs[0]["head_sha"] = OLDER_MAINTENANCE_SHA
 
@@ -466,9 +631,7 @@ class ReleaseGateTests(unittest.TestCase):
 
     def test_recovery_rejects_mismatched_tag(self):
         api = FakeApi()
-        api.tags["v3.22.0.5"] = {
-            "object": {"type": "commit", "sha": "d" * 40}
-        }
+        api.add_signed_tag("v3.22.0.5", "d" * 40)
         with self.assertRaisesRegex(release_gate.ReleaseError, "Recovery tag"):
             release_gate.require_release_target(
                 api,
@@ -737,72 +900,65 @@ class ReleaseGateTests(unittest.TestCase):
             with self.assertRaisesRegex(release_gate.ReleaseError, "HTTP 403"):
                 release_gate.main(arguments)
 
-    def test_ensure_tag_creates_initial_and_reuses_only_explicit_recovery(self):
+    def test_ensure_tag_verifies_signed_annotated_tag(self):
         api = FakeApi()
+        api.add_signed_tag("v3.22.0.5", MAINTENANCE_SHA)
         release_gate.ensure_tag(
-            api, version="3.22.0.5", target_commit=MAINTENANCE_SHA, recovery=False
+            api, version="3.22.0.5", target_commit=MAINTENANCE_SHA
         )
-        self.assertEqual(MAINTENANCE_SHA, api.tags["v3.22.0.5"]["object"]["sha"])
-        with self.assertRaisesRegex(release_gate.ReleaseError, "recovery mode"):
-            release_gate.ensure_tag(
-                api,
-                version="3.22.0.5",
-                target_commit=MAINTENANCE_SHA,
-                recovery=False,
-            )
-        release_gate.ensure_tag(
-            api, version="3.22.0.5", target_commit=MAINTENANCE_SHA, recovery=True
-        )
+        self.assertFalse(api.posts)
 
-    def test_ensure_tag_rejects_missing_recovery_and_mismatched_target(self):
+    def test_ensure_tag_rejects_missing_and_mismatched_target(self):
         api = FakeApi()
-        with self.assertRaisesRegex(release_gate.ReleaseError, "does not exist"):
+        with self.assertRaisesRegex(release_gate.ReleaseError, "must exist"):
             release_gate.ensure_tag(
                 api,
                 version="3.22.0.5",
                 target_commit=MAINTENANCE_SHA,
-                recovery=True,
             )
-        api.tags["v3.22.0.5"] = {
-            "object": {"type": "commit", "sha": "d" * 40}
-        }
-        with self.assertRaisesRegex(release_gate.ReleaseError, "different commit"):
+        api.add_signed_tag("v3.22.0.5", "d" * 40)
+        with self.assertRaisesRegex(release_gate.ReleaseError, "must exist"):
             release_gate.ensure_tag(
                 api,
                 version="3.22.0.5",
                 target_commit=MAINTENANCE_SHA,
-                recovery=True,
             )
 
-    def test_ensure_tag_handles_creation_race_only_for_exact_target(self):
+    def test_tag_rejects_lightweight_or_wrong_signer(self):
         api = FakeApi()
-        api.post_error = release_gate.GitHubApiError("POST", "/git/refs", 422, "exists")
-        original_get = api.get
-        calls = 0
+        api.tags["v3.22.0.5"] = {"object": {"type": "commit", "sha": MAINTENANCE_SHA}}
+        with self.assertRaisesRegex(release_gate.ReleaseError, "not annotated"):
+            release_gate.tag_target(api, "v3.22.0.5")
+        api.add_signed_tag("v3.22.0.5", MAINTENANCE_SHA)
+        api.tag_objects["e" * 40]["tagger"]["email"] = "other@example.com"
+        with self.assertRaisesRegex(release_gate.ReleaseError, "wrong tagger"):
+            release_gate.tag_target(api, "v3.22.0.5")
+        api.tag_objects["e" * 40]["tagger"]["email"] = release_gate.RELEASE_SIGNER_EMAIL
+        api.tag_objects["e" * 40]["verification"]["verified"] = False
+        with self.assertRaisesRegex(release_gate.ReleaseError, "not verified"):
+            release_gate.tag_target(api, "v3.22.0.5")
+        api.tag_objects["e" * 40]["verification"]["verified"] = True
+        with mock.patch.object(release_gate, "signature_fingerprint", return_value="0" * 40):
+            with self.assertRaisesRegex(release_gate.ReleaseError, "publisher key"):
+                release_gate.tag_target(api, "v3.22.0.5")
 
-        def raced_get(path, **kwargs):
-            nonlocal calls
-            calls += 1
-            if calls == 1:
-                return None
-            api.tags["v3.22.0.5"] = {
-                "object": {"type": "commit", "sha": MAINTENANCE_SHA}
-            }
-            return original_get(path, **kwargs)
-
-        with mock.patch.object(api, "get", side_effect=raced_get):
-            release_gate.ensure_tag(
-                api,
-                version="3.22.0.5",
-                target_commit=MAINTENANCE_SHA,
-                recovery=False,
-            )
+    def test_tag_rejects_wrong_identity_message_or_target_type(self):
+        for field, value, expected in (
+            ("tag", "v3.22.0.4", "wrong name"),
+            ("message", "Release v3.22.0.4", "wrong message"),
+            ("object", {"type": "tree", "sha": MAINTENANCE_SHA}, "not a commit tag"),
+            ("verification", {"verified": False, "reason": "unsigned"}, "not verified"),
+        ):
+            with self.subTest(field=field):
+                api = FakeApi()
+                api.add_signed_tag("v3.22.0.5", MAINTENANCE_SHA)
+                api.tag_objects["e" * 40][field] = value
+                with self.assertRaisesRegex(release_gate.ReleaseError, expected):
+                    release_gate.tag_target(api, "v3.22.0.5")
 
     def test_ensure_release_is_idempotent_only_in_recovery(self):
         api = FakeApi()
-        api.tags["v3.22.0.5"] = {
-            "object": {"type": "commit", "sha": MAINTENANCE_SHA}
-        }
+        api.add_signed_tag("v3.22.0.5", MAINTENANCE_SHA)
         release_gate.ensure_release(
             api,
             version="3.22.0.5",
@@ -827,9 +983,7 @@ class ReleaseGateTests(unittest.TestCase):
 
     def test_existing_release_must_be_final(self):
         api = FakeApi()
-        api.tags["v3.22.0.5"] = {
-            "object": {"type": "commit", "sha": MAINTENANCE_SHA}
-        }
+        api.add_signed_tag("v3.22.0.5", MAINTENANCE_SHA)
         api.releases["v3.22.0.5"] = {
             "tag_name": "v3.22.0.5",
             "draft": True,

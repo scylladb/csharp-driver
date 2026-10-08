@@ -69,26 +69,22 @@ decision, edit the PR label directly after the last classifier run.
 
 ### Canonical release workflow
 
-Run **Prepare signed release commit** from the protected branch being released:
+Run **Release NuGet packages** from the protected branch being released:
 `branch-3.22` for version 3.22.x, or `master` for version 4. The manual dispatch
-must name the four-part version and the full SHA of the current branch tip. It
-checks source versions, the milestone, successful CI, and the absence of an
-existing release tag or GitHub Release. In the branch-restricted `release`
-environment, it updates `build/release-version.txt` and creates a
-`Release v<version>` commit signed with the ScyllaDB Publisher GPG key
-`BF4BF97A8D4DF1AA`. The marker file makes the push run CI on the signed SHA
-without changing shipping projects. No tag or package is published by this
-preparation step.
+names the four-part version and the full SHA of the current branch tip. For
+production, the workflow checks source versions, the milestone and blockers,
+successful CI, and the absence of an existing release tag or GitHub Release.
+It updates `build/release-version.txt` and pushes a `Release v<version>` commit
+signed with the ScyllaDB Publisher GPG key `BF4BF97A8D4DF1AA`. The push runs
+CI; the same workflow waits for successful CI on that exact signed SHA before
+building docs and packages. A new dispatch after the signed commit was pushed
+accepts that commit as the branch tip without creating another one.
 
-Wait for successful push CI on the signed commit. Then run **Release NuGet
-packages** from the same branch with that signed commit's full SHA. The
-publication gate verifies the commit message, publisher identity, GitHub
-verification, and the exact GPG fingerprint before creating the tag.
-The workflow uses release tooling checked out from protected `master`,
-resolves the exact `v<version>` milestone, verifies successful CI for that
-SHA, signs and validates all three packages, and retains their hashes as a
-workflow artifact. The branch-local dispatch lets the publishing job use
-the built-in Actions token to tag its own branch tip.
+After docs, integration and package validation, the workflow rechecks the
+milestone and commit signature. It creates a signed annotated tag on the
+validated commit, verifies the tag's publisher signature and target, and then
+publishes all three packages and the GitHub Release. It uses release tooling
+checked out from protected `master` and retains package hashes as an artifact.
 
 The release workflow also runs the C# driver matrix against the exact target
 commit and intended package version before publication. It checks the DataStax
@@ -100,12 +96,11 @@ The workflow also builds the versioned Pages artifact with the candidate
 release tag before publication, then deploys that checked artifact after the
 GitHub Release succeeds. Dry runs never deploy docs.
 
-A dry run performs that complete package path but creates no tag, NuGet
-package, or GitHub Release. A preliminary dry run may use the source commit;
-the final production-key dry run uses the signed release commit. Open milestone
-blockers are reported but do not prevent a dry run or creation of the signed
-commit. Production runs fail closed while any selected-milestone
-`release-blocker` remains, and recheck the gate before the tag and before each
+A dry run validates the input source commit, docs and packages with the
+production strong-name key, but creates no remote commit, tag, NuGet package or
+GitHub Release. Open milestone blockers are reported but do not prevent a dry
+run. Production fails before creating the signed commit while any selected-milestone
+`release-blocker` remains, and rechecks the gate before the tag and before each
 individual package upload.
 
 Production requires a `release` environment restricted to `master` and
@@ -115,8 +110,8 @@ Commit preparation also requires `RELEASE_GPG_PRIVATE_KEY` for the publisher
 key and `RELEASE_BOT_TOKEN` for the `scylladb-publisher` account, both scoped to
 the `release` environment. The publisher must have repository write access
 and an individual-user bypass for the protected `master` and `branch-3.22`
-ruleset. This token pushes only the signed release commit so its push triggers
-CI. The publishing job gives its built-in `GITHUB_TOKEN` Contents write only;
+ruleset. This token pushes the signed release commit and signed annotated tag.
+The publishing job gives its built-in `GITHUB_TOKEN` Contents write only;
 other jobs retain read-only access.
 
 The release environment is a GitHub repository setting, so merging a pull
@@ -136,12 +131,14 @@ branch-tip CI, signed release commit, and package validation. A release run
 that was already waiting for approval may need to be rerun after the setting
 changes.
 
-An active tag ruleset must restrict update and deletion of
-`refs/tags/v*.*.*.*` and have no bypass actors. It cannot restrict tag
-creation while using the built-in Actions token, because that token cannot
-be added as a ruleset bypass actor. The release workflow rejects a preexisting
-tag on an initial run and never moves or deletes a tag. An administrator
-should verify the ruleset before production use:
+Two active rulesets must protect `refs/tags/v*.*.*.*`. The existing `Protect
+release tags` ruleset restricts updates and deletion with no bypass actor. A
+separate creation ruleset must allow only the `scylladb-publisher` user (ID
+`338827103`) to bypass its creation restriction in `always` mode. Keeping
+update and deletion in the no-bypass ruleset leaves tags immutable even for
+the publisher. An administrator must add the creation ruleset before production
+use. The workflow rejects a preexisting tag on an initial run and never moves
+or deletes a tag. Verify both rulesets afterward:
 
 ```bash
 GITHUB_TOKEN=<admin-token> python3 build/release-gate.py audit-ruleset \
@@ -150,12 +147,18 @@ GITHUB_TOKEN=<admin-token> python3 build/release-gate.py audit-ruleset \
 
 ### Partial-publication recovery
 
+If publication stops after the signed commit but before the tag, dispatch a
+new workflow run from that signed branch tip, passing its full SHA as the target
+commit and using normal production inputs. A GitHub Actions re-run retains the
+old dispatch SHA and cannot resume this state. The new run verifies the commit
+and resumes validation without creating another release commit.
+
 If publication stops after the tag or one of the packages is published:
 
 1. Fix any newly opened release blocker before retrying.
 2. Dispatch the workflow for the same version and exact tagged commit, with
    **Resume partial publication** enabled.
-3. The workflow verifies that the existing lightweight tag still points to
+3. The workflow verifies that the existing signed annotated tag points to
    that commit, rebuilds and validates the package set, and skips only package
    versions already present on NuGet.
 4. Verify all three public packages and the GitHub Release after completion.
