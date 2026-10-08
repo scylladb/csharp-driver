@@ -14,7 +14,7 @@ on:
         type: string
         required: true
       target_commit:
-        description: Full SHA at the branch tip; a signed release commit is required to publish
+        description: Full SHA at the branch tip; production creates a signed release commit
         type: string
         required: true
       dry_run:
@@ -58,6 +58,7 @@ jobs:
     outputs:
       branch: ${{ steps.gate.outputs.branch }}
       tag: ${{ steps.gate.outputs.tag }}
+      already_signed: ${{ steps.gate.outputs.already_signed }}
     steps:
       - name: Checkout trusted release tooling
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -68,7 +69,7 @@ jobs:
       - name: Validate release inputs and milestone
         id: gate
         env:
-          ALLOW_BLOCKERS: ${{ inputs.dry_run }}
+          DRY_RUN: ${{ inputs.dry_run }}
           GITHUB_TOKEN: ${{ github.token }}
           RECOVERY: ${{ inputs.resume_partial_publication }}
           RELEASE_VERSION: ${{ inputs.version }}
@@ -76,31 +77,166 @@ jobs:
           WORKFLOW_REF: ${{ github.ref }}
           WORKFLOW_SHA: ${{ github.sha }}
         run: |
-          options=()
-          if [[ "$ALLOW_BLOCKERS" == "true" ]]; then
-            options+=(--allow-blockers)
+          common=(--repository "$GITHUB_REPOSITORY" --version "$RELEASE_VERSION"
+            --target-commit "$TARGET_COMMIT" --workflow-ref "$WORKFLOW_REF"
+            --workflow-sha "$WORKFLOW_SHA" --github-output "$GITHUB_OUTPUT")
+          if [[ "$DRY_RUN" == true && "$RECOVERY" == true ]]; then
+            echo 'Dry run cannot resume partial publication' >&2
+            exit 1
           fi
-          if [[ "$RECOVERY" == "true" ]]; then
-            options+=(--recovery)
+          if [[ "$DRY_RUN" == true ]]; then
+            python3 build/release-gate.py preflight "${common[@]}" --allow-blockers
+          elif [[ "$RECOVERY" == true ]]; then
+            python3 build/release-gate.py preflight "${common[@]}" --recovery
+          elif python3 build/release-gate.py verify-release-commit \
+            --repository "$GITHUB_REPOSITORY" --version "$RELEASE_VERSION" \
+            --target-commit "$TARGET_COMMIT" >/dev/null 2>&1; then
+            python3 build/release-gate.py preflight "${common[@]}" --skip-ci
+            echo 'already_signed=true' >> "$GITHUB_OUTPUT"
+          else
+            python3 build/release-gate.py prepare "${common[@]}" --require-no-blockers
           fi
-          python3 build/release-gate.py preflight \
-            --repository "$GITHUB_REPOSITORY" \
-            --version "$RELEASE_VERSION" \
+
+  prepare-target:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: release
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      target_commit: ${{ steps.target.outputs.target_commit }}
+    steps:
+      - name: Checkout trusted release tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Checkout exact release source
+        if: ${{ !inputs.dry_run && !inputs.resume_partial_publication && needs.preflight.outputs.already_signed != 'true' }}
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ inputs.target_commit }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check publisher signing credentials without publishing
+        if: ${{ inputs.dry_run }}
+        env:
+          RELEASE_BOT_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
+          RELEASE_GPG_PRIVATE_KEY: ${{ secrets.RELEASE_GPG_PRIVATE_KEY }}
+        run: |
+          [[ -n "$RELEASE_BOT_TOKEN" && -n "$RELEASE_GPG_PRIVATE_KEY" ]]
+          export GNUPGHOME
+          GNUPGHOME=$(mktemp -d)
+          chmod 700 "$GNUPGHOME"
+          trap 'rm -rf -- "${GNUPGHOME:?}"' EXIT
+          printf '%s' "$RELEASE_GPG_PRIVATE_KEY" | gpg --batch --import
+          gpg --batch --with-colons --list-secret-keys \
+            71A6D22711CDB7C2446D21CFBF4BF97A8D4DF1AA |
+            grep -Fq 'fpr:::::::::71A6D22711CDB7C2446D21CFBF4BF97A8D4DF1AA:'
+
+      - name: Create signed release commit and await exact CI
+        if: ${{ !inputs.dry_run && !inputs.resume_partial_publication && needs.preflight.outputs.already_signed != 'true' }}
+        id: signed
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
+          RELEASE_BOT_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
+          RELEASE_GPG_PRIVATE_KEY: ${{ secrets.RELEASE_GPG_PRIVATE_KEY }}
+          RELEASE_BRANCH: ${{ needs.preflight.outputs.branch }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          TARGET_COMMIT: ${{ inputs.target_commit }}
+          GATE_TOKEN: ${{ github.token }}
+          WORKFLOW_REF: ${{ github.ref }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          [[ -n "$RELEASE_BOT_TOKEN" && -n "$RELEASE_GPG_PRIVATE_KEY" ]]
+          python3 build/release-gate.py verify-source \
+            --source source --version "$RELEASE_VERSION" \
+            --branch "$RELEASE_BRANCH" --target-commit "$TARGET_COMMIT"
+          fingerprint=71A6D22711CDB7C2446D21CFBF4BF97A8D4DF1AA
+          export GNUPGHOME
+          GNUPGHOME=$(mktemp -d)
+          chmod 700 "$GNUPGHOME"
+          trap 'rm -rf -- "${GNUPGHOME:?}"' EXIT
+          printf '%s' "$RELEASE_GPG_PRIVATE_KEY" | gpg --batch --import
+          gpg --batch --with-colons --list-secret-keys "$fingerprint" |
+            grep -Fq "fpr:::::::::$fingerprint:"
+          cd source
+          git config user.name 'ScyllaDB Publisher'
+          git config user.email 'publish.code@scylladb.com'
+          git config user.signingkey "$fingerprint"
+          printf 'v%s\n' "$RELEASE_VERSION" > build/release-version.txt
+          git add build/release-version.txt
+          [[ "$(git diff --cached --name-only)" == 'build/release-version.txt' ]]
+          git -c commit.gpgsign=true commit -m "Release v$RELEASE_VERSION"
+          git verify-commit --raw HEAD > "$RUNNER_TEMP/release-signature-status" 2>&1
+          grep -Fq "[GNUPG:] VALIDSIG $fingerprint " "$RUNNER_TEMP/release-signature-status"
+          [[ "$(git diff --name-only "$TARGET_COMMIT" HEAD)" == 'build/release-version.txt' ]]
+          current=$(git ls-remote origin "refs/heads/$RELEASE_BRANCH" | cut -f1)
+          [[ "$current" == "$TARGET_COMMIT" ]]
+          GITHUB_TOKEN="$GATE_TOKEN" python3 ../build/release-gate.py prepare \
+            --repository "$GITHUB_REPOSITORY" --version "$RELEASE_VERSION" \
             --target-commit "$TARGET_COMMIT" \
-            --workflow-ref "$WORKFLOW_REF" \
-            --workflow-sha "$WORKFLOW_SHA" \
-            --github-output "$GITHUB_OUTPUT" \
-            "${options[@]}"
+            --workflow-ref "$WORKFLOW_REF" --workflow-sha "$WORKFLOW_SHA" \
+            --require-no-blockers
+          gh auth setup-git -h github.com
+          git push origin "HEAD:refs/heads/$RELEASE_BRANCH"
+          release_commit=$(git rev-parse HEAD)
+          echo "target_commit=$release_commit" >> "$GITHUB_OUTPUT"
+          verified=false
+          for attempt in {1..20}; do
+            if GITHUB_TOKEN="$RELEASE_BOT_TOKEN" python3 ../build/release-gate.py \
+              verify-release-commit --repository "$GITHUB_REPOSITORY" \
+              --version "$RELEASE_VERSION" --target-commit "$release_commit" \
+              >/dev/null 2>&1; then
+              verified=true
+              break
+            fi
+            sleep 3
+          done
+          if [[ "$verified" != true ]]; then
+            GITHUB_TOKEN="$RELEASE_BOT_TOKEN" python3 ../build/release-gate.py \
+              verify-release-commit --repository "$GITHUB_REPOSITORY" \
+              --version "$RELEASE_VERSION" --target-commit "$release_commit"
+            exit 1
+          fi
+          GITHUB_TOKEN="$RELEASE_BOT_TOKEN" python3 ../build/release-gate.py \
+            wait-ci --repository "$GITHUB_REPOSITORY" \
+            --branch "$RELEASE_BRANCH" --target-commit "$release_commit"
+
+      - name: Wait for CI on an existing signed release commit
+        if: ${{ !inputs.dry_run && !inputs.resume_partial_publication && needs.preflight.outputs.already_signed == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_BRANCH: ${{ needs.preflight.outputs.branch }}
+          TARGET_COMMIT: ${{ inputs.target_commit }}
+        run: |
+          python3 build/release-gate.py wait-ci \
+            --repository "$GITHUB_REPOSITORY" \
+            --branch "$RELEASE_BRANCH" --target-commit "$TARGET_COMMIT"
+
+      - name: Select exact validation target
+        id: target
+        env:
+          SIGNED_COMMIT: ${{ steps.signed.outputs.target_commit }}
+          INPUT_COMMIT: ${{ inputs.target_commit }}
+        run: echo "target_commit=${SIGNED_COMMIT:-$INPUT_COMMIT}" >> "$GITHUB_OUTPUT"
 
   pre-release-integration:
-    needs: preflight
+    needs: prepare-target
     uses: scylladb/csharp-driver-matrix/.github/workflows/driver-integration-matrix.yml@master
     with:
-      driver_ref: ${{ inputs.target_commit }}
+      driver_ref: ${{ needs.prepare-target.outputs.target_commit }}
       driver_version: ${{ inputs.version }}
 
   docs-check:
-    needs: preflight
+    needs: prepare-target
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -109,7 +245,7 @@ jobs:
       - name: Checkout exact release source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
-          ref: ${{ inputs.target_commit }}
+          ref: ${{ needs.prepare-target.outputs.target_commit }}
           persist-credentials: false
 
       - name: Checkout current docs site tooling
@@ -150,7 +286,7 @@ jobs:
       - name: Stage the candidate tag in the docs checkout
         env:
           RELEASE_TAG: v${{ inputs.version }}
-          TARGET_COMMIT: ${{ inputs.target_commit }}
+          TARGET_COMMIT: ${{ needs.prepare-target.outputs.target_commit }}
         run: |
           git -C site fetch --no-tags origin "$TARGET_COMMIT"
           existing=$(git -C site rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}" 2>/dev/null || true)
@@ -182,7 +318,7 @@ jobs:
           retention-days: 14
 
   package:
-    needs: preflight
+    needs: [preflight, prepare-target]
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     environment: release
@@ -201,7 +337,7 @@ jobs:
       - name: Checkout exact release source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
-          ref: ${{ inputs.target_commit }}
+          ref: ${{ needs.prepare-target.outputs.target_commit }}
           path: source
           persist-credentials: false
 
@@ -209,7 +345,7 @@ jobs:
         env:
           RELEASE_BRANCH: ${{ needs.preflight.outputs.branch }}
           RELEASE_VERSION: ${{ inputs.version }}
-          TARGET_COMMIT: ${{ inputs.target_commit }}
+          TARGET_COMMIT: ${{ needs.prepare-target.outputs.target_commit }}
         run: |
           python3 build/release-gate.py verify-source \
             --source source \
@@ -266,7 +402,7 @@ jobs:
       - name: Retain validated packages
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: packages-${{ needs.preflight.outputs.tag }}-${{ inputs.target_commit }}
+          name: packages-${{ needs.preflight.outputs.tag }}-${{ needs.prepare-target.outputs.target_commit }}
           path: |
             source/nupkgs/*.nupkg
             source/nupkgs/SHA256SUMS
@@ -275,7 +411,7 @@ jobs:
 
   publish:
     if: ${{ !inputs.dry_run }}
-    needs: [preflight, pre-release-integration, docs-check, package]
+    needs: [preflight, prepare-target, pre-release-integration, docs-check, package]
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     environment: release
@@ -291,6 +427,14 @@ jobs:
           ref: master
           persist-credentials: false
 
+      - name: Checkout signed release commit for tag creation
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ needs.prepare-target.outputs.target_commit }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+
       - name: Setup .NET
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
@@ -299,7 +443,7 @@ jobs:
       - name: Download validated packages
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: packages-${{ needs.preflight.outputs.tag }}-${{ inputs.target_commit }}
+          name: packages-${{ needs.preflight.outputs.tag }}-${{ needs.prepare-target.outputs.target_commit }}
           path: nupkgs
 
       - name: Reverify downloaded package set
@@ -316,22 +460,58 @@ jobs:
       - name: Recheck gate and create immutable tag
         env:
           GATE_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
           RECOVERY: ${{ inputs.resume_partial_publication }}
-          RELEASE_TOKEN: ${{ github.token }}
+          RELEASE_GPG_PRIVATE_KEY: ${{ secrets.RELEASE_GPG_PRIVATE_KEY }}
           RELEASE_VERSION: ${{ inputs.version }}
-          TARGET_COMMIT: ${{ inputs.target_commit }}
+          TARGET_COMMIT: ${{ needs.prepare-target.outputs.target_commit }}
         run: |
           options=()
-          if [[ "$RECOVERY" == "true" ]]; then
+          if [[ "$RECOVERY" == true ]]; then
             options+=(--recovery)
           fi
           GITHUB_TOKEN="$GATE_TOKEN" python3 build/release-gate.py gate \
             --repository "$GITHUB_REPOSITORY" --version "$RELEASE_VERSION" \
-            --target-commit "$TARGET_COMMIT" \
-            "${options[@]}"
-          GITHUB_TOKEN="$RELEASE_TOKEN" python3 build/release-gate.py ensure-tag \
-            --repository "$GITHUB_REPOSITORY" --version "$RELEASE_VERSION" \
             --target-commit "$TARGET_COMMIT" "${options[@]}"
+          tag="v$RELEASE_VERSION"
+          if [[ "$RECOVERY" != true ]]; then
+            [[ -n "$GH_TOKEN" && -n "$RELEASE_GPG_PRIVATE_KEY" ]]
+            remote_tag=$(git -C source ls-remote origin "refs/tags/$tag")
+            [[ -z "$remote_tag" ]]
+            fingerprint=71A6D22711CDB7C2446D21CFBF4BF97A8D4DF1AA
+            export GNUPGHOME
+            GNUPGHOME=$(mktemp -d)
+            chmod 700 "$GNUPGHOME"
+            trap 'rm -rf -- "${GNUPGHOME:?}"' EXIT
+            printf '%s' "$RELEASE_GPG_PRIVATE_KEY" | gpg --batch --import
+            gpg --batch --with-colons --list-secret-keys "$fingerprint" |
+              grep -Fq "fpr:::::::::$fingerprint:"
+            git -C source config user.name 'ScyllaDB Publisher'
+            git -C source config user.email 'publish.code@scylladb.com'
+            git -C source config user.signingkey "$fingerprint"
+            git -C source tag -s "$tag" -m "Release $tag" "$TARGET_COMMIT"
+            git -C source verify-tag --raw "$tag" > "$RUNNER_TEMP/tag-signature-status" 2>&1
+            grep -Fq "[GNUPG:] VALIDSIG $fingerprint " "$RUNNER_TEMP/tag-signature-status"
+            [[ "$(git -C source rev-parse "$tag^{commit}")" == "$TARGET_COMMIT" ]]
+            gh auth setup-git -h github.com
+            git -C source push origin "refs/tags/$tag"
+          fi
+          verified=false
+          for attempt in {1..20}; do
+            if GITHUB_TOKEN="$GATE_TOKEN" python3 build/release-gate.py ensure-tag \
+              --repository "$GITHUB_REPOSITORY" --version "$RELEASE_VERSION" \
+              --target-commit "$TARGET_COMMIT" >/dev/null 2>&1; then
+              verified=true
+              break
+            fi
+            sleep 3
+          done
+          if [[ "$verified" != true ]]; then
+            GITHUB_TOKEN="$GATE_TOKEN" python3 build/release-gate.py ensure-tag \
+              --repository "$GITHUB_REPOSITORY" --version "$RELEASE_VERSION" \
+              --target-commit "$TARGET_COMMIT"
+            exit 1
+          fi
 
       - name: Gate and publish packages
         env:
@@ -342,7 +522,7 @@ jobs:
           OPENTELEMETRY_PACKAGE_PATH: ${{ steps.packages.outputs.opentelemetry }}
           RECOVERY: ${{ inputs.resume_partial_publication }}
           RELEASE_VERSION: ${{ inputs.version }}
-          TARGET_COMMIT: ${{ inputs.target_commit }}
+          TARGET_COMMIT: ${{ needs.prepare-target.outputs.target_commit }}
         run: |
           package_ids=(
             ScyllaDBCSharpDriver
@@ -363,7 +543,7 @@ jobs:
             package_path="${package_paths[$index]}"
             GITHUB_TOKEN="$GATE_TOKEN" python3 build/release-gate.py gate \
               --repository "$GITHUB_REPOSITORY" --version "$RELEASE_VERSION" \
-              --target-commit "$TARGET_COMMIT" --recovery
+              --target-commit "$TARGET_COMMIT" "${package_options[@]}"
             state=$(python3 build/release-gate.py published-package \
               --package "$package_path" --package-id "$package_id" \
               --version "$RELEASE_VERSION" "${package_options[@]}")
@@ -388,7 +568,7 @@ jobs:
           RECOVERY: ${{ inputs.resume_partial_publication }}
           RELEASE_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ inputs.version }}
-          TARGET_COMMIT: ${{ inputs.target_commit }}
+          TARGET_COMMIT: ${{ needs.prepare-target.outputs.target_commit }}
         run: |
           options=()
           if [[ "$RECOVERY" == "true" ]]; then
@@ -396,7 +576,7 @@ jobs:
           fi
           GITHUB_TOKEN="$GATE_TOKEN" python3 build/release-gate.py gate \
             --repository "$GITHUB_REPOSITORY" --version "$RELEASE_VERSION" \
-            --target-commit "$TARGET_COMMIT" --recovery
+            --target-commit "$TARGET_COMMIT" "${options[@]}"
           GITHUB_TOKEN="$RELEASE_TOKEN" python3 build/release-gate.py ensure-release \
             --repository "$GITHUB_REPOSITORY" --version "$RELEASE_VERSION" \
             --target-commit "$TARGET_COMMIT" \

@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -20,6 +21,7 @@ from typing import Any
 
 API_VERSION = "2022-11-28"
 RELEASE_TAG_RULESET_PATTERN = "refs/tags/v*.*.*.*"
+RELEASE_TAG_BOT_ID = 338827103
 RELEASE_SIGNER_FINGERPRINT = "71A6D22711CDB7C2446D21CFBF4BF97A8D4DF1AA"
 RELEASE_SIGNER_EMAIL = "publish.code@scylladb.com"
 RELEASE_SIGNER_PUBLIC_KEY = Path(__file__).with_name("release-publisher.asc")
@@ -263,11 +265,35 @@ def tag_target(api: Any, tag: str, *, missing_ok: bool = False) -> str | None:
     require(isinstance(payload, dict), f"Tag {tag} response was not an object")
     ref_object = payload.get("object")
     require(isinstance(ref_object, dict), f"Tag {tag} response omitted object")
-    require(ref_object.get("type") == "commit", f"Tag {tag} is not lightweight")
-    return validate_commit(
-        require_string(ref_object.get("sha"), f"SHA for tag {tag}"),
-        f"SHA for tag {tag}",
+    require(ref_object.get("type") == "tag", f"Tag {tag} is not annotated")
+    tag_sha = validate_commit(require_string(ref_object.get("sha"), f"object SHA for tag {tag}"))
+    tag_object = api.get(f"/git/tags/{tag_sha}")
+    require(isinstance(tag_object, dict), f"Tag {tag} object was not returned")
+    require(tag_object.get("tag") == tag, f"Tag {tag} has the wrong name")
+    message = require_string(tag_object.get("message"), f"message for tag {tag}")
+    require(message.splitlines()[0] == f"Release {tag}", f"Tag {tag} has the wrong message")
+    tagger = tag_object.get("tagger")
+    require(
+        isinstance(tagger, dict) and tagger.get("email") == RELEASE_SIGNER_EMAIL,
+        f"Tag {tag} has the wrong tagger",
     )
+    verification = tag_object.get("verification")
+    require(
+        isinstance(verification, dict)
+        and verification.get("verified") is True
+        and verification.get("reason") == "valid",
+        f"Tag {tag} is not verified by GitHub",
+    )
+    require(
+        signature_fingerprint(
+            require_string(verification.get("payload"), f"payload for tag {tag}"),
+            require_string(verification.get("signature"), f"signature for tag {tag}"),
+        ) == RELEASE_SIGNER_FINGERPRINT,
+        f"Tag {tag} was not signed by the publisher key",
+    )
+    target = tag_object.get("object")
+    require(isinstance(target, dict) and target.get("type") == "commit", f"Tag {tag} is not a commit tag")
+    return validate_commit(require_string(target.get("sha"), f"commit SHA for tag {tag}"))
 
 
 def require_release_target(
@@ -287,7 +313,7 @@ def require_release_target(
         return
     require(
         tag_target(api, tag, missing_ok=True) == target_commit,
-        f"Recovery tag {tag} must be lightweight and point at the target commit",
+        f"Recovery tag {tag} must be signed and point at the target commit",
     )
     if current_tip == target_commit:
         return
@@ -374,6 +400,42 @@ def require_successful_ci(api: Any, branch: str, target_commit: str) -> None:
     )
 
 
+def wait_for_successful_ci(
+    api: Any, branch: str, target_commit: str, *, attempts: int = 360, interval: int = 15
+) -> None:
+    target_commit = validate_commit(target_commit)
+    for attempt in range(attempts):
+        try:
+            runs = api.paginate_key(
+                "/actions/workflows/main.yml/runs",
+                "workflow_runs",
+                query={"head_sha": target_commit},
+            )
+        except GitHubApiError as error:
+            if error.status not in (None, 408, 425, 429) and not (
+                error.status is not None and 500 <= error.status <= 599
+            ):
+                raise
+        else:
+            matching = [
+                run for run in runs
+                if isinstance(run, dict)
+                and run.get("head_sha") == target_commit
+                and run.get("head_branch") == branch
+                and run.get("event") == "push"
+            ]
+            if any(run.get("conclusion") == "success" for run in matching):
+                return
+            failures = {"failure", "cancelled", "timed_out", "action_required"}
+            require(
+                not any(run.get("conclusion") in failures for run in matching),
+                f"Push CI failed for {branch} at {target_commit}",
+            )
+        if attempt + 1 < attempts:
+            time.sleep(interval)
+    raise ReleaseError(f"Timed out waiting for successful push CI on {branch} at {target_commit}")
+
+
 def signature_fingerprint(payload: str, signature: str) -> str:
     with tempfile.TemporaryDirectory(prefix="csharp-driver-release-gpg-") as directory:
         home = Path(directory)
@@ -453,7 +515,7 @@ def require_signed_release_commit(api: Any, version: str, target_commit: str) ->
     )
 
 
-def require_release_tag_ruleset(api: Any) -> dict[str, Any]:
+def require_release_tag_ruleset(api: Any, *, audit_bypass: bool = False) -> None:
     rulesets = api.paginate("/rulesets", query={"includes_parents": "true"})
     candidates = [
         ruleset
@@ -462,7 +524,8 @@ def require_release_tag_ruleset(api: Any) -> dict[str, Any]:
         and ruleset.get("target") == "tag"
         and ruleset.get("enforcement") == "active"
     ]
-    protected = []
+    immutable = []
+    creation = []
     for candidate in candidates:
         ruleset_id = require_integer(candidate.get("id"), "release tag ruleset ID")
         detail = api.get(f"/rulesets/{ruleset_id}")
@@ -481,24 +544,37 @@ def require_release_tag_ruleset(api: Any) -> dict[str, Any]:
             isinstance(includes, list)
             and RELEASE_TAG_RULESET_PATTERN in includes
             and excludes == []
-            and {"update", "deletion"}.issubset(rule_types)
-            and "creation" not in rule_types
         ):
-            protected.append(detail)
+            if {"update", "deletion"}.issubset(rule_types) and "creation" not in rule_types:
+                immutable.append(detail)
+            if "creation" in rule_types and not {"update", "deletion"} & rule_types:
+                creation.append(detail)
     require(
-        len(protected) == 1,
-        "Expected exactly one active update/delete ruleset for "
-        f"{RELEASE_TAG_RULESET_PATTERN}, found {len(protected)}",
+        len(immutable) == 1,
+        f"Expected one immutable release tag ruleset for {RELEASE_TAG_RULESET_PATTERN}",
     )
-    return protected[0]
+    require(
+        len(creation) == 1,
+        f"Expected one release tag creation ruleset for {RELEASE_TAG_RULESET_PATTERN}",
+    )
+    if not audit_bypass:
+        return
+    require(
+        immutable[0].get("bypass_actors") == [],
+        "Immutable release tag ruleset must have no bypass actors",
+    )
+    require(
+        creation[0].get("bypass_actors") == [{
+            "actor_id": RELEASE_TAG_BOT_ID,
+            "actor_type": "User",
+            "bypass_mode": "always",
+        }],
+        "Expected one release tag creation ruleset bypassed only by scylladb-publisher",
+    )
 
 
 def audit_release_tag_ruleset_bypass(api: Any) -> None:
-    detail = require_release_tag_ruleset(api)
-    require(
-        detail.get("bypass_actors") == [],
-        "Release tag ruleset must not have bypass actors",
-    )
+    require_release_tag_ruleset(api, audit_bypass=True)
 
 
 def preflight(
@@ -510,6 +586,7 @@ def preflight(
     workflow_sha: str,
     allow_blockers: bool,
     recovery: bool,
+    skip_ci: bool = False,
 ) -> ReleaseContext:
     branch = branch_for_version(version)
     target_commit = validate_commit(target_commit)
@@ -534,12 +611,24 @@ def preflight(
         target_commit=target_commit,
         recovery=recovery,
     )
+    if not allow_blockers and not recovery:
+        require(
+            tag_target(api, tag, missing_ok=True) is None,
+            f"Tag {tag} already exists; use explicit recovery mode",
+        )
+        require(
+            api.get(f"/releases/tags/{urllib.parse.quote(tag, safe='')}", missing_ok=True) is None,
+            f"GitHub Release {tag} already exists; use explicit recovery mode",
+        )
     milestone_number = resolve_milestone(api, tag)
     blockers = release_blockers(api, milestone_number)
     if blockers:
         report_blockers(blockers)
         require(allow_blockers, f"Milestone {tag} has {len(blockers)} open release blocker(s)")
-    require_successful_ci(api, branch, target_commit)
+    if not skip_ci:
+        require_successful_ci(api, branch, target_commit)
+    else:
+        require(not allow_blockers and not recovery, "Only a signed initial release can defer CI")
     if not allow_blockers:
         require_signed_release_commit(api, version, target_commit)
         require_release_tag_ruleset(api)
@@ -553,6 +642,7 @@ def prepare_release_commit(
     target_commit: str,
     workflow_ref: str,
     workflow_sha: str,
+    require_no_blockers: bool = False,
 ) -> ReleaseContext:
     context = preflight(
         api,
@@ -564,6 +654,9 @@ def prepare_release_commit(
         recovery=False,
     )
     require_release_tag_ruleset(api)
+    if require_no_blockers:
+        blockers = release_blockers(api, context.milestone_number)
+        require(not blockers, f"Milestone {context.tag} has {len(blockers)} open release blocker(s)")
     require(
         tag_target(api, context.tag, missing_ok=True) is None,
         f"Tag {context.tag} already exists; do not create another release commit",
@@ -780,36 +873,15 @@ def published_package_state(
     return True
 
 
-def ensure_tag(api: Any, *, version: str, target_commit: str, recovery: bool) -> None:
+def ensure_tag(api: Any, *, version: str, target_commit: str) -> None:
     parse_version(version)
     target_commit = validate_commit(target_commit)
     tag = f"v{version}"
-    encoded_tag = urllib.parse.quote(tag, safe="")
-    path = f"/git/ref/tags/{encoded_tag}"
-    existing = api.get(path, missing_ok=True)
-    creation_race = False
-    if existing is None:
-        require(not recovery, f"Recovery requested but tag {tag} does not exist")
-        try:
-            api.post("/git/refs", {"ref": f"refs/tags/{tag}", "sha": target_commit})
-            print(f"Created lightweight tag {tag} at {target_commit}")
-            return
-        except GitHubApiError as error:
-            if error.status != 422:
-                raise
-            existing = api.get(path, missing_ok=True)
-            require(existing is not None, f"Tag {tag} creation raced but the tag is still absent")
-            creation_race = True
-    require(isinstance(existing, dict), f"Tag {tag} response was not an object")
-    ref_object = existing.get("object")
-    require(isinstance(ref_object, dict), f"Tag {tag} response omitted object")
-    require(ref_object.get("type") == "commit", f"Tag {tag} is not lightweight")
-    require(ref_object.get("sha") == target_commit, f"Tag {tag} points at a different commit")
-    if creation_race:
-        print(f"A concurrent run created lightweight tag {tag} at {target_commit}")
-        return
-    require(recovery, f"Tag {tag} already exists; use explicit recovery mode")
-    print(f"Reusing lightweight tag {tag} at {target_commit}")
+    require(
+        tag_target(api, tag, missing_ok=True) == target_commit,
+        f"Tag {tag} must exist, be signed, and point at the target commit",
+    )
+    print(f"Verified signed tag {tag} at {target_commit}")
 
 
 def ensure_release(
@@ -820,7 +892,7 @@ def ensure_release(
     tag = f"v{version}"
     require(
         tag_target(api, tag, missing_ok=True) == target_commit,
-        f"Tag {tag} must be lightweight and point at the target commit",
+        f"Tag {tag} must be signed and point at the target commit",
     )
     encoded_tag = urllib.parse.quote(tag, safe="")
     existing = api.get(f"/releases/tags/{encoded_tag}", missing_ok=True)
@@ -882,6 +954,7 @@ def parse_arguments(arguments: list[str] | None = None) -> argparse.Namespace:
     preflight_parser.add_argument("--workflow-sha", required=True)
     preflight_parser.add_argument("--allow-blockers", action="store_true")
     preflight_parser.add_argument("--recovery", action="store_true")
+    preflight_parser.add_argument("--skip-ci", action="store_true")
     preflight_parser.add_argument("--github-output")
 
     prepare_parser = subparsers.add_parser("prepare")
@@ -889,6 +962,12 @@ def parse_arguments(arguments: list[str] | None = None) -> argparse.Namespace:
     prepare_parser.add_argument("--workflow-ref", required=True)
     prepare_parser.add_argument("--workflow-sha", required=True)
     prepare_parser.add_argument("--github-output")
+    prepare_parser.add_argument("--require-no-blockers", action="store_true")
+
+    ci_parser = subparsers.add_parser("wait-ci")
+    ci_parser.add_argument("--repository", required=True)
+    ci_parser.add_argument("--branch", required=True)
+    ci_parser.add_argument("--target-commit", required=True)
 
     gate_parser = subparsers.add_parser("gate")
     add_common_release_arguments(gate_parser)
@@ -917,7 +996,6 @@ def parse_arguments(arguments: list[str] | None = None) -> argparse.Namespace:
 
     tag_parser = subparsers.add_parser("ensure-tag")
     add_common_release_arguments(tag_parser)
-    tag_parser.add_argument("--recovery", action="store_true")
 
     release_parser = subparsers.add_parser("ensure-release")
     release_parser.add_argument("--repository", required=True)
@@ -942,6 +1020,7 @@ def main(arguments: list[str] | None = None) -> None:
             workflow_sha=options.workflow_sha,
             allow_blockers=options.allow_blockers,
             recovery=options.recovery,
+            skip_ci=options.skip_ci,
         )
         write_github_outputs(
             options.github_output,
@@ -958,10 +1037,15 @@ def main(arguments: list[str] | None = None) -> None:
             target_commit=options.target_commit,
             workflow_ref=options.workflow_ref,
             workflow_sha=options.workflow_sha,
+            require_no_blockers=options.require_no_blockers,
         )
         write_github_outputs(
             options.github_output,
             {"branch": context.branch, "tag": context.tag},
+        )
+    elif options.command == "wait-ci":
+        wait_for_successful_ci(
+            github_api(options.repository), options.branch, options.target_commit
         )
     elif options.command == "gate":
         gate(
@@ -1010,7 +1094,6 @@ def main(arguments: list[str] | None = None) -> None:
             github_api(options.repository),
             version=options.version,
             target_commit=options.target_commit,
-            recovery=options.recovery,
         )
     elif options.command == "ensure-release":
         ensure_release(
