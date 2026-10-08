@@ -8,7 +8,7 @@ on:
         type: string
         required: true
       target_commit:
-        description: Full SHA at the branch tip; a signed release commit is required to publish
+        description: Full SHA at the branch tip; production creates a signed release commit
         type: string
         required: true
       dry_run:
