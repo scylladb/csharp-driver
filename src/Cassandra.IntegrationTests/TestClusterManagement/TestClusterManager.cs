@@ -158,13 +158,13 @@ namespace Cassandra.IntegrationTests.TestClusterManagement
         }
 
         /// <summary>
-        /// Use SCYLLA_VERSION if it's set, otherwise use CASSANDRA_VERSION
+        /// Use the Cassandra version for Cassandra clusters, even when the Makefile exports SCYLLA_VERSION.
         /// </summary>
         public static string CassandraVersionString
         {
             get
             {
-                if (Environment.GetEnvironmentVariable("SCYLLA_VERSION") != null)
+                if (IsScylla)
                 {
                     return "3.10.0";
                 }
