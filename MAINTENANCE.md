@@ -108,9 +108,9 @@ Production requires a `release` environment restricted to `master` and
 secret is available to release jobs. NuGet publication uses trusted
 publishing for the `scylladb.publish.code` account. Its configured policy
 trusts `scylladb/csharp-driver`, workflow file `publish.yml`, and environment
-`release`. The publish job exchanges a GitHub OIDC token for a short-lived
-NuGet API key immediately before package uploads; no stored NuGet key is
-needed.
+`release`. The publish job exchanges a fresh GitHub OIDC token for a
+short-lived NuGet publishing credential immediately before each package
+upload; no stored NuGet key is needed.
 Commit preparation also requires `RELEASE_GPG_PRIVATE_KEY` for the publisher
 key and `RELEASE_BOT_TOKEN` for the `scylladb-publisher` account, both scoped to
 the `release` environment. The publisher must have repository write access

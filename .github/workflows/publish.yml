@@ -514,61 +514,56 @@ jobs:
             exit 1
           fi
 
-      - name: Get temporary NuGet publishing key
-        id: nuget_login
+      - name: Get temporary NuGet key for core package
+        id: nuget_login_core
         uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
         with:
           user: scylladb.publish.code
 
-      - name: Gate and publish packages
+      - name: Gate and publish core package
         env:
-          APPMETRICS_PACKAGE_PATH: ${{ steps.packages.outputs.appmetrics }}
-          CORE_PACKAGE_PATH: ${{ steps.packages.outputs.core }}
           GATE_TOKEN: ${{ github.token }}
-          NUGET_API_KEY: ${{ steps.nuget_login.outputs.NUGET_API_KEY }}
-          OPENTELEMETRY_PACKAGE_PATH: ${{ steps.packages.outputs.opentelemetry }}
+          NUGET_API_KEY: ${{ steps.nuget_login_core.outputs.NUGET_API_KEY }}
+          PACKAGE_ID: ScyllaDBCSharpDriver
+          PACKAGE_PATH: ${{ steps.packages.outputs.core }}
           RECOVERY: ${{ inputs.resume_partial_publication }}
           RELEASE_VERSION: ${{ inputs.version }}
           TARGET_COMMIT: ${{ needs.prepare-target.outputs.target_commit }}
-        run: |
-          [[ -n "$NUGET_API_KEY" ]]
-          package_ids=(
-            ScyllaDBCSharpDriver
-            ScyllaDBCSharpDriver.AppMetrics
-            ScyllaDBCSharpDriver.OpenTelemetry
-          )
-          package_paths=(
-            "$CORE_PACKAGE_PATH"
-            "$APPMETRICS_PACKAGE_PATH"
-            "$OPENTELEMETRY_PACKAGE_PATH"
-          )
-          package_options=()
-          if [[ "$RECOVERY" == "true" ]]; then
-            package_options+=(--recovery)
-          fi
-          for index in "${!package_ids[@]}"; do
-            package_id="${package_ids[$index]}"
-            package_path="${package_paths[$index]}"
-            GITHUB_TOKEN="$GATE_TOKEN" python3 build/release-gate.py gate \
-              --repository "$GITHUB_REPOSITORY" --version "$RELEASE_VERSION" \
-              --target-commit "$TARGET_COMMIT" "${package_options[@]}"
-            state=$(python3 build/release-gate.py published-package \
-              --package "$package_path" --package-id "$package_id" \
-              --version "$RELEASE_VERSION" "${package_options[@]}")
-            if [[ "$state" == "absent" ]]; then
-              dotnet nuget push "$package_path" --api-key "$NUGET_API_KEY" \
-                --source https://api.nuget.org/v3/index.json --skip-duplicate
-              for attempt in {1..180}; do
-                state=$(python3 build/release-gate.py published-package \
-                  --package "$package_path" --package-id "$package_id" \
-                  --version "$RELEASE_VERSION" --recovery \
-                  --transient-errors-as-retry)
-                if [[ "$state" == "present" ]]; then break; fi
-                sleep 10
-              done
-              [[ "$state" == "present" ]]
-            fi
-          done
+        run: bash build/publish-release-package.sh
+
+      - name: Get temporary NuGet key for AppMetrics package
+        id: nuget_login_appmetrics
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+        with:
+          user: scylladb.publish.code
+
+      - name: Gate and publish AppMetrics package
+        env:
+          GATE_TOKEN: ${{ github.token }}
+          NUGET_API_KEY: ${{ steps.nuget_login_appmetrics.outputs.NUGET_API_KEY }}
+          PACKAGE_ID: ScyllaDBCSharpDriver.AppMetrics
+          PACKAGE_PATH: ${{ steps.packages.outputs.appmetrics }}
+          RECOVERY: ${{ inputs.resume_partial_publication }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          TARGET_COMMIT: ${{ needs.prepare-target.outputs.target_commit }}
+        run: bash build/publish-release-package.sh
+
+      - name: Get temporary NuGet key for OpenTelemetry package
+        id: nuget_login_opentelemetry
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+        with:
+          user: scylladb.publish.code
+
+      - name: Gate and publish OpenTelemetry package
+        env:
+          GATE_TOKEN: ${{ github.token }}
+          NUGET_API_KEY: ${{ steps.nuget_login_opentelemetry.outputs.NUGET_API_KEY }}
+          PACKAGE_ID: ScyllaDBCSharpDriver.OpenTelemetry
+          PACKAGE_PATH: ${{ steps.packages.outputs.opentelemetry }}
+          RECOVERY: ${{ inputs.resume_partial_publication }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          TARGET_COMMIT: ${{ needs.prepare-target.outputs.target_commit }}
+        run: bash build/publish-release-package.sh
 
       - name: Gate and create GitHub Release
         env:
