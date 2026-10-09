@@ -419,8 +419,7 @@ namespace Cassandra.IntegrationTests.Core
                     $"listen_address: {_realCluster.Value.ClusterIpPrefix}4",
                     $"rpc_address: {_realCluster.Value.ClusterIpPrefix}4");
 
-                var startOptions = TestClusterManager.IsScylla ? "--skip-wait-other-notice" : "--no-wait";
-                _realCluster.Value.Start(3, startOptions, newIp);
+                _realCluster.Value.Start(3, "--skip-wait-other-notice", newIp);
 
                 TestHelper.RetryAssert(
                     () =>
