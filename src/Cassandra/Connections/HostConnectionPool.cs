@@ -1363,7 +1363,7 @@ namespace Cassandra.Connections
                 {
                     await CreateOpenConnection(false, false).ConfigureAwait(false);
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (!Utils.IsFatalException(ex))
                 {
                     HostConnectionPool.Logger.Warning(
                         "Pool #{0} for host {1} failed to open a warmup connection: {2} of {3} open, " +

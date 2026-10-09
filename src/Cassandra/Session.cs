@@ -18,6 +18,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -239,7 +240,8 @@ namespace Cassandra
         /// <summary>
         /// Creates the required connections on all hosts in the local DC.
         /// Returns a Task that is marked as completed after all pools were warmed up.
-        /// In case, all the host pool warmup fail, it logs an error.
+        /// If all host pool warmups fail with recoverable errors, it logs an error.
+        /// Fatal errors propagate to the caller.
         /// </summary>
         private async Task Warmup()
         {
@@ -252,12 +254,19 @@ namespace Cassandra
                 tasks[i] = pool.Warmup();
             }
 
+            var allWarmups = Task.WhenAll(tasks);
             try
             {
-                await Task.WhenAll(tasks).ConfigureAwait(false);
+                await allWarmups.ConfigureAwait(false);
             }
             catch
             {
+                var fatal = allWarmups.Exception?.Flatten().InnerExceptions.FirstOrDefault(Utils.IsFatalException);
+                if (fatal != null)
+                {
+                    ExceptionDispatchInfo.Capture(fatal).Throw();
+                }
+
                 if (tasks.Any(t => t.Status == TaskStatus.RanToCompletion))
                 {
                     // At least 1 of the warmup tasks completed
