@@ -65,30 +65,28 @@ Release tags use the four-part package version prefixed with `v`, for example
 together. After publication, the GitHub Release and the `master` branch's
 documentation catalog must point to the same artifacts.
 
-Run **Prepare signed release commit** from protected `branch-3.22` with the
-four-part version and the full current tip SHA. After approval in the protected
-`release` environment, the canonical workflow on `master` updates
-`build/release-version.txt` and creates a `Release v<version>` commit signed by
-ScyllaDB Publisher GPG key `BF4BF97A8D4DF1AA`. This marker makes the push
-run CI on the signed SHA without changing shipping projects. This requires
-`RELEASE_GPG_PRIVATE_KEY` and `RELEASE_BOT_TOKEN` in the `release` environment;
-the `scylladb-publisher` account needs write access and an individual-user
-bypass on the protected branch ruleset. Preparation creates no tag or package.
+Run **Release NuGet packages** from protected `branch-3.22` with the four-part
+version and the full current tip SHA. The branch workflow calls the canonical
+release implementation on protected `master`. For production, it checks CI and
+milestone blockers, then updates `build/release-version.txt` and pushes a
+`Release v<version>` commit signed by ScyllaDB Publisher GPG key
+`BF4BF97A8D4DF1AA`. It waits for CI on the signed SHA, validates docs,
+integration tests and all three packages, then creates and verifies a signed
+annotated tag before publishing. The `release` environment supplies
+`RELEASE_GPG_PRIVATE_KEY` and `RELEASE_BOT_TOKEN`; the `scylladb-publisher`
+account needs write access and an individual-user bypass on the protected
+branch ruleset.
 
-Wait for successful push CI on the signed commit. Then run **Release NuGet
-packages** from `branch-3.22` with that commit's full SHA. The branch workflow
-calls the canonical release implementation on protected `master`; production
-verifies the exact publisher signature before tagging. A dry run signs, packs,
-validates, and retains all three packages without creating a tag, NuGet
-package, or GitHub Release. A preliminary dry run may use the source tip; the
-final production-key dry run uses the signed release commit. Production remains
-blocked until the selected milestone has no open `release-blocker` issue or
-pull request.
+A dry run signs, packs, validates and retains the packages without pushing a
+commit or tag, uploading to NuGet, or creating a GitHub Release. Production
+remains blocked until the selected milestone has no open `release-blocker` issue
+or pull request. If a run stops after pushing the signed commit but before
+tagging, dispatch the workflow again at that signed branch tip.
 
 If publication stops after creating the immutable tag or publishing one of the
 packages, fix any newly opened blocker and rerun the same version and tagged
 commit with **Resume partial publication** enabled. The workflow verifies the
-tag and any already-published package before completing the remaining uploads.
+signed tag and any already-published package before completing the remaining uploads.
 Never delete, move, force-update, or reuse a release tag as recovery.
 
 ## End of life
