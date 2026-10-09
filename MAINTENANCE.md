@@ -104,15 +104,21 @@ run. Production fails before creating the signed commit while any selected-miles
 individual package upload.
 
 Production requires a `release` environment restricted to `master` and
-`branch-3.22`, with no required-reviewer rule. The
-existing `SNK_KEY` and `NUGET_API_KEY` secrets are available to release jobs.
+`branch-3.22`, with no required-reviewer rule. The existing `SNK_KEY`
+secret is available to release jobs. NuGet publication uses trusted
+publishing for the `scylladb.publish.code` account. Its configured policy
+trusts `scylladb/csharp-driver`, workflow file `publish.yml`, and environment
+`release`. The publish job exchanges a fresh GitHub OIDC token for a
+short-lived NuGet publishing credential immediately before each package
+upload; no stored NuGet key is needed.
 Commit preparation also requires `RELEASE_GPG_PRIVATE_KEY` for the publisher
 key and `RELEASE_BOT_TOKEN` for the `scylladb-publisher` account, both scoped to
 the `release` environment. The publisher must have repository write access
 and an individual-user bypass for the protected `master` and `branch-3.22`
 ruleset. This token pushes the signed release commit and signed annotated tag.
-The publishing job gives its built-in `GITHUB_TOKEN` Contents write only;
-other jobs retain read-only access.
+The publishing job gives its built-in `GITHUB_TOKEN` Contents write and
+grants `id-token: write` for the NuGet exchange; other jobs retain read-only
+GitHub content access.
 
 The release environment is a GitHub repository setting, so merging a pull
 request does not change its reviewer rule. After this policy change is merged,
