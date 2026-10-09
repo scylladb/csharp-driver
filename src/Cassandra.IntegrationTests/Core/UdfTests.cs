@@ -58,10 +58,14 @@ namespace Cassandra.IntegrationTests.Core
             {
                 userDefinedFunctionsConfig = "user_defined_functions_enabled: true";
             }
-            var experimentalFeaturesConfig = TestClusterManager.IsScylla
-                ? "experimental_features:[udf]"
-                : null;
-            _testCluster.UpdateConfig(userDefinedFunctionsConfig, experimentalFeaturesConfig);
+            if (TestClusterManager.IsScylla)
+            {
+                _testCluster.UpdateConfig(userDefinedFunctionsConfig, "experimental_features:[udf]");
+            }
+            else
+            {
+                _testCluster.UpdateConfig(userDefinedFunctionsConfig);
+            }
             _testCluster.Start(1);
             using (var cluster = ClusterBuilder().AddContactPoint(_testCluster.InitialContactPoint).Build())
             {

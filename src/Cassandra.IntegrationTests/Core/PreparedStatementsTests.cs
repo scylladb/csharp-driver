@@ -1119,7 +1119,7 @@ namespace Cassandra.IntegrationTests.Core
         [TestCassandraVersion(4, 0)]
         public void BatchStatement_With_Keyspace_Defined_On_Protocol_Greater_Than_4()
         {
-            using (var cluster = ClusterBuilder().AddContactPoint(TestClusterManager.InitialContactPoint).Build())
+            using (var cluster = GetNewTemporaryCluster())
             {
                 if (cluster.Metadata.ControlConnection.Serializer.CurrentProtocolVersion < ProtocolVersion.V5)
                 {
