@@ -418,6 +418,7 @@ jobs:
     permissions:
       actions: read
       contents: write
+      id-token: write
       issues: read
       pull-requests: read
     steps:
@@ -513,17 +514,24 @@ jobs:
             exit 1
           fi
 
+      - name: Get temporary NuGet publishing key
+        id: nuget_login
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+        with:
+          user: scylladb.publish.code
+
       - name: Gate and publish packages
         env:
           APPMETRICS_PACKAGE_PATH: ${{ steps.packages.outputs.appmetrics }}
           CORE_PACKAGE_PATH: ${{ steps.packages.outputs.core }}
           GATE_TOKEN: ${{ github.token }}
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          NUGET_API_KEY: ${{ steps.nuget_login.outputs.NUGET_API_KEY }}
           OPENTELEMETRY_PACKAGE_PATH: ${{ steps.packages.outputs.opentelemetry }}
           RECOVERY: ${{ inputs.resume_partial_publication }}
           RELEASE_VERSION: ${{ inputs.version }}
           TARGET_COMMIT: ${{ needs.prepare-target.outputs.target_commit }}
         run: |
+          [[ -n "$NUGET_API_KEY" ]]
           package_ids=(
             ScyllaDBCSharpDriver
             ScyllaDBCSharpDriver.AppMetrics
