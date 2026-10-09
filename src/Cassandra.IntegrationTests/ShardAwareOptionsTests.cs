@@ -9,6 +9,7 @@ using System.Linq;
 namespace Cassandra.IntegrationTests
 {
     [TestFixture]
+    [TestScyllaVersion(0, 0)]
     public class ShardAwareOptionsTests : TestGlobals
     {
         private ITestCluster _realCluster;

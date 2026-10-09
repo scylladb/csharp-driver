@@ -10,6 +10,7 @@ using Assert = NUnit.Framework.Legacy.ClassicAssert;
 namespace Cassandra.IntegrationTests
 {
     [TestFixture]
+    [TestScyllaVersion(0, 0)]
     public class ScyllaTabletTest : TestGlobals
     {
         private ITestCluster _realCluster;
