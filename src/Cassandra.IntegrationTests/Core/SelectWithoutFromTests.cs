@@ -26,9 +26,19 @@ namespace Cassandra.IntegrationTests.Core
     [TestFixture, Category(TestCategory.Short), Category(TestCategory.RealCluster), Category(TestCategory.ServerApi)]
     public class SelectWithoutFromTests : SharedClusterTest
     {
+        protected override void CreateCommonSession()
+        {
+            Cluster = ClusterBuilder().AddContactPoint(TestCluster.InitialContactPoint)
+                                      .WithQueryTimeout(60000)
+                                      .WithSocketOptions(new SocketOptions().SetConnectTimeoutMillis(30000).SetReadTimeoutMillis(22000))
+                                      .Build();
+            Session = Cluster.Connect();
+        }
+
         [Test]
         public void Should_Execute_Select_Without_From()
         {
+            Assert.IsNull(Session.Keyspace);
             RowSet result;
             try
             {
