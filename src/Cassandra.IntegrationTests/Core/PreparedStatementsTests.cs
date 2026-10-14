@@ -679,13 +679,27 @@ namespace Cassandra.IntegrationTests.Core
         public void Bound_Decimal_Valids()
         {
             var psDecimal = Session.Prepare(string.Format("INSERT INTO {0} (id, decimal_sample) VALUES (?, ?)", AllTypesTableName));
+            var psSelect = Session.Prepare(string.Format("SELECT decimal_sample FROM {0} WHERE id = ?", AllTypesTableName));
 
-            //decimal: There is type conversion, all numeric types are valid
-            AssertValid(Session, psDecimal, 1L);
-            AssertValid(Session, psDecimal, 1F);
-            AssertValid(Session, psDecimal, 1D);
-            AssertValid(Session, psDecimal, 1);
-            AssertValid(Session, psDecimal, new byte[16]);
+            // decimal: the driver does not convert other numeric CLR types, it serializes them by their runtime type,
+            // so only System.Decimal values (or pre-serialized bytes) produce a valid CQL decimal
+            var values = new[]
+            {
+                1M, -1.5M, 0M, 1.10M, 123456789.123456789M, -0.0000000000000000000000000001M, decimal.MaxValue, decimal.MinValue
+            };
+            foreach (var value in values)
+            {
+                var id = Guid.NewGuid();
+                Session.Execute(psDecimal.Bind(id, value));
+                var actual = Session.Execute(psSelect.Bind(id)).First().GetValue<decimal>("decimal_sample");
+                // Compare the bits to check that the scale is preserved as well as the numeric value
+                CollectionAssert.AreEqual(decimal.GetBits(value), decimal.GetBits(actual), "Round-trip of {0}", value);
+            }
+
+            // Pre-serialized bytes: 4-byte scale 0 followed by a 12-byte varint 0
+            var blobId = Guid.NewGuid();
+            Session.Execute(psDecimal.Bind(blobId, new byte[16]));
+            Assert.AreEqual(0M, Session.Execute(psSelect.Bind(blobId)).First().GetValue<decimal>("decimal_sample"));
         }
 
         [Test]
