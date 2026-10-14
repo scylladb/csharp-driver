@@ -643,6 +643,17 @@ namespace Cassandra.Requests
                 Logger.Warning(string.Format("The statement was prepared using another keyspace, changing the keyspace temporarily to" +
                                               " {0} and back to {1}. Use keyspace and table identifiers in your queries and avoid switching keyspaces.",
                     preparedKeyspace, _session.Keyspace));
+
+                // Response callbacks run sequentially within a received buffer. A keyspace switch can
+                // wait for later callbacks to release their reservations, so let this callback return.
+                Task.Run(async () =>
+                {
+                    await SendAsync(
+                        request,
+                        nodeRequestInfo.Host,
+                        NewReprepareResponseHandler(unknownId, boundStatement.PreparedStatement)).ConfigureAwait(false);
+                }).Forget();
+                return;
             }
             await SendAsync(
                 request,

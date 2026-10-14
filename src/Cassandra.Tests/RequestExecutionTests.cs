@@ -327,6 +327,87 @@ namespace Cassandra.Tests
                 Times.Once);
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_Not_Block_Response_Callback_When_Reprepare_Waits_For_Another_Keyspace(bool useBatch)
+        {
+            var serializerManager = new SerializerManager(ProtocolVersion.V4);
+            var serializer = serializerManager.GetCurrentSerializer();
+            var preparedStatement = new PreparedStatement(
+                null, new byte[] { 1 }, null, "SELECT * FROM table1", "ks1", serializerManager, false);
+            var boundStatement = preparedStatement.Bind();
+            var statement = useBatch ? (IStatement)new BatchStatement().Add(boundStatement) : boundStatement;
+            var request = Mock.Of<IRequest>();
+            var host = new Host(new IPEndPoint(IPAddress.Loopback, 9047), new ConstantReconnectionPolicy(1));
+            var validHost = ValidHost.New(host, HostDistance.Local);
+            var executeSent = new TaskCompletionSource<Func<IRequestError, Response, Task>>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var reprepareStarted = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var pendingSend = new TaskCompletionSource<OperationState>(TaskCreationOptions.RunContinuationsAsynchronously);
+            InternalPrepareRequest reprepareRequest = null;
+            var connection = new Mock<IConnection>();
+            var connectionEndPoint = new Mock<IConnectionEndPoint>();
+            connectionEndPoint.SetupGet(value => value.EndpointFriendlyName).Returns("test-node");
+            connection.SetupGet(value => value.EndPoint).Returns(connectionEndPoint.Object);
+            connection.SetupGet(value => value.Keyspace).Returns("ks2");
+            connection
+                .Setup(value => value.SendWithKeyspace(
+                    It.IsAny<IRequest>(), It.IsAny<string>(),
+                    It.IsAny<Func<IRequestError, Response, Task>>(), It.IsAny<int>(), It.IsAny<bool>()))
+                .Returns<IRequest, string, Func<IRequestError, Response, Task>, int, bool>((sentRequest, keyspace, callback, _, __) =>
+                {
+                    if (sentRequest is InternalPrepareRequest prepareRequest)
+                    {
+                        reprepareRequest = prepareRequest;
+                        reprepareStarted.SetResult(keyspace);
+                        // The ks1 send waits until a later ks2 response releases its reservation.
+                        return pendingSend.Task;
+                    }
+                    executeSent.SetResult(callback);
+                    return Task.FromResult<OperationState>(null);
+                });
+            var session = new Mock<IInternalSession>();
+            session.SetupGet(value => value.Keyspace).Returns("ks2");
+            var parent = new Mock<IRequestHandler>();
+            parent.SetupGet(value => value.Serializer).Returns(serializer);
+            parent.SetupGet(value => value.Statement).Returns(statement);
+            parent.SetupGet(value => value.RequestOptions)
+                .Returns(new TestConfigurationBuilder().Build().DefaultRequestOptions);
+            parent.Setup(value => value.GetNextValidHost(It.IsAny<Dictionary<IPEndPoint, Exception>>()))
+                .Returns(validHost);
+            parent.Setup(value => value.GetConnectionToValidHostAsync(
+                    validHost, It.IsAny<IDictionary<IPEndPoint, Exception>>(), It.IsAny<int>()))
+                .ReturnsAsync(connection.Object);
+            var execution = new RequestExecution(
+                parent.Object, session.Object, request, NullRequestObserver.Instance,
+                new SessionRequestInfo(statement, "ks2"));
+            var laterOperation = OperationStateExtensions.CreateMock((_, __) => { });
+            laterOperation.SetWireCompletionHandler(() => pendingSend.TrySetResult(null));
+
+            execution.Start(false);
+            var executeCallback = await executeSent.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            var callbackTask = executeCallback(
+                RequestError.CreateServerError(new PreparedQueryNotFoundException("not prepared", new byte[] { 1 })), null);
+            try
+            {
+                // Connection.InvokeReadCallbacks awaits callbacks sequentially within a response buffer.
+                Assert.IsTrue(callbackTask.IsCompleted, "UNPREPARED must release the dispatcher before the keyspace drain completes.");
+                await callbackTask.ConfigureAwait(false);
+                Assert.AreEqual("ks1", await reprepareStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+                Assert.AreEqual("ks1", reprepareRequest.Keyspace);
+                Assert.IsFalse(pendingSend.Task.IsCompleted);
+
+                await laterOperation.SetCompleted()(null, null, 0).ConfigureAwait(false);
+                Assert.IsTrue(pendingSend.Task.IsCompleted);
+                connection.Verify(value => value.SetKeyspace(It.IsAny<string>()), Times.Never);
+            }
+            finally
+            {
+                pendingSend.TrySetResult(null);
+                await callbackTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
+        }
+
         [Test]
         public async Task Should_Snapshot_Unprepared_Id_Before_Invoking_Request_Tracker()
         {
