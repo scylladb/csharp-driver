@@ -644,10 +644,10 @@ namespace Cassandra.Requests
                                               " {0} and back to {1}. Use keyspace and table identifiers in your queries and avoid switching keyspaces.",
                     preparedKeyspace, _session.Keyspace));
 
-                var c = _connection;
+                // Response callbacks run sequentially within a received buffer. A keyspace switch can
+                // wait for later callbacks to release their reservations, so let this callback return.
                 Task.Run(async () =>
                 {
-                    await c.SetKeyspace(preparedKeyspace).ConfigureAwait(false);
                     await SendAsync(
                         request,
                         nodeRequestInfo.Host,
