@@ -212,10 +212,7 @@ namespace Cassandra.Collections
                 throw new ArgumentNullException(nameof(key));
             }
 
-            if (valueFactory == null)
-            {
-                throw new ArgumentNullException(nameof(valueFactory));
-            }
+            ArgumentNullException.ThrowIfNull(valueFactory);
 
             // optimistic scenario: return before lock
             if (_map.TryGetValue(key, out var outputValue))
@@ -243,15 +240,9 @@ namespace Cassandra.Collections
                 throw new ArgumentNullException(nameof(key));
             }
 
-            if (addValueFactory == null)
-            {
-                throw new ArgumentNullException(nameof(addValueFactory));
-            }
+            ArgumentNullException.ThrowIfNull(addValueFactory);
 
-            if (updateValueFactory == null)
-            {
-                throw new ArgumentNullException(nameof(updateValueFactory));
-            }
+            ArgumentNullException.ThrowIfNull(updateValueFactory);
 
             lock (_writeLock)
             {
@@ -278,10 +269,7 @@ namespace Cassandra.Collections
                 throw new ArgumentNullException(nameof(key));
             }
 
-            if (updateValueFactory == null)
-            {
-                throw new ArgumentNullException(nameof(updateValueFactory));
-            }
+            ArgumentNullException.ThrowIfNull(updateValueFactory);
 
             lock (_writeLock)
             {

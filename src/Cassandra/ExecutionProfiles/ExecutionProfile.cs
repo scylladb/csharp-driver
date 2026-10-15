@@ -39,15 +39,9 @@ namespace Cassandra.ExecutionProfiles
 
         internal ExecutionProfile(IExecutionProfile baseProfile, IExecutionProfile profile)
         {
-            if (baseProfile == null)
-            {
-                throw new ArgumentNullException(nameof(baseProfile));
-            }
+            ArgumentNullException.ThrowIfNull(baseProfile);
 
-            if (profile == null)
-            {
-                throw new ArgumentNullException(nameof(profile));
-            }
+            ArgumentNullException.ThrowIfNull(profile);
 
             Initialize(
                 profile.ConsistencyLevel ?? baseProfile.ConsistencyLevel,
@@ -60,10 +54,7 @@ namespace Cassandra.ExecutionProfiles
 
         internal ExecutionProfile(IRequestOptions requestOptions)
         {
-            if (requestOptions == null)
-            {
-                throw new ArgumentNullException(nameof(requestOptions));
-            }
+            ArgumentNullException.ThrowIfNull(requestOptions);
 
             Initialize(
                 requestOptions.ConsistencyLevel,

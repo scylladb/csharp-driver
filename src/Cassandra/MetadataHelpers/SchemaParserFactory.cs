@@ -43,10 +43,7 @@ namespace Cassandra.MetadataHelpers
             {
                 return new SchemaParserV1(parent);
             }
-            if (currentInstance == null)
-            {
-                throw new ArgumentNullException(nameof(currentInstance));
-            }
+            ArgumentNullException.ThrowIfNull(currentInstance);
             return currentInstance;
         }
     }

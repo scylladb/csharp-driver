@@ -64,15 +64,9 @@ namespace Cassandra.ExecutionProfiles
                 throw new ArgumentException("There is already an execution profile with that name.");
             }
 
-            if (profile == null)
-            {
-                throw new ArgumentNullException(nameof(profile));
-            }
+            ArgumentNullException.ThrowIfNull(profile);
 
-            if (baseProfile == null)
-            {
-                throw new ArgumentNullException(nameof(baseProfile));
-            }
+            ArgumentNullException.ThrowIfNull(baseProfile);
 
             if (!_profiles.TryGetValue(baseProfile, out var baseProfileInstance))
             {
@@ -90,10 +84,7 @@ namespace Cassandra.ExecutionProfiles
 
         private IExecutionProfile BuildProfile(Action<IExecutionProfileBuilder> profileBuildAction)
         {
-            if (profileBuildAction == null)
-            {
-                throw new ArgumentNullException(nameof(profileBuildAction));
-            }
+            ArgumentNullException.ThrowIfNull(profileBuildAction);
 
             var builder = new ExecutionProfileBuilder();
             profileBuildAction(builder);

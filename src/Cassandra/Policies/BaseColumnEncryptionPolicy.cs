@@ -33,10 +33,7 @@ namespace Cassandra
         /// <inheritdoc />
         public byte[] Encrypt(object key, byte[] objBytes)
         {
-            if (key == null)
-            {
-                throw new ArgumentNullException(nameof(key));
-            }
+            ArgumentNullException.ThrowIfNull(key);
 
             if (key is TKey typedKey)
             {
@@ -49,10 +46,7 @@ namespace Cassandra
         /// <inheritdoc />
         public byte[] Decrypt(object key, byte[] encryptedBytes)
         {
-            if (key == null)
-            {
-                throw new ArgumentNullException(nameof(key));
-            }
+            ArgumentNullException.ThrowIfNull(key);
 
             if (key is TKey typedKey)
             {

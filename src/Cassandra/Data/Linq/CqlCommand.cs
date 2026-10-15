@@ -110,10 +110,7 @@ namespace Cassandra.Data.Linq
         /// </summary>
         public RowSet Execute(string executionProfile)
         {
-            if (executionProfile == null)
-            {
-                throw new ArgumentNullException(nameof(executionProfile));
-            }
+            ArgumentNullException.ThrowIfNull(executionProfile);
             return WaitToCompleteWithMetrics(ExecuteAsync(executionProfile), QueryAbortTimeout);
         }
 

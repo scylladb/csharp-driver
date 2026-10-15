@@ -728,10 +728,7 @@ namespace Cassandra.Mapping.TypeConversion
     {
         public static Delegate CreateDelegateLocal(this MethodInfo method, object sender = null)
         {
-            if (method == null)
-            {
-                throw new ArgumentNullException("method");
-            }
+            ArgumentNullException.ThrowIfNull(method);
             var delegateType = Expression.GetFuncType(
                 method.GetParameters().Select(p => p.ParameterType)
                 .Concat(new[] { method.ReturnType }).ToArray());

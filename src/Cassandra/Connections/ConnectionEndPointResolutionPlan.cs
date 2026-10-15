@@ -74,10 +74,7 @@ namespace Cassandra.Connections
             IEnumerable<ConnectionEndPointResolutionStep> steps,
             Func<IReadOnlyList<Exception>, Exception> noEndPointsExceptionFactory = null)
         {
-            if (steps == null)
-            {
-                throw new ArgumentNullException(nameof(steps));
-            }
+            ArgumentNullException.ThrowIfNull(steps);
 
             _steps = steps.ToArray();
             _noEndPointsExceptionFactory = noEndPointsExceptionFactory;

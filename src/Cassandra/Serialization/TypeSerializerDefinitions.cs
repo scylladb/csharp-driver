@@ -43,10 +43,7 @@ namespace Cassandra.Serialization
         /// <exception cref="InvalidTypeException">When trying to define a Serializer for types that are not allowed.</exception>
         public TypeSerializerDefinitions Define<T>(TypeSerializer<T> typeSerializer)
         {
-            if (typeSerializer == null)
-            {
-                throw new ArgumentNullException("typeSerializer");
-            }
+            ArgumentNullException.ThrowIfNull(typeSerializer);
             switch (typeSerializer.CqlType)
             {
                 case ColumnTypeCode.List:

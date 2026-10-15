@@ -68,10 +68,7 @@ namespace Cassandra.Requests
             _cqlQuery = cqlQuery;
             _queryOptions = queryOptions;
 
-            if (queryOptions == null)
-            {
-                throw new ArgumentNullException("queryOptions");
-            }
+            ArgumentNullException.ThrowIfNull(queryOptions);
 
             if (queryOptions.SerialConsistency != ConsistencyLevel.Any && queryOptions.SerialConsistency.IsSerialConsistencyLevel() == false)
             {

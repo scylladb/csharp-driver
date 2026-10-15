@@ -201,10 +201,7 @@ namespace Cassandra
         /// </summary>
         public static LocalDate Parse(string value)
         {
-            if (value == null)
-            {
-                throw new ArgumentNullException(nameof(value));
-            }
+            ArgumentNullException.ThrowIfNull(value);
             if (RegexInteger.IsMatch(value))
             {
                 return new LocalDate(Convert.ToUInt32(DateCenter + long.Parse(value)));

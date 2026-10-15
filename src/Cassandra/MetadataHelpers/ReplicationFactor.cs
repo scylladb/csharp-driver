@@ -41,10 +41,7 @@ namespace Cassandra.MetadataHelpers
 
         public static ReplicationFactor Parse(string rf)
         {
-            if (rf == null)
-            {
-                throw new ArgumentNullException(nameof(rf));
-            }
+            ArgumentNullException.ThrowIfNull(rf);
 
             var slashIndex = rf.IndexOf('/');
             if (slashIndex < 0)

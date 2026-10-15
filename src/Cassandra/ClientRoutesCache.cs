@@ -61,10 +61,7 @@ namespace Cassandra
         {
             _queryProvider = queryProvider ?? throw new ArgumentNullException(nameof(queryProvider));
             _logger = logger ?? new Logger(typeof(ClientRoutesCache));
-            if (connectionIds == null)
-            {
-                throw new ArgumentNullException(nameof(connectionIds));
-            }
+            ArgumentNullException.ThrowIfNull(connectionIds);
 
             _connectionIds = connectionIds.ToArray();
             if (_connectionIds.Length == 0)

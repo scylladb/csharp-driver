@@ -447,10 +447,7 @@ namespace Cassandra.Serialization
                 return TaskHelper.ToTask(dataType);
             }
             typeName = typeName.Replace("\"", "");
-            if (udtResolver == null)
-            {
-                throw new ArgumentNullException(nameof(udtResolver));
-            }
+            ArgumentNullException.ThrowIfNull(udtResolver);
             return udtResolver(keyspace, typeName).ContinueSync(typeInfo =>
             {
                 dataType.TypeCode = ColumnTypeCode.Udt;

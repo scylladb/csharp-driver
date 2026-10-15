@@ -157,10 +157,7 @@ namespace Cassandra
         /// <seealso cref="SimpleStatement(string, object[])"/>
         public SimpleStatement(IDictionary<string, object> valuesDictionary, string query)
         {
-            if (valuesDictionary == null)
-            {
-                throw new ArgumentNullException("valuesDictionary");
-            }
+            ArgumentNullException.ThrowIfNull(valuesDictionary);
 
             _query = query ?? throw new ArgumentNullException("query");
 

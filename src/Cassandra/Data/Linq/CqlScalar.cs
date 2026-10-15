@@ -71,10 +71,7 @@ namespace Cassandra.Data.Linq
 
         public new async Task<TEntity> ExecuteAsync(string executionProfile)
         {
-            if (executionProfile == null)
-            {
-                throw new ArgumentNullException(nameof(executionProfile));
-            }
+            ArgumentNullException.ThrowIfNull(executionProfile);
 
             string cql = GetCql(out object[] values);
             var rs = await InternalExecuteWithProfileAsync(executionProfile, cql, values).ConfigureAwait(false);

@@ -111,10 +111,7 @@ namespace Cassandra.Mapping.Statements
             var parameterList = new List<object>();
             if (!insertNulls)
             {
-                if (pocoValues == null)
-                {
-                    throw new ArgumentNullException("pocoValues");
-                }
+                ArgumentNullException.ThrowIfNull(pocoValues);
                 if (pocoValues.Length != pocoData.Columns.Count)
                 {
                     throw new ArgumentException("Values array should contain the same amount of items as POCO columns");
@@ -272,10 +269,7 @@ namespace Cassandra.Mapping.Statements
         /// </summary>
         public static List<string> GetCreate(ISerializer serializer, PocoData pocoData, string tableName, string keyspaceName, bool ifNotExists)
         {
-            if (pocoData == null)
-            {
-                throw new ArgumentNullException(nameof(pocoData));
-            }
+            ArgumentNullException.ThrowIfNull(pocoData);
             if (pocoData.MissingPrimaryKeyColumns.Count > 0)
             {
                 throw new InvalidOperationException(string.Format(CqlGenerator.MissingPkColumns, "CREATE", pocoData.PocoType.Name,

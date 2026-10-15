@@ -150,10 +150,7 @@ namespace Cassandra.Mapping
 
         public ICqlBatch WithOptions(Action<CqlQueryOptions> action)
         {
-            if (action == null)
-            {
-                throw new ArgumentNullException("action");
-            }
+            ArgumentNullException.ThrowIfNull(action);
             action(Options);
             return this;
         }

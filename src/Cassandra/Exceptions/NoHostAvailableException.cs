@@ -110,10 +110,7 @@ namespace Cassandra
             Dictionary<IPEndPoint, Exception> errors,
             Exception existingInnerException = null)
         {
-            if (errors == null)
-            {
-                throw new ArgumentNullException(nameof(errors));
-            }
+            ArgumentNullException.ThrowIfNull(errors);
 
             Dictionary<IPEndPoint, Exception> normalized = null;
             var supplementalErrors = new List<Exception>();

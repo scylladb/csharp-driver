@@ -86,10 +86,7 @@ namespace Cassandra.Serialization
 
         public override byte[] Serialize(ushort protocolVersion, object value)
         {
-            if (value == null)
-            {
-                throw new ArgumentNullException("value");
-            }
+            ArgumentNullException.ThrowIfNull(value);
             var map = GetUdtMap(value.GetType());
             if (map == null)
             {

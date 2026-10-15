@@ -100,10 +100,7 @@ namespace Cassandra.Connections
         /// </summary>
         internal void Replace(IConnection replacement)
         {
-            if (replacement == null)
-            {
-                throw new ArgumentNullException(nameof(replacement));
-            }
+            ArgumentNullException.ThrowIfNull(replacement);
             if (Volatile.Read(ref _transferred) != 0)
             {
                 throw new InvalidOperationException("A transferred connection candidate cannot be replaced.");
@@ -130,22 +127,10 @@ namespace Cassandra.Connections
             Func<IConnection, bool> publish,
             Action<IConnection> rollback)
         {
-            if (ownerLock == null)
-            {
-                throw new ArgumentNullException(nameof(ownerLock));
-            }
-            if (beginOwnerObservation == null)
-            {
-                throw new ArgumentNullException(nameof(beginOwnerObservation));
-            }
-            if (publish == null)
-            {
-                throw new ArgumentNullException(nameof(publish));
-            }
-            if (rollback == null)
-            {
-                throw new ArgumentNullException(nameof(rollback));
-            }
+            ArgumentNullException.ThrowIfNull(ownerLock);
+            ArgumentNullException.ThrowIfNull(beginOwnerObservation);
+            ArgumentNullException.ThrowIfNull(publish);
+            ArgumentNullException.ThrowIfNull(rollback);
 
             lock (ownerLock)
             {

@@ -166,10 +166,7 @@ namespace Cassandra
 
         public QueryTrace(Guid traceId, ISession session)
         {
-            if (session == null)
-            {
-                throw new ArgumentNullException("session");
-            }
+            ArgumentNullException.ThrowIfNull(session);
             if (session.Cluster == null)
             {
                 throw new NullReferenceException("session.Cluster is null");

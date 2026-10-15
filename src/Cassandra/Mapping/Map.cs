@@ -138,7 +138,7 @@ namespace Cassandra.Mapping
         /// </summary>
         public Map<TPoco> PartitionKey(params string[] columnNames)
         {
-            if (columnNames == null) throw new ArgumentNullException("columnNames");
+            ArgumentNullException.ThrowIfNull(columnNames);
             if (columnNames.Length == 0) throw new ArgumentOutOfRangeException("columnNames", "Must specify at least one partition key column.");
             if (_partitionKeyColumnMembers != null) throw new InvalidOperationException("Partition key columns were already specified.");
             _partitionKeyColumns = columnNames;
@@ -150,7 +150,7 @@ namespace Cassandra.Mapping
         /// </summary>
         public Map<TPoco> PartitionKey(params Expression<Func<TPoco, object>>[] columns)
         {
-            if (columns == null) throw new ArgumentNullException("columns");
+            ArgumentNullException.ThrowIfNull(columns);
             if (columns.Length == 0) throw new ArgumentOutOfRangeException("columns", "Must specify at least one partition key column.");
             if (_partitionKeyColumns != null) throw new InvalidOperationException("Partition key column names were already specified, define multiple using invoking this method with multiple expressions.");
 
@@ -173,7 +173,7 @@ namespace Cassandra.Mapping
         /// </summary>
         public Map<TPoco> ClusteringKey(params string[] columnNames)
         {
-            if (columnNames == null) throw new ArgumentNullException("columnNames");
+            ArgumentNullException.ThrowIfNull(columnNames);
             if (columnNames.Length == 0) return this;
             _clusteringKeyColumns.AddRange(columnNames.Select(name => Tuple.Create(name, SortOrder.Unspecified)));
             return this;
@@ -184,7 +184,7 @@ namespace Cassandra.Mapping
         /// </summary>
         public Map<TPoco> ClusteringKey(params Tuple<string, SortOrder>[] columnNames)
         {
-            if (columnNames == null) throw new ArgumentNullException("columnNames");
+            ArgumentNullException.ThrowIfNull(columnNames);
             if (columnNames.Length == 0) return this;
             //Allow multiple calls to clustering key
             _clusteringKeyColumns.AddRange(columnNames);
@@ -198,7 +198,7 @@ namespace Cassandra.Mapping
         /// <param name="order">Clustering order</param>
         public Map<TPoco> ClusteringKey(Expression<Func<TPoco, object>> column, SortOrder order)
         {
-            if (column == null) throw new ArgumentNullException("column");
+            ArgumentNullException.ThrowIfNull(column);
             var memberInfo = GetPropertyOrField(column);
             _clusteringKeyColumnMembers.Add(Tuple.Create(memberInfo, order));
             return this;
@@ -238,8 +238,8 @@ namespace Cassandra.Mapping
         /// </summary>
         public Map<TPoco> Column<TProp>(Expression<Func<TPoco, TProp>> column, Action<ColumnMap> columnConfig)
         {
-            if (column == null) throw new ArgumentNullException("column");
-            if (columnConfig == null) throw new ArgumentNullException("columnConfig");
+            ArgumentNullException.ThrowIfNull(column);
+            ArgumentNullException.ThrowIfNull(columnConfig);
 
             MemberInfo memberInfo = GetPropertyOrField(column);
 

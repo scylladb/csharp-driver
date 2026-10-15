@@ -124,10 +124,7 @@ namespace Cassandra.Data.Linq
         /// </summary>
         public async Task<IPage<TEntity>> ExecutePagedAsync(string executionProfile)
         {
-            if (executionProfile == null)
-            {
-                throw new ArgumentNullException(nameof(executionProfile));
-            }
+            ArgumentNullException.ThrowIfNull(executionProfile);
 
             SetAutoPage(false);
             var visitor = new CqlExpressionVisitor(PocoData, Table.Name, Table.KeyspaceName);
@@ -142,10 +139,7 @@ namespace Cassandra.Data.Linq
         /// </summary>
         public IPage<TEntity> ExecutePaged(string executionProfile)
         {
-            if (executionProfile == null)
-            {
-                throw new ArgumentNullException(nameof(executionProfile));
-            }
+            ArgumentNullException.ThrowIfNull(executionProfile);
 
             return WaitToCompleteWithMetrics(ExecutePagedAsync(executionProfile), QueryAbortTimeout);
         }

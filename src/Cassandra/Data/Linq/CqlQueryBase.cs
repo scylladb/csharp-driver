@@ -148,10 +148,7 @@ namespace Cassandra.Data.Linq
         /// </summary>
         public Task<IEnumerable<TEntity>> ExecuteAsync(string executionProfile)
         {
-            if (executionProfile == null)
-            {
-                throw new ArgumentNullException(nameof(executionProfile));
-            }
+            ArgumentNullException.ThrowIfNull(executionProfile);
 
             return ExecuteCqlQueryAsync(executionProfile);
         }
@@ -161,10 +158,7 @@ namespace Cassandra.Data.Linq
         /// </summary>
         public IEnumerable<TEntity> Execute(string executionProfile)
         {
-            if (executionProfile == null)
-            {
-                throw new ArgumentNullException(nameof(executionProfile));
-            }
+            ArgumentNullException.ThrowIfNull(executionProfile);
 
             return ExecuteCqlQuery(executionProfile);
         }
