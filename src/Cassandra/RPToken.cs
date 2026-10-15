@@ -59,8 +59,6 @@ namespace Cassandra
 
         private class RPTokenFactory : TokenFactory
         {
-            [ThreadStatic] private static MD5 _md5;
-
             public override IToken Parse(string tokenStr)
             {
                 return new RPToken(BigInteger.Parse(tokenStr));
@@ -72,17 +70,15 @@ namespace Cassandra
                 Justification = "Support for Cassandra's RandomPartitioner")]
             public override IToken Hash(byte[] partitionKey)
             {
-                if (_md5 == null)
-                    _md5 = MD5.Create();
+                // MD5.HashData would hash a null array as an empty span; reject it exactly like
+                // MD5.ComputeHash(byte[] buffer) did, including its parameter name.
+                ArgumentNullException.ThrowIfNull(partitionKey, "buffer");
 
-                var hash = _md5.ComputeHash(partitionKey);
+                Span<byte> hash = stackalloc byte[MD5.HashSizeInBytes];
+                MD5.HashData(partitionKey, hash);
 
-                var reversedHash = new byte[hash.Length];
-                for (int x = hash.Length - 1, y = 0; x >= 0; --x, ++y)
-                {
-                    reversedHash[y] = hash[x];
-                }
-                var bigInteger = BigInteger.Abs(new BigInteger(reversedHash));
+                // Cassandra reads the digest as a signed big-endian integer.
+                var bigInteger = BigInteger.Abs(new BigInteger(hash, isUnsigned: false, isBigEndian: true));
 
                 return new RPToken(bigInteger);
             }
