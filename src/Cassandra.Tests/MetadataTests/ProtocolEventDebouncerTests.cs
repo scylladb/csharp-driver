@@ -238,6 +238,8 @@ namespace Cassandra.Tests.MetadataTests
         {
             var mockResult = new TimerMockResult();
             var timerFactory = Mock.Of<ITimerFactory>();
+            // Moq would otherwise return a mocked TimeProvider with a zero timestamp frequency.
+            Mock.Get(timerFactory).Setup(t => t.TimeProvider).Returns(TimeProvider.System);
             Mock.Get(timerFactory)
                 .Setup(t => t.Create(It.IsAny<TaskScheduler>()))
                 .Returns(() =>

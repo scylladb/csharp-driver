@@ -14,12 +14,19 @@
 //   limitations under the License.
 //
 
+using System;
 using System.Threading.Tasks;
 
 namespace Cassandra.ProtocolEvents
 {
     internal interface ITimerFactory
     {
+        /// <summary>
+        /// The clock that drives the timers this factory creates. Code that measures elapsed time around those
+        /// timers should use it too, so that both agree on the time.
+        /// </summary>
+        TimeProvider TimeProvider { get; }
+
         ITimer Create(TaskScheduler scheduler);
     }
 }
