@@ -184,6 +184,11 @@ namespace Cassandra.Connections
         LwtInfo LwtInfo();
 
         /// <summary>
+        /// Returns the tablet info advertised by the node this connection is connected to.
+        /// </summary>
+        TabletInfo TabletInfo();
+
+        /// <summary>
         /// Whether EXECUTE requests on this connection carry a result metadata id and RESULT responses
         /// answer with one, i.e. whether the connection speaks a protocol version that makes the field
         /// mandatory (v5 and above) or negotiated the <c>SCYLLA_USE_METADATA_ID</c> extension.

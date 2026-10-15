@@ -107,7 +107,7 @@ namespace Cassandra
             var table = query.TableName;
             var replicas = (_cluster is IInternalCluster internalCluster
                                ? internalCluster.GetRoutingReplicas(keyspace, table, routingKey.RawRoutingKey)
-                               : _cluster.Metadata.GetReplicas(keyspace, table, routingKey.RawRoutingKey))
+                               : _cluster.Metadata.GetRoutingReplicas(keyspace, table, routingKey.RawRoutingKey))
                            ?? new HostShard[0];
 
             var localReplicaSet = new HashSet<HostShard>();

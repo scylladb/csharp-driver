@@ -121,6 +121,11 @@ namespace Cassandra
         /// <param name="keyspace">The keyspace name</param>
         /// <param name="partitionKey">Byte array representing the partition key</param>
         /// <returns></returns>
+        /// <remarks>
+        /// An empty collection is returned for a keyspace using tablets, or when it cannot be determined whether
+        /// the keyspace uses tablets, see
+        /// <see cref="Metadata.GetReplicas(string, string, byte[])"/>.
+        /// </remarks>
         [Obsolete("Use Metadata.GetReplicas(string keyspaceName, string tableName, byte[] partitionKey) for tablet-aware replica resolution.")]
         ICollection<HostShard> GetReplicas(string keyspace, byte[] partitionKey);
 

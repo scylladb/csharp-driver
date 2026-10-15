@@ -62,7 +62,7 @@ namespace Cassandra.IntegrationTests.MetadataTests
                 var sessionNotSync = ClusterObjNotSync.Connect();
                 var sessionSync = ClusterObjSync.Connect();
 
-                var createKeyspaceCql = $"CREATE KEYSPACE {keyspaceName} WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor' : 3}}";
+                var createKeyspaceCql = $"CREATE KEYSPACE {keyspaceName} WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor' : 3}}" + TestUtils.VnodeKeyspaceOptions;
                 sessionNotSync.Execute(createKeyspaceCql);
 
                 TestUtils.WaitForSchemaAgreement(ClusterObjNotSync);
@@ -73,6 +73,9 @@ namespace Cassandra.IntegrationTests.MetadataTests
 
                 ICollection<HostShard> replicasSync = null;
                 ICollection<HostShard> replicasNotSync = null;
+                // Without metadata synchronization the keyspace is not cached. On servers supporting tablets it is then
+                // unknown whether it uses tablets, so no replica is returned, otherwise the token map primary replica is.
+                var expectedReplicasNotSync = ClusterObjNotSync.Metadata.ControlConnection.SupportsTablets ? 0 : 1;
 
                 TestHelper.RetryAssert(() =>
                 {
@@ -83,7 +86,7 @@ namespace Cassandra.IntegrationTests.MetadataTests
                     replicasNotSync = ClusterObjNotSync.Metadata.GetReplicas(keyspaceName, null, Encoding.UTF8.GetBytes("123"));
 
                     Assert.AreEqual(3, replicasSync.Count);
-                    Assert.AreEqual(1, replicasNotSync.Count);
+                    Assert.AreEqual(expectedReplicasNotSync, replicasNotSync.Count);
                 }, 100, 150);
 
                 var oldTokenMapNotSync = ClusterObjNotSync.Metadata.TokenToReplicasMap;
@@ -109,7 +112,7 @@ namespace Cassandra.IntegrationTests.MetadataTests
                     replicasNotSync = ClusterObjNotSync.Metadata.GetReplicas(keyspaceName, null, Encoding.UTF8.GetBytes("123"));
 
                     Assert.AreEqual(2, replicasSync.Count, "replicasSync.Count");
-                    Assert.AreEqual(1, replicasNotSync.Count, "replicasNotSync.Count");
+                    Assert.AreEqual(expectedReplicasNotSync, replicasNotSync.Count, "replicasNotSync.Count");
 
                     Assert.IsFalse(object.ReferenceEquals(ClusterObjNotSync.Metadata.TokenToReplicasMap, oldTokenMapNotSync));
                     Assert.IsFalse(object.ReferenceEquals(ClusterObjSync.Metadata.TokenToReplicasMap, oldTokenMapSync));
@@ -128,7 +131,7 @@ namespace Cassandra.IntegrationTests.MetadataTests
                     replicasNotSync = ClusterObjNotSync.Metadata.GetReplicas(keyspaceName, null, Encoding.UTF8.GetBytes("123"));
 
                     Assert.AreEqual(3, replicasSync.Count);
-                    Assert.AreEqual(1, replicasNotSync.Count);
+                    Assert.AreEqual(expectedReplicasNotSync, replicasNotSync.Count);
 
                     Assert.IsFalse(object.ReferenceEquals(ClusterObjNotSync.Metadata.TokenToReplicasMap, oldTokenMapNotSync));
                     Assert.IsFalse(object.ReferenceEquals(ClusterObjSync.Metadata.TokenToReplicasMap, oldTokenMapSync));
