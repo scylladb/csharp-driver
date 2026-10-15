@@ -831,5 +831,189 @@ namespace Cassandra.Tests
             Assert.AreEqual(counter, 5);
             timer.Dispose();
         }
+
+        private static Mock<IControlConnection> GetV2ControlConnectionMock(string tableRegex, params IRow[] rows)
+        {
+            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            queryProviderMock
+                .Setup(cc => cc.QueryAsync(It.IsRegex(tableRegex), It.IsAny<bool>()))
+                .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(rows));
+            return queryProviderMock;
+        }
+
+        private static Func<string, string, Task<UdtColumnInfo>> FailingUdtResolver(Exception exception)
+        {
+            return (ks, name) => Task.FromException<UdtColumnInfo>(exception);
+        }
+
+        [Test]
+        public async Task SchemaParserV2_GetUdtDefinition_Should_Pair_Field_Names_With_Their_Types()
+        {
+            var row = TestHelper.CreateRow(new Dictionary<string, object>
+            {
+                {"keyspace_name", "ks1"},
+                {"type_name", "address"},
+                {"field_names", new[] {"street", "zip", "tags"}},
+                {"field_types", new[] {"text", "int", "frozen<list<text>>"}}
+            });
+            var parser = GetV2Instance(GetV2ControlConnectionMock("system_schema\\.types.*ks1.*address", row).Object);
+
+            var udt = await parser.GetUdtDefinitionAsync("ks1", "address").ConfigureAwait(false);
+
+            Assert.AreEqual("ks1.address", udt.Name);
+            CollectionAssert.AreEqual(new[] { "street", "zip", "tags" }, udt.Fields.Select(f => f.Name));
+            CollectionAssert.AreEqual(
+                new[] { ColumnTypeCode.Text, ColumnTypeCode.Int, ColumnTypeCode.List },
+                udt.Fields.Select(f => f.TypeCode));
+            Assert.AreEqual(ColumnTypeCode.Text, ((ListColumnInfo)udt.Fields[2].TypeInfo).ValueTypeCode);
+        }
+
+        [Test]
+        public async Task SchemaParserV2_GetUdtDefinition_Should_Return_Null_When_Not_Found()
+        {
+            var parser = GetV2Instance(GetV2ControlConnectionMock("system_schema\\.types").Object);
+            Assert.IsNull(await parser.GetUdtDefinitionAsync("ks1", "missing").ConfigureAwait(false));
+        }
+
+        [Test]
+        public async Task SchemaParserV2_GetUdtDefinition_Should_Propagate_The_Original_Exception_Of_A_Field_Type()
+        {
+            var row = TestHelper.CreateRow(new Dictionary<string, object>
+            {
+                {"keyspace_name", "ks1"},
+                {"type_name", "address"},
+                {"field_names", new[] {"zip", "nested"}},
+                {"field_types", new[] {"int", "frozen<other_udt>"}}
+            });
+            var resolverException = new InvalidOperationException("udt resolution failed");
+            var parser = GetV2Instance(
+                GetV2ControlConnectionMock("system_schema\\.types", row).Object, FailingUdtResolver(resolverException));
+
+            var ex = await NUnit.Framework.Assert.ThrowsAsync<InvalidOperationException>(
+                () => parser.GetUdtDefinitionAsync("ks1", "address")).ConfigureAwait(false);
+            Assert.AreSame(resolverException, ex);
+        }
+
+        [Test]
+        public async Task SchemaParserV2_GetAggregate_Should_Parse_State_Return_And_Argument_Types()
+        {
+            var row = TestHelper.CreateRow(new Dictionary<string, object>
+            {
+                {"keyspace_name", "ks1"},
+                {"aggregate_name", "agg1"},
+                {"argument_types", new[] {"int", "text"}},
+                {"state_type", "bigint"},
+                {"return_type", "double"},
+                {"state_func", "state_fn"},
+                {"final_func", "final_fn"},
+                {"initcond", "0"},
+                {"deterministic", true}
+            });
+            var parser = GetV2Instance(GetV2ControlConnectionMock("system_schema\\.aggregates.*ks1.*agg1", row).Object);
+
+            var aggregate = await parser.GetAggregateAsync("ks1", "agg1", "['int','text']").ConfigureAwait(false);
+
+            Assert.AreEqual("agg1", aggregate.Name);
+            Assert.AreEqual("ks1", aggregate.KeyspaceName);
+            Assert.AreEqual("state_fn", aggregate.StateFunction);
+            Assert.AreEqual("final_fn", aggregate.FinalFunction);
+            Assert.AreEqual("0", aggregate.InitialCondition);
+            Assert.IsTrue(aggregate.Deterministic);
+            CollectionAssert.AreEqual(new[] { "int", "text" }, aggregate.Signature);
+            Assert.AreEqual(ColumnTypeCode.Bigint, aggregate.StateType.TypeCode);
+            Assert.AreEqual(ColumnTypeCode.Double, aggregate.ReturnType.TypeCode);
+            CollectionAssert.AreEqual(
+                new[] { ColumnTypeCode.Int, ColumnTypeCode.Text }, aggregate.ArgumentTypes.Select(t => t.TypeCode));
+        }
+
+        [Test]
+        public async Task SchemaParserV2_GetAggregate_Should_Return_Null_When_Not_Found()
+        {
+            var parser = GetV2Instance(GetV2ControlConnectionMock("system_schema\\.aggregates").Object);
+            Assert.IsNull(await parser.GetAggregateAsync("ks1", "missing", "[]").ConfigureAwait(false));
+        }
+
+        [Test]
+        public async Task SchemaParserV2_GetAggregate_Should_Propagate_The_Original_Exception_Of_An_Argument_Type()
+        {
+            var row = TestHelper.CreateRow(new Dictionary<string, object>
+            {
+                {"keyspace_name", "ks1"},
+                {"aggregate_name", "agg1"},
+                {"argument_types", new[] {"frozen<other_udt>"}},
+                {"state_type", "bigint"},
+                {"return_type", "double"},
+                {"state_func", "state_fn"},
+                {"final_func", "final_fn"},
+                {"initcond", "0"}
+            });
+            var resolverException = new InvalidOperationException("udt resolution failed");
+            var parser = GetV2Instance(
+                GetV2ControlConnectionMock("system_schema\\.aggregates", row).Object, FailingUdtResolver(resolverException));
+
+            var ex = await NUnit.Framework.Assert.ThrowsAsync<InvalidOperationException>(
+                () => parser.GetAggregateAsync("ks1", "agg1", "['frozen<other_udt>']")).ConfigureAwait(false);
+            Assert.AreSame(resolverException, ex);
+        }
+
+        [Test]
+        public async Task SchemaParserV2_GetFunction_Should_Parse_Return_And_Argument_Types()
+        {
+            var row = TestHelper.CreateRow(new Dictionary<string, object>
+            {
+                {"keyspace_name", "ks1"},
+                {"function_name", "fn1"},
+                {"argument_types", new[] {"int", "text"}},
+                {"argument_names", new[] {"a", "b"}},
+                {"body", "return a;"},
+                {"called_on_null_input", true},
+                {"language", "java"},
+                {"return_type", "bigint"}
+            });
+            var parser = GetV2Instance(GetV2ControlConnectionMock("system_schema\\.functions.*ks1.*fn1", row).Object);
+
+            var function = await parser.GetFunctionAsync("ks1", "fn1", "['int','text']").ConfigureAwait(false);
+
+            Assert.AreEqual("fn1", function.Name);
+            Assert.AreEqual("ks1", function.KeyspaceName);
+            CollectionAssert.AreEqual(new[] { "int", "text" }, function.Signature);
+            CollectionAssert.AreEqual(new[] { "a", "b" }, function.ArgumentNames);
+            Assert.AreEqual("return a;", function.Body);
+            Assert.IsTrue(function.CalledOnNullInput);
+            Assert.AreEqual("java", function.Language);
+            Assert.AreEqual(ColumnTypeCode.Bigint, function.ReturnType.TypeCode);
+            CollectionAssert.AreEqual(
+                new[] { ColumnTypeCode.Int, ColumnTypeCode.Text }, function.ArgumentTypes.Select(t => t.TypeCode));
+        }
+
+        [Test]
+        public async Task SchemaParserV2_GetFunction_Should_Return_Null_When_Not_Found()
+        {
+            var parser = GetV2Instance(GetV2ControlConnectionMock("system_schema\\.functions").Object);
+            Assert.IsNull(await parser.GetFunctionAsync("ks1", "missing", "[]").ConfigureAwait(false));
+        }
+
+        [Test]
+        public async Task SchemaParserV2_GetFunction_Should_Propagate_The_Original_Exception_Of_The_Return_Type()
+        {
+            var row = TestHelper.CreateRow(new Dictionary<string, object>
+            {
+                {"keyspace_name", "ks1"},
+                {"function_name", "fn1"},
+                {"argument_types", new[] {"int"}},
+                {"argument_names", new[] {"a"}},
+                {"body", "return a;"},
+                {"called_on_null_input", true},
+                {"language", "java"},
+                {"return_type", "frozen<other_udt>"}
+            });
+            var resolverException = new InvalidOperationException("udt resolution failed");
+            var parser = GetV2Instance(
+                GetV2ControlConnectionMock("system_schema\\.functions", row).Object, FailingUdtResolver(resolverException));
+
+            var ex = await NUnit.Framework.Assert.ThrowsAsync<InvalidOperationException>(
+                () => parser.GetFunctionAsync("ks1", "fn1", "['int']")).ConfigureAwait(false);
+            Assert.AreSame(resolverException, ex);
+        }
     }
 }

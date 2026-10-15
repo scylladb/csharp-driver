@@ -377,17 +377,7 @@ namespace Cassandra.Serialization
                 dataType.TypeCode = ColumnTypeCode.Map;
                 var keyTypeTask = ParseTypeName(udtResolver, keyspace, innerTypes[0].Trim());
                 var valueTypeTask = ParseTypeName(udtResolver, keyspace, innerTypes[1].Trim());
-                return Task.Factory.ContinueWhenAll(new[] { keyTypeTask, valueTypeTask }, tasks =>
-                {
-                    dataType.TypeInfo = new MapColumnInfo
-                    {
-                        KeyTypeCode = tasks[0].Result.TypeCode,
-                        KeyTypeInfo = tasks[0].Result.TypeInfo,
-                        ValueTypeCode = tasks[1].Result.TypeCode,
-                        ValueTypeInfo = tasks[1].Result.TypeInfo
-                    };
-                    return dataType;
-                });
+                return SetMapTypeInfoAsync(dataType, keyTypeTask, valueTypeTask);
             }
             if (typeName.AsSpan(startIndex).StartsWith(CqlNames.Tuple, comparison))
             {
@@ -404,11 +394,7 @@ namespace Cassandra.Serialization
                 var elementTasks = tupleParams
                     .Select(subTypeName => ParseTypeName(udtResolver, keyspace, subTypeName.Trim()))
                     .ToArray();
-                return Task.Factory.ContinueWhenAll(elementTasks, tasks =>
-                {
-                    dataType.TypeInfo = new TupleColumnInfo(tasks.Select(t => t.Result));
-                    return dataType;
-                });
+                return SetTupleTypeInfoAsync(dataType, elementTasks);
             }
             if (typeName.AsSpan(startIndex).StartsWith(CqlNames.Vector, comparison))
             {
@@ -454,6 +440,26 @@ namespace Cassandra.Serialization
                 dataType.TypeInfo = typeInfo ?? throw GetTypeException(typeName);
                 return dataType;
             });
+        }
+
+        private static async Task<ColumnDesc> SetMapTypeInfoAsync(
+            ColumnDesc dataType, Task<ColumnDesc> keyTypeTask, Task<ColumnDesc> valueTypeTask)
+        {
+            var types = await Task.WhenAll(keyTypeTask, valueTypeTask).ConfigureAwait(false);
+            dataType.TypeInfo = new MapColumnInfo
+            {
+                KeyTypeCode = types[0].TypeCode,
+                KeyTypeInfo = types[0].TypeInfo,
+                ValueTypeCode = types[1].TypeCode,
+                ValueTypeInfo = types[1].TypeInfo
+            };
+            return dataType;
+        }
+
+        private static async Task<ColumnDesc> SetTupleTypeInfoAsync(ColumnDesc dataType, Task<ColumnDesc>[] elementTasks)
+        {
+            dataType.TypeInfo = new TupleColumnInfo(await Task.WhenAll(elementTasks).ConfigureAwait(false));
+            return dataType;
         }
 
         /// <summary>

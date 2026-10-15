@@ -242,119 +242,21 @@ namespace Cassandra.Tasks
         }
 
         /// <summary>
-        /// Smart ContinueWith that executes the sync delegate once the initial task is completed and returns 
-        /// a Task of the result of sync delegate while propagating exceptions
+        /// Runs the sync delegate on the result of the task once it completes, propagating the task's
+        /// exception or cancellation instead.
         /// </summary>
-        public static Task<TOut> ContinueSync<TIn, TOut>(this Task<TIn> task, Func<TIn, TOut> next)
+        public static async Task<TOut> ContinueSync<TIn, TOut>(this Task<TIn> task, Func<TIn, TOut> next)
         {
-            const TaskContinuationOptions options = TaskContinuationOptions.ExecuteSynchronously;
-            var tcs = new TaskCompletionSource<TOut>();
-            if (task.IsCompleted)
-            {
-                DoNextAndHandle(tcs, task, next);
-                return tcs.Task;
-            }
-            task.ContinueWith(previousTask =>
-            {
-                DoNextAndHandle(tcs, previousTask, next);
-            }, options);
-            return tcs.Task;
+            return next(await task.ConfigureAwait(false));
         }
 
         /// <summary>
-        /// Invokes the next function immediately and assigns the result to a Task, propagating exceptions to the new Task
+        /// Runs the async delegate on the result of the task once it completes and returns its result,
+        /// propagating either task's exception or cancellation instead.
         /// </summary>
-        private static void DoNextAndHandle<TIn, TOut>(TaskCompletionSource<TOut> tcs, Task<TIn> previousTask, Func<TIn, TOut> next)
+        public static async Task<TOut> Then<TIn, TOut>(this Task<TIn> task, Func<TIn, Task<TOut>> next)
         {
-            try
-            {
-                if (previousTask.IsFaulted && previousTask.Exception != null)
-                {
-                    SetInnerException(tcs, previousTask.Exception);
-                    return;
-                }
-                if (previousTask.IsCanceled)
-                {
-                    tcs.TrySetCanceled();
-                    return;
-                }
-                tcs.TrySetResult(next(previousTask.Result));
-            }
-            catch (Exception ex)
-            {
-                tcs.TrySetException(ex);
-            }
-        }
-
-        /// <summary>
-        /// Once Task is completed with another Task, returning the second task, propagating exceptions to the second Task.
-        /// </summary>
-        public static Task<TOut> Then<TIn, TOut>(this Task<TIn> task, Func<TIn, Task<TOut>> next)
-        {
-            const TaskContinuationOptions options = TaskContinuationOptions.ExecuteSynchronously;
-            var tcs = new TaskCompletionSource<TOut>();
-            if (task.IsCompleted)
-            {
-                //RanToCompletion, Faulted, or Canceled.
-                DoNextThen(tcs, task, next, options);
-                return tcs.Task;
-            }
-            task.ContinueWith(previousTask =>
-            {
-                DoNextThen(tcs, task, next, options);
-            }, options);
-
-            return tcs.Task;
-        }
-
-        private static void DoNextThen<TIn, TOut>(TaskCompletionSource<TOut> tcs, Task<TIn> previousTask, Func<TIn, Task<TOut>> next, TaskContinuationOptions options)
-        {
-            if (previousTask.IsFaulted && previousTask.Exception != null)
-            {
-                SetInnerException(tcs, previousTask.Exception);
-                return;
-            }
-            if (previousTask.IsCanceled)
-            {
-                tcs.TrySetCanceled();
-                return;
-            }
-            try
-            {
-                next(previousTask.Result).ContinueWith(nextTask =>
-                {
-                    if (nextTask.IsFaulted && nextTask.Exception != null)
-                    {
-                        SetInnerException(tcs, nextTask.Exception);
-                        return;
-                    }
-                    if (nextTask.IsCanceled)
-                    {
-                        tcs.TrySetCanceled();
-                        return;
-                    }
-                    try
-                    {
-                        tcs.TrySetResult(nextTask.Result);
-                    }
-                    catch (Exception ex)
-                    {
-                        tcs.TrySetException(ex);
-                    }
-                }, options);
-            }
-            catch (Exception ex)
-            {
-                tcs.TrySetException(ex);
-            }
-        }
-
-        private static void SetInnerException<T>(TaskCompletionSource<T> tcs, AggregateException ex)
-        {
-            // We are setting the Task from the tcs as faulted
-            // The previous AggregateException is handled
-            ex.Handle(_ => true);
-            tcs.TrySetException(ex.InnerException);
+            return await next(await task.ConfigureAwait(false)).ConfigureAwait(false);
         }
 
         /// <summary>
