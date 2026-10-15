@@ -18,6 +18,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using Cassandra.SessionManagement;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 using CollectionAssert = NUnit.Framework.CollectionAssert;
@@ -587,7 +588,27 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public void TokenAwarePolicyUsesStatementKeyspaceAndTableToGetReplicas()
+        public void TokenAwarePolicyUsesStatementKeyspaceAndTableToGetRoutingReplicas()
+        {
+            var rawRoutingKey = new byte[] { 1, 2, 3, 4 };
+            var clusterMock = new Mock<IInternalCluster>();
+            clusterMock
+                .Setup(c => c.AllHosts())
+                .Returns(new List<Host>());
+            clusterMock
+                .Setup(c => c.GetRoutingReplicas(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<byte[]>()))
+                .Returns(new List<HostShard>());
+            var policy = new TokenAwarePolicy(new RoundRobinPolicy());
+            policy.Initialize(clusterMock.Object);
+
+            var _ = policy.NewQueryPlan("ks2", CreateStatement("ks1", "tbl1", rawRoutingKey)).ToList();
+
+            clusterMock.Verify(c => c.GetRoutingReplicas("ks1", "tbl1", rawRoutingKey), Times.Once);
+            clusterMock.Verify(c => c.GetReplicas(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<byte[]>()), Times.Never);
+        }
+
+        [Test]
+        public void TokenAwarePolicyUsesStatementKeyspaceAndTableToGetReplicas_When_ClusterIsNotInternal()
         {
             var rawRoutingKey = new byte[] { 1, 2, 3, 4 };
             var clusterMock = new Mock<ICluster>();
@@ -600,14 +621,18 @@ namespace Cassandra.Tests
             var policy = new TokenAwarePolicy(new RoundRobinPolicy());
             policy.Initialize(clusterMock.Object);
 
-            var statementMock = new Mock<Statement>(MockBehavior.Loose);
-            statementMock.Setup(s => s.RoutingKey).Returns(new RoutingKey(rawRoutingKey));
-            statementMock.Setup(s => s.Keyspace).Returns("ks1");
-            statementMock.Setup(s => s.TableName).Returns("tbl1");
-
-            var _ = policy.NewQueryPlan("ks2", statementMock.Object).ToList();
+            var _ = policy.NewQueryPlan("ks2", CreateStatement("ks1", "tbl1", rawRoutingKey)).ToList();
 
             clusterMock.Verify(c => c.GetReplicas("ks1", "tbl1", rawRoutingKey), Times.Once);
+        }
+
+        private static Statement CreateStatement(string keyspace, string table, byte[] rawRoutingKey)
+        {
+            var statementMock = new Mock<Statement>(MockBehavior.Loose);
+            statementMock.Setup(s => s.RoutingKey).Returns(new RoutingKey(rawRoutingKey));
+            statementMock.Setup(s => s.Keyspace).Returns(keyspace);
+            statementMock.Setup(s => s.TableName).Returns(table);
+            return statementMock.Object;
         }
 
         [Test]

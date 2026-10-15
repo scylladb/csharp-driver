@@ -525,11 +525,16 @@ namespace Cassandra
 
         private const string SelectColumns = "SELECT * FROM system_schema.columns WHERE table_name='{0}' AND keyspace_name='{1}'";
         private const string SelectIndexes = "SELECT * FROM system_schema.indexes WHERE table_name='{0}' AND keyspace_name='{1}'";
+        private static readonly Logger Logger = new Logger(typeof(SchemaParserV2));
+
         protected const string SelectKeyspaces = "SELECT * FROM system_schema.keyspaces";
         private const string SelectSingleKeyspace = "SELECT * FROM system_schema.keyspaces WHERE keyspace_name = '{0}'";
         private const string SelectSingleTable = "SELECT * FROM system_schema.tables WHERE table_name='{0}' AND keyspace_name='{1}'";
         private const string SelectSingleView = "SELECT * FROM system_schema.views WHERE view_name='{0}' AND keyspace_name='{1}'";
         private const string SelectKeyspacesNames = "SELECT keyspace_name FROM system_schema.keyspaces";
+        private const string SelectScyllaKeyspaces = "SELECT keyspace_name, initial_tablets FROM system_schema.scylla_keyspaces";
+        private const string SelectSingleScyllaKeyspace =
+            "SELECT keyspace_name, initial_tablets FROM system_schema.scylla_keyspaces WHERE keyspace_name = '{0}'";
 
         protected override string SelectAggregates => "SELECT * FROM system_schema.aggregates WHERE keyspace_name = '{0}' AND aggregate_name = '{1}' AND argument_types = {2}";
 
@@ -545,7 +550,7 @@ namespace Cassandra
             _udtResolver = udtResolver;
         }
 
-        private KeyspaceMetadata ParseKeyspaceRow(IRow row)
+        private KeyspaceMetadata ParseKeyspaceRow(IRow row, ISet<string> tabletKeyspaces)
         {
             var replication = row.GetValue<IDictionary<string, string>>("replication");
             string strategy = null;
@@ -564,20 +569,59 @@ namespace Cassandra
                 strategy,
                 replication,
                 new ReplicationStrategyFactory(),
-                row.ContainsColumn("graph_engine") ? row.GetValue<string>("graph_engine") : null);
+                row.ContainsColumn("graph_engine") ? row.GetValue<string>("graph_engine") : null,
+                usesTablets: tabletKeyspaces?.Contains(row.GetValue<string>("keyspace_name")));
         }
 
         public override async Task<KeyspaceMetadata> GetKeyspaceAsync(string name)
         {
-            var rs = await Cc.QueryAsync(string.Format(SelectSingleKeyspace, name), true).ConfigureAwait(false);
-            var row = rs.FirstOrDefault();
-            return row != null ? ParseKeyspaceRow(row) : null;
+            var keyspaceTask = Cc.QueryAsync(string.Format(SelectSingleKeyspace, name), true);
+            var tabletKeyspacesTask = GetTabletKeyspacesAsync(string.Format(SelectSingleScyllaKeyspace, name), true);
+            await Task.WhenAll(keyspaceTask, tabletKeyspacesTask).ConfigureAwait(false);
+
+            var row = (await keyspaceTask.ConfigureAwait(false)).FirstOrDefault();
+            return row != null ? ParseKeyspaceRow(row, await tabletKeyspacesTask.ConfigureAwait(false)) : null;
         }
 
         public override async Task<IEnumerable<KeyspaceMetadata>> GetKeyspacesAsync(bool retry)
         {
-            var rs = await Cc.QueryAsync(SelectKeyspaces, retry).ConfigureAwait(false);
-            return rs.Select(ParseKeyspaceRow);
+            var keyspacesTask = Cc.QueryAsync(SelectKeyspaces, retry);
+            var tabletKeyspacesTask = GetTabletKeyspacesAsync(SelectScyllaKeyspaces, retry);
+            await Task.WhenAll(keyspacesTask, tabletKeyspacesTask).ConfigureAwait(false);
+
+            var tabletKeyspaces = await tabletKeyspacesTask.ConfigureAwait(false);
+            return (await keyspacesTask.ConfigureAwait(false)).Select(row => ParseKeyspaceRow(row, tabletKeyspaces)).ToList();
+        }
+
+        /// <summary>
+        /// Gets the names of the keyspaces using tablets. Scylla stores a non-null <c>initial_tablets</c> in
+        /// <c>system_schema.scylla_keyspaces</c> for every tablet keyspace, while vnode keyspaces have no row or a null
+        /// value. Servers without tablet support are not queried. Returns <c>null</c> when the server rejects the query,
+        /// for example because the table or column is not available, as it is then unknown which keyspaces use tablets.
+        /// </summary>
+        private async Task<ISet<string>> GetTabletKeyspacesAsync(string cqlQuery, bool retry)
+        {
+            if (!Cc.SupportsTablets)
+            {
+                return new HashSet<string>();
+            }
+
+            IEnumerable<IRow> rs;
+            try
+            {
+                rs = await Cc.QueryAsync(cqlQuery, retry).ConfigureAwait(false);
+            }
+            catch (InvalidQueryException ex)
+            {
+                SchemaParserV2.Logger.Warning(
+                    "Could not determine which keyspaces use tablets, replicas will not be resolved from the token map " +
+                    "for these keyspaces: {0}", ex.Message);
+                return null;
+            }
+
+            return new HashSet<string>(
+                rs.Where(row => row.GetValue<int?>("initial_tablets") != null)
+                  .Select(row => row.GetValue<string>("keyspace_name")));
         }
 
         public override async Task<ICollection<string>> GetKeyspacesNamesAsync()

@@ -121,17 +121,24 @@ namespace Cassandra
         /// <param name="keyspace">The keyspace name</param>
         /// <param name="partitionKey">Byte array representing the partition key</param>
         /// <returns></returns>
+        /// <remarks>
+        /// An empty collection is returned for a keyspace using tablets, see
+        /// <see cref="GetReplicas(string, string, byte[])"/>.
+        /// </remarks>
         [Obsolete("Use GetReplicas(string keyspace, string table, byte[] partitionKey) for tablet-aware replica resolution.")]
         ICollection<HostShard> GetReplicas(string keyspace, byte[] partitionKey);
 
         /// <summary>
         /// Gets a collection of replicas for a given partition key on a given keyspace and table.
-        /// Tablet metadata is used when available, with token-map fallback otherwise.
         /// </summary>
         /// <param name="keyspace">The keyspace name.</param>
         /// <param name="table">The table name.</param>
         /// <param name="partitionKey">Byte array representing the partition key.</param>
-        /// <returns>A collection of replicas for the provided partition key.</returns>
+        /// <returns>
+        /// For a keyspace using tablets, the replicas of the cached tablet owning the partition key, or an empty
+        /// collection when the driver has not learned that tablet yet. For any other keyspace, the replicas from the
+        /// token map. See <see cref="Metadata.GetReplicas(string, string, byte[])"/>.
+        /// </returns>
         ICollection<HostShard> GetReplicas(string keyspace, string table, byte[] partitionKey);
 
         /// <summary>

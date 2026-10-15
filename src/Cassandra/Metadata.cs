@@ -280,9 +280,15 @@ namespace Cassandra
         /// <param name="tableName">The table name.</param>
         /// <param name="partitionKey">Byte array representing the partition key.</param>
         /// <returns>
-        /// A collection of replicas resolved using tablet metadata when the provided keyspace and table have a tablet
-        /// mapping, otherwise using the token map. When the table has a tablet mapping but no cached tablet owns the
-        /// partition key, an empty collection is returned instead of falling back to the token map.
+        /// The replicas owning the partition key, resolved according to how the keyspace distributes its data:
+        /// <list type="bullet">
+        /// <item>for a keyspace using tablets, the replicas of the cached tablet owning the partition key. The
+        /// driver learns tablets lazily from the server while executing queries, so an empty collection is returned
+        /// when no tablet owning the partition key has been cached yet, or when <paramref name="tableName"/> is not
+        /// provided. The token map is never used for such keyspaces, as it does not describe tablet placement. The
+        /// same applies when the driver could not determine whether the keyspace uses tablets.</item>
+        /// <item>for any other keyspace, the replicas from the token map.</item>
+        /// </list>
         /// </returns>
         public ICollection<HostShard> GetReplicas(string keyspaceName, string tableName, byte[] partitionKey)
         {
@@ -293,12 +299,17 @@ namespace Cassandra
             }
 
             var token = _tokenMap.Factory.Hash(partitionKey);
-            if (!string.IsNullOrEmpty(keyspaceName) && !string.IsNullOrEmpty(tableName))
+            if (TryGetTabletReplicas(keyspaceName, tableName, token, out var tabletReplicas))
             {
-                if (TabletMap.TryGetReplicas(keyspaceName, tableName, token, out var tabletReplicas))
-                {
-                    return tabletReplicas;
-                }
+                return tabletReplicas;
+            }
+
+            // Keyspaces for which it is unknown whether they use tablets are treated as tablet keyspaces, as the
+            // token map may not describe where their data is stored
+            var keyspace = string.IsNullOrEmpty(keyspaceName) ? null : GetKeyspaceFromCache(keyspaceName);
+            if (keyspace != null && keyspace.UsesTablets != false)
+            {
+                return new HostShard[0];
             }
 
             return _tokenMap.GetReplicas(keyspaceName, token);
@@ -307,6 +318,10 @@ namespace Cassandra
         /// <summary>
         /// Get the replicas for a given partition key and keyspace.
         /// </summary>
+        /// <remarks>
+        /// An empty collection is returned for a keyspace using tablets, see
+        /// <see cref="GetReplicas(string, string, byte[])"/>.
+        /// </remarks>
         [Obsolete("Use GetReplicas(string keyspaceName, string tableName, byte[] partitionKey) for tablet-aware replica resolution.")]
         public ICollection<HostShard> GetReplicas(string keyspaceName, byte[] partitionKey)
         {
@@ -317,6 +332,33 @@ namespace Cassandra
         public ICollection<HostShard> GetReplicas(byte[] partitionKey)
         {
             return GetReplicas(null, null, partitionKey);
+        }
+
+        /// <summary>
+        /// Gets the replicas used for token-aware routing. Unlike <see cref="GetReplicas(string, string, byte[])"/>,
+        /// it falls back to the token map when no tablet of the table is cached: the server answers a query routed
+        /// to a non-replica with the tablet owning the partition key, which makes the following queries routed
+        /// correctly.
+        /// </summary>
+        internal ICollection<HostShard> GetRoutingReplicas(string keyspaceName, string tableName, byte[] partitionKey)
+        {
+            if (_tokenMap == null)
+            {
+                return new HostShard[0];
+            }
+
+            var token = _tokenMap.Factory.Hash(partitionKey);
+            return TryGetTabletReplicas(keyspaceName, tableName, token, out var tabletReplicas)
+                ? tabletReplicas
+                : _tokenMap.GetReplicas(keyspaceName, token);
+        }
+
+        private bool TryGetTabletReplicas(string keyspaceName, string tableName, IToken token, out ICollection<HostShard> replicas)
+        {
+            replicas = null;
+            return !string.IsNullOrEmpty(keyspaceName)
+                   && !string.IsNullOrEmpty(tableName)
+                   && TabletMap.TryGetReplicas(keyspaceName, tableName, token, out replicas);
         }
 
         /// <summary>

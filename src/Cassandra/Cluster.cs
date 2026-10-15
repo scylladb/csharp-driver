@@ -495,6 +495,12 @@ namespace Cassandra
             return Metadata.GetReplicas(keyspace, table, partitionKey);
         }
 
+        /// <inheritdoc />
+        ICollection<HostShard> IInternalCluster.GetRoutingReplicas(string keyspace, string table, byte[] partitionKey)
+        {
+            return Metadata.GetRoutingReplicas(keyspace, table, partitionKey);
+        }
+
         private void OnHostRemoved(Host h)
         {
             HostRemoved?.Invoke(h);

@@ -43,7 +43,7 @@ namespace Cassandra.IntegrationTests.MetadataTests
             Assert.AreEqual(3, newCluster.Metadata.Hosts.Count);
 
             Assert.IsNull(newCluster.Metadata.TokenToReplicasMap.GetByKeyspace(keyspaceName));
-            var createKeyspaceCql = $"CREATE KEYSPACE {keyspaceName} WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor' : 3}}";
+            var createKeyspaceCql = $"CREATE KEYSPACE {keyspaceName} WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor' : 3}}" + TestUtils.VnodeKeyspaceOptions;
 
             newSession.Execute(createKeyspaceCql);
             TestUtils.WaitForSchemaAgreement(newCluster);
@@ -65,7 +65,7 @@ namespace Cassandra.IntegrationTests.MetadataTests
         public void TokenMap_Should_UpdateExistingTokenMap_When_KeyspaceIsRemoved()
         {
             var keyspaceName = TestUtils.GetUniqueKeyspaceName().ToLower();
-            var createKeyspaceCql = $"CREATE KEYSPACE {keyspaceName} WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor' : 3}}";
+            var createKeyspaceCql = $"CREATE KEYSPACE {keyspaceName} WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor' : 3}}" + TestUtils.VnodeKeyspaceOptions;
             Session.Execute(createKeyspaceCql);
             TestUtils.WaitForSchemaAgreement(Cluster);
 
@@ -86,7 +86,7 @@ namespace Cassandra.IntegrationTests.MetadataTests
         public void TokenMap_Should_UpdateExistingTokenMap_When_KeyspaceIsChanged()
         {
             var keyspaceName = TestUtils.GetUniqueKeyspaceName().ToLower();
-            var createKeyspaceCql = $"CREATE KEYSPACE {keyspaceName} WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor' : 3}}";
+            var createKeyspaceCql = $"CREATE KEYSPACE {keyspaceName} WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor' : 3}}" + TestUtils.VnodeKeyspaceOptions;
             Session.Execute(createKeyspaceCql);
             TestUtils.WaitForSchemaAgreement(Cluster);
 

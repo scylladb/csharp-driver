@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using Cassandra.MetadataHelpers;
 using Cassandra.Tests.MetadataHelpers.TestHelpers;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
@@ -14,6 +15,8 @@ namespace Cassandra.Tests.MetadataTests
     public class MetadataGetReplicasTests
     {
         private const string Keyspace = "ks1";
+        private const string TabletKeyspace = "ks_tablets";
+        private const string UnknownTabletsKeyspace = "ks_unknown_tablets";
         private const string Table = "tbl1";
         private static readonly byte[] PartitionKey = { 0, 0, 0, 1 };
 
@@ -26,6 +29,24 @@ namespace Cassandra.Tests.MetadataTests
             // 3 nodes in the ring with a keyspace replicated to all of them
             var keyspaces = new ConcurrentDictionary<string, KeyspaceMetadata>();
             keyspaces.TryAdd(Keyspace, FakeSchemaParserFactory.CreateSimpleKeyspace(Keyspace, 3));
+            keyspaces.TryAdd(TabletKeyspace, new KeyspaceMetadata(
+                null,
+                TabletKeyspace,
+                true,
+                ReplicationStrategies.NetworkTopologyStrategy,
+                new Dictionary<string, string> { { "dc1", "3" } },
+                new ReplicationStrategyFactory(),
+                null,
+                usesTablets: true));
+            keyspaces.TryAdd(UnknownTabletsKeyspace, new KeyspaceMetadata(
+                null,
+                UnknownTabletsKeyspace,
+                true,
+                ReplicationStrategies.NetworkTopologyStrategy,
+                new Dictionary<string, string> { { "dc1", "3" } },
+                new ReplicationStrategyFactory(),
+                null,
+                usesTablets: null));
             _metadata = new Metadata(new Configuration(), new FakeSchemaParser(keyspaces)) { Partitioner = "Murmur3Partitioner" };
             var tokens = new[] { "-6148914691236517204", "0", "6148914691236517204" };
             _hosts = new Host[tokens.Length];
@@ -107,7 +128,75 @@ namespace Cassandra.Tests.MetadataTests
             Assert.IsEmpty(metadata.GetReplicas(Keyspace, Table, PartitionKey));
         }
 
+        [Test]
+        public void GetReplicas_Should_UseTabletReplicas_When_KeyspaceUsesTablets()
+        {
+            AddTabletCoveringAllTokens(TabletKeyspace, Table, new HostShardPair(_hosts[1].HostId, 5));
+
+            var replicas = _metadata.GetReplicas(TabletKeyspace, Table, PartitionKey);
+
+            CollectionAssert.AreEqual(new[] { (_hosts[1], 5) }, replicas.Select(r => (r.Host, r.Shard)));
+        }
+
+        [Test]
+        public void GetReplicas_Should_ReturnEmpty_When_KeyspaceUsesTablets_And_TableHasNoTablets()
+        {
+            AddTabletCoveringAllTokens(TabletKeyspace, "other_table", new HostShardPair(_hosts[1].HostId, 5));
+
+            Assert.IsEmpty(_metadata.GetReplicas(TabletKeyspace, Table, PartitionKey));
+        }
+
+        [Test]
+        public void GetReplicas_Should_ReturnEmpty_When_KeyspaceUsesTablets_And_TableIsNull()
+        {
+            Assert.IsEmpty(_metadata.GetReplicas(TabletKeyspace, null, PartitionKey));
+        }
+
+        [Test]
+        public void GetReplicas_Should_ReturnEmpty_When_ItIsUnknownWhetherKeyspaceUsesTablets()
+        {
+            Assert.IsEmpty(_metadata.GetReplicas(UnknownTabletsKeyspace, Table, PartitionKey));
+        }
+
+        [Test]
+        public void GetRoutingReplicas_Should_UseTokenMap_When_ItIsUnknownWhetherKeyspaceUsesTablets()
+        {
+            AssertTokenMapReplicas(_metadata.GetRoutingReplicas(UnknownTabletsKeyspace, Table, PartitionKey));
+        }
+
+        [Test]
+        public void GetRoutingReplicas_Should_UseTabletReplicas_When_TabletOwnsToken()
+        {
+            AddTabletCoveringAllTokens(TabletKeyspace, Table, new HostShardPair(_hosts[1].HostId, 5));
+
+            var replicas = _metadata.GetRoutingReplicas(TabletKeyspace, Table, PartitionKey);
+
+            CollectionAssert.AreEqual(new[] { (_hosts[1], 5) }, replicas.Select(r => (r.Host, r.Shard)));
+        }
+
+        [Test]
+        public void GetRoutingReplicas_Should_UseTokenMap_When_KeyspaceUsesTablets_And_TableHasNoTablets()
+        {
+            AssertTokenMapReplicas(_metadata.GetRoutingReplicas(TabletKeyspace, Table, PartitionKey));
+        }
+
+        [Test]
+        public void GetRoutingReplicas_Should_ReturnEmpty_When_ThereIsNoTokenMap()
+        {
+            var metadata = new Metadata(new Configuration());
+
+            Assert.IsEmpty(metadata.GetRoutingReplicas(Keyspace, Table, PartitionKey));
+        }
+
 #pragma warning disable 618
+        [Test]
+        public void ObsoleteGetReplicas_With_TabletKeyspace_Should_ReturnEmpty()
+        {
+            AddTabletCoveringAllTokens(TabletKeyspace, Table, new HostShardPair(_hosts[1].HostId, 5));
+
+            Assert.IsEmpty(_metadata.GetReplicas(TabletKeyspace, PartitionKey));
+        }
+
         [Test]
         public void ObsoleteGetReplicas_With_Keyspace_Should_UseTokenMap()
         {
@@ -132,7 +221,12 @@ namespace Cassandra.Tests.MetadataTests
 
         private void AddTabletCoveringAllTokens(string table, params HostShardPair[] replicas)
         {
-            _metadata.TabletMap.AddTablet(Keyspace, table, new Tablet(long.MinValue, long.MaxValue, replicas.ToList()));
+            AddTabletCoveringAllTokens(Keyspace, table, replicas);
+        }
+
+        private void AddTabletCoveringAllTokens(string keyspace, string table, params HostShardPair[] replicas)
+        {
+            _metadata.TabletMap.AddTablet(keyspace, table, new Tablet(long.MinValue, long.MaxValue, replicas.ToList()));
         }
 
         private void AssertTokenMapReplicas(ICollection<HostShard> replicas)

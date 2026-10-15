@@ -115,7 +115,7 @@ namespace Cassandra.IntegrationTests.Core
             // replication factor higher than the amount of nodes.
             Session.Execute(
                 $"CREATE KEYSPACE {ZeroTokenNodeTests.RfKeyspace} WITH replication = " +
-                "{'class': 'NetworkTopologyStrategy', 'replication_factor': '3'}");
+                "{'class': 'NetworkTopologyStrategy', 'replication_factor': '3'}" + TestUtils.VnodeKeyspaceOptions);
         }
 
         // NUnit 5 deprecates Order; preserve the existing sequence of cluster tests.
