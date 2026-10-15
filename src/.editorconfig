@@ -506,3 +506,34 @@ dotnet_diagnostic.SA1136.severity = suggestion
 
 # SA1311: Static readonly fields should begin with upper-case letter
 dotnet_diagnostic.SA1311.severity = suggestion
+
+# .NET 10 modernization rules enforced in the shipping projects. Their findings were fixed when the
+# driver moved from netstandard2.0 to net10.0; keep them at zero. Tests are not covered.
+[{Cassandra,Extensions}/**.cs]
+
+# Throw helpers (.NET 6+)
+dotnet_diagnostic.CA1510.severity = warning
+dotnet_diagnostic.CA1511.severity = warning
+
+# Span- and Memory-based overloads
+dotnet_diagnostic.CA1835.severity = warning
+dotnet_diagnostic.CA1845.severity = warning
+dotnet_diagnostic.CA1846.severity = warning
+
+# Static one-shot hashing (.NET 5+)
+dotnet_diagnostic.CA1850.severity = warning
+
+# Cheaper collection and string APIs
+dotnet_diagnostic.CA1854.severity = warning
+dotnet_diagnostic.CA1858.severity = warning
+dotnet_diagnostic.CA1864.severity = warning
+dotnet_diagnostic.CA1865.severity = warning
+dotnet_diagnostic.CA1866.severity = warning
+dotnet_diagnostic.CA1867.severity = warning
+
+# Source-generated regular expressions (.NET 7+)
+dotnet_diagnostic.SYSLIB1045.severity = warning
+
+# System.Threading.Lock (.NET 9+); IDE rules are checked by `make check`
+csharp_prefer_system_threading_lock = true
+dotnet_diagnostic.IDE0330.severity = warning
