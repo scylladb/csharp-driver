@@ -927,7 +927,7 @@ namespace Cassandra.Connections
                 {
                     await cb(stream, timestamp).ConfigureAwait(false);
                 }
-                stream.Dispose();
+                await stream.DisposeAsync().ConfigureAwait(false);
             }, CancellationToken.None);
             return true;
         }
