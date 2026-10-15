@@ -98,21 +98,20 @@ namespace Cassandra.ProtocolEvents
         private TimeSpan ComputeTimeUntilNextTrigger(long currentTimestamp)
         {
             TimeSpan timeUntilNextTrigger;
-            long diffTimestamp;
+            TimeSpan timeSinceLastTrigger;
 
             // get time past since last trigger
             if (!_isRunning)
             {
                 Volatile.Write(ref _windowFirstTimestamp, currentTimestamp);
-                diffTimestamp = 0;
+                timeSinceLastTrigger = TimeSpan.Zero;
                 _isRunning = true;
             }
             else
             {
-                diffTimestamp = currentTimestamp - Volatile.Read(ref _windowFirstTimestamp);
+                // Stopwatch ticks are not TimeSpan ticks: their frequency is platform dependent (1 GHz on Linux)
+                timeSinceLastTrigger = Stopwatch.GetElapsedTime(Volatile.Read(ref _windowFirstTimestamp), currentTimestamp);
             }
-
-            var timeSinceLastTrigger = new TimeSpan(diffTimestamp);
 
             // compute time until next trigger based on how long has passed and _maxDelay
             if (timeSinceLastTrigger >= _maxDelay)
