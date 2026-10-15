@@ -89,16 +89,6 @@ namespace Cassandra.Tasks
         }
 
         /// <summary>
-        /// Returns a faulted task with the provided exception
-        /// </summary>
-        public static Task<TResult> FromException<TResult>(Exception exception)
-        {
-            var tcs = new TaskCompletionSource<TResult>();
-            tcs.SetException(exception);
-            return tcs.Task;
-        }
-
-        /// <summary>
         /// Waits the task to transition to RanToComplete and returns the Task.Result.
         /// It throws the inner exception of the AggregateException in case there is a single exception.
         /// It throws the Aggregate exception when there is more than 1 inner exception.
@@ -317,14 +307,6 @@ namespace Cassandra.Tasks
             return tcs.Task;
         }
 
-        /// <summary>
-        /// Checks whether the task has finished.
-        /// </summary>
-        public static bool HasFinished(this Task task)
-        {
-            return task.IsCompleted || task.IsCanceled || task.IsFaulted;
-        }
-
         private static void DoNextThen<TIn, TOut>(TaskCompletionSource<TOut> tcs, Task<TIn> previousTask, Func<TIn, Task<TOut>> next, TaskContinuationOptions options)
         {
             if (previousTask.IsFaulted && previousTask.Exception != null)
@@ -373,13 +355,6 @@ namespace Cassandra.Tasks
             // The previous AggregateException is handled
             ex.Handle(_ => true);
             tcs.TrySetException(ex.InnerException);
-        }
-
-        public static Task<T> ToTask<T>(T value)
-        {
-            var tcs = new TaskCompletionSource<T>();
-            tcs.SetResult(value);
-            return tcs.Task;
         }
 
         /// <summary>
@@ -459,59 +434,6 @@ namespace Cassandra.Tasks
             {
                 t.Exception?.Handle(_ => true);
             }, TaskContinuationOptions.ExecuteSynchronously);
-        }
-
-        /// <summary>
-        /// Designed to Await tasks with a cancellation token when the method that returns the task doesn't
-        /// accept a token.
-        /// </summary>
-        /// <param name="task"></param>
-        /// <param name="cancellationToken"></param>
-        /// <returns></returns>
-        public static async Task<T> WithCancellation<T>(
-            this Task<T> task, CancellationToken cancellationToken)
-        {
-            var cancellationCompletionSource = new TaskCompletionSource<bool>();
-
-            using (cancellationToken.Register(() => cancellationCompletionSource.TrySetResult(true)))
-            {
-                if (task != await Task.WhenAny(task, cancellationCompletionSource.Task).ConfigureAwait(false))
-                {
-                    throw new OperationCanceledException(cancellationToken);
-                }
-            }
-
-            return await task.ConfigureAwait(false);
-        }
-
-        /// <summary>
-        /// Simple helper to create a CancellationToken that is cancelled after
-        /// the provided <paramref name="timespan"/>.
-        /// </summary>
-        /// <param name="timespan">Timespan after which the returned <see cref="CancellationToken"/>
-        /// is canceled.</param>
-        /// <returns>A newly created <see cref="CancellationToken"/> that will be canceled
-        /// after the specified <paramref name="timespan"/>.</returns>
-        public static CancellationToken CancelTokenAfterDelay(TimeSpan timespan)
-        {
-            return new CancellationTokenSource(timespan).Token;
-        }
-
-        /// <summary>
-        /// Calls <code>Task.Delay</code> with a cancellation token.
-        /// </summary>
-        /// <returns><code>true</code> if delay ran to completion; <code>false</code> if delay was canceled.</returns>
-        public static async Task<bool> DelayWithCancellation(TimeSpan delayTimeSpan, CancellationToken token)
-        {
-            try
-            {
-                await Task.Delay(delayTimeSpan, token).ConfigureAwait(false);
-                return true;
-            }
-            catch (TaskCanceledException)
-            {
-                return false;
-            }
         }
 
         public static Func<Task> ActionToAsync(Action act)

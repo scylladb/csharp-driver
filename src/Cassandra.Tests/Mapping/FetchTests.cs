@@ -66,11 +66,11 @@ namespace Cassandra.Tests.Mapping
             sessionMock.Setup(s => s.Keyspace).Returns<string>(null);
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BoundStatement>()))
-                .Returns(() => TaskHelper.ToTask(TestDataHelper.GetUsersRowSet(users)))
+                .Returns(() => Task.FromResult(TestDataHelper.GetUsersRowSet(users)))
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns(TaskHelper.ToTask(GetPrepared()))
+                .Returns(Task.FromResult(GetPrepared()))
                 .Verifiable();
             var mappingClient = GetMappingClient(sessionMock);
             var taskList = new List<Task<IEnumerable<PlainUser>>>();
@@ -99,11 +99,11 @@ namespace Cassandra.Tests.Mapping
             sessionMock.Setup(s => s.Keyspace).Returns<string>(null);
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BoundStatement>()))
-                .Returns(() => TaskHelper.FromException<RowSet>(new InvalidQueryException("Mocked Exception")))
+                .Returns(() => Task.FromException<RowSet>(new InvalidQueryException("Mocked Exception")))
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns(TaskHelper.ToTask(GetPrepared()))
+                .Returns(Task.FromResult(GetPrepared()))
                 .Verifiable();
             var mappingClient = GetMappingClient(sessionMock);
             var ex = Assert.Throws<InvalidQueryException>(() => mappingClient.Fetch<PlainUser>("SELECT WILL FAIL FOR INVALID"));
@@ -118,7 +118,7 @@ namespace Cassandra.Tests.Mapping
             sessionMock.Setup(s => s.Keyspace).Returns<string>(null);
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns(() => TaskHelper.FromException<PreparedStatement>(new SyntaxError("Mocked Exception 2")))
+                .Returns(() => Task.FromException<PreparedStatement>(new SyntaxError("Mocked Exception 2")))
                 .Verifiable();
             var mappingClient = GetMappingClient(sessionMock);
             var ex = Assert.Throws<SyntaxError>(() => mappingClient.Fetch<PlainUser>("SELECT WILL FAIL FOR SYNTAX"));
@@ -227,7 +227,7 @@ namespace Cassandra.Tests.Mapping
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns(TaskHelper.ToTask(GetPrepared()))
+                .Returns(Task.FromResult(GetPrepared()))
                 .Verifiable();
             var mappingClient = GetMappingClient(sessionMock);
             IPage<PlainUser> page = mappingClient.FetchPageAsync<PlainUser>(Cql.New("SELECT * FROM users")).Result;
@@ -257,7 +257,7 @@ namespace Cassandra.Tests.Mapping
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns(TaskHelper.ToTask(GetPrepared()))
+                .Returns(Task.FromResult(GetPrepared()))
                 .Verifiable();
             var mappingClient = GetMappingClient(sessionMock);
             IPage<PlainUser> page = mappingClient.FetchPageAsync<PlainUser>(Cql.New("SELECT * FROM users").WithOptions(opt => opt.SetPageSize(pageSize))).Result;
@@ -302,11 +302,11 @@ namespace Cassandra.Tests.Mapping
                     consistency = b.ConsistencyLevel;
                     serialConsistency = b.SerialConsistencyLevel;
                 })
-                .Returns(() => TaskHelper.ToTask(TestDataHelper.GetUsersRowSet(TestDataHelper.GetUserList())))
+                .Returns(() => Task.FromResult(TestDataHelper.GetUsersRowSet(TestDataHelper.GetUserList())))
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns(TaskHelper.ToTask(GetPrepared()))
+                .Returns(Task.FromResult(GetPrepared()))
                 .Verifiable();
             var mapper = GetMappingClient(sessionMock);
             mapper.Fetch<PlainUser>(new Cql("SELECT").WithOptions(o => o.SetConsistencyLevel(ConsistencyLevel.EachQuorum).SetSerialConsistencyLevel(ConsistencyLevel.Serial)));
@@ -337,7 +337,7 @@ namespace Cassandra.Tests.Mapping
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns(TaskHelper.ToTask(GetPrepared()))
+                .Returns(Task.FromResult(GetPrepared()))
                 .Verifiable();
             var mapper = GetMappingClient(sessionMock);
             var song = mapper.Fetch<Song2>(new Cql("SELECT * FROM songs")).First();
@@ -380,7 +380,7 @@ namespace Cassandra.Tests.Mapping
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns(TaskHelper.ToTask(GetPrepared()))
+                .Returns(Task.FromResult(GetPrepared()))
                 .Verifiable();
             var mapper = GetMappingClient(sessionMock);
             return mapper.Fetch<T>(new Cql("SELECT title,releasedate FROM songs")).ToArray();

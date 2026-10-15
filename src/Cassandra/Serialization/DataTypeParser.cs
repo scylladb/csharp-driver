@@ -312,12 +312,12 @@ namespace Cassandra.Serialization
             {
                 // When quoted, this is a custom type.
                 dataType.TypeInfo = new CustomColumnInfo(typeName.Substring(startIndex + 1, length - 2));
-                return TaskHelper.ToTask(dataType);
+                return Task.FromResult(dataType);
             }
             if (typeName == CqlNames.Empty)
             {
                 // A custom without type info
-                return TaskHelper.ToTask(dataType);
+                return Task.FromResult(dataType);
             }
             if (typeName.AsSpan(startIndex).StartsWith(CqlNames.List, comparison))
             {
@@ -327,7 +327,7 @@ namespace Cassandra.Serialization
                 var innerTypes = ParseParams(typeName, startIndex, length, '<', '>');
                 if (innerTypes.Count != 1)
                 {
-                    return TaskHelper.FromException<ColumnDesc>(GetTypeException(typeName));
+                    return Task.FromException<ColumnDesc>(GetTypeException(typeName));
                 }
                 dataType.TypeCode = ColumnTypeCode.List;
                 return ParseTypeName(udtResolver, keyspace, innerTypes[0].Trim())
@@ -349,7 +349,7 @@ namespace Cassandra.Serialization
                 var innerTypes = ParseParams(typeName, startIndex, length, '<', '>');
                 if (innerTypes.Count != 1)
                 {
-                    return TaskHelper.FromException<ColumnDesc>(GetTypeException(typeName));
+                    return Task.FromException<ColumnDesc>(GetTypeException(typeName));
                 }
                 dataType.TypeCode = ColumnTypeCode.Set;
                 return ParseTypeName(udtResolver, keyspace, innerTypes[0].Trim())
@@ -372,7 +372,7 @@ namespace Cassandra.Serialization
                 //It should contain the key and value types
                 if (innerTypes.Count != 2)
                 {
-                    return TaskHelper.FromException<ColumnDesc>(GetTypeException(typeName));
+                    return Task.FromException<ColumnDesc>(GetTypeException(typeName));
                 }
                 dataType.TypeCode = ColumnTypeCode.Map;
                 var keyTypeTask = ParseTypeName(udtResolver, keyspace, innerTypes[0].Trim());
@@ -398,7 +398,7 @@ namespace Cassandra.Serialization
                 if (tupleParams.Count < 1)
                 {
                     //It should contain at least the keyspace, name of the udt and a type
-                    return TaskHelper.FromException<ColumnDesc>(GetTypeException(typeName));
+                    return Task.FromException<ColumnDesc>(GetTypeException(typeName));
                 }
                 dataType.TypeCode = ColumnTypeCode.Tuple;
                 var elementTasks = tupleParams
@@ -418,7 +418,7 @@ namespace Cassandra.Serialization
                 var parameters = ParseParams(typeName, startIndex, length, '<', '>');
                 if (parameters.Count != 2)
                 {
-                    return TaskHelper.FromException<ColumnDesc>(GetTypeException(typeName));
+                    return Task.FromException<ColumnDesc>(GetTypeException(typeName));
                 }
                 dataType.TypeCode = ColumnTypeCode.Custom;
                 if (!int.TryParse(parameters[1].Trim(), out var dimensions))
@@ -444,7 +444,7 @@ namespace Cassandra.Serialization
             if (SingleCqlNames.TryGetValue(typeName, out ColumnTypeCode typeCode))
             {
                 dataType.TypeCode = typeCode;
-                return TaskHelper.ToTask(dataType);
+                return Task.FromResult(dataType);
             }
             typeName = typeName.Replace("\"", "");
             ArgumentNullException.ThrowIfNull(udtResolver);

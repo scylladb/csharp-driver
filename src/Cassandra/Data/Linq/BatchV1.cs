@@ -50,7 +50,7 @@ namespace Cassandra.Data.Linq
         {
             if (_batchScript.Length == 0)
             {
-                return TaskHelper.FromException<RowSet>(new RequestInvalidException("The Batch must contain queries to execute"));
+                return Task.FromException<RowSet>(new RequestInvalidException("The Batch must contain queries to execute"));
             }
             string cqlQuery = GetCql();
             var stmt = new SimpleStatement(cqlQuery);

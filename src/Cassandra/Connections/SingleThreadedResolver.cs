@@ -40,7 +40,7 @@ namespace Cassandra.Connections
                 return;
             }
 
-            if (task != null && !task.HasFinished())
+            if (task != null && !task.IsCompleted)
             {
                 await task.ConfigureAwait(false);
                 return;
@@ -51,7 +51,7 @@ namespace Cassandra.Connections
             try
             {
                 task = _currentTask;
-                if (task == null || (task.HasFinished() && refreshNeeded()) || task.IsFaulted)
+                if (task == null || (task.IsCompleted && refreshNeeded()) || task.IsFaulted)
                 {
                     task = refreshFunc();
                     _currentTask = task;
