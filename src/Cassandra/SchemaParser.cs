@@ -771,129 +771,93 @@ namespace Cassandra
             return rows.Select(IndexMetadata.FromRow).ToDictionary(ix => ix.Name);
         }
 
-        public override Task<UdtColumnInfo> GetUdtDefinitionAsync(string keyspaceName, string typeName)
+        public override async Task<UdtColumnInfo> GetUdtDefinitionAsync(string keyspaceName, string typeName)
         {
-            return Cc
-                .QueryAsync(string.Format(SelectUdts, keyspaceName, typeName), true)
-                .Then(rs =>
-                {
-                    var row = rs.FirstOrDefault();
-                    if (row == null)
-                    {
-                        return Task.FromResult<UdtColumnInfo>(null);
-                    }
-                    var udt = new UdtColumnInfo(row.GetValue<string>("keyspace_name") + "." + row.GetValue<string>("type_name"));
-                    var fieldTypeTasks = row.GetValue<string[]>("field_types")
-                        .Select(name => DataTypeParser.ParseTypeName(_udtResolver, keyspaceName, name))
-                        .ToArray();
-                    return Task.Factory.ContinueWhenAll(fieldTypeTasks, tasks =>
-                    {
-                        var ex = tasks.Select(t => t.Exception).FirstOrDefault(e => e != null);
-                        if (ex != null)
-                        {
-                            throw ex.InnerException;
-                        }
-                        var fieldNames = row.GetValue<string[]>("field_names");
-                        for (var i = 0; i < fieldNames.Length && i < tasks.Length; i++)
-                        {
-                            var field = tasks[i].Result;
-                            field.Name = fieldNames[i];
-                            udt.Fields.Add(field);
-                        }
-                        return udt;
-                    });
-                });
+            var rs = await Cc.QueryAsync(string.Format(SelectUdts, keyspaceName, typeName), true).ConfigureAwait(false);
+            var row = rs.FirstOrDefault();
+            if (row == null)
+            {
+                return null;
+            }
+            var udt = new UdtColumnInfo(row.GetValue<string>("keyspace_name") + "." + row.GetValue<string>("type_name"));
+            var fieldTypeTasks = row.GetValue<string[]>("field_types")
+                .Select(name => DataTypeParser.ParseTypeName(_udtResolver, keyspaceName, name))
+                .ToArray();
+            var fieldTypes = await Task.WhenAll(fieldTypeTasks).ConfigureAwait(false);
+            var fieldNames = row.GetValue<string[]>("field_names");
+            for (var i = 0; i < fieldNames.Length && i < fieldTypes.Length; i++)
+            {
+                var field = fieldTypes[i];
+                field.Name = fieldNames[i];
+                udt.Fields.Add(field);
+            }
+            return udt;
         }
 
-        public override Task<AggregateMetadata> GetAggregateAsync(string keyspaceName, string aggregateName, string signatureString)
+        public override async Task<AggregateMetadata> GetAggregateAsync(string keyspaceName, string aggregateName, string signatureString)
         {
             var query = string.Format(SelectAggregates, keyspaceName, aggregateName, signatureString);
-            return Cc
-                .QueryAsync(query, true)
-                .Then(rs =>
-                {
-                    var row = rs.FirstOrDefault();
-                    if (row == null)
-                    {
-                        return Task.FromResult<AggregateMetadata>(null);
-                    }
-                    var argumentTypes = row.GetValue<string[]>("argument_types") ?? new string[0];
-                    //state_type + return_type + amount of argument types
-                    var parseTasks = new Task<ColumnDesc>[2 + argumentTypes.Length];
-                    parseTasks[0] = DataTypeParser.ParseTypeName(_udtResolver, row.GetValue<string>("keyspace_name"), row.GetValue<string>("state_type"));
-                    parseTasks[1] = DataTypeParser.ParseTypeName(_udtResolver, row.GetValue<string>("keyspace_name"), row.GetValue<string>("return_type"));
-                    for (var i = 0; i < argumentTypes.Length; i++)
-                    {
-                        parseTasks[2 + i] = DataTypeParser.ParseTypeName(_udtResolver, row.GetValue<string>("keyspace_name"), argumentTypes[i]);
-                    }
-                    return Task.Factory.ContinueWhenAll(parseTasks, tasks =>
-                    {
-                        var ex = tasks.Select(t => t.Exception).FirstOrDefault(e => e != null);
-                        if (ex != null)
-                        {
-                            throw ex.InnerException;
-                        }
-                        return new AggregateMetadata
-                        {
-                            Name = row.GetValue<string>("aggregate_name"),
-                            KeyspaceName = row.GetValue<string>("keyspace_name"),
-                            StateFunction = row.GetValue<string>("state_func"),
-                            FinalFunction = row.GetValue<string>("final_func"),
-                            InitialCondition = row.GetValue<string>("initcond"),
-                            Deterministic = row.GetColumn("deterministic") != null &&
-                                            row.GetValue<bool>("deterministic"),
-                            Signature = argumentTypes,
-                            StateType = tasks[0].Result,
-                            ReturnType = tasks[1].Result,
-                            ArgumentTypes = tasks.Skip(2).Select(t => t.Result).ToArray()
-                        };
-                    }, TaskContinuationOptions.ExecuteSynchronously);
-                });
+            var rs = await Cc.QueryAsync(query, true).ConfigureAwait(false);
+            var row = rs.FirstOrDefault();
+            if (row == null)
+            {
+                return null;
+            }
+            var argumentTypes = row.GetValue<string[]>("argument_types") ?? new string[0];
+            //state_type + return_type + amount of argument types
+            var parseTasks = new Task<ColumnDesc>[2 + argumentTypes.Length];
+            parseTasks[0] = DataTypeParser.ParseTypeName(_udtResolver, row.GetValue<string>("keyspace_name"), row.GetValue<string>("state_type"));
+            parseTasks[1] = DataTypeParser.ParseTypeName(_udtResolver, row.GetValue<string>("keyspace_name"), row.GetValue<string>("return_type"));
+            for (var i = 0; i < argumentTypes.Length; i++)
+            {
+                parseTasks[2 + i] = DataTypeParser.ParseTypeName(_udtResolver, row.GetValue<string>("keyspace_name"), argumentTypes[i]);
+            }
+            var types = await Task.WhenAll(parseTasks).ConfigureAwait(false);
+            return new AggregateMetadata
+            {
+                Name = row.GetValue<string>("aggregate_name"),
+                KeyspaceName = row.GetValue<string>("keyspace_name"),
+                StateFunction = row.GetValue<string>("state_func"),
+                FinalFunction = row.GetValue<string>("final_func"),
+                InitialCondition = row.GetValue<string>("initcond"),
+                Deterministic = row.GetColumn("deterministic") != null &&
+                                row.GetValue<bool>("deterministic"),
+                Signature = argumentTypes,
+                StateType = types[0],
+                ReturnType = types[1],
+                ArgumentTypes = types.Skip(2).ToArray()
+            };
         }
 
-        public override Task<FunctionMetadata> GetFunctionAsync(string keyspaceName, string functionName, string signatureString)
+        public override async Task<FunctionMetadata> GetFunctionAsync(string keyspaceName, string functionName, string signatureString)
         {
             var query = string.Format(SelectFunctions, keyspaceName, functionName, signatureString);
-            return Cc
-                .QueryAsync(query, true)
-                .Then(rs =>
-                {
-                    var row = rs.FirstOrDefault();
-                    if (row == null)
-                    {
-                        return Task.FromResult<FunctionMetadata>(null);
-                    }
-                    var argumentTypes = row.GetValue<string[]>("argument_types") ?? new string[0];
-                    var parseTasks = new Task<ColumnDesc>[1 + argumentTypes.Length];
-                    parseTasks[0] = DataTypeParser.ParseTypeName(_udtResolver, row.GetValue<string>("keyspace_name"), row.GetValue<string>("return_type"));
-                    for (var i = 0; i < argumentTypes.Length; i++)
-                    {
-                        parseTasks[1 + i] = DataTypeParser.ParseTypeName(_udtResolver, row.GetValue<string>("keyspace_name"), argumentTypes[i]);
-                    }
-                    return Task.Factory.ContinueWhenAll(parseTasks, tasks =>
-                    {
-                        var ex = tasks.Select(t => t.Exception).FirstOrDefault(e => e != null);
-                        if (ex != null)
-                        {
-                            throw ex.InnerException;
-                        }
-
-                        var result = new FunctionMetadata
-                        {
-                            Name = row.GetValue<string>("function_name"),
-                            KeyspaceName = row.GetValue<string>("keyspace_name"),
-                            Signature = argumentTypes,
-                            ArgumentNames = row.GetValue<string[]>("argument_names") ?? new string[0],
-                            Body = row.GetValue<string>("body"),
-                            CalledOnNullInput = row.GetValue<bool>("called_on_null_input"),
-                            Language = row.GetValue<string>("language"),
-                            ReturnType = tasks[0].Result,
-                            ArgumentTypes = tasks.Skip(1).Select(t => t.Result).ToArray()
-                        };
-
-                        return result;
-                    });
-                });
+            var rs = await Cc.QueryAsync(query, true).ConfigureAwait(false);
+            var row = rs.FirstOrDefault();
+            if (row == null)
+            {
+                return null;
+            }
+            var argumentTypes = row.GetValue<string[]>("argument_types") ?? new string[0];
+            var parseTasks = new Task<ColumnDesc>[1 + argumentTypes.Length];
+            parseTasks[0] = DataTypeParser.ParseTypeName(_udtResolver, row.GetValue<string>("keyspace_name"), row.GetValue<string>("return_type"));
+            for (var i = 0; i < argumentTypes.Length; i++)
+            {
+                parseTasks[1 + i] = DataTypeParser.ParseTypeName(_udtResolver, row.GetValue<string>("keyspace_name"), argumentTypes[i]);
+            }
+            var types = await Task.WhenAll(parseTasks).ConfigureAwait(false);
+            return new FunctionMetadata
+            {
+                Name = row.GetValue<string>("function_name"),
+                KeyspaceName = row.GetValue<string>("keyspace_name"),
+                Signature = argumentTypes,
+                ArgumentNames = row.GetValue<string[]>("argument_names") ?? new string[0],
+                Body = row.GetValue<string>("body"),
+                CalledOnNullInput = row.GetValue<bool>("called_on_null_input"),
+                Language = row.GetValue<string>("language"),
+                ReturnType = types[0],
+                ArgumentTypes = types.Skip(1).ToArray()
+            };
         }
     }
 

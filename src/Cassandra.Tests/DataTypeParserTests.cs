@@ -372,6 +372,20 @@ namespace Cassandra.Tests
             }
         }
 
+        [TestCase("map<int, my_udt>")]
+        [TestCase("map<my_udt, int>")]
+        [TestCase("tuple<int, my_udt>")]
+        public async Task ParseTypeName_Should_Propagate_The_Original_Exception_Of_A_Failed_Sub_Type(string typeName)
+        {
+            var resolverException = new InvalidOperationException("udt resolution failed");
+            Func<string, string, Task<UdtColumnInfo>> udtResolver = (ks, name) =>
+                Task.FromException<UdtColumnInfo>(resolverException);
+
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => DataTypeParser.ParseTypeName(udtResolver, "ks1", typeName)).ConfigureAwait(false);
+            Assert.AreSame(resolverException, ex);
+        }
+
         [Test]
         public void ParseFqTypeName_Should_Parse_Custom_Types()
         {
