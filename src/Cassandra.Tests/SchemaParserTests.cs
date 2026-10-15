@@ -72,7 +72,7 @@ namespace Cassandra.Tests
             var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system\\.schema_keyspaces.*" + ksName), It.IsAny<bool>()))
-                .Returns(() => TaskHelper.ToTask(Enumerable.Empty<IRow>()));
+                .Returns(() => Task.FromResult(Enumerable.Empty<IRow>()));
             var parser = GetV1Instance(queryProviderMock.Object);
             var ks = TaskHelper.WaitToComplete(parser.GetKeyspaceAsync(ksName));
             Assert.Null(ks);
@@ -432,11 +432,11 @@ namespace Cassandra.Tests
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { ksRow }));
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system\\.schema_columnfamilies.*ks1"), It.IsAny<bool>()))
-                .Returns(() => TaskHelper.FromException<IEnumerable<IRow>>(new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>())));
+                .Returns(() => Task.FromException<IEnumerable<IRow>>(new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>())));
             //This will cause the task to be faulted
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system\\.schema_columns.*ks1"), It.IsAny<bool>()))
-                .Returns(() => TaskHelper.FromException<IEnumerable<IRow>>(new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>())));
+                .Returns(() => Task.FromException<IEnumerable<IRow>>(new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>())));
             var parser = GetV1Instance(queryProviderMock.Object);
             var ks = TaskHelper.WaitToComplete(parser.GetKeyspaceAsync("ks1"));
             Assert.NotNull(ks);
@@ -675,7 +675,7 @@ namespace Cassandra.Tests
             //This will cause the task to be faulted
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.columns.*ks1"), It.IsAny<bool>()))
-                .Returns(() => TaskHelper.FromException<IEnumerable<IRow>>(new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>())));
+                .Returns(() => Task.FromException<IEnumerable<IRow>>(new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>())));
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.indexes.*ks1"), It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask(Enumerable.Empty<IRow>()));
@@ -730,7 +730,7 @@ namespace Cassandra.Tests
             var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system_traces\\.sessions"), It.IsAny<bool>()))
-                .Returns(() => TaskHelper.FromException<IEnumerable<IRow>>(new Exception("Test exception")));
+                .Returns(() => Task.FromException<IEnumerable<IRow>>(new Exception("Test exception")));
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system_traces\\.events"), It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask(Enumerable.Empty<IRow>()));
@@ -760,7 +760,7 @@ namespace Cassandra.Tests
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { sessionRow }));
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system_traces\\.events"), It.IsAny<bool>()))
-                .Returns(() => TaskHelper.FromException<IEnumerable<IRow>>(new Exception("Test exception 2")));
+                .Returns(() => Task.FromException<IEnumerable<IRow>>(new Exception("Test exception 2")));
 
             var queryTrace = GetQueryTrace();
             var parser = GetV1Instance(queryProviderMock.Object);
@@ -791,7 +791,7 @@ namespace Cassandra.Tests
                 });
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system_traces\\.events"), It.IsAny<bool>()))
-                .Returns(() => TaskHelper.ToTask(Enumerable.Empty<IRow>()));
+                .Returns(() => Task.FromResult(Enumerable.Empty<IRow>()));
             var queryTrace = GetQueryTrace();
             var parser = GetV1Instance(queryProviderMock.Object);
             var timer = new HashedWheelTimer();
@@ -823,7 +823,7 @@ namespace Cassandra.Tests
                 });
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system_traces\\.events"), It.IsAny<bool>()))
-                .Returns(() => TaskHelper.ToTask(Enumerable.Empty<IRow>()));
+                .Returns(() => Task.FromResult(Enumerable.Empty<IRow>()));
             var queryTrace = GetQueryTrace();
             var parser = GetV1Instance(queryProviderMock.Object);
             var timer = new HashedWheelTimer();

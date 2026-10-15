@@ -29,7 +29,6 @@ using Moq;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 using StringAssert = NUnit.Framework.StringAssert;
-using Cassandra.Tasks;
 
 #pragma warning disable 618
 
@@ -362,14 +361,14 @@ APPLY BATCH".Replace("\r", ""));
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
                 .Callback<string>(actualCqlQueries.Add)
-                .Returns(TaskHelper.ToTask(GetPrepared("Mock query")));
+                .Returns(Task.FromResult(GetPrepared("Mock query")));
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<IStatement>(), It.IsAny<string>()))
                 .Returns(Task<RowSet>.Factory.StartNew(() => new RowSet()));
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
                 .Callback<string>(query => actualCqlQueries.Add(query))
-                .Returns(TaskHelper.ToTask(GetPrepared("Mock query")));
+                .Returns(Task.FromResult(GetPrepared("Mock query")));
 
             //Execute all linq queries
             foreach (var q in linqQueries)

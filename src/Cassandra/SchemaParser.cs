@@ -90,7 +90,7 @@ namespace Cassandra
         {
             if (attempt >= TraceMaxAttempts)
             {
-                return TaskHelper.FromException<QueryTrace>(
+                return Task.FromException<QueryTrace>(
                     new TraceRetrievalException(string.Format("Unable to retrieve complete query trace after {0} tries", TraceMaxAttempts)));
             }
             var sessionQuery = string.Format(SelectTraceSessions, trace.TraceId);
@@ -150,7 +150,7 @@ namespace Cassandra
     /// </summary>
     internal class SchemaParserV1 : SchemaParser
     {
-        private static readonly Task<TableMetadata> NullTableTask = TaskHelper.ToTask((TableMetadata)null);
+        private static readonly Task<TableMetadata> NullTableTask = Task.FromResult((TableMetadata)null);
         private const string SelectColumns = "SELECT * FROM system.schema_columns WHERE columnfamily_name='{0}' AND keyspace_name='{1}'";
         private const string SelectKeyspaces = "SELECT * FROM system.schema_keyspaces";
         private const string SelectSingleKeyspace = "SELECT * FROM system.schema_keyspaces WHERE keyspace_name = '{0}'";
@@ -403,7 +403,7 @@ namespace Cassandra
 
         public override Task<MaterializedViewMetadata> GetViewAsync(string keyspaceName, string viewName)
         {
-            return TaskHelper.FromException<MaterializedViewMetadata>(new NotSupportedException("Materialized views are supported in Cassandra 3.0 or above"));
+            return Task.FromException<MaterializedViewMetadata>(new NotSupportedException("Materialized views are supported in Cassandra 3.0 or above"));
         }
 
         /// <summary>
@@ -780,7 +780,7 @@ namespace Cassandra
                     var row = rs.FirstOrDefault();
                     if (row == null)
                     {
-                        return TaskHelper.ToTask<UdtColumnInfo>(null);
+                        return Task.FromResult<UdtColumnInfo>(null);
                     }
                     var udt = new UdtColumnInfo(row.GetValue<string>("keyspace_name") + "." + row.GetValue<string>("type_name"));
                     var fieldTypeTasks = row.GetValue<string[]>("field_types")
@@ -815,7 +815,7 @@ namespace Cassandra
                     var row = rs.FirstOrDefault();
                     if (row == null)
                     {
-                        return TaskHelper.ToTask<AggregateMetadata>(null);
+                        return Task.FromResult<AggregateMetadata>(null);
                     }
                     var argumentTypes = row.GetValue<string[]>("argument_types") ?? new string[0];
                     //state_type + return_type + amount of argument types
@@ -861,7 +861,7 @@ namespace Cassandra
                     var row = rs.FirstOrDefault();
                     if (row == null)
                     {
-                        return TaskHelper.ToTask<FunctionMetadata>(null);
+                        return Task.FromResult<FunctionMetadata>(null);
                     }
                     var argumentTypes = row.GetValue<string[]>("argument_types") ?? new string[0];
                     var parseTasks = new Task<ColumnDesc>[1 + argumentTypes.Length];
