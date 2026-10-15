@@ -251,13 +251,6 @@ namespace Cassandra.Connections
                 {
                     OnError(null, SocketError.NotConnected);
                 }
-                catch (NullReferenceException)
-                {
-                    // Mono can throw a NRE when being disposed concurrently
-                    // https://github.com/mono/mono/blob/b190f213a364a2793cc573e1bd9fae8be72296e4/mcs/class/System/System.Net.Sockets/SocketAsyncEventArgs.cs#L184-L185
-                    // https://github.com/mono/mono/blob/b190f213a364a2793cc573e1bd9fae8be72296e4/mcs/class/System/System.Net.Sockets/Socket.cs#L1873-L1874
-                    OnError(null, SocketError.NotConnected);
-                }
                 catch (Exception ex)
                 {
                     OnError(ex);
@@ -434,13 +427,6 @@ namespace Cassandra.Connections
                 }
                 catch (ObjectDisposedException)
                 {
-                    OnError(null, SocketError.NotConnected);
-                }
-                catch (NullReferenceException)
-                {
-                    // Mono can throw a NRE when being disposed concurrently
-                    // https://github.com/mono/mono/blob/b190f213a364a2793cc573e1bd9fae8be72296e4/mcs/class/System/System.Net.Sockets/SocketAsyncEventArgs.cs#L184-L185
-                    // https://github.com/mono/mono/blob/b190f213a364a2793cc573e1bd9fae8be72296e4/mcs/class/System/System.Net.Sockets/Socket.cs#L2477-L2478
                     OnError(null, SocketError.NotConnected);
                 }
                 catch (Exception ex)
