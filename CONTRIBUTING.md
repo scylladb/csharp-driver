@@ -203,6 +203,17 @@ dotnet test src/Cassandra.IntegrationTests/Cassandra.IntegrationTests.csproj -c 
 
 This currently takes less than 45 minutes for Apache Cassandra 3.11.x.
 
+## Benchmarks
+
+[src/Cassandra.Benchmarks](./src/Cassandra.Benchmarks) contains [BenchmarkDotNet][benchmarkdotnet] micro-benchmarks for the driver's hot paths: big-endian conversions, value serialization, partition-key hashing and RESULT/Rows decoding. They need no cluster. CI only checks that they compile and are formatted (`make check-benchmarks`; `make check` leaves them out).
+
+```bash
+make benchmark                                # all benchmarks
+make benchmark BENCHMARK_FILTER='*Token*'     # a subset
+```
+
+A PR that claims a performance improvement should include before/after results from the same machine, with allocations (`[MemoryDiagnoser]`). Add a benchmark for the code path if none exists yet.
+
 ## License headers
 
 The code analysis that runs on CI builds will return errors if the license headers are missing.
@@ -252,3 +263,4 @@ If you need new stuff from the base branch, it's fine to rebase and force-push, 
 [dotnetsdk]: https://dotnet.microsoft.com/download/dotnet/10.0
 [dotnetcoresdk]: https://www.microsoft.com/net/download/core
 [scylla-slack]: https://scylladb-users.slack.com
+[benchmarkdotnet]: https://benchmarkdotnet.org/

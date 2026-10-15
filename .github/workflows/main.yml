@@ -133,6 +133,15 @@ jobs:
       - name: Build examples
         run: make build-examples
 
+      # Keeps the micro-benchmarks compiling against the driver's internals; running them is manual.
+      - name: Build benchmarks
+        run: make build-benchmarks
+
+      # Here rather than in lint, so that restoring BenchmarkDotNet uses this job's NuGet cache and does not delay
+      # the integration jobs, which wait for lint.
+      - name: Check benchmarks formatting
+        run: make check-benchmarks
+
   integration-tests:
     needs: [lint]
     runs-on: ubuntu-24.04
