@@ -482,7 +482,7 @@ namespace Cassandra.Requests
             // whose effective consistency is serial as an LWT — and the schema's enum lists both of them, so every
             // level the enum defines is reportable. An integer cast to ConsistencyLevel is not, and
             // SetConsistencyLevel takes one, so that case is reported as the number and logged.
-            if (!Enum.IsDefined(typeof(ConsistencyLevel), requestOptions.ConsistencyLevel))
+            if (!Enum.IsDefined(requestOptions.ConsistencyLevel))
             {
                 DriverConfigReporter.WarnUnrepresentable(
                     "query.defaults.consistency",

@@ -537,7 +537,7 @@ namespace Cassandra.Serialization
         {
             string msg = null;
             bool requiresCheck = false;
-            var typeCodeName = Enum.GetName(typeof(ColumnTypeCode), typeCode);
+            var typeCodeName = Enum.GetName(typeCode);
             switch (typeCode)
             {
                 case ColumnTypeCode.List:

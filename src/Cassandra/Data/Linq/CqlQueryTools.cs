@@ -151,8 +151,8 @@ namespace Cassandra.Data.Linq
 
         private static string GetCqlTypeFromType(Type tpy)
         {
-            if (CQLTypeNames.ContainsKey(tpy))
-                return CQLTypeNames[tpy];
+            if (CQLTypeNames.TryGetValue(tpy, out var cqlTypeName))
+                return cqlTypeName;
             else
             {
                 if (tpy.GetTypeInfo().IsGenericType)

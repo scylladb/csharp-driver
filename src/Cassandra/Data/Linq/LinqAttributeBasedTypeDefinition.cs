@@ -92,18 +92,18 @@ namespace Cassandra.Data.Linq
             if (TableName == null)
             {
                 TableName = type.Name;
-                var tableAttribute = (TableAttribute)type.GetTypeInfo().GetCustomAttribute(typeof(TableAttribute), true);
+                var tableAttribute = type.GetTypeInfo().GetCustomAttribute<TableAttribute>(true);
                 if (tableAttribute != null)
                 {
                     TableName = tableAttribute.Name;
                     CaseSensitive = tableAttribute.CaseSensitive;
                 }
             }
-            if (type.GetTypeInfo().GetCustomAttribute(typeof(CompactStorageAttribute), true) != null)
+            if (type.GetTypeInfo().GetCustomAttribute<CompactStorageAttribute>(true) != null)
             {
                 CompactStorage = true;
             }
-            if (type.GetTypeInfo().GetCustomAttribute(typeof(AllowFilteringAttribute), true) != null)
+            if (type.GetTypeInfo().GetCustomAttribute<AllowFilteringAttribute>(true) != null)
             {
                 AllowFiltering = true;
             }

@@ -242,7 +242,7 @@ namespace Cassandra.Data
         {
             ArgumentNullException.ThrowIfNull(parameterName);
 
-            var name = parameterName.StartsWith(":") ? parameterName : ":" + parameterName;
+            var name = parameterName.StartsWith(':') ? parameterName : ":" + parameterName;
             return _parameters.FindIndex(p => p.ParameterName == name);
         }
 

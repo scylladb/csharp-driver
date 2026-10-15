@@ -141,10 +141,7 @@ namespace Cassandra.Connections
                 }
 
                 var observation = Volatile.Read(ref _observation);
-                if (observation == null)
-                {
-                    throw new ObjectDisposedException(nameof(ConnectionCandidateHandoff));
-                }
+                ObjectDisposedException.ThrowIf(observation == null, this);
 
                 var ownerObservationStarted = false;
                 var transferCompleted = false;
