@@ -25,8 +25,8 @@ namespace Cassandra.AppMetrics.Implementations
 
         private readonly long _highestTrackableValue;
         private readonly long _refreshIntervalTicks;
-        private readonly object _maxValueLock = new object();
-        private readonly object _minValueLock = new object();
+        private readonly Lock _maxValueLock = new Lock();
+        private readonly Lock _minValueLock = new Lock();
         private readonly Recorder _recorder;
 
         private HistogramBase _intervalHistogram;
@@ -39,7 +39,7 @@ namespace Cassandra.AppMetrics.Implementations
 
         private volatile IReservoirSnapshot _cachedSnapshot;
         private long _lastRefreshTicks;
-        private object _refreshLock = new object();
+        private readonly Lock _refreshLock = new Lock();
 
         static HdrHistogramReservoir()
         {

@@ -15,6 +15,7 @@
 //
 
 using System;
+using System.Threading;
 
 namespace Cassandra
 {
@@ -26,7 +27,7 @@ namespace Cassandra
         private static readonly DateTimeOffset GregorianCalendarTime = new DateTimeOffset(1582, 10, 15, 0, 0, 0, TimeSpan.Zero);
         //Reuse the random generator to avoid collisions
         private static readonly Random RandomGenerator = new Random();
-        private static readonly object RandomLock = new object();
+        private static readonly Lock RandomLock = new Lock();
         private static readonly byte[] MinNodeId = { 0x80, 0x80, 0x80, 0x80, 0x80, 0x80 };
         private static readonly byte[] MinClockId = { 0x80, 0x80 };
         private static readonly byte[] MaxNodeId = { 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f };

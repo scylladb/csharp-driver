@@ -51,8 +51,8 @@ namespace Cassandra
             new ConcurrentDictionary<PreparedStatementCacheKey, PreparedStatementCacheEntry>();
         // Serializes generation publication with cache insertion, slow-path hit validation, and invalidation.
         // When both prepared-statement locks are needed, this lock is always acquired before the tracking lock.
-        private readonly object _preparedStatementCacheLock = new object();
-        private readonly object _preparedStatementTrackingLock = new object();
+        private readonly Lock _preparedStatementCacheLock = new Lock();
+        private readonly Lock _preparedStatementTrackingLock = new Lock();
         private readonly HashSet<PreparedStatementPreparation> _activePreparedStatementPreparations =
             new HashSet<PreparedStatementPreparation>();
         // Entries move from this set to the active-preparation set atomically with invalidation. An entry can

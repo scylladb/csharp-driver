@@ -42,7 +42,7 @@ namespace Cassandra
         private readonly ImmutableDictionary<string, string> _addressOverrides;
         private readonly ImmutableDictionary<string, int> _connectionPriorities;
         private readonly bool _useTls;
-        private readonly object _refreshLock = new object();
+        private readonly Lock _refreshLock = new Lock();
         private readonly HashSet<Guid> _pendingHostIds = new HashSet<Guid>();
 
         private RoutesSnapshot _snapshot = RoutesSnapshot.Empty;

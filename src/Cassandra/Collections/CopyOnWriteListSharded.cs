@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 
 namespace Cassandra.Collections
 {
@@ -83,7 +84,7 @@ namespace Cassandra.Collections
     {
         private static readonly T[] EmptyArray = new T[0];
         private volatile ShardedList<T> _shardedList;
-        private readonly object _writeLock = new object();
+        private readonly Lock _writeLock = new Lock();
 
         internal CopyOnWriteShardedList()
         {

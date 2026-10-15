@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Generic;
 using System.Net;
+using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Tasks;
 
@@ -32,7 +33,7 @@ namespace Cassandra
     /// </summary>
     public class QueryTrace
     {
-        private readonly object _fetchLock = new object();
+        private readonly Lock _fetchLock = new Lock();
         private readonly Metadata _metadata;
         private readonly Guid _traceId;
         private IPAddress _coordinator;

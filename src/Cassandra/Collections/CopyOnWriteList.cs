@@ -17,6 +17,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Threading;
 
 namespace Cassandra.Collections
 {
@@ -28,7 +29,7 @@ namespace Cassandra.Collections
         private static readonly T[] Empty = new T[0];
 
         private volatile T[] _array;
-        private readonly object _writeLock = new object();
+        private readonly Lock _writeLock = new Lock();
 
         public int Count { get { return _array.Length; } }
 

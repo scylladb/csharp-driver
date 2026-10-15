@@ -122,12 +122,13 @@ namespace Cassandra.Connections
         /// The supplied lock serializes publication and rollback with the owner's close callback.
         /// </summary>
         internal bool TryTransfer(
-            object ownerLock,
+            Lock ownerLock,
             Action<IConnection> beginOwnerObservation,
             Func<IConnection, bool> publish,
             Action<IConnection> rollback)
         {
-            ArgumentNullException.ThrowIfNull(ownerLock);
+            // Not ThrowIfNull: converting a Lock to object is flagged by CS9216.
+            _ = ownerLock ?? throw new ArgumentNullException(nameof(ownerLock));
             ArgumentNullException.ThrowIfNull(beginOwnerObservation);
             ArgumentNullException.ThrowIfNull(publish);
             ArgumentNullException.ThrowIfNull(rollback);

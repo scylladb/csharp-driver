@@ -18,6 +18,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 
 namespace Cassandra.Collections
 {
@@ -29,7 +30,7 @@ namespace Cassandra.Collections
     {
         private static readonly Dictionary<TKey, TValue> Empty = new Dictionary<TKey, TValue>();
         private volatile Dictionary<TKey, TValue> _map;
-        private readonly object _writeLock = new object();
+        private readonly Lock _writeLock = new Lock();
 
         public int Count => _map.Count;
 
