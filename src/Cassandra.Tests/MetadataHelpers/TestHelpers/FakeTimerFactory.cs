@@ -14,6 +14,7 @@
 //   limitations under the License.
 //
 
+using System;
 using System.Collections.Concurrent;
 using System.Threading.Tasks;
 
@@ -26,6 +27,8 @@ namespace Cassandra.Tests.MetadataHelpers.TestHelpers
     internal class FakeTimerFactory : ITimerFactory
     {
         public ConcurrentQueue<ITimer> CreatedTimers { get; } = new ConcurrentQueue<ITimer>();
+
+        public TimeProvider TimeProvider => TimeProvider.System;
 
         public ITimer Create(TaskScheduler scheduler)
         {

@@ -28,10 +28,12 @@ namespace Cassandra.ProtocolEvents
         private volatile CancellationTokenSource _cts;
 
         private readonly TaskFactory _taskFactory;
+        private readonly TimeProvider _timeProvider;
         private volatile bool _disposed = false;
 
-        public TaskBasedTimer(TaskScheduler scheduler)
+        public TaskBasedTimer(TaskScheduler scheduler, TimeProvider timeProvider = null)
         {
+            _timeProvider = timeProvider ?? TimeProvider.System;
             _taskFactory = new TaskFactory(
                 CancellationToken.None,
                 TaskCreationOptions.DenyChildAttach,
@@ -76,6 +78,20 @@ namespace Cassandra.ProtocolEvents
             _cts = new CancellationTokenSource();
             var cts = _cts;
 
+            // Start the delay now rather than when the thread pool runs the work item below, so the action is due
+            // exactly `due` after this call.
+            Task delay;
+            try
+            {
+                delay = Task.Delay(due, _timeProvider, cts.Token);
+            }
+            catch (Exception ex)
+            {
+                // e.g. a delay beyond Task.Delay's ~49.7 day limit; callers discard Change's exceptions
+                TaskBasedTimer.Logger.Error("Exception thrown in TaskBasedTimer.", ex);
+                return;
+            }
+
             // ReSharper disable once MethodSupportsCancellation
             _task = Task.Run(async () =>
             {
@@ -87,7 +103,7 @@ namespace Cassandra.ProtocolEvents
                         return;
                     }
 
-                    await Task.Delay(due, cts.Token).ConfigureAwait(false);
+                    await delay.ConfigureAwait(false);
 
                     // ReSharper disable once MethodSupportsCancellation
                     var t = _taskFactory.StartNew(() =>

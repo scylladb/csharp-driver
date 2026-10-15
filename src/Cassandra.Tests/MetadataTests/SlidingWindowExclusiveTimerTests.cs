@@ -18,6 +18,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.ProtocolEvents;
+using Microsoft.Extensions.Time.Testing;
 using NUnit.Framework;
 
 namespace Cassandra.Tests.MetadataTests
@@ -46,6 +47,69 @@ namespace Cassandra.Tests.MetadataTests
                 }
 
                 Assert.That(Volatile.Read(ref calls), Is.EqualTo(0));
+            }
+        }
+
+        [Test]
+        public async Task Should_Cap_The_Delay_At_MaxDelay_While_Sliding()
+        {
+            var time = new FakeTimeProvider();
+            var calls = 0;
+            var fired = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using (var timer = new SlidingWindowExclusiveTimer(
+                       new TaskBasedTimerFactory(time),
+                       TimeSpan.FromSeconds(1),
+                       TimeSpan.FromSeconds(3),
+                       () =>
+                       {
+                           Interlocked.Increment(ref calls);
+                           fired.TrySetResult(true);
+                       }))
+            {
+                // Slides at 0, 0.9, 1.8 and 2.7 s each postpone the action by the 1 s increment...
+                for (var i = 0; i < 4; i++)
+                {
+                    if (i > 0)
+                    {
+                        time.Advance(TimeSpan.FromMilliseconds(900));
+                    }
+                    await timer.SlideDelayAsync(false).ConfigureAwait(false);
+                }
+
+                // ...except the last one, which is capped so that the action runs when the window reaches 3 s
+                // (0.3 s later) instead of at 3.7 s.
+                time.Advance(TimeSpan.FromMilliseconds(299));
+                Assert.That(Volatile.Read(ref calls), Is.EqualTo(0));
+
+                time.Advance(TimeSpan.FromMilliseconds(1));
+                await fired.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+                Assert.That(Volatile.Read(ref calls), Is.EqualTo(1));
+            }
+        }
+
+        [Test]
+        public async Task Should_Run_The_Action_Once_The_Window_Is_Quiet()
+        {
+            var time = new FakeTimeProvider();
+            var calls = 0;
+            var fired = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using (var timer = new SlidingWindowExclusiveTimer(
+                       new TaskBasedTimerFactory(time),
+                       TimeSpan.FromSeconds(1),
+                       TimeSpan.FromSeconds(10),
+                       () =>
+                       {
+                           Interlocked.Increment(ref calls);
+                           fired.TrySetResult(true);
+                       }))
+            {
+                await timer.SlideDelayAsync(false).ConfigureAwait(false);
+                time.Advance(TimeSpan.FromMilliseconds(999));
+                Assert.That(Volatile.Read(ref calls), Is.EqualTo(0));
+
+                time.Advance(TimeSpan.FromMilliseconds(1));
+                await fired.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+                Assert.That(Volatile.Read(ref calls), Is.EqualTo(1));
             }
         }
     }
