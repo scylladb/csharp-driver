@@ -27,7 +27,7 @@ namespace Cassandra.Mapping.Statements
     /// <summary>
     /// A utility class capable of generating CQL statements for a POCO.
     /// </summary>
-    internal class CqlGenerator
+    internal partial class CqlGenerator
     {
         private const string CannotGenerateStatementForPoco = "Cannot create {0} statement for POCO of type {1}";
         private const string NoColumns = CqlGenerator.CannotGenerateStatementForPoco + " because it has no columns";
@@ -36,8 +36,11 @@ namespace Cassandra.Mapping.Statements
                                                 "Are you missing a property/field on the POCO or did you forget to specify " +
                                                 "the PK columns in the mapping?";
 
-        private static readonly Regex SelectRegex = new Regex(@"\A\s*SELECT\s", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-        private static readonly Regex FromRegex = new Regex(@"\A\s*FROM\s", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        [GeneratedRegex(@"\A\s*SELECT\s", RegexOptions.IgnoreCase)]
+        private static partial Regex SelectRegex { get; }
+
+        [GeneratedRegex(@"\A\s*FROM\s", RegexOptions.IgnoreCase)]
+        private static partial Regex FromRegex { get; }
 
         private readonly PocoDataFactory _pocoDataFactory;
         private static readonly DateTimeOffset UnixEpoch = new DateTimeOffset(1970, 1, 1, 0, 0, 0, 0, TimeSpan.Zero);

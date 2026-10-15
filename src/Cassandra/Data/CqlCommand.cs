@@ -27,13 +27,14 @@ namespace Cassandra.Data
     /// <summary>
     /// Represents an CQL statement to execute against Cassandra
     /// </summary>
-    public sealed class CqlCommand : DbCommand
+    public sealed partial class CqlCommand : DbCommand
     {
         internal CqlConnection CqlConnection;
         internal CqlBatchTransaction CqlTransaction;
         private string _commandText;
         private ConsistencyLevel _consistencyLevel = ConsistencyLevel.One;
-        private static readonly Regex RegexParseParameterName = new Regex(@"\B:[a-zA-Z][a-zA-Z0-9_]*", RegexOptions.Compiled | RegexOptions.Multiline);
+        [GeneratedRegex(@"\B:[a-zA-Z][a-zA-Z0-9_]*", RegexOptions.Multiline)]
+        private static partial Regex RegexParseParameterName { get; }
         private PreparedStatement _preparedStatement;
         private readonly CqlParameterCollection _parameters = new CqlParameterCollection();
 

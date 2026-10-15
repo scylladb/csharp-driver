@@ -23,9 +23,10 @@ using System.Text.RegularExpressions;
 
 namespace Cassandra.Data.Linq
 {
-    internal static class CqlQueryTools
+    internal static partial class CqlQueryTools
     {
-        private static readonly Regex IdentifierRx = new Regex(@"\b[a-z][a-z0-9_]*\b", RegexOptions.Compiled);
+        [GeneratedRegex(@"\b[a-z][a-z0-9_]*\b")]
+        private static partial Regex IdentifierRx { get; }
 
         /// <summary>
         /// Hex string lookup table.
