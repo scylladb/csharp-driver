@@ -49,14 +49,14 @@ namespace Cassandra
 
         public bool Equals(NodeRequestInfo other)
         {
-            return other != null && other.ExecutionId.Equals(ExecutionId);
+            return other is not null && other.ExecutionId.Equals(ExecutionId);
         }
 
         public static bool operator ==(NodeRequestInfo a, NodeRequestInfo b)
         {
-            if (a == null)
+            if (a is null)
             {
-                return b == null;
+                return b is null;
             }
 
             return a.Equals(b);
@@ -78,7 +78,7 @@ namespace Cassandra
 
         public override int GetHashCode()
         {
-            return HashCode.Combine(Host, ExecutionId);
+            return ExecutionId.GetHashCode();
         }
     }
 }
