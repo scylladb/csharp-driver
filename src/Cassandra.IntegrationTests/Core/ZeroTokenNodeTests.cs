@@ -36,8 +36,9 @@ namespace Cassandra.IntegrationTests.Core
         protected const string TableName = "zero_token_routing";
 
         /// <summary>
-        /// Amount of distinct partition keys used to probe the token map. With a handful of token
-        /// owners this is more than enough to cover every token range at least once.
+        /// Amount of distinct partition keys used to probe the token map. Only suitable for checks that
+        /// must hold for every key: CCM clusters do not use vnodes, so each token owner has a single
+        /// random range that these keys are not guaranteed to cover.
         /// </summary>
         protected const int RoutingKeySamples = 60;
 
@@ -348,27 +349,33 @@ namespace Cassandra.IntegrationTests.Core
             TestCluster.BootstrapNode(ZeroTokenNodeReplacementTests.ZeroTokenNodeId, true);
             TestUtils.WaitForUp(ZeroTokenAddress, SharedClusterTest.DefaultCassandraPort, 120);
 
-            // The driver has to pick up the tokens of the replacement node without being restarted.
+            // The driver has to pick up the tokens of the replacement node without being restarted and
+            // start using it for token aware routing. Probe the token map at the tokens the node owns
+            // instead of sampling partition keys: CCM clusters do not use vnodes, so the replacement
+            // node owns a single random token range that a fixed set of keys can miss.
             TestHelper.RetryAssert(
                 () =>
                 {
                     var upgraded = Cluster.AllHosts().SingleOrDefault(h => h.Address.Address.ToString() == ZeroTokenAddress);
                     Assert.IsNotNull(upgraded, "the replacement node should have been discovered");
                     Assert.IsTrue(upgraded.IsUp);
-                    Assert.IsTrue(upgraded.Tokens.Any(), "the replacement node should own tokens");
-                },
-                1000,
-                240);
+                    var tokens = upgraded.Tokens.ToList();
+                    Assert.IsNotEmpty(tokens, "the replacement node should own tokens");
 
-            // And it has to start using it for token aware routing.
-            TestHelper.RetryAssert(
-                () =>
-                {
-                    var isReplica = Enumerable
-                                    .Range(0, ZeroTokenNodeReplacementTests.RoutingKeySamples)
-                                    .SelectMany(i => Cluster.Metadata.GetReplicas(KeyspaceName, GetRoutingKey(i)))
-                                    .Any(r => r.Host.Address.Address.ToString() == ZeroTokenAddress);
-                    Assert.IsTrue(isReplica, "the node that replaced the zero-token node should now own data");
+                    var tokenFactory = Cluster.Metadata.GetTokenFactory();
+                    var replicasByToken = Cluster.Metadata.TokenToReplicasMap?.GetByKeyspace(KeyspaceName);
+                    Assert.IsNotNull(replicasByToken, "the token map should contain the test keyspace");
+
+                    foreach (var token in tokens)
+                    {
+                        Assert.IsTrue(
+                            replicasByToken.TryGetValue(tokenFactory.Parse(token), out var replicas),
+                            $"the token map has no entry for token {token} of the node that replaced the zero-token node");
+                        Assert.IsTrue(
+                            replicas.Contains(upgraded),
+                            $"the node that replaced the zero-token node should own the range ending at its token {token}, " +
+                            $"replicas: {string.Join(", ", replicas.Select(h => h.Address))}");
+                    }
                 },
                 1000,
                 240);
