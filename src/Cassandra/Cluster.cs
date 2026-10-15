@@ -1085,12 +1085,7 @@ namespace Cassandra
 
             public override int GetHashCode()
             {
-                unchecked
-                {
-                    var hashCode = _cqlQuery?.GetHashCode() ?? 0;
-                    hashCode = (hashCode * 397) ^ (_keyspace?.GetHashCode() ?? 0);
-                    return hashCode;
-                }
+                return HashCode.Combine(_cqlQuery, _keyspace);
             }
         }
     }

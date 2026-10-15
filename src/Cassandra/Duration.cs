@@ -107,14 +107,7 @@ namespace Cassandra
         /// <inheritdoc />
         public override int GetHashCode()
         {
-            unchecked
-            {
-                var hash = 17;
-                hash = hash * 31 + Months.GetHashCode();
-                hash = hash * 31 + Days.GetHashCode();
-                hash = hash * 31 + Nanoseconds.GetHashCode();
-                return hash;
-            }
+            return HashCode.Combine(Months, Days, Nanoseconds);
         }
 
         /// <summary>

@@ -151,13 +151,7 @@ namespace Cassandra.Mapping.Statements
 
             public override int GetHashCode()
             {
-                unchecked
-                {
-                    var hashCode = _query?.GetHashCode() ?? 0;
-                    hashCode = (hashCode * 397) ^ _keyspace?.GetHashCode() ?? 0;
-                    hashCode = (hashCode * 397) ^ _sessionCode;
-                    return hashCode;
-                }
+                return HashCode.Combine(_query, _keyspace, _sessionCode);
             }
         }
     }

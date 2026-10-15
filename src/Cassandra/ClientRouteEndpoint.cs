@@ -51,13 +51,7 @@ namespace Cassandra
 
         public override int GetHashCode()
         {
-            unchecked
-            {
-                var hashCode = ConnectionId.GetHashCode();
-                hashCode = (hashCode * 397) ^ Address.GetHashCode();
-                hashCode = (hashCode * 397) ^ Port;
-                return hashCode;
-            }
+            return HashCode.Combine(ConnectionId, Address, Port);
         }
     }
 }

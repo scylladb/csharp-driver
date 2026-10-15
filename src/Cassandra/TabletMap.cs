@@ -213,9 +213,7 @@ namespace Cassandra
             public override bool Equals(object obj) => Equals(obj as KeyspaceTableNamePair);
             public bool Equals(KeyspaceTableNamePair other) => other != null && Keyspace == other.Keyspace && TableName == other.TableName;
 
-            public override int GetHashCode() =>
-                // Manual hash code implementation for .NET Standard 2.0
-                (Keyspace != null ? Keyspace.GetHashCode() : 0) * 397 ^ (TableName != null ? TableName.GetHashCode() : 0);
+            public override int GetHashCode() => HashCode.Combine(Keyspace, TableName);
         }
 
         public class TabletSet

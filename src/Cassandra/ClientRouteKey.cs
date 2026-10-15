@@ -46,11 +46,7 @@ namespace Cassandra
 
         public override int GetHashCode()
         {
-            unchecked
-            {
-                return (HostId.GetHashCode() * 397) ^
-                       (ConnectionId == null ? 0 : StringComparer.Ordinal.GetHashCode(ConnectionId));
-            }
+            return HashCode.Combine(HostId, ConnectionId);
         }
 
         public override string ToString()

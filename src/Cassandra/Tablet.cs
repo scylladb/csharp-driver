@@ -44,12 +44,7 @@ namespace Cassandra
 
         public override int GetHashCode()
         {
-            // Manual hash code implementation for .NET Standard 2.0
-            int hash = 17;
-            hash = hash * 23 + FirstToken.GetHashCode();
-            hash = hash * 23 + LastToken.GetHashCode();
-            hash = hash * 23 + (Replicas != null ? Replicas.GetHashCode() : 0);
-            return hash;
+            return HashCode.Combine(FirstToken, LastToken, Replicas);
         }
 
         public override string ToString()

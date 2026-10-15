@@ -160,13 +160,7 @@ namespace Cassandra
 
             public override int GetHashCode()
             {
-                unchecked
-                {
-                    var hashCode = (Keyspace != null ? Keyspace.GetHashCode() : 0);
-                    hashCode = (hashCode * 397) ^ (Table != null ? Table.GetHashCode() : 0);
-                    hashCode = (hashCode * 397) ^ (Column != null ? Column.GetHashCode() : 0);
-                    return hashCode;
-                }
+                return HashCode.Combine(Keyspace, Table, Column);
             }
 
             /// <summary>

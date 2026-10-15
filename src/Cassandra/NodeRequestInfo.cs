@@ -78,10 +78,7 @@ namespace Cassandra
 
         public override int GetHashCode()
         {
-            unchecked
-            {
-                return ((Host != null ? Host.GetHashCode() : 0) * 397) ^ ExecutionId.GetHashCode();
-            }
+            return HashCode.Combine(Host, ExecutionId);
         }
     }
 }
