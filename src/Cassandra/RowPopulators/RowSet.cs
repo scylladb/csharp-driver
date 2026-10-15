@@ -232,7 +232,7 @@ namespace Cassandra
                 return;
             }
 
-            var tcs = new TaskCompletionSource<bool>();
+            var tcs = new TaskCompletionSource();
             // Set the task field as soon as possible
             _currentFetchNextPageTask = tcs.Task;
 
@@ -258,7 +258,7 @@ namespace Cassandra
             finally
             {
                 // Set task BEFORE allowing other threads to page.
-                tcs.TrySetResult(true);
+                tcs.TrySetResult();
                 Interlocked.Exchange(ref _isPaging, 0);
             }
         }
