@@ -31,8 +31,8 @@ namespace Cassandra.Tests
         [TestCase(int.MinValue)]
         public void Should_ThrowArgumentException_When_TheConnectTimeoutIsNeitherABoundNorTheAbsenceOfOne(int connectTimeoutMillis)
         {
-            // The value is handed to Timer.Change, so 0 fires the timeout at once and fails every connection
-            // attempt, and anything below Timeout.Infinite makes Timer.Change throw.
+            // The value bounds the connect through Task.WaitAsync, so 0 times out at once and fails every connection
+            // attempt, and anything below Timeout.Infinite makes WaitAsync throw.
             Assert.Throws<ArgumentException>(() => new SocketOptions().SetConnectTimeoutMillis(connectTimeoutMillis));
         }
 

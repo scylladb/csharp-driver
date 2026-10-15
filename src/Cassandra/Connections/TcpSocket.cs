@@ -139,10 +139,7 @@ namespace Cassandra.Connections
         /// <exception cref="SocketException">Throws a SocketException when the connection could not be established with the host</exception>
         public async Task<bool> Connect(int localPort = -1)
         {
-            var tcs = TaskHelper.TaskCompletionSourceWithTimeout<bool>(
-                Options.ConnectTimeoutMillis,
-                () => new SocketException((int)SocketError.TimedOut));
-            var socketConnectTask = tcs.Task;
+            var tcs = new TaskCompletionSource<bool>();
 
             if (localPort != -1)
             {
@@ -163,7 +160,17 @@ namespace Cassandra.Connections
                     Task.Run(() => OnConnectComplete(tcs, eventArgs)).Forget();
                 }
 
-                await socketConnectTask.ConfigureAwait(false);
+                try
+                {
+                    await tcs.Task.WaitAsync(TimeSpan.FromMilliseconds(Options.ConnectTimeoutMillis)).ConfigureAwait(false);
+                }
+                catch (TimeoutException)
+                {
+                    // Only WaitAsync throws TimeoutException here: OnConnectComplete fails with SocketException.
+                    // The connect attempt may still fail later; keep that failure from going unobserved.
+                    tcs.Task.Forget();
+                    throw new SocketException((int)SocketError.TimedOut);
+                }
             }
 
             if (SSLOptions != null)
@@ -204,33 +211,32 @@ namespace Cassandra.Connections
             TcpSocket.Logger.Verbose("Starting SSL authentication");
             var sslStream = new SslStream(new NetworkStream(_socket), false, SSLOptions.RemoteCertValidationCallback, null);
             _socketStream = sslStream;
-            // Use a timer to ensure that it does callback
-            var tcs = TaskHelper.TaskCompletionSourceWithTimeout<bool>(
-                Options.ConnectTimeoutMillis,
-                () => new TimeoutException("The timeout period elapsed prior to completion of SSL authentication operation."));
 
-            sslStream.AuthenticateAsClientAsync(await EndPoint.GetServerNameAsync().ConfigureAwait(false),
-                                                SSLOptions.CertificateCollection,
-                                                SSLOptions.SslProtocol,
-                                                SSLOptions.CheckCertificateRevocation)
-                     .ContinueWith(t =>
-                     {
-                         if (t.Exception != null)
-                         {
-                             t.Exception.Handle(_ => true);
-                             // ReSharper disable once AssignNullToNotNullAttribute
-                             tcs.TrySetException(t.Exception.InnerException);
-                             return;
-                         }
-                         tcs.TrySetResult(true);
-                     }, TaskContinuationOptions.ExecuteSynchronously)
-                     // Avoid awaiting as it may never yield
-                     .Forget();
-
-            await tcs.Task.ConfigureAwait(false);
+            // The handshake may never complete, so bound it (including the server name resolution) by the connect
+            // timeout.
+            var authentication = AuthenticateAsync(sslStream);
+            try
+            {
+                await authentication.WaitAsync(TimeSpan.FromMilliseconds(Options.ConnectTimeoutMillis)).ConfigureAwait(false);
+            }
+            catch (TimeoutException ex) when (!(authentication.IsFaulted && authentication.Exception.InnerExceptions.Contains(ex)))
+            {
+                // The handshake may still fail later; keep that failure from going unobserved.
+                authentication.Forget();
+                throw new TimeoutException("The timeout period elapsed prior to completion of SSL authentication operation.");
+            }
             TcpSocket.Logger.Verbose("SSL authentication successful");
             ReceiveAsync();
             return true;
+        }
+
+        private async Task AuthenticateAsync(SslStream sslStream)
+        {
+            await sslStream.AuthenticateAsClientAsync(await EndPoint.GetServerNameAsync().ConfigureAwait(false),
+                                                      SSLOptions.CertificateCollection,
+                                                      SSLOptions.SslProtocol,
+                                                      SSLOptions.CheckCertificateRevocation)
+                           .ConfigureAwait(false);
         }
 
         /// <summary>

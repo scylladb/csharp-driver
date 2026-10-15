@@ -181,21 +181,18 @@ namespace Cassandra.Tasks
         public static async Task WaitToCompleteAsync(this Task task, int timeout = Timeout.Infinite)
         {
             //It should wait and throw any exception
-            if (timeout == Timeout.Infinite)
-            {
-                await task.ConfigureAwait(false);
-                return;
-            }
-
             try
             {
-                var timeoutTask = Task.Delay(TimeSpan.FromMilliseconds(timeout));
-                var finishedTask = await Task.WhenAny(task, timeoutTask).ConfigureAwait(false);
-                if (finishedTask == timeoutTask)
-                {
-                    throw new TimeoutException("The task didn't complete before timeout.");
-                }
-                await task.ConfigureAwait(false);
+                // WaitAsync stops its timer once the task completes, unlike racing the task against Task.Delay.
+                await task.WaitAsync(TimeSpan.FromMilliseconds(timeout)).ConfigureAwait(false);
+            }
+            // Tell WaitAsync's own timeout apart from a TimeoutException thrown by the task. Matching the instance,
+            // not the task state, keeps this right when the task completes just after WaitAsync timed out.
+            catch (TimeoutException ex) when (!(task.IsFaulted && task.Exception.InnerExceptions.Contains(ex)))
+            {
+                // WaitAsync detaches from the task when it times out, so a later fault of the task would go unobserved
+                task.Forget();
+                throw new TimeoutException("The task didn't complete before timeout.");
             }
             catch (AggregateException ex)
             {
@@ -257,52 +254,6 @@ namespace Cassandra.Tasks
         public static async Task<TOut> Then<TIn, TOut>(this Task<TIn> task, Func<TIn, Task<TOut>> next)
         {
             return await next(await task.ConfigureAwait(false)).ConfigureAwait(false);
-        }
-
-        /// <summary>
-        /// It creates a <see cref="TaskCompletionSource{T}"/> that transitions to Faulted once 
-        /// </summary>
-        /// <typeparam name="T">The type of the result value associated with this <see cref="TaskCompletionSource{T}"/></typeparam>
-        /// <param name="milliseconds">The timer due time in milliseconds</param>
-        /// <param name="newTimeoutException">The method to call in case timeout expired</param>
-        public static TaskCompletionSource<T> TaskCompletionSourceWithTimeout<T>(int milliseconds, Func<Exception> newTimeoutException)
-        {
-            var tcs = new TaskCompletionSource<T>();
-            Timer timer = null;
-            TimerCallback timerCallback = _ =>
-            {
-                // ReSharper disable once AccessToModifiedClosure
-                // timer is a modified closure and can not be null
-                var t = timer;
-                if (t == null)
-                {
-                    throw new NullReferenceException("timer instance from closure is null");
-                }
-                t.Dispose();
-                // Transition the underlying Task outside the IO thread
-                Task.Factory.StartNew(() =>
-                {
-                    try
-                    {
-                        tcs.TrySetException(newTimeoutException());
-                    }
-                    catch (ObjectDisposedException)
-                    {
-                        //The task was already disposed: move on
-                    }
-                    catch (Exception ex)
-                    {
-                        tcs.TrySetException(ex);
-                    }
-                });
-            };
-            // We can not use constructor that sets the timer as the state object
-            // as it is not available in .NET Standard 1.5 
-            timer = new Timer(timerCallback, null, Timeout.Infinite, Timeout.Infinite);
-            Interlocked.MemoryBarrier();
-            tcs.Task.ContinueWith(t => timer.Dispose());
-            timer.Change(milliseconds, Timeout.Infinite);
-            return tcs;
         }
 
         /// <summary>
