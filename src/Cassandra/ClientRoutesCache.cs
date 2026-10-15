@@ -48,7 +48,7 @@ namespace Cassandra
         private RoutesSnapshot _snapshot = RoutesSnapshot.Empty;
         private ImmutableDictionary<ClientRouteKey, int> _unconfirmedRouteCounts =
             ImmutableDictionary<ClientRouteKey, int>.Empty;
-        private TaskCompletionSource<bool> _inFlightRefresh;
+        private TaskCompletionSource _inFlightRefresh;
         private bool _pendingFullRefresh;
         private int _consecutiveEmptyFullRefreshes;
 
@@ -154,7 +154,7 @@ namespace Cassandra
             return _inFlightRefresh.Task;
         }
 
-        private async Task DrainRefreshesAsync(TaskCompletionSource<bool> completion)
+        private async Task DrainRefreshesAsync(TaskCompletionSource completion)
         {
             bool fullRefresh;
             HashSet<Guid> hostIds;
@@ -178,7 +178,7 @@ namespace Cassandra
                     {
                         _inFlightRefresh = null;
                     }
-                    completion.TrySetResult(true);
+                    completion.TrySetResult();
                     return;
                 }
             }
@@ -202,7 +202,7 @@ namespace Cassandra
                 return;
             }
 
-            TaskCompletionSource<bool> nextCompletion = null;
+            TaskCompletionSource nextCompletion = null;
             lock (_refreshLock)
             {
                 if (_pendingFullRefresh || _pendingHostIds.Count > 0)
@@ -218,7 +218,7 @@ namespace Cassandra
 
             // Match the Java driver's completion contract: callers that queued during this
             // refresh complete with it, even though their coalesced work runs in the next query.
-            completion.TrySetResult(true);
+            completion.TrySetResult();
             if (nextCompletion != null)
             {
                 // This completion can be internally owned when no request arrives during the
@@ -228,12 +228,12 @@ namespace Cassandra
             }
         }
 
-        private static TaskCompletionSource<bool> CreateRefreshCompletionSource()
+        private static TaskCompletionSource CreateRefreshCompletionSource()
         {
-            return new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            return new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
-        private void StartRefresh(TaskCompletionSource<bool> completion)
+        private void StartRefresh(TaskCompletionSource completion)
         {
             _ = Task.Run(() => DrainRefreshesAsync(completion));
         }
