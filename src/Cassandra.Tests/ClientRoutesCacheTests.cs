@@ -1875,7 +1875,7 @@ namespace Cassandra.Tests
             var loggerHandler = new RecordingLoggerHandler();
             var cache = CreateCache(provider.Object, logger: new Logger(loggerHandler));
 
-            var thrown = Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            var thrown = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
                 await cache.FullRefreshBarrierAsync().ConfigureAwait(false));
             Assert.That(thrown, Is.SameAs(coldStartFailure));
             Assert.That(cache.Routes, Is.Empty);
@@ -1922,7 +1922,7 @@ namespace Cassandra.Tests
             var cache = CreateCache(provider.Object);
             await cache.RefreshAsync(Change((ConnectionA, hostId))).ConfigureAwait(false);
 
-            var thrown = Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            var thrown = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
                 await cache.FullRefreshBarrierAsync(confirmIgnoredEmptyResults: true).ConfigureAwait(false));
 
             Assert.That(thrown, Is.SameAs(confirmationFailure));
@@ -2725,7 +2725,7 @@ namespace Cassandra.Tests
                 releaseFailedRefresh.TrySetResult(true);
                 await barrier.WaitToCompleteAsync(5000).ConfigureAwait(false);
                 await schedulingAttempted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
-                var thrown = Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                var thrown = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
                     await failedRefresh.WaitToCompleteAsync(5000).ConfigureAwait(false));
                 Assert.That(thrown, Is.SameAs(schedulingFailure));
 
@@ -2835,9 +2835,9 @@ namespace Cassandra.Tests
                 releaseRefresh.TrySetResult(true);
             }
 
-            var barrierException = Assert.ThrowsAsync<OutOfMemoryException>(async () =>
+            var barrierException = await Assert.ThrowsAsync<OutOfMemoryException>(async () =>
                 await barrier.WaitToCompleteAsync(5000).ConfigureAwait(false));
-            var refreshException = Assert.ThrowsAsync<OutOfMemoryException>(async () =>
+            var refreshException = await Assert.ThrowsAsync<OutOfMemoryException>(async () =>
                 await refresh.WaitToCompleteAsync(5000).ConfigureAwait(false));
 
             Assert.That(barrierException, Is.SameAs(fatal));
@@ -2871,7 +2871,7 @@ namespace Cassandra.Tests
 
                 cache.Shutdown();
 
-                Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+                await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
                     await barrier.WaitToCompleteAsync(5000).ConfigureAwait(false));
             }
             finally
@@ -2928,7 +2928,7 @@ namespace Cassandra.Tests
 
                 var thrown = Assert.Throws<AggregateException>(() => cache.Shutdown());
                 Assert.That(thrown.InnerExceptions.Single(), Is.SameAs(cancellationFailure));
-                Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+                await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
                     await barrier.WaitToCompleteAsync(5000).ConfigureAwait(false));
 
                 releaseActiveRefresh.TrySetResult(true);
@@ -3108,9 +3108,9 @@ namespace Cassandra.Tests
             cache.Shutdown();
             cache.Shutdown();
 
-            Assert.ThrowsAsync<ObjectDisposedException>(async () => await barrier.ConfigureAwait(false));
-            Assert.ThrowsAsync<ObjectDisposedException>(async () => await cache.RefreshAsync().ConfigureAwait(false));
-            Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+            await Assert.ThrowsAsync<ObjectDisposedException>(async () => await barrier.ConfigureAwait(false));
+            await Assert.ThrowsAsync<ObjectDisposedException>(async () => await cache.RefreshAsync().ConfigureAwait(false));
+            await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
                 await cache.RefreshAsync(Change((ConnectionA, pendingHostId))).ConfigureAwait(false));
 
             await cache.RefreshAsync(Change(("unconfigured", pendingHostId))).ConfigureAwait(false);
@@ -3163,7 +3163,7 @@ namespace Cassandra.Tests
 
             foreach (var waiter in new[] { startingBarrier, queuedConfirmingBarrier, queuedBarrier, queuedRefresh })
             {
-                var thrown = Assert.ThrowsAsync<OutOfMemoryException>(async () =>
+                var thrown = await Assert.ThrowsAsync<OutOfMemoryException>(async () =>
                     await waiter.WaitToCompleteAsync(5000).ConfigureAwait(false));
                 Assert.That(thrown, Is.SameAs(fatal));
             }
@@ -3290,7 +3290,7 @@ namespace Cassandra.Tests
 
                 cache.Shutdown();
 
-                Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+                await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
                     await barrier.WaitToCompleteAsync(5000).ConfigureAwait(false));
             }
             finally
@@ -3302,7 +3302,7 @@ namespace Cassandra.Tests
 
             Assert.That(queryCount, Is.EqualTo(3));
             AssertEndpoint(cache.Routes[hostId], ConnectionA, "10.0.0.1", 9042);
-            Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+            await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
                 await cache.FullRefreshBarrierAsync(confirmIgnoredEmptyResults: true).ConfigureAwait(false));
             Assert.That(queryCount, Is.EqualTo(3));
         }

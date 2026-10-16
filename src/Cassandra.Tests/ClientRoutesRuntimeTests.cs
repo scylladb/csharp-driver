@@ -33,7 +33,7 @@ namespace Cassandra.Tests
     public class ClientRoutesRuntimeTests
     {
         [Test]
-        public void Shutdown_Should_FaultActiveLifecycleWaiter()
+        public async Task Shutdown_Should_FaultActiveLifecycleWaiter()
         {
             var runtime = CreateRuntime();
             runtime.CompleteLifecyclePass();
@@ -43,7 +43,7 @@ namespace Cassandra.Tests
 
             runtime.Shutdown();
 
-            Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+            await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
                 await waiter.WaitToCompleteAsync(5000).ConfigureAwait(false));
         }
 
@@ -109,7 +109,7 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public void CompleteLifecyclePass_Should_SerializeWithShutdownAndNotCompleteItsSignal()
+        public async Task CompleteLifecyclePass_Should_SerializeWithShutdownAndNotCompleteItsSignal()
         {
             var runtime = CreateRuntime();
             var waiter = runtime.WaitForLifecycleReadyAsync();
@@ -160,7 +160,7 @@ namespace Cassandra.Tests
                 Assert.IsTrue(completionAttemptWasObserved);
                 Assert.IsTrue(completionWasSerialized);
                 Assert.IsNull(completionException);
-                Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+                await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
                     await waiter.WaitToCompleteAsync(5000).ConfigureAwait(false));
             }
         }
@@ -191,7 +191,7 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public void Shutdown_Should_ShutDownBoundCache()
+        public async Task Shutdown_Should_ShutDownBoundCache()
         {
             var runtime = CreateRuntime();
             var provider = new Mock<IMetadataQueryProvider>(MockBehavior.Strict);
@@ -199,9 +199,9 @@ namespace Cassandra.Tests
 
             runtime.Shutdown();
 
-            Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+            await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
                 await cache.RefreshAsync().WaitToCompleteAsync(5000).ConfigureAwait(false));
-            Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+            await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
                 await cache.FullRefreshBarrierAsync(true).WaitToCompleteAsync(5000).ConfigureAwait(false));
             Assert.Throws<ObjectDisposedException>(() => runtime.Bind(provider.Object));
             provider.Verify(
@@ -233,7 +233,7 @@ namespace Cassandra.Tests
 
                 runtime.Shutdown();
 
-                Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+                await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
                     await barrier.WaitToCompleteAsync(5000).ConfigureAwait(false));
             }
             finally
