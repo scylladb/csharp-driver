@@ -109,15 +109,20 @@ namespace Cassandra
 
         public Task WaitForInitialSnapshotAsync()
         {
-            var cache = Volatile.Read(ref _cache);
-            if (cache == null)
+            lock (_bindLock)
             {
+                var cache = _cache;
+                if (cache != null)
+                {
+                    return cache.WaitForInitialSnapshotAsync();
+                }
                 var completion = CreateLifecycleCompletionSource();
-                completion.TrySetException(new InvalidOperationException(
-                    "The client-routes runtime has not been bound to a metadata query provider."));
+                completion.TrySetException(_shutdown
+                    ? (Exception)new ObjectDisposedException(nameof(ClientRoutesRuntime))
+                    : new InvalidOperationException(
+                        "The client-routes runtime has not been bound to a metadata query provider."));
                 return completion.Task;
             }
-            return cache.WaitForInitialSnapshotAsync();
         }
 
         public bool IsLifecycleReady => !Volatile.Read(ref _shutdown) &&

@@ -293,6 +293,51 @@ namespace Cassandra.Tests
             Assert.IsTrue(runtime.IsHostCoveredByCompleteSnapshot(replacementHostId));
         }
 
+        [Test]
+        public async Task WaitForInitialSnapshotAsync_Should_RejectUnboundRuntime()
+        {
+            var runtime = CreateRuntime();
+            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await runtime.WaitForInitialSnapshotAsync().WaitToCompleteAsync(5000).ConfigureAwait(false));
+            runtime.Shutdown();
+            await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+                await runtime.WaitForInitialSnapshotAsync().WaitToCompleteAsync(5000).ConfigureAwait(false));
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task WaitForInitialSnapshotAsync_Should_ForwardBoundCacheCompletion(bool shutdown)
+        {
+            var runtime = CreateRuntime();
+            var provider = new Mock<IMetadataQueryProvider>(MockBehavior.Strict);
+            provider.Setup(value => value.QueryUnpagedAsync(It.IsAny<string>(), false))
+                    .ReturnsAsync(Enumerable.Empty<IRow>());
+            var cache = runtime.Bind(provider.Object);
+            var waiter = runtime.WaitForInitialSnapshotAsync();
+            Assert.AreSame(cache.WaitForInitialSnapshotAsync(), waiter);
+            Assert.IsFalse(waiter.IsCompleted);
+            try
+            {
+                if (shutdown)
+                {
+                    runtime.Shutdown();
+                    await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+                        await waiter.WaitToCompleteAsync(5000).ConfigureAwait(false));
+                }
+                else
+                {
+                    await cache.FullRefreshBarrierAsync(new[] { Guid.NewGuid() }, false)
+                               .WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    await waiter.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    Assert.IsTrue(runtime.HasCompleteSnapshot);
+                }
+            }
+            finally
+            {
+                runtime.Shutdown();
+            }
+        }
+
         private static ClientRoutesRuntime CreateRuntime()
         {
             return new ClientRoutesRuntime(

@@ -58,6 +58,7 @@ namespace Cassandra
         private ImmutableDictionary<ClientRouteKey, int> _unconfirmedRouteCounts =
             ImmutableDictionary<ClientRouteKey, int>.Empty;
         private TaskCompletionSource<bool> _inFlightRefresh;
+        private bool _inFlightRefreshHasCaller;
         private ClientRoutesRefreshWorkItem _pendingRefresh;
         private long _pendingRefreshMaximumSequence;
         private ClientRoutesRefreshWorkItem _failedRefreshRetry;
@@ -170,8 +171,10 @@ namespace Cassandra
 
         /// <summary>
         /// Requests a full refresh. The returned task completes with the in-flight pass, so it may complete
-        /// before the requested full pass has run. A failed query does not fault it: the previous routes are
-        /// retained and the query is retried in the background.
+        /// before the requested full pass has run. A recoverable query failure does not fault it: any
+        /// existing routes are retained and the query is retried in the background when retries are enabled.
+        /// Fatal refresh failures fault the task. Shutdown rejects new requests and passes not yet querying;
+        /// an already querying pass may complete successfully, but cannot publish routes after shutdown.
         /// </summary>
         public Task RefreshAsync()
         {
@@ -202,9 +205,10 @@ namespace Cassandra
         /// </summary>
         /// <returns>
         /// A task that faults when the pass fails before any full refresh has ever succeeded, or with
-        /// <see cref="ObjectDisposedException"/> on shutdown. After a successful full refresh, a failed query
-        /// completes the task successfully with the previous routes retained and a retry scheduled in the
-        /// background, so completion means a usable snapshot exists, not that it was reloaded.
+        /// <see cref="ObjectDisposedException"/> on shutdown, or on a fatal refresh failure. After a full
+        /// refresh has been applied, a recoverable query failure completes successfully with the existing
+        /// routes retained and a background retry scheduled when retries are enabled. An applied full pass
+        /// may be empty or lack topology coverage: completion does not imply a complete or reloaded snapshot.
         /// </returns>
         public Task FullRefreshBarrierAsync(bool confirmIgnoredEmptyResults)
         {
@@ -216,6 +220,14 @@ namespace Cassandra
         /// direct fallback only if this refresh, or a later refresh carrying newer topology,
         /// successfully publishes a complete snapshot.
         /// </summary>
+        /// <returns>
+        /// A task that completes after the requested attempt, including a recoverable query failure when
+        /// an older complete snapshot exists. Completion does not guarantee that the supplied Host IDs
+        /// were published. Ignored empty results complete the task unless confirmation was requested.
+        /// A query failure faults the task if no complete snapshot exists, even when an earlier full pass
+        /// without topology coverage succeeded. Fatal failures and shutdown also fault the task.
+        /// Passing null topology uses the completion contract of <see cref="FullRefreshBarrierAsync(bool)"/>.
+        /// </returns>
         public Task FullRefreshBarrierAsync(
             IEnumerable<Guid> topologyHostIds,
             bool confirmIgnoredEmptyResults)
@@ -238,7 +250,7 @@ namespace Cassandra
                     completion,
                     confirmIgnoredEmptyResults,
                     coverage));
-                StartDrainIfNeeded();
+                StartDrainIfNeeded(false);
                 return completion.Task;
             }
         }
@@ -274,7 +286,8 @@ namespace Cassandra
 
         /// <summary>
         /// Re-queries the hosts named by a client-routes change event, or every route when the event names
-        /// no host. Completes like <see cref="RefreshAsync()"/>.
+        /// no host. Relevant events complete like <see cref="RefreshAsync()"/>. Null events and events
+        /// concerning only unconfigured connection IDs complete immediately without querying, even after shutdown.
         /// </summary>
         public Task RefreshAsync(ClientRoutesChangeEventArgs eventArgs)
         {
@@ -362,13 +375,15 @@ namespace Cassandra
             return result;
         }
 
-        private Task StartDrainIfNeeded()
+        private Task StartDrainIfNeeded(bool hasCaller = true)
         {
             if (_inFlightRefresh == null)
             {
                 _inFlightRefresh = CreateRefreshCompletionSource();
+                _inFlightRefreshHasCaller = false;
                 StartRefresh(_inFlightRefresh);
             }
+            _inFlightRefreshHasCaller |= hasCaller;
             return _inFlightRefresh.Task;
         }
 
@@ -466,27 +481,25 @@ namespace Cassandra
 
                 lock (_refreshLock)
                 {
+                    // A targeted successor cannot absorb failed full work. Give that work
+                    // its own delay even when targeted requests keep the drain occupied.
+                    if (_pendingRefresh == null ||
+                        (!_pendingRefresh.FullRefreshGeneration.HasValue &&
+                         _failedRefreshRetry?.FullRefreshGeneration != null))
+                    {
+                        // Keep ownership until the injected scheduler returns, so fatal cleanup
+                        // cannot clobber a newer drain. It may also synchronously queue work.
+                        ScheduleFailedRefreshRetry();
+                    }
                     if (!_shutdown && _pendingRefresh != null)
                     {
                         nextCompletion = CreateRefreshCompletionSource();
                         _inFlightRefresh = nextCompletion;
+                        _inFlightRefreshHasCaller = false;
                     }
-                    else
+                    else if (ReferenceEquals(_inFlightRefresh, completion))
                     {
-                        // Keep ownership of _inFlightRefresh until this potentially injected
-                        // scheduler returns, so fatal cleanup cannot clobber a newer drain.
-                        ScheduleFailedRefreshRetry();
-                        // A synchronous scheduler callback can re-enter RefreshAsync() and queue
-                        // work behind this completion, so hand that work to a successor drain.
-                        if (!_shutdown && _pendingRefresh != null)
-                        {
-                            nextCompletion = CreateRefreshCompletionSource();
-                            _inFlightRefresh = nextCompletion;
-                        }
-                        else if (ReferenceEquals(_inFlightRefresh, completion))
-                        {
-                            _inFlightRefresh = null;
-                        }
+                        _inFlightRefresh = null;
                     }
                 }
             }
@@ -548,7 +561,7 @@ namespace Cassandra
                     Math.Max(_consecutiveFailedRefreshes - 1, 0),
                     MaxFailedRefreshRetryBackoffExponent);
                 var delay = TimeSpan.FromTicks(_failedRefreshRetryDelay.Ticks * (1L << exponent));
-                _logger.Info(
+                _logger.Verbose(
                     "Retrying the failed client routes refresh in {0}ms ({1} consecutive failure(s)).",
                     delay.TotalMilliseconds,
                     _consecutiveFailedRefreshes);
@@ -589,7 +602,7 @@ namespace Cassandra
                 _failedRefreshRetry = null;
 
                 // Nobody awaits a background retry, so observe any fatal exception that faults it.
-                StartDrainIfNeeded().Forget();
+                StartDrainIfNeeded(false).Forget();
             }
         }
 
@@ -634,12 +647,16 @@ namespace Cassandra
 
         private void CompleteFatalDrain(TaskCompletionSource<bool> completion, Exception exception)
         {
+            var logFailure = false;
             List<TaskCompletionSource<bool>> fullRefreshWaiters = null;
             List<TaskCompletionSource<bool>> queuedRefreshWaiters = null;
             lock (_refreshLock)
             {
                 if (ReferenceEquals(_inFlightRefresh, completion))
                 {
+                    logFailure = !_inFlightRefreshHasCaller &&
+                                 _fullRefreshWaiters.Count == 0 &&
+                                 _queuedRefreshWaiters.Count == 0;
                     _pendingRefresh = null;
                     _pendingRefreshMaximumSequence = 0;
                     _inFlightRefresh = null;
@@ -650,9 +667,20 @@ namespace Cassandra
                         _requestedRefreshSequence);
                 }
             }
-            CompleteWaiters(fullRefreshWaiters, exception);
-            CompleteWaiters(queuedRefreshWaiters, exception);
-            completion.TrySetException(exception);
+            try
+            {
+                if (logFailure)
+                {
+                    _logger.Error("Client routes background refresh stopped after a fatal failure.", exception);
+                }
+            }
+            finally
+            {
+                // Application-provided logging must not leave the drain or its waiters pending.
+                CompleteWaiters(fullRefreshWaiters, exception);
+                CompleteWaiters(queuedRefreshWaiters, exception);
+                completion.TrySetException(exception);
+            }
         }
 
         private async Task<RefreshResult> ExecuteRefreshAsync(ClientRoutesRefreshWorkItem workItem)

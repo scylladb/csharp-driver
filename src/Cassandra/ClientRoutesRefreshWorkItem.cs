@@ -206,8 +206,8 @@ namespace Cassandra
         public override string FormatFailure(Exception exception)
         {
             return string.Format(
-                "Could not refresh client routes. The previous routes will be retained and the query " +
-                "will be retried. Exception: {0}",
+                "Could not refresh client routes. Any existing routes are retained. The query " +
+                "will be retried in the background when retries are enabled. Exception: {0}",
                 exception);
         }
 
@@ -271,8 +271,8 @@ namespace Cassandra
         public override string FormatFailure(Exception exception)
         {
             return string.Format(
-                "Could not refresh client routes for host(s) {0}. The previous routes will be retained " +
-                "and these hosts will be re-queried by the next route refresh or retry. Exception: {1}",
+                "Could not refresh client routes for host(s) {0}. Any existing routes are retained. " +
+                "These hosts will be re-queried by a later route refresh or, when enabled, a background retry. Exception: {1}",
                 string.Join(", ", HostIds.OrderBy(id => id).Select(id => id.ToString("D"))),
                 exception);
         }
