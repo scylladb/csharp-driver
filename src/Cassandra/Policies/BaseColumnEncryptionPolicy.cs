@@ -33,10 +33,7 @@ namespace Cassandra
         /// <inheritdoc />
         public byte[] Encrypt(object key, byte[] objBytes)
         {
-            if (key == null)
-            {
-                throw new ArgumentNullException(nameof(key));
-            }
+            ArgumentNullException.ThrowIfNull(key);
 
             if (key is TKey typedKey)
             {
@@ -49,10 +46,7 @@ namespace Cassandra
         /// <inheritdoc />
         public byte[] Decrypt(object key, byte[] encryptedBytes)
         {
-            if (key == null)
-            {
-                throw new ArgumentNullException(nameof(key));
-            }
+            ArgumentNullException.ThrowIfNull(key);
 
             if (key is TKey typedKey)
             {
@@ -166,13 +160,7 @@ namespace Cassandra
 
             public override int GetHashCode()
             {
-                unchecked
-                {
-                    var hashCode = (Keyspace != null ? Keyspace.GetHashCode() : 0);
-                    hashCode = (hashCode * 397) ^ (Table != null ? Table.GetHashCode() : 0);
-                    hashCode = (hashCode * 397) ^ (Column != null ? Column.GetHashCode() : 0);
-                    return hashCode;
-                }
+                return HashCode.Combine(Keyspace, Table, Column);
             }
 
             /// <summary>

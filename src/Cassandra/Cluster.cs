@@ -51,8 +51,8 @@ namespace Cassandra
             new ConcurrentDictionary<PreparedStatementCacheKey, PreparedStatementCacheEntry>();
         // Serializes generation publication with cache insertion, slow-path hit validation, and invalidation.
         // When both prepared-statement locks are needed, this lock is always acquired before the tracking lock.
-        private readonly object _preparedStatementCacheLock = new object();
-        private readonly object _preparedStatementTrackingLock = new object();
+        private readonly Lock _preparedStatementCacheLock = new Lock();
+        private readonly Lock _preparedStatementTrackingLock = new Lock();
         private readonly HashSet<PreparedStatementPreparation> _activePreparedStatementPreparations =
             new HashSet<PreparedStatementPreparation>();
         // Entries move from this set to the active-preparation set atomically with invalidation. An entry can
@@ -344,42 +344,13 @@ namespace Cassandra
 
         private static string GetAssemblyProduct(Assembly assembly)
         {
-            var product = DefaultProductString;
-
-            var productAttribute = assembly.GetCustomAttributes(typeof(AssemblyProductAttribute)).FirstOrDefault();
-            if (productAttribute != null)
-            {
-                try
-                {
-                    product = ((AssemblyProductAttribute)productAttribute)?.Product ?? DefaultProductString;
-                }
-                catch (Exception ex)
-                {
-                    Cluster.Logger.Verbose($"Could not retrieve Product name from assembly custom attribute: {ex.ToString()}");
-                }
-            }
-
-            return product;
+            return assembly.GetCustomAttribute<AssemblyProductAttribute>()?.Product ?? DefaultProductString;
         }
 
         private static string GetAssemblyVersion(Assembly assembly)
         {
-            var version = DefaultVersionString;
-
-            var assemblyInfoVersionAttribute = assembly.GetCustomAttributes(typeof(AssemblyInformationalVersionAttribute)).FirstOrDefault();
-            if (assemblyInfoVersionAttribute != null)
-            {
-                try
-                {
-                    version = ((AssemblyInformationalVersionAttribute)assemblyInfoVersionAttribute)?.InformationalVersion ?? DefaultVersionString;
-                }
-                catch (Exception ex)
-                {
-                    Cluster.Logger.Verbose($"Could not retrieve Driver version from assembly informational version attribute: {ex.ToString()}");
-                }
-            }
-
-            return version;
+            return assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+                   ?? DefaultVersionString;
         }
 
         IReadOnlyDictionary<IContactPoint, IEnumerable<IConnectionEndPoint>> IInternalCluster.GetResolvedEndpoints()
@@ -1114,12 +1085,7 @@ namespace Cassandra
 
             public override int GetHashCode()
             {
-                unchecked
-                {
-                    var hashCode = _cqlQuery?.GetHashCode() ?? 0;
-                    hashCode = (hashCode * 397) ^ (_keyspace?.GetHashCode() ?? 0);
-                    return hashCode;
-                }
+                return HashCode.Combine(_cqlQuery, _keyspace);
             }
         }
     }

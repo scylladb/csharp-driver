@@ -74,7 +74,7 @@ namespace Cassandra.Connections
         private readonly ISerializerManager _serializerManager;
         private readonly IObserverFactory _observerFactory;
         private readonly CopyOnWriteShardedList<IConnection> _connections = new CopyOnWriteShardedList<IConnection>();
-        private readonly object _connectionHandoffLock = new object();
+        private readonly Lock _connectionHandoffLock = new Lock();
         private volatile HostDistance _distance;
         private readonly HashedWheelTimer _timer;
         private readonly SemaphoreSlim _allConnectionClosedEventLock = new SemaphoreSlim(1, 1);

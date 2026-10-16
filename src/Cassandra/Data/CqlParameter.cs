@@ -188,7 +188,7 @@ namespace Cassandra.Data
                 throw new ArgumentNullException("name");
             }
 
-            _name = name.StartsWith(":") ? name : ":" + name;
+            _name = name.StartsWith(':') ? name : ":" + name;
         }
 
         #endregion

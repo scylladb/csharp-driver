@@ -24,7 +24,7 @@ namespace Cassandra
     /// LocalDate is an immutable date-time object that represents a date, often viewed as year-month-day.
     /// This class is implemented to match the Date representation CQL string literals.
     /// </summary>
-    public class LocalDate : IComparable<LocalDate>, IEquatable<LocalDate>
+    public partial class LocalDate : IComparable<LocalDate>, IEquatable<LocalDate>
     {
         /// <summary>
         /// Day number relatively to the year based on the month index
@@ -37,7 +37,8 @@ namespace Cassandra
         // ReSharper disable once InconsistentNaming
         private const long DaysFromYear0March1stToUnixEpoch = LocalDate.DaysFromYear0ToUnixEpoch - 60L;
 
-        private static readonly Regex RegexInteger = new Regex("^-?\\d+$", RegexOptions.Compiled);
+        [GeneratedRegex("^-?\\d+$")]
+        private static partial Regex RegexInteger { get; }
 
         private const string BadFormatMessage =
             "LocalDate must be provided in the yyyy-mm-dd format or in days since epoch";
@@ -201,10 +202,7 @@ namespace Cassandra
         /// </summary>
         public static LocalDate Parse(string value)
         {
-            if (value == null)
-            {
-                throw new ArgumentNullException(nameof(value));
-            }
+            ArgumentNullException.ThrowIfNull(value);
             if (RegexInteger.IsMatch(value))
             {
                 return new LocalDate(Convert.ToUInt32(DateCenter + long.Parse(value)));

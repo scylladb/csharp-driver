@@ -24,7 +24,7 @@ namespace Cassandra.AppMetrics.HdrHistogram
     {
         private static long _instanceIdSequencer = 1;
 
-        private readonly object _gate = new object();
+        private readonly Lock _gate = new Lock();
         private readonly long _instanceId = Interlocked.Increment(ref Recorder._instanceIdSequencer);
         private readonly WriterReaderPhaser _recordingPhaser = new WriterReaderPhaser();
         private readonly HistogramFactoryDelegate _histogramFactory;

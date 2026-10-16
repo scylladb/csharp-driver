@@ -105,10 +105,7 @@ namespace Cassandra.Mapping
         /// <inheritdoc />
         public Task<IPage<T>> FetchPageAsync<T>(Cql cql)
         {
-            if (cql == null)
-            {
-                throw new ArgumentNullException("cql");
-            }
+            ArgumentNullException.ThrowIfNull(cql);
             cql.AutoPage = false;
             _cqlGenerator.AddSelect<T>(cql);
             return ExecuteAsyncAndAdapt<IPage<T>>(cql, (stmt, rs) =>
@@ -245,10 +242,7 @@ namespace Cassandra.Mapping
         /// <inheritdoc />
         public Task InsertAsync<T>(T poco, string executionProfile, bool insertNulls, int? ttl, CqlQueryOptions queryOptions = null)
         {
-            if (executionProfile == null)
-            {
-                throw new ArgumentNullException(nameof(executionProfile));
-            }
+            ArgumentNullException.ThrowIfNull(executionProfile);
 
             var pocoData = _mapperFactory.PocoDataFactory.GetPocoData<T>();
             var queryIdentifier = $"INSERT ID {pocoData.KeyspaceName}/{pocoData.TableName}";
@@ -295,10 +289,7 @@ namespace Cassandra.Mapping
         /// <inheritdoc />
         public Task<AppliedInfo<T>> InsertIfNotExistsAsync<T>(T poco, string executionProfile, bool insertNulls, int? ttl, CqlQueryOptions queryOptions = null)
         {
-            if (executionProfile == null)
-            {
-                throw new ArgumentNullException(nameof(executionProfile));
-            }
+            ArgumentNullException.ThrowIfNull(executionProfile);
 
             var pocoData = _mapperFactory.PocoDataFactory.GetPocoData<T>();
             var queryIdentifier = $"INSERT ID {pocoData.KeyspaceName}/{pocoData.TableName}";
@@ -323,10 +314,7 @@ namespace Cassandra.Mapping
         /// <inheritdoc />
         public Task UpdateAsync<T>(T poco, string executionProfile, CqlQueryOptions queryOptions = null)
         {
-            if (executionProfile == null)
-            {
-                throw new ArgumentNullException(nameof(executionProfile));
-            }
+            ArgumentNullException.ThrowIfNull(executionProfile);
 
             // Get statement and bind values from POCO
             string cql = _cqlGenerator.GenerateUpdate<T>();
@@ -372,10 +360,7 @@ namespace Cassandra.Mapping
         /// <inheritdoc />
         public Task DeleteAsync<T>(T poco, string executionProfile, CqlQueryOptions queryOptions = null)
         {
-            if (executionProfile == null)
-            {
-                throw new ArgumentNullException(nameof(executionProfile));
-            }
+            ArgumentNullException.ThrowIfNull(executionProfile);
 
             // Get the statement and bind values from POCO
             string cql = _cqlGenerator.GenerateDelete<T>();
@@ -448,15 +433,9 @@ namespace Cassandra.Mapping
         /// <inheritdoc />
         public async Task ExecuteAsync(ICqlBatch batch, string executionProfile)
         {
-            if (executionProfile == null)
-            {
-                throw new ArgumentNullException(nameof(executionProfile));
-            }
+            ArgumentNullException.ThrowIfNull(executionProfile);
 
-            if (batch == null)
-            {
-                throw new ArgumentNullException(nameof(batch));
-            }
+            ArgumentNullException.ThrowIfNull(batch);
 
             var batchStatement = await _statementFactory
                                        .GetBatchStatementAsync(_session, batch)
@@ -637,10 +616,7 @@ namespace Cassandra.Mapping
         /// <inheritdoc />
         public void Insert<T>(T poco, string executionProfile, bool insertNulls, int? ttl, CqlQueryOptions queryOptions = null)
         {
-            if (executionProfile == null)
-            {
-                throw new ArgumentNullException(nameof(executionProfile));
-            }
+            ArgumentNullException.ThrowIfNull(executionProfile);
 
             //Wait async method to be completed or throw
             TaskHelper.WaitToCompleteWithMetrics(_metricsManager, InsertAsync(poco, executionProfile, insertNulls, ttl, queryOptions), _queryAbortTimeout);
@@ -771,15 +747,9 @@ namespace Cassandra.Mapping
         /// <inheritdoc />
         public async Task<AppliedInfo<T>> ExecuteConditionalAsync<T>(ICqlBatch batch, string executionProfile)
         {
-            if (executionProfile == null)
-            {
-                throw new ArgumentNullException(nameof(executionProfile));
-            }
+            ArgumentNullException.ThrowIfNull(executionProfile);
 
-            if (batch == null)
-            {
-                throw new ArgumentNullException(nameof(batch));
-            }
+            ArgumentNullException.ThrowIfNull(batch);
 
             var batchStatement = await _statementFactory
                                        .GetBatchStatementAsync(_session, batch)

@@ -94,9 +94,9 @@ namespace Cassandra
             }
 
             var closestToken = readOnlyRing[i];
-            if (keyspaceName != null && _tokenToHostsByKeyspace.ContainsKey(keyspaceName))
+            if (keyspaceName != null && _tokenToHostsByKeyspace.TryGetValue(keyspaceName, out var tokenToHosts))
             {
-                return _tokenToHostsByKeyspace[keyspaceName][closestToken]
+                return tokenToHosts[closestToken]
                     .Select(h => new HostShard(h, -1))
                     .ToList();
             }

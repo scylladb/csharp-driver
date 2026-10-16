@@ -496,10 +496,7 @@ namespace Cassandra
 
         private Builder AddMultipleContactPointsInternal(IEnumerable<object> contactPoints)
         {
-            if (contactPoints == null)
-            {
-                throw new ArgumentNullException(nameof(contactPoints));
-            }
+            ArgumentNullException.ThrowIfNull(contactPoints);
 
             _contactPoints.AddRange(contactPoints);
             return this;
@@ -507,10 +504,7 @@ namespace Cassandra
 
         private Builder AddSingleContactPointInternal(object contactPoint)
         {
-            if (contactPoint == null)
-            {
-                throw new ArgumentNullException(nameof(contactPoint));
-            }
+            ArgumentNullException.ThrowIfNull(contactPoint);
 
             _contactPoints.Add(contactPoint);
             return this;

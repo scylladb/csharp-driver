@@ -128,14 +128,14 @@ namespace Cassandra.Serialization
             var trimmedTypeName = typeName.Trim();
             length -= typeName.Length - trimmedTypeName.Length;
             typeName = trimmedTypeName;
-            if (length > ReversedTypeName.Length && typeName.IndexOf(ReversedTypeName, startIndex, comparison) == startIndex)
+            if (length > ReversedTypeName.Length && typeName.AsSpan(startIndex).StartsWith(ReversedTypeName, comparison))
             {
                 //move the start index and subtract the length plus parenthesis
                 startIndex += ReversedTypeName.Length + 1;
                 length -= ReversedTypeName.Length + 2;
                 dataType.IsReversed = true;
             }
-            if (length > FrozenTypeName.Length && typeName.IndexOf(FrozenTypeName, startIndex, comparison) == startIndex)
+            if (length > FrozenTypeName.Length && typeName.AsSpan(startIndex).StartsWith(FrozenTypeName, comparison))
             {
                 //Remove the frozen
                 startIndex += FrozenTypeName.Length + 1;
@@ -160,7 +160,7 @@ namespace Cassandra.Serialization
                     return dataType;
                 }
             }
-            if (typeName.IndexOf(ListTypeName, startIndex, comparison) == startIndex)
+            if (typeName.AsSpan(startIndex).StartsWith(ListTypeName, comparison))
             {
                 //Its a list
                 //org.apache.cassandra.db.marshal.ListType(innerType)
@@ -181,7 +181,7 @@ namespace Cassandra.Serialization
                 };
                 return dataType;
             }
-            if (typeName.IndexOf(SetTypeName, startIndex, comparison) == startIndex)
+            if (typeName.AsSpan(startIndex).StartsWith(SetTypeName, comparison))
             {
                 //Its a set
                 //org.apache.cassandra.db.marshal.SetType(innerType)
@@ -202,7 +202,7 @@ namespace Cassandra.Serialization
                 };
                 return dataType;
             }
-            if (typeName.IndexOf(MapTypeName, startIndex, comparison) == startIndex)
+            if (typeName.AsSpan(startIndex).StartsWith(MapTypeName, comparison))
             {
                 //org.apache.cassandra.db.marshal.MapType(keyType,valueType)
                 //move cursor across the name and bypass the parenthesis
@@ -226,7 +226,7 @@ namespace Cassandra.Serialization
                 };
                 return dataType;
             }
-            if (typeName.IndexOf(UdtTypeName, startIndex, comparison) == startIndex)
+            if (typeName.AsSpan(startIndex).StartsWith(UdtTypeName, comparison))
             {
                 //move cursor across the name and bypass the parenthesis
                 startIndex += UdtTypeName.Length + 1;
@@ -252,7 +252,7 @@ namespace Cassandra.Serialization
                 dataType.TypeInfo = udtInfo;
                 return dataType;
             }
-            if (typeName.IndexOf(TupleTypeName, startIndex, comparison) == startIndex)
+            if (typeName.AsSpan(startIndex).StartsWith(TupleTypeName, comparison))
             {
                 //move cursor across the name and bypass the parenthesis
                 startIndex += TupleTypeName.Length + 1;
@@ -272,7 +272,7 @@ namespace Cassandra.Serialization
                 dataType.TypeInfo = tupleInfo;
                 return dataType;
             }
-            if (typeName.IndexOf(VectorTypeName, startIndex, comparison) == startIndex)
+            if (typeName.AsSpan(startIndex).StartsWith(VectorTypeName, comparison))
             {
                 dataType.TypeCode = ColumnTypeCode.Custom;
                 dataType.TypeInfo = ParseVectorColumnInfo(typeName, startIndex, length);
@@ -301,14 +301,14 @@ namespace Cassandra.Serialization
             var trimmedTypeName = typeName.Trim();
             length -= typeName.Length - trimmedTypeName.Length;
             typeName = trimmedTypeName;
-            if (typeName.IndexOf(CqlNames.Frozen, startIndex, comparison) == startIndex)
+            if (typeName.AsSpan(startIndex).StartsWith(CqlNames.Frozen, comparison))
             {
                 //Remove the frozen
                 startIndex += CqlNames.Frozen.Length + 1;
                 length -= CqlNames.Frozen.Length + 2;
                 dataType.IsFrozen = true;
             }
-            if (typeName.IndexOf("'", startIndex, comparison) == startIndex)
+            if (typeName.AsSpan(startIndex).StartsWith('\''))
             {
                 // When quoted, this is a custom type.
                 dataType.TypeInfo = new CustomColumnInfo(typeName.Substring(startIndex + 1, length - 2));
@@ -319,7 +319,7 @@ namespace Cassandra.Serialization
                 // A custom without type info
                 return TaskHelper.ToTask(dataType);
             }
-            if (typeName.IndexOf(CqlNames.List, startIndex, comparison) == startIndex)
+            if (typeName.AsSpan(startIndex).StartsWith(CqlNames.List, comparison))
             {
                 //Its a list: move cursor across the name and bypass the angle brackets
                 startIndex += CqlNames.List.Length + 1;
@@ -341,7 +341,7 @@ namespace Cassandra.Serialization
                         return dataType;
                     });
             }
-            if (typeName.IndexOf(CqlNames.Set, startIndex, comparison) == startIndex)
+            if (typeName.AsSpan(startIndex).StartsWith(CqlNames.Set, comparison))
             {
                 //Its a set: move cursor across the name and bypass the angle brackets
                 startIndex += CqlNames.Set.Length + 1;
@@ -363,7 +363,7 @@ namespace Cassandra.Serialization
                         return dataType;
                     });
             }
-            if (typeName.IndexOf(CqlNames.Map, startIndex, comparison) == startIndex)
+            if (typeName.AsSpan(startIndex).StartsWith(CqlNames.Map, comparison))
             {
                 //move cursor across the name and bypass the parenthesis
                 startIndex += CqlNames.Map.Length + 1;
@@ -389,7 +389,7 @@ namespace Cassandra.Serialization
                     return dataType;
                 });
             }
-            if (typeName.IndexOf(CqlNames.Tuple, startIndex, comparison) == startIndex)
+            if (typeName.AsSpan(startIndex).StartsWith(CqlNames.Tuple, comparison))
             {
                 //move cursor across the name and bypass the parenthesis
                 startIndex += CqlNames.Tuple.Length + 1;
@@ -410,7 +410,7 @@ namespace Cassandra.Serialization
                     return dataType;
                 });
             }
-            if (typeName.IndexOf(CqlNames.Vector, startIndex, comparison) == startIndex)
+            if (typeName.AsSpan(startIndex).StartsWith(CqlNames.Vector, comparison))
             {
                 //Its a vector: move cursor across the name and bypass the angle brackets
                 startIndex += CqlNames.Vector.Length + 1;
@@ -447,10 +447,7 @@ namespace Cassandra.Serialization
                 return TaskHelper.ToTask(dataType);
             }
             typeName = typeName.Replace("\"", "");
-            if (udtResolver == null)
-            {
-                throw new ArgumentNullException(nameof(udtResolver));
-            }
+            ArgumentNullException.ThrowIfNull(udtResolver);
             return udtResolver(keyspace, typeName).ContinueSync(typeInfo =>
             {
                 dataType.TypeCode = ColumnTypeCode.Udt;

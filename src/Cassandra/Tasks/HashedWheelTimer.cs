@@ -52,10 +52,7 @@ namespace Cassandra.Tasks
 
         public HashedWheelTimer(int tickDuration = 100, int ticksPerWheel = 512)
         {
-            if (ticksPerWheel < 1)
-            {
-                throw new ArgumentOutOfRangeException("ticksPerWheel");
-            }
+            ArgumentOutOfRangeException.ThrowIfLessThan(ticksPerWheel, 1);
             if (tickDuration < 20)
             {
                 throw new ArgumentOutOfRangeException("tickDuration", "Timer resolution is system dependant, you should not use this class for tick durations lower than 20 ms");

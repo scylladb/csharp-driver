@@ -99,9 +99,9 @@ namespace Cassandra.Tests
                     await PrepareAsync(
                         cluster, session, serializerManager, "SELECT * FROM table1").ConfigureAwait(false));
 
-                var cacheLock = GetPrivateField<object>(cluster, "_preparedStatementCacheLock");
+                var cacheLock = GetPrivateField<Lock>(cluster, "_preparedStatementCacheLock");
                 Task<PreparedStatement> cacheHit = null;
-                Monitor.Enter(cacheLock);
+                cacheLock.Enter();
                 try
                 {
                     cacheHit = Task.Run(() => PrepareAsync(
@@ -112,7 +112,7 @@ namespace Cassandra.Tests
                 }
                 finally
                 {
-                    Monitor.Exit(cacheLock);
+                    cacheLock.Exit();
                 }
 
                 Assert.AreSame(preparedStatement, await cacheHit.ConfigureAwait(false));
@@ -793,11 +793,11 @@ namespace Cassandra.Tests
                     cluster, session, serializerManager, "SELECT * FROM table2").ConfigureAwait(false);
                 Assert.AreEqual(2, attempts);
 
-                var trackingLock = GetPrivateField<object>(cluster, "_preparedStatementTrackingLock");
+                var trackingLock = GetPrivateField<Lock>(cluster, "_preparedStatementTrackingLock");
                 Task invalidationTask = null;
                 Task<PreparedStatement> cacheHitTask = null;
                 var cacheHitStarted = new ManualResetEventSlim();
-                Monitor.Enter(trackingLock);
+                trackingLock.Enter();
                 try
                 {
                     invalidationTask = Task.Run(() =>
@@ -819,7 +819,7 @@ namespace Cassandra.Tests
                 }
                 finally
                 {
-                    Monitor.Exit(trackingLock);
+                    trackingLock.Exit();
                     cacheHitStarted.Dispose();
                 }
 
@@ -852,11 +852,11 @@ namespace Cassandra.Tests
                 await PrepareAsync(
                     cluster, session, serializerManager, "SELECT * FROM table1").ConfigureAwait(false);
 
-                var trackingLock = GetPrivateField<object>(cluster, "_preparedStatementTrackingLock");
+                var trackingLock = GetPrivateField<Lock>(cluster, "_preparedStatementTrackingLock");
                 Task firstInvalidation = null;
                 Task secondInvalidation = null;
                 var secondInvalidationStarted = new ManualResetEventSlim();
-                Monitor.Enter(trackingLock);
+                trackingLock.Enter();
                 try
                 {
                     firstInvalidation = Task.Run(() =>
@@ -879,7 +879,7 @@ namespace Cassandra.Tests
                 }
                 finally
                 {
-                    Monitor.Exit(trackingLock);
+                    trackingLock.Exit();
                     secondInvalidationStarted.Dispose();
                 }
 
@@ -1377,10 +1377,10 @@ namespace Cassandra.Tests
             using (var cluster = CreateCluster(handlerMock.Object))
             using (var session = CreateSession(cluster, serializerManager, keyspace))
             {
-                var trackingLock = GetPrivateField<object>(cluster, "_preparedStatementTrackingLock");
+                var trackingLock = GetPrivateField<Lock>(cluster, "_preparedStatementTrackingLock");
                 Task<PreparedStatement> detachedPrepare = null;
                 PreparedStatement replacement = null;
-                Monitor.Enter(trackingLock);
+                trackingLock.Enter();
                 try
                 {
                     // The first caller publishes its cache entry, then its Lazy factory blocks while handing
@@ -1411,7 +1411,7 @@ namespace Cassandra.Tests
                 }
                 finally
                 {
-                    Monitor.Exit(trackingLock);
+                    trackingLock.Exit();
                 }
 
                 await Assert.ThrowsAsync<InvalidOperationException>(async () =>
@@ -1453,7 +1453,7 @@ namespace Cassandra.Tests
 
                 // Model the Lazy.Value race: invalidation took its active-preparation snapshot immediately
                 // before this preparation registered itself, while a caller still retained the cache entry.
-                var trackingLock = GetPrivateField<object>(cluster, "_preparedStatementTrackingLock");
+                var trackingLock = GetPrivateField<Lock>(cluster, "_preparedStatementTrackingLock");
                 lock (trackingLock)
                 {
                     var activePreparations =

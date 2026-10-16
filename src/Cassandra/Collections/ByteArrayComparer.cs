@@ -33,10 +33,7 @@ namespace Cassandra.Collections
 
         public int GetHashCode(byte[] key)
         {
-            if (key == null)
-            {
-                throw new ArgumentNullException(nameof(key));
-            }
+            ArgumentNullException.ThrowIfNull(key);
             var hash = 0;
             var rest = key.Length % 4;
             for (var i = 0; i < key.Length - rest; i += 4)

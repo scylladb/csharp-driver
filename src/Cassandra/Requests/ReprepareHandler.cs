@@ -56,12 +56,12 @@ namespace Cassandra.Requests
                         continue;
                     }
 
-                    if (prepareResult.TriedHosts.ContainsKey(poolKvp.Key.Address))
+                    if (prepareResult.TriedHosts.TryGetValue(poolKvp.Key.Address, out var triedHostError))
                     {
                         PrepareHandler.Logger.Warning(
                             $"An error occured while attempting to prepare query on {{0}}:{Environment.NewLine}{{1}}",
                             poolKvp.Key.Address,
-                            prepareResult.TriedHosts[poolKvp.Key.Address]);
+                            triedHostError);
                         continue;
                     }
 

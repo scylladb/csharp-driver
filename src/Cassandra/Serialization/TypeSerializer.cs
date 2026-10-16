@@ -129,10 +129,7 @@ namespace Cassandra.Serialization
         /// </summary>
         internal static void CheckArgument<T>(object value)
         {
-            if (value == null)
-            {
-                throw new ArgumentNullException();
-            }
+            ArgumentNullException.ThrowIfNull(value);
             if (!(value is T))
             {
                 throw new InvalidTypeException("value", value.GetType().FullName, new object[] { typeof(T).FullName });

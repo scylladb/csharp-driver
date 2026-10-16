@@ -96,6 +96,14 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public void RandomPartitioner_Hash_Should_Throw_For_Null_Key()
+        {
+            var ex = Assert.Throws<ArgumentNullException>(() => RPToken.Factory.Hash(null));
+            // Same contract as the MD5.ComputeHash(byte[] buffer) call this replaced
+            Assert.AreEqual("buffer", ex.ParamName);
+        }
+
+        [Test]
         public void TokenMap_SimpleStrategy_With_Keyspace_Test()
         {
             var hosts = new List<Host>

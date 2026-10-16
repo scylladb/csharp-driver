@@ -46,7 +46,7 @@ namespace Cassandra
 
         private readonly int _maxIndex = Int32.MaxValue - 10000;
         private volatile Tuple<List<Host>, List<Host>> _hosts;
-        private readonly object _hostCreationLock = new object();
+        private readonly Lock _hostCreationLock = new Lock();
         ICluster _cluster;
         int _index;
 

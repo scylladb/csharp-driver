@@ -471,10 +471,7 @@ namespace Microsoft.IO
         public override int Read(byte[] buffer, int offset, int count)
         {
             this.CheckDisposed();
-            if (buffer == null)
-            {
-                throw new ArgumentNullException("buffer");
-            }
+            ArgumentNullException.ThrowIfNull(buffer);
 
             if (offset < 0)
             {
@@ -509,10 +506,7 @@ namespace Microsoft.IO
         public override void Write(byte[] buffer, int offset, int count)
         {
             this.CheckDisposed();
-            if (buffer == null)
-            {
-                throw new ArgumentNullException("buffer");
-            }
+            ArgumentNullException.ThrowIfNull(buffer);
 
             if (offset < 0)
             {
@@ -692,10 +686,7 @@ namespace Microsoft.IO
         public override void WriteTo(Stream stream)
         {
             this.CheckDisposed();
-            if (stream == null)
-            {
-                throw new ArgumentNullException("stream");
-            }
+            ArgumentNullException.ThrowIfNull(stream);
 
             if (this.largeBuffer == null)
             {

@@ -537,7 +537,7 @@ namespace Cassandra.Serialization
         {
             string msg = null;
             bool requiresCheck = false;
-            var typeCodeName = Enum.GetName(typeof(ColumnTypeCode), typeCode);
+            var typeCodeName = Enum.GetName(typeCode);
             switch (typeCode)
             {
                 case ColumnTypeCode.List:
@@ -662,10 +662,7 @@ namespace Cassandra.Serialization
 
         public int GetValueLengthIfFixed(object value)
         {
-            if (value == null)
-            {
-                throw new ArgumentNullException(nameof(value));
-            }
+            ArgumentNullException.ThrowIfNull(value);
             var type = value.GetType();
             if (_primitiveSerializers.TryGetValue(type, out ITypeSerializer typeSerializer))
             {

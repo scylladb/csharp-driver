@@ -53,10 +53,7 @@ namespace Cassandra
 
         public override int GetHashCode()
         {
-            unchecked
-            {
-                return ((Value != null ? Value.GetHashCode() : 0) * 397) ^ (Key != null ? Key.GetHashCode() : 0);
-            }
+            return HashCode.Combine(Value, Key);
         }
 
         public static bool operator ==(EncryptedValue left, EncryptedValue right)

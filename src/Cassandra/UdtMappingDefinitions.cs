@@ -57,10 +57,7 @@ namespace Cassandra
         /// <exception cref="ArgumentException" />
         public async Task DefineAsync(params UdtMap[] udtMaps)
         {
-            if (udtMaps == null)
-            {
-                throw new ArgumentNullException("udtMaps");
-            }
+            ArgumentNullException.ThrowIfNull(udtMaps);
             var sessionKeyspace = _session.Keyspace;
             if (string.IsNullOrEmpty(sessionKeyspace) && udtMaps.Any(map => map.Keyspace == null))
             {

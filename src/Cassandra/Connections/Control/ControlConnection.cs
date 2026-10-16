@@ -37,7 +37,7 @@ namespace Cassandra.Connections.Control
 
         private readonly IInternalCluster _cluster;
         private readonly Metadata _metadata;
-        private readonly object _connectionHandoffLock = new object();
+        private readonly Lock _connectionHandoffLock = new Lock();
         private volatile Host _host;
         private volatile IConnectionEndPoint _currentConnectionEndPoint;
         private volatile IConnection _connection;

@@ -21,7 +21,7 @@ using System.Text.RegularExpressions;
 
 namespace Cassandra
 {
-    internal static class CqlQueryTools
+    internal static partial class CqlQueryTools
     {
         /// <summary>
         /// The cql query to select the peers
@@ -31,7 +31,8 @@ namespace Cassandra
         /// The cql query to get the local schema version information
         /// </summary>
         public const string SelectSchemaLocal = "SELECT schema_version FROM system.local WHERE key='local'";
-        private static readonly Regex IdentifierRx = new Regex(@"\b[a-z][a-z0-9_]*\b", RegexOptions.Compiled);
+        [GeneratedRegex(@"\b[a-z][a-z0-9_]*\b")]
+        private static partial Regex IdentifierRx { get; }
 
         private static readonly string[] HexStringTable =
         {

@@ -64,10 +64,7 @@ namespace Cassandra.Compression
 
         internal WrappedStream(Stream stream, long length)
         {
-            if (stream == null)
-            {
-                throw new ArgumentNullException("stream");
-            }
+            ArgumentNullException.ThrowIfNull(stream);
             if (stream.Position + length > stream.Length)
             {
                 throw new ArgumentOutOfRangeException("length", "length + current position cannot be greater than stream.Length");

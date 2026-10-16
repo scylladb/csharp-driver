@@ -18,6 +18,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 
 namespace Cassandra.Collections
 {
@@ -29,7 +30,7 @@ namespace Cassandra.Collections
     {
         private static readonly Dictionary<TKey, TValue> Empty = new Dictionary<TKey, TValue>();
         private volatile Dictionary<TKey, TValue> _map;
-        private readonly object _writeLock = new object();
+        private readonly Lock _writeLock = new Lock();
 
         public int Count => _map.Count;
 
@@ -212,10 +213,7 @@ namespace Cassandra.Collections
                 throw new ArgumentNullException(nameof(key));
             }
 
-            if (valueFactory == null)
-            {
-                throw new ArgumentNullException(nameof(valueFactory));
-            }
+            ArgumentNullException.ThrowIfNull(valueFactory);
 
             // optimistic scenario: return before lock
             if (_map.TryGetValue(key, out var outputValue))
@@ -243,15 +241,9 @@ namespace Cassandra.Collections
                 throw new ArgumentNullException(nameof(key));
             }
 
-            if (addValueFactory == null)
-            {
-                throw new ArgumentNullException(nameof(addValueFactory));
-            }
+            ArgumentNullException.ThrowIfNull(addValueFactory);
 
-            if (updateValueFactory == null)
-            {
-                throw new ArgumentNullException(nameof(updateValueFactory));
-            }
+            ArgumentNullException.ThrowIfNull(updateValueFactory);
 
             lock (_writeLock)
             {
@@ -278,10 +270,7 @@ namespace Cassandra.Collections
                 throw new ArgumentNullException(nameof(key));
             }
 
-            if (updateValueFactory == null)
-            {
-                throw new ArgumentNullException(nameof(updateValueFactory));
-            }
+            ArgumentNullException.ThrowIfNull(updateValueFactory);
 
             lock (_writeLock)
             {

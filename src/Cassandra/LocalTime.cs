@@ -119,10 +119,7 @@ namespace Cassandra
         /// </summary>
         public static LocalTime Parse(string value)
         {
-            if (value == null)
-            {
-                throw new ArgumentNullException(nameof(value));
-            }
+            ArgumentNullException.ThrowIfNull(value);
             var parts = value.Split(':');
             if (parts.Length < 2 || parts.Length > 3)
             {

@@ -69,10 +69,7 @@ namespace Cassandra.Mapping
         /// </summary>
         public Cql WithOptions(Action<CqlQueryOptions> options)
         {
-            if (options == null)
-            {
-                throw new ArgumentNullException(nameof(options));
-            }
+            ArgumentNullException.ThrowIfNull(options);
 
             options(QueryOptions);
             return this;

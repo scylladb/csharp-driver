@@ -31,10 +31,7 @@ namespace Cassandra
         /// </summary>
         public FixedReconnectionPolicy(params long[] delays)
         {
-            if (delays == null)
-            {
-                throw new ArgumentNullException("delays");
-            }
+            ArgumentNullException.ThrowIfNull(delays);
             if (delays.Length == 0)
             {
                 throw new ArgumentException("You should provide at least one delay time in milliseconds");

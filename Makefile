@@ -45,12 +45,17 @@ check:
 	dotnet format --verify-no-changes --severity warn --verbosity diagnostic src/Cassandra/Cassandra.csproj
 	dotnet format --verify-no-changes --severity warn --verbosity diagnostic src/Cassandra.Tests/Cassandra.Tests.csproj
 	dotnet format --verify-no-changes --severity warn --verbosity diagnostic src/Cassandra.IntegrationTests/Cassandra.IntegrationTests.csproj
+# Code style only (e.g. IDE0330): the extensions predate the whitespace rules enforced above.
+	dotnet format style --verify-no-changes --severity warn --verbosity diagnostic src/Extensions/Cassandra.AppMetrics/Cassandra.AppMetrics.csproj
+	dotnet format style --verify-no-changes --severity warn --verbosity diagnostic src/Extensions/Cassandra.OpenTelemetry/Cassandra.OpenTelemetry.csproj
 
 .PHONY: fix
 fix:
 	dotnet format --severity warn --verbosity diagnostic src/Cassandra/Cassandra.csproj
 	dotnet format --severity warn --verbosity diagnostic src/Cassandra.Tests/Cassandra.Tests.csproj
 	dotnet format --severity warn --verbosity diagnostic src/Cassandra.IntegrationTests/Cassandra.IntegrationTests.csproj
+	dotnet format style --severity warn --verbosity diagnostic src/Extensions/Cassandra.AppMetrics/Cassandra.AppMetrics.csproj
+	dotnet format style --severity warn --verbosity diagnostic src/Extensions/Cassandra.OpenTelemetry/Cassandra.OpenTelemetry.csproj
 
 .PHONY: build-examples
 build-examples: .use-development-snk

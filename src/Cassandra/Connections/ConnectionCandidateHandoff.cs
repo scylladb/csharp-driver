@@ -100,10 +100,7 @@ namespace Cassandra.Connections
         /// </summary>
         internal void Replace(IConnection replacement)
         {
-            if (replacement == null)
-            {
-                throw new ArgumentNullException(nameof(replacement));
-            }
+            ArgumentNullException.ThrowIfNull(replacement);
             if (Volatile.Read(ref _transferred) != 0)
             {
                 throw new InvalidOperationException("A transferred connection candidate cannot be replaced.");
@@ -125,27 +122,16 @@ namespace Cassandra.Connections
         /// The supplied lock serializes publication and rollback with the owner's close callback.
         /// </summary>
         internal bool TryTransfer(
-            object ownerLock,
+            Lock ownerLock,
             Action<IConnection> beginOwnerObservation,
             Func<IConnection, bool> publish,
             Action<IConnection> rollback)
         {
-            if (ownerLock == null)
-            {
-                throw new ArgumentNullException(nameof(ownerLock));
-            }
-            if (beginOwnerObservation == null)
-            {
-                throw new ArgumentNullException(nameof(beginOwnerObservation));
-            }
-            if (publish == null)
-            {
-                throw new ArgumentNullException(nameof(publish));
-            }
-            if (rollback == null)
-            {
-                throw new ArgumentNullException(nameof(rollback));
-            }
+            // Not ThrowIfNull: converting a Lock to object is flagged by CS9216.
+            _ = ownerLock ?? throw new ArgumentNullException(nameof(ownerLock));
+            ArgumentNullException.ThrowIfNull(beginOwnerObservation);
+            ArgumentNullException.ThrowIfNull(publish);
+            ArgumentNullException.ThrowIfNull(rollback);
 
             lock (ownerLock)
             {
@@ -155,10 +141,7 @@ namespace Cassandra.Connections
                 }
 
                 var observation = Volatile.Read(ref _observation);
-                if (observation == null)
-                {
-                    throw new ObjectDisposedException(nameof(ConnectionCandidateHandoff));
-                }
+                ObjectDisposedException.ThrowIf(observation == null, this);
 
                 var ownerObservationStarted = false;
                 var transferCompleted = false;

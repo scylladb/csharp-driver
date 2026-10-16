@@ -68,7 +68,7 @@ namespace Cassandra.Connections
 
         private volatile string _keyspace;
         private readonly SemaphoreSlim _keyspaceSwitchLock = new SemaphoreSlim(1, 1);
-        private readonly object _keyspaceOperationsLock = new object();
+        private readonly Lock _keyspaceOperationsLock = new Lock();
         private readonly Dictionary<long, int> _keyspaceOperationTimeouts = new Dictionary<long, int>();
         private TaskCompletionSource<bool> _keyspaceOperationsDrained;
         private long _nextKeyspaceOperationId;

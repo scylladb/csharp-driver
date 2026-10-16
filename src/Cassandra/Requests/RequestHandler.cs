@@ -45,7 +45,7 @@ namespace Cassandra.Requests
         private readonly IRequestResultHandler _requestResultHandler;
         private long _state;
         private readonly IEnumerator<HostShard> _queryPlan;
-        private readonly object _queryPlanLock = new object();
+        private readonly Lock _queryPlanLock = new Lock();
         private readonly ICollection<IRequestExecution> _running = new CopyOnWriteList<IRequestExecution>();
         private ISpeculativeExecutionPlan _executionPlan;
         private volatile HashedWheelTimer.ITimeout _nextExecutionTimeout;
@@ -57,7 +57,7 @@ namespace Cassandra.Requests
         public IRequestOptions RequestOptions { get; }
 
         private readonly Dictionary<Guid, NodeRequestInfo> _nodeExecutions = new Dictionary<Guid, NodeRequestInfo>(1);
-        private readonly object _nodeExecutionLock = new object();
+        private readonly Lock _nodeExecutionLock = new Lock();
         private bool _nodeExecutionsCleared = false;
 
         /// <summary>

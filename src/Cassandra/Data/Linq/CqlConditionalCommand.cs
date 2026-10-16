@@ -64,10 +64,7 @@ namespace Cassandra.Data.Linq
         /// </summary>
         public new async Task<AppliedInfo<TEntity>> ExecuteAsync(string executionProfile)
         {
-            if (executionProfile == null)
-            {
-                throw new ArgumentNullException(nameof(executionProfile));
-            }
+            ArgumentNullException.ThrowIfNull(executionProfile);
 
             var cql = GetCql(out object[] values);
             var session = GetTable().GetSession();
@@ -85,10 +82,7 @@ namespace Cassandra.Data.Linq
         /// <returns>An instance of AppliedInfo{TEntity}</returns>
         public new AppliedInfo<TEntity> Execute(string executionProfile)
         {
-            if (executionProfile == null)
-            {
-                throw new ArgumentNullException(nameof(executionProfile));
-            }
+            ArgumentNullException.ThrowIfNull(executionProfile);
 
             var queryAbortTimeout = GetTable().GetSession().Cluster.Configuration.ClientOptions.QueryAbortTimeout;
             return WaitToCompleteWithMetrics(ExecuteAsync(executionProfile), queryAbortTimeout);

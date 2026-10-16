@@ -29,7 +29,7 @@ namespace Cassandra
     /// number of days in a month varies, and a day can have 23 or 25 hours if a daylight saving is involved.
     /// </summary>
     /// <remarks>Duration instances are immutable and thread-safe.</remarks>
-    public struct Duration : IEquatable<Duration>, IComparable<Duration>
+    public partial struct Duration : IEquatable<Duration>, IComparable<Duration>
     {
         private const long NanosPerMicro = 1000L;
         private const long NanosPerMilli = 1000L * NanosPerMicro;
@@ -41,14 +41,18 @@ namespace Cassandra
         //                       ticks * micro * milli * second * minute
         private const long TicksPerDay = 10L * 1000L * 1000L * 60L * 60 * 24;
         private const long NanosPerTick = 100L;
-        private static readonly Regex StandardRegex = new Regex(
-            @"(\d+)(y|mo|w|d|h|s|ms|us|µs|ns|m)", RegexOptions.Compiled);
-        private static readonly Regex Iso8601Regex = new Regex(
-            @"^P((\d+)Y)?((\d+)M)?((\d+)D)?(T((\d+)H)?((\d+)M)?((\d+(\.\d+)?)S)?)?$", RegexOptions.Compiled);
-        private static readonly Regex Iso8601WeekRegex = new Regex(
-            @"^P(\d+)W$", RegexOptions.Compiled);
-        private static readonly Regex Iso8601AlternateRegex = new Regex(
-            @"^P(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$", RegexOptions.Compiled);
+
+        [GeneratedRegex(@"(\d+)(y|mo|w|d|h|s|ms|us|µs|ns|m)")]
+        private static partial Regex StandardRegex { get; }
+
+        [GeneratedRegex(@"^P((\d+)Y)?((\d+)M)?((\d+)D)?(T((\d+)H)?((\d+)M)?((\d+(\.\d+)?)S)?)?$")]
+        private static partial Regex Iso8601Regex { get; }
+
+        [GeneratedRegex(@"^P(\d+)W$")]
+        private static partial Regex Iso8601WeekRegex { get; }
+
+        [GeneratedRegex(@"^P(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$")]
+        private static partial Regex Iso8601AlternateRegex { get; }
 
         public static readonly Duration Zero = new Duration();
 
@@ -103,14 +107,7 @@ namespace Cassandra
         /// <inheritdoc />
         public override int GetHashCode()
         {
-            unchecked
-            {
-                var hash = 17;
-                hash = hash * 31 + Months.GetHashCode();
-                hash = hash * 31 + Days.GetHashCode();
-                hash = hash * 31 + Nanoseconds.GetHashCode();
-                return hash;
-            }
+            return HashCode.Combine(Months, Days, Nanoseconds);
         }
 
         /// <summary>

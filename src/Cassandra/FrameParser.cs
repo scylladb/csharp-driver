@@ -48,11 +48,11 @@ namespace Cassandra
         public static Response Parse(Frame frame)
         {
             byte opcode = frame.Header.Opcode;
-            if (!_responseHandlerFactory.ContainsKey(opcode))
+            if (!_responseHandlerFactory.TryGetValue(opcode, out var createResponse))
             {
                 throw new DriverInternalError("Unknown Response Frame type " + opcode);
             }
-            return _responseHandlerFactory[opcode](frame);
+            return createResponse(frame);
         }
     }
 }

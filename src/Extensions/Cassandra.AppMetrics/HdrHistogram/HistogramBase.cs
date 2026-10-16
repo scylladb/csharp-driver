@@ -35,11 +35,12 @@ namespace Cassandra.AppMetrics.HdrHistogram
     /// At it's maximum tracked value(1 hour), it would still maintain a resolution of 3.6 seconds (or better).
     /// </para>
     /// </remarks>
-    internal abstract class HistogramBase : IRecorder
+    internal abstract partial class HistogramBase : IRecorder
     {
         private static Logger Logger = new Logger(typeof(HistogramBase));
 
-        private static readonly Regex TagValidation = new Regex("[, \\r\\n]", RegexOptions.Compiled);
+        [GeneratedRegex("[, \\r\\n]")]
+        private static partial Regex TagValidation { get; }
         private static long _instanceIdSequencer = -1;
 
         private readonly int _subBucketHalfCountMagnitude;

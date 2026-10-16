@@ -124,14 +124,8 @@ namespace Cassandra.Data.Linq
         public static CqlQuery<IGrouping<TKey, TSource>> GroupBy<TKey, TSource>(this CqlQuery<TSource> source,
             Expression<Func<TSource, TKey>> predicate)
         {
-            if (source == null)
-            {
-                throw new ArgumentNullException("source");
-            }
-            if (predicate == null)
-            {
-                throw new ArgumentNullException("predicate");
-            }
+            ArgumentNullException.ThrowIfNull(source);
+            ArgumentNullException.ThrowIfNull(predicate);
             var result = (CqlQuery<IGrouping<TKey, TSource>>)source.Table.CreateQuery<IGrouping<TKey, TSource>>(Expression.Call(
                 null, CqlMthHelps.GroupByMi,
                 new[] { source.Expression, predicate }));

@@ -51,10 +51,7 @@ namespace Cassandra.Connections
         /// </summary>
         public static bool ShouldReplacePreferred(Exception currentPreferredError, Exception candidateError)
         {
-            if (candidateError == null)
-            {
-                throw new ArgumentNullException(nameof(candidateError));
-            }
+            ArgumentNullException.ThrowIfNull(candidateError);
 
             return currentPreferredError == null ||
                    !(candidateError is SocketException) ||
@@ -63,10 +60,7 @@ namespace Cassandra.Connections
 
         private static string GetMessage(Exception preferredError)
         {
-            if (preferredError == null)
-            {
-                throw new ArgumentNullException(nameof(preferredError));
-            }
+            ArgumentNullException.ThrowIfNull(preferredError);
             return "Connection failed. Preferred error: " + preferredError.Message;
         }
 

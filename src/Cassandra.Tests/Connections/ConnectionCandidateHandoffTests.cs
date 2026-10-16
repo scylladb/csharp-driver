@@ -16,6 +16,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using Cassandra.Connections;
 using Moq;
 using NUnit.Framework;
@@ -83,7 +84,7 @@ namespace Cassandra.Tests.Connections
             using (var handoff = new ConnectionCandidateHandoff(connection.Object))
             {
                 var transferred = handoff.TryTransfer(
-                    new object(),
+                    new Lock(),
                     candidate => candidate.Closing += permanentHandler,
                     candidate =>
                     {
@@ -127,7 +128,7 @@ namespace Cassandra.Tests.Connections
             using (var handoff = new ConnectionCandidateHandoff(connection.Object))
             {
                 var transferred = handoff.TryTransfer(
-                    new object(),
+                    new Lock(),
                     candidate => candidate.Closing += permanentHandler,
                     candidate =>
                     {

@@ -207,11 +207,11 @@ namespace Cassandra
         public virtual T GetValue<T>(string name)
         {
             //The method is marked virtual to allow to be mocked
-            if (!ColumnIndexes.ContainsKey(name))
+            if (!ColumnIndexes.TryGetValue(name, out var index))
             {
                 throw new ArgumentException(string.Format("Column {0} not found", name));
             }
-            return GetValue<T>(ColumnIndexes[name]);
+            return GetValue<T>(index);
         }
 
         /// <summary>

@@ -357,10 +357,7 @@ namespace Microsoft.IO
         /// <exception cref="ArgumentException">buffer.Length is not a multiple of LargeBufferMultiple (it did not originate from this pool)</exception>
         internal void ReturnLargeBuffer(byte[] buffer, string tag)
         {
-            if (buffer == null)
-            {
-                throw new ArgumentNullException("buffer");
-            }
+            ArgumentNullException.ThrowIfNull(buffer);
 
             if (!this.IsLargeBufferMultiple(buffer.Length))
             {
@@ -402,10 +399,7 @@ namespace Microsoft.IO
         /// <exception cref="ArgumentException">blocks contains buffers that are the wrong size (or null) for this memory manager</exception>
         internal void ReturnBlocks(ICollection<byte[]> blocks, string tag)
         {
-            if (blocks == null)
-            {
-                throw new ArgumentNullException("blocks");
-            }
+            ArgumentNullException.ThrowIfNull(blocks);
 
             var bytesToReturn = blocks.Count * this.BlockSize;
             Interlocked.Add(ref this.smallPoolInUseSize, -bytesToReturn);

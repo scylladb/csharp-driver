@@ -80,8 +80,8 @@ namespace Cassandra.Mapping
         public PocoData(Type pocoType, string tableName, string keyspaceName, LookupKeyedCollection<string, PocoColumn> columns,
                         string[] partitionkeys, Tuple<string, SortOrder>[] clusteringKeys, bool caseSensitive, bool compact, bool allowFiltering)
         {
-            if (partitionkeys == null) throw new ArgumentNullException("partitionkeys");
-            if (clusteringKeys == null) throw new ArgumentNullException("clusteringKeys");
+            ArgumentNullException.ThrowIfNull(partitionkeys);
+            ArgumentNullException.ThrowIfNull(clusteringKeys);
             PocoType = pocoType ?? throw new ArgumentNullException("pocoType");
             TableName = tableName ?? throw new ArgumentNullException("tableName");
             Columns = columns ?? throw new ArgumentNullException("columns");

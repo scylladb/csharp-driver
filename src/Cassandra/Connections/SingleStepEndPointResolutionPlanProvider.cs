@@ -52,10 +52,7 @@ namespace Cassandra.Connections
             bool refreshCache,
             Func<ConnectionEndPointResolutionPlan> defaultResolutionPlanFactory)
         {
-            if (defaultResolutionPlanFactory == null)
-            {
-                throw new ArgumentNullException(nameof(defaultResolutionPlanFactory));
-            }
+            ArgumentNullException.ThrowIfNull(defaultResolutionPlanFactory);
 
             return defaultResolutionPlanFactory();
         }

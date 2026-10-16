@@ -70,7 +70,7 @@ namespace Cassandra.Responses
 
         internal Response(Frame frame)
         {
-            if (frame == null) throw new ArgumentNullException("frame");
+            ArgumentNullException.ThrowIfNull(frame);
             if (frame.Body == null) throw new InvalidOperationException("Response body of the received frame was null");
             if (!frame.Header.Flags.HasFlag(HeaderFlags.Compression) && frame.Header.BodyLength > frame.Body.Length - frame.Body.Position)
             {
@@ -98,9 +98,8 @@ namespace Cassandra.Responses
             {
                 CustomPayload = Reader.ReadBytesMap();
 
-                if (CustomPayload.ContainsKey(TabletInfo.TABLETS_ROUTING_V1_CUSTOM_PAYLOAD_KEY))
+                if (CustomPayload.TryGetValue(TabletInfo.TABLETS_ROUTING_V1_CUSTOM_PAYLOAD_KEY, out var tabletInfo))
                 {
-                    var tabletInfo = CustomPayload[TabletInfo.TABLETS_ROUTING_V1_CUSTOM_PAYLOAD_KEY];
 
                     var des = frame.Serializer.Deserialize(tabletInfo, 0, tabletInfo.Length, ColumnTypeCode.Tuple, TabletColumnInfo);
                     if (des is Tuple<long, long, IEnumerable<Tuple<Guid, int>>> tablet)
