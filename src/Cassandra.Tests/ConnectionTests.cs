@@ -60,7 +60,7 @@ namespace Cassandra.Tests
             config.SocketOptions.SetReadTimeoutMillis(50);
             var connection = GetConnectionMock(config).Object;
             typeof(Connection).GetField("_keyspaceOperationsDrained", BindingFlags.Instance | BindingFlags.NonPublic)
-                .SetValue(connection, new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously));
+                .SetValue(connection, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
 
             var exception = await NUnit.Framework.Assert.ThrowsAsync<OperationTimedOutException>(
                 async () => await connection.SetKeyspace("other").ConfigureAwait(false));

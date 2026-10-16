@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using Cassandra.Mapping;
 using Cassandra.Tasks;
 using Cassandra.Tests.Mapping.Pocos;
@@ -51,7 +52,7 @@ namespace Cassandra.Tests.Mapping
                     query = ((BoundStatement)b).PreparedStatement.Cql;
                     parameters = b.QueryValues;
                 })
-                .Returns(TaskHelper.ToTask(new RowSet()))
+                .Returns(Task.FromResult(new RowSet()))
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
@@ -87,7 +88,7 @@ namespace Cassandra.Tests.Mapping
                     query = ((BoundStatement)b).PreparedStatement.Cql;
                     parameters = b.QueryValues;
                 })
-                .Returns(TaskHelper.ToTask(new RowSet()))
+                .Returns(Task.FromResult(new RowSet()))
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
@@ -132,7 +133,7 @@ namespace Cassandra.Tests.Mapping
                     query = ((BoundStatement)b).PreparedStatement.Cql;
                     parameters = b.QueryValues;
                 })
-                .Returns(TaskHelper.ToTask(new RowSet()))
+                .Returns(Task.FromResult(new RowSet()))
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
@@ -310,7 +311,7 @@ namespace Cassandra.Tests.Mapping
         {
             object[] parameters = null;
             var config = new MappingConfiguration().Define(PocoWithEnumCollections.DefaultMapping);
-            var mapper = GetMappingClient(() => TaskHelper.ToTask(RowSet.Empty()), (_, p) =>
+            var mapper = GetMappingClient(() => Task.FromResult(RowSet.Empty()), (_, p) =>
             {
                 parameters = p;
             }, config);

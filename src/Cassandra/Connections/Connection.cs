@@ -70,7 +70,7 @@ namespace Cassandra.Connections
         private readonly SemaphoreSlim _keyspaceSwitchLock = new SemaphoreSlim(1, 1);
         private readonly Lock _keyspaceOperationsLock = new Lock();
         private readonly Dictionary<long, int> _keyspaceOperationTimeouts = new Dictionary<long, int>();
-        private TaskCompletionSource<bool> _keyspaceOperationsDrained;
+        private TaskCompletionSource _keyspaceOperationsDrained;
         private long _nextKeyspaceOperationId;
 
         /// <summary>
@@ -927,7 +927,7 @@ namespace Cassandra.Connections
                 {
                     await cb(stream, timestamp).ConfigureAwait(false);
                 }
-                stream.Dispose();
+                await stream.DisposeAsync().ConfigureAwait(false);
             }, CancellationToken.None);
             return true;
         }
@@ -1088,7 +1088,7 @@ namespace Cassandra.Connections
                     if (_keyspaceOperationTimeouts.Count == 0)
                     {
                         _keyspaceOperationsDrained =
-                            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                            new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                     }
                     operationId = ++_nextKeyspaceOperationId;
                     _keyspaceOperationTimeouts.Add(operationId, timeoutMillis);
@@ -1107,7 +1107,7 @@ namespace Cassandra.Connections
                     return;
                 }
 
-                TaskCompletionSource<bool> operationsDrained = null;
+                TaskCompletionSource operationsDrained = null;
                 lock (_keyspaceOperationsLock)
                 {
                     _keyspaceOperationTimeouts.Remove(operationId);
@@ -1117,7 +1117,7 @@ namespace Cassandra.Connections
                         _keyspaceOperationsDrained = null;
                     }
                 }
-                operationsDrained?.TrySetResult(true);
+                operationsDrained?.TrySetResult();
             };
         }
 

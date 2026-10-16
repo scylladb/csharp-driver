@@ -170,9 +170,9 @@ namespace Cassandra.Tests
             {
                 if (++counter == 2)
                 {
-                    return TaskHelper.FromException<IConnection>(new Exception("Dummy exception"));
+                    return Task.FromException<IConnection>(new Exception("Dummy exception"));
                 }
-                return TaskHelper.ToTask(CreateConnection());
+                return Task.FromResult(CreateConnection());
             });
             var pool = _mock.Object;
             var connections = await pool.EnsureCreate().ConfigureAwait(false);
@@ -191,7 +191,7 @@ namespace Cassandra.Tests
                 {
                     return TestHelper.DelayedTask(c, 500);
                 }
-                return TaskHelper.ToTask(c);
+                return Task.FromResult(c);
             });
             var pool = _mock.Object;
             var creationTasks = new Task<ShardedList<IConnection>>[4];
@@ -242,7 +242,7 @@ namespace Cassandra.Tests
             _mock.Setup(p => p.DoCreateAndOpen(It.IsAny<bool>(), -1, 0, 0)).Returns(() =>
             {
                 Interlocked.Increment(ref openConnectionAttempts);
-                return TaskHelper.FromException<IConnection>(new Exception("Test Exception"));
+                return Task.FromException<IConnection>(new Exception("Test Exception"));
             });
             var pool = _mock.Object;
             const int times = 5;
@@ -317,7 +317,7 @@ namespace Cassandra.Tests
             host.SetDistance(HostDistance.Local);
             _mock = GetPoolMock(host, GetConfig(1, 1));
             _mock.Setup(p => p.DoCreateAndOpen(It.IsAny<bool>(), -1, 0, 0))
-                .Returns(() => TaskHelper.ToTask(CreateConnection()));
+                .Returns(() => Task.FromResult(CreateConnection()));
             var pool = _mock.Object;
             pool.SetDistance(HostDistance.Local);
 
@@ -339,7 +339,7 @@ namespace Cassandra.Tests
                 .Returns(() =>
                 {
                     Interlocked.Increment(ref created);
-                    return TaskHelper.ToTask(CreateConnection());
+                    return Task.FromResult(CreateConnection());
                 });
             var pool = _mock.Object;
             pool.SetDistance(HostDistance.Local);
@@ -362,7 +362,7 @@ namespace Cassandra.Tests
             _mock.Setup(p => p.DoCreateAndOpen(It.IsAny<bool>(), -1, 0, 0)).Returns(() =>
             {
                 Interlocked.Increment(ref creationCounter);
-                return TaskHelper.ToTask(CreateConnection());
+                return Task.FromResult(CreateConnection());
             });
             var pool = _mock.Object;
             pool.SetDistance(HostDistance.Ignored);
@@ -439,7 +439,7 @@ namespace Cassandra.Tests
                 .Returns<bool, int, int, int>((isReconnection, shardId, shardAwarePort, count) =>
                 {
                     attempts.Add(Tuple.Create(shardId, shardAwarePort, count));
-                    return TaskHelper.ToTask(GetShardedConnectionMock(shardId == -1 ? 1 : shardId, shardCount));
+                    return Task.FromResult(GetShardedConnectionMock(shardId == -1 ? 1 : shardId, shardCount));
                 });
 
             var pool = _mock.Object;
@@ -470,7 +470,7 @@ namespace Cassandra.Tests
                 .Returns<bool, int, int, int>((isReconnection, shardId, shardAwarePort, count) =>
                 {
                     attempts.Add(Tuple.Create(shardId, shardAwarePort, count));
-                    return TaskHelper.ToTask(GetShardedConnectionMock(shardId == -1 ? 0 : shardId, shardCount, 1500));
+                    return Task.FromResult(GetShardedConnectionMock(shardId == -1 ? 0 : shardId, shardCount, 1500));
                 });
 
             var pool = _mock.Object;
@@ -499,7 +499,7 @@ namespace Cassandra.Tests
                 .Returns<bool, int, int, int>((isReconnection, shardId, shardAwarePort, count) =>
                 {
                     attempts.Add(Tuple.Create(shardId, shardAwarePort, count));
-                    return TaskHelper.ToTask(GetShardedConnectionMock(shardId == -1 ? 0 : shardId, shardCount, 1500));
+                    return Task.FromResult(GetShardedConnectionMock(shardId == -1 ? 0 : shardId, shardCount, 1500));
                 });
 
             var pool = _mock.Object;
@@ -592,7 +592,7 @@ namespace Cassandra.Tests
             _mock.Setup(p => p.DoCreateAndOpen(It.IsAny<bool>(), -1, 0, 0)).Returns(() =>
             {
                 Interlocked.Increment(ref openConnectionsAttempts);
-                return TaskHelper.FromException<IConnection>(new Exception("Test Exception"));
+                return Task.FromException<IConnection>(new Exception("Test Exception"));
             });
             var pool = _mock.Object;
             var eventRaised = 0;
@@ -615,7 +615,7 @@ namespace Cassandra.Tests
             _mock.Setup(p => p.DoCreateAndOpen(It.IsAny<bool>(), -1, 0, 0)).Returns(() =>
             {
                 Interlocked.Increment(ref openConnectionsAttempts);
-                return TaskHelper.FromException<IConnection>(new Exception("Test Exception"));
+                return Task.FromException<IConnection>(new Exception("Test Exception"));
             });
             var pool = _mock.Object;
             var eventRaised = 0;
@@ -638,7 +638,7 @@ namespace Cassandra.Tests
                 {
                     var cc = HostConnectionPoolTests.GetConnectionMock(0, int.MaxValue);
                     cc.Closing += _mock.Object.OnConnectionClosing;
-                    return TaskHelper.ToTask(cc);
+                    return Task.FromResult(cc);
                 });
             var pool = _mock.Object;
             pool.SetDistance(HostDistance.Local);
@@ -694,7 +694,7 @@ namespace Cassandra.Tests
         public async Task Dispose_Should_Not_Raise_AllConnections_Closed()
         {
             _mock = GetPoolMock(null, GetConfig(4, 4));
-            _mock.Setup(p => p.DoCreateAndOpen(It.IsAny<bool>(), -1, 0, 0)).Returns(() => TaskHelper.ToTask(CreateConnection()));
+            _mock.Setup(p => p.DoCreateAndOpen(It.IsAny<bool>(), -1, 0, 0)).Returns(() => Task.FromResult(CreateConnection()));
             var pool = _mock.Object;
             Assert.AreEqual(0, pool.OpenConnections);
             pool.SetDistance(HostDistance.Local);
@@ -715,7 +715,7 @@ namespace Cassandra.Tests
             _mock.Setup(p => p.DoCreateAndOpen(It.IsAny<bool>(), -1, 0, 0)).Returns(() =>
             {
                 Interlocked.Increment(ref openConnectionAttempts);
-                return TaskHelper.ToTask(CreateConnection());
+                return Task.FromResult(CreateConnection());
             });
             var pool = _mock.Object;
             Assert.AreEqual(0, pool.OpenConnections);
@@ -739,7 +739,7 @@ namespace Cassandra.Tests
                 {
                     throw new SocketException();
                 }
-                return TaskHelper.ToTask(CreateConnection());
+                return Task.FromResult(CreateConnection());
             });
 
             var pool = _mock.Object;
@@ -760,7 +760,7 @@ namespace Cassandra.Tests
                 {
                     throw new SocketException();
                 }
-                return TaskHelper.ToTask(CreateConnection());
+                return Task.FromResult(CreateConnection());
             });
 
             var pool = _mock.Object;
@@ -787,7 +787,7 @@ namespace Cassandra.Tests
                     {
                         throw new SocketException();
                     }
-                    return TaskHelper.ToTask(GetShardedConnectionMock(shardId == -1 ? 0 : shardId, shardCount));
+                    return Task.FromResult(GetShardedConnectionMock(shardId == -1 ? 0 : shardId, shardCount));
                 });
 
             var pool = _mock.Object;
@@ -813,7 +813,7 @@ namespace Cassandra.Tests
             _mock.Setup(p => p.DoCreateAndOpen(It.IsAny<bool>(), -1, 0, 0)).Returns(() =>
             {
                 Interlocked.Increment(ref openConnectionAttempts);
-                return TaskHelper.ToTask(CreateConnection());
+                return Task.FromResult(CreateConnection());
             });
 
             var pool = _mock.Object;

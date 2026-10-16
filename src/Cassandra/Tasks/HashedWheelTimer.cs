@@ -40,8 +40,9 @@ namespace Cassandra.Tasks
         private const int DisposedState = 2;
         private int _state;
         private readonly Bucket[] _wheel;
-        private readonly Timer _timer;
+        private readonly System.Threading.ITimer _timer;
         private readonly int _tickDuration;
+        private readonly TimeSpan _tickInterval;
         private readonly ConcurrentQueue<Tuple<TimeoutItem, long>> _pendingToAdd = new ConcurrentQueue<Tuple<TimeoutItem, long>>();
         private readonly ConcurrentQueue<TimeoutItem> _cancelledTimeouts = new ConcurrentQueue<TimeoutItem>();
 
@@ -50,7 +51,7 @@ namespace Cassandra.Tasks
         /// </summary>
         internal volatile int Index;
 
-        public HashedWheelTimer(int tickDuration = 100, int ticksPerWheel = 512)
+        public HashedWheelTimer(int tickDuration = 100, int ticksPerWheel = 512, TimeProvider timeProvider = null)
         {
             ArgumentOutOfRangeException.ThrowIfLessThan(ticksPerWheel, 1);
             if (tickDuration < 20)
@@ -65,7 +66,9 @@ namespace Cassandra.Tasks
             }
             //Create the timer
             _tickDuration = tickDuration;
-            _timer = new Timer(TimerTick, null, Timeout.Infinite, Timeout.Infinite);
+            _tickInterval = TimeSpan.FromMilliseconds(tickDuration);
+            _timer = (timeProvider ?? TimeProvider.System).CreateTimer(
+                TimerTick, null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
         }
 
         private void TimerTick(object state)
@@ -102,7 +105,7 @@ namespace Cassandra.Tasks
         {
             try
             {
-                _timer.Change(_tickDuration, Timeout.Infinite);
+                _timer.Change(_tickInterval, Timeout.InfiniteTimeSpan);
             }
             catch (ObjectDisposedException)
             {

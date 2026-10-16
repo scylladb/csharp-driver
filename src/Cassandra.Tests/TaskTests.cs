@@ -211,6 +211,34 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public async Task TaskHelper_WaitToCompleteAsync_Completes_When_The_Task_Completes_In_Time()
+        {
+            var tcs = new TaskCompletionSource<bool>();
+            var wait = tcs.Task.WaitToCompleteAsync(10000);
+            tcs.SetResult(true);
+            await wait.ConfigureAwait(false);
+            Assert.AreEqual(TaskStatus.RanToCompletion, wait.Status);
+        }
+
+        [Test]
+        public async Task TaskHelper_WaitToCompleteAsync_Throws_TimeoutException_When_Expired()
+        {
+            var tcs = new TaskCompletionSource<bool>();
+            var ex = await NUnit.Framework.Assert.ThrowsAsync<TimeoutException>(
+                () => tcs.Task.WaitToCompleteAsync(20)).ConfigureAwait(false);
+            Assert.AreEqual("The task didn't complete before timeout.", ex.Message);
+        }
+
+        [Test]
+        public async Task TaskHelper_WaitToCompleteAsync_Propagates_The_Task_Exception()
+        {
+            var expected = new TimeoutException("from the task");
+            var ex = await NUnit.Framework.Assert.ThrowsAsync<TimeoutException>(
+                () => Task.FromException(expected).WaitToCompleteAsync(10000)).ConfigureAwait(false);
+            Assert.AreSame(expected, ex);
+        }
+
+        [Test]
         public void ConfigureAwait_Used_For_Every_Awaited_Task()
         {
             var assemblyFile = new FileInfo(new Uri(GetType().GetTypeInfo().Assembly.Location).LocalPath);

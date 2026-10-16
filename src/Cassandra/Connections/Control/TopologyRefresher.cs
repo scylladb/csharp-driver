@@ -63,12 +63,12 @@ namespace Cassandra.Connections.Control
 
             await Task.WhenAll(localTask, peersTask).ConfigureAwait(false);
 
-            var peersResponse = peersTask.Result;
+            var peersResponse = await peersTask.ConfigureAwait(false);
             localIsPeersV2 = peersResponse.IsPeersV2;
 
             var rsPeers = _config.MetadataRequestHandler.GetRowSet(peersResponse.Response);
 
-            var localRow = _config.MetadataRequestHandler.GetRowSet(localTask.Result).FirstOrDefault();
+            var localRow = _config.MetadataRequestHandler.GetRowSet(await localTask.ConfigureAwait(false)).FirstOrDefault();
             if (localRow == null)
             {
                 ControlConnection.Logger.Error("Local host metadata could not be retrieved");

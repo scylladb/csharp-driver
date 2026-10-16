@@ -15,6 +15,7 @@
 //
 
 using System;
+using System.Threading.Tasks;
 using Cassandra.Mapping;
 using Cassandra.Tasks;
 using Cassandra.Tests.Mapping.Pocos;
@@ -42,11 +43,11 @@ namespace Cassandra.Tests.Mapping
                     consistency = b.ConsistencyLevel;
                     serialConsistency = b.SerialConsistencyLevel;
                 })
-                .Returns(() => TaskHelper.ToTask(new RowSet()))
+                .Returns(() => Task.FromResult(new RowSet()))
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns(TaskHelper.ToTask(GetPrepared()))
+                .Returns(Task.FromResult(GetPrepared()))
                 .Verifiable();
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BoundStatement>(), It.IsAny<string>()))
@@ -55,11 +56,11 @@ namespace Cassandra.Tests.Mapping
                     consistency = b.ConsistencyLevel;
                     serialConsistency = b.SerialConsistencyLevel;
                 })
-                .Returns(() => TaskHelper.ToTask(new RowSet()))
+                .Returns(() => Task.FromResult(new RowSet()))
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns(TaskHelper.ToTask(GetPrepared()))
+                .Returns(Task.FromResult(GetPrepared()))
                 .Verifiable();
             var mapper = GetMappingClient(sessionMock);
             mapper.ExecuteAsync(new Cql("UPDATE").WithOptions(o => o.SetConsistencyLevel(ConsistencyLevel.EachQuorum).SetSerialConsistencyLevel(ConsistencyLevel.Serial))).Wait();
@@ -89,7 +90,7 @@ namespace Cassandra.Tests.Mapping
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns<string>((cql) => TaskHelper.ToTask(GetPrepared(cql)))
+                .Returns<string>((cql) => Task.FromResult(GetPrepared(cql)))
                 .Verifiable();
             var mapper = GetMappingClient(sessionMock);
             var batch = mapper.CreateBatch();
