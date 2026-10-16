@@ -18,6 +18,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using Cassandra.SessionManagement;
 
 namespace Cassandra
 {
@@ -104,16 +105,10 @@ namespace Cassandra
 
             var keyspace = query.Keyspace ?? loggedKeyspace;
             var table = query.TableName;
-            IEnumerable<HostShard> replicas = null;
-            if (table != null)
-            {
-                var token = _cluster.Metadata.GetTokenFactory().Hash(routingKey.RawRoutingKey);
-                replicas = _cluster.Metadata.TabletMap.GetReplicas(keyspace, table, token);
-            }
-            if (replicas == null || !replicas.Any())
-            {
-                replicas = _cluster.GetReplicas(keyspace, routingKey.RawRoutingKey);
-            }
+            var replicas = (_cluster is IInternalCluster internalCluster
+                               ? internalCluster.GetRoutingReplicas(keyspace, table, routingKey.RawRoutingKey)
+                               : _cluster.GetReplicas(keyspace, table, routingKey.RawRoutingKey))
+                           ?? new HostShard[0];
 
             var localReplicaSet = new HashSet<HostShard>();
             var localReplicaList = new List<HostShard>(replicas.Count());

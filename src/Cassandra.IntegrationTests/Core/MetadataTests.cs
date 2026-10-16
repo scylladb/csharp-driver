@@ -49,7 +49,7 @@ namespace Cassandra.IntegrationTests.Core
             Assert.Greater(initialLength, 0);
 
             //GetReplicas should yield the primary replica when the Keyspace is not found
-            Assert.AreEqual(1, cluster.GetReplicas("ks2", new byte[] { 0, 0, 0, 1 }).Count);
+            Assert.AreEqual(1, cluster.GetReplicas("ks2", null, new byte[] { 0, 0, 0, 1 }).Count);
 
             const string createKeyspaceQuery = "CREATE KEYSPACE {0} WITH replication = {{ 'class' : '{1}', {2} }}";
             session.Execute(string.Format(createKeyspaceQuery, "ks1", "NetworkTopologyStrategy", "'replication_factor' : 1"));
@@ -66,7 +66,7 @@ namespace Cassandra.IntegrationTests.Core
             Assert.NotNull(ks2);
             Assert.AreEqual(ks2.Replication["replication_factor"], 3);
             //GetReplicas should yield the 2 replicas (rf=3 but cluster=2) when the Keyspace is found
-            Assert.AreEqual(2, cluster.GetReplicas("ks2", new byte[] { 0, 0, 0, 1 }).Count);
+            Assert.AreEqual(2, cluster.GetReplicas("ks2", null, new byte[] { 0, 0, 0, 1 }).Count);
             var ks3 = cluster.Metadata.GetKeyspace("ks3");
             Assert.NotNull(ks3);
             Assert.AreEqual(ks3.Replication["dc1"], 1);

@@ -43,6 +43,13 @@ namespace Cassandra.IntegrationTests.TestBase
             "CREATE KEYSPACE \"{0}\" WITH replication = {{ 'class' : 'NetworkTopologyStrategy', 'replication_factor' : {1} }}" +
             (TestClusterManager.IsScylla ? " AND tablets = {{'enabled': false}}" : "");
 
+        /// <summary>
+        /// Keyspace options making a keyspace use vnodes, needed by tests relying on the token map as Scylla creates
+        /// tablet keyspaces by default.
+        /// </summary>
+        public static readonly string VnodeKeyspaceOptions =
+            TestClusterManager.IsScylla ? " AND tablets = {'enabled': false}" : "";
+
         public static readonly string CreateKeyspaceGenericFormat = "CREATE KEYSPACE {0} WITH replication = {{ 'class' : '{1}', {2} }}";
 
         public static readonly string CreateTableSimpleFormat = "CREATE TABLE {0} (k text PRIMARY KEY, t text, i int, f float)";

@@ -1226,6 +1226,9 @@ namespace Cassandra.Connections.Control
                 : _eventDebouncer.ScheduleEventAsync(@event, false);
         }
 
+        /// <inheritdoc />
+        public bool SupportsTablets => _supportedOptionsInitializer.GetTabletInfo()?.IsEnabled() == true;
+
         public bool IsShardAware()
         {
             if (_supportedOptionsInitializer.GetShardingInfo() == null)

@@ -115,7 +115,7 @@ namespace Cassandra.IntegrationTests.Core
             // replication factor higher than the amount of nodes.
             Session.Execute(
                 $"CREATE KEYSPACE {ZeroTokenNodeTests.RfKeyspace} WITH replication = " +
-                "{'class': 'NetworkTopologyStrategy', 'replication_factor': '3'}");
+                "{'class': 'NetworkTopologyStrategy', 'replication_factor': '3'}" + TestUtils.VnodeKeyspaceOptions);
         }
 
         // NUnit 5 deprecates Order; preserve the existing sequence of cluster tests.
@@ -296,7 +296,7 @@ namespace Cassandra.IntegrationTests.Core
                     for (var i = 0; i < ZeroTokenNodeTests.RoutingKeySamples; i++)
                     {
                         var replicas = Cluster.Metadata
-                                              .GetReplicas(ZeroTokenNodeTests.RfKeyspace, GetRoutingKey(i))
+                                              .GetReplicas(ZeroTokenNodeTests.RfKeyspace, null, GetRoutingKey(i))
                                               .Select(r => r.Host)
                                               .ToList();
 
@@ -313,7 +313,7 @@ namespace Cassandra.IntegrationTests.Core
 
             for (var i = 0; i < ZeroTokenNodeTests.RoutingKeySamples; i++)
             {
-                var replicas = Cluster.Metadata.GetReplicas(KeyspaceName, GetRoutingKey(i));
+                var replicas = Cluster.Metadata.GetReplicas(KeyspaceName, null, GetRoutingKey(i));
 
                 Assert.IsNotEmpty(replicas, $"no replica was computed for partition key {i}");
                 Assert.IsFalse(

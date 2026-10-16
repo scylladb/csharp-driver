@@ -91,6 +91,51 @@ Connection pools now recover when a load balancing policy temporarily ignores a
 host and later treats it as local or remote again, including when the pool was
 empty or still draining its old connections.
 
+### Table-aware replica resolution
+
+The new table-aware `GetReplicas` overloads resolve replicas according to how
+the keyspace distributes its data:
+
+- `Metadata.GetReplicas(string keyspaceName, string tableName, byte[] partitionKey)`
+- `ICluster.GetReplicas(string keyspace, string table, byte[] partitionKey)`
+
+For a keyspace using tablets, they return the replicas of the cached tablet
+owning the partition key. The driver learns tablets from server responses while
+executing queries, so the result is empty until the driver has cached that
+tablet, and always empty when no table is provided. The token map is never used
+for these keyspaces, because it does not describe tablet placement. For any
+other keyspace, they return the replicas from the token map.
+
+Code that assumes a non-empty result, for example by calling `First()`, must
+handle an empty collection for keyspaces using tablets.
+
+The following overloads cannot use tablet metadata and are now marked
+`[Obsolete]`:
+
+- `Metadata.GetReplicas(string keyspaceName, byte[] partitionKey)`
+- `Metadata.GetReplicas(byte[] partitionKey)`
+- `ICluster.GetReplicas(string keyspace, byte[] partitionKey)` and its `Cluster`
+  implementation
+- `ICluster.GetReplicas(byte[] partitionKey)` and its `Cluster` implementation
+
+Calling them produces compiler warning CS0618, which fails builds that use
+`TreatWarningsAsErrors`. Move to the table-aware overload, or suppress CS0618
+for those calls.
+
+The `GetReplicas(string keyspace, byte[] partitionKey)` overloads now return an
+empty collection for a keyspace using tablets. Previously they returned token
+map replicas, which do not reflect where a tablet keyspace stores its data. The
+`GetReplicas(byte[] partitionKey)` overloads are unchanged: without a keyspace,
+they return the primary replica from the token map.
+
+Custom `ICluster` implementations must implement the new
+`GetReplicas(string, string, byte[])` member.
+
+`TokenAwarePolicy` still routes using the token map when no tablet of the table
+is cached, and the server's response lets the driver learn the tablet for later
+queries. When other tablets of the table are cached but not the one owning the
+partition key, `TokenAwarePolicy` uses its child policy's query plan.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.

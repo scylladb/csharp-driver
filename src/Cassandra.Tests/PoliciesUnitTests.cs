@@ -18,6 +18,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using Cassandra.SessionManagement;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 using CollectionAssert = NUnit.Framework.CollectionAssert;
@@ -489,8 +490,8 @@ namespace Cassandra.Tests
                 .Returns(hostList)
                 .Verifiable();
             clusterMock
-                .Setup(c => c.GetReplicas(It.IsAny<string>(), It.IsAny<byte[]>()))
-                .Returns<string, byte[]>((keyspace, key) =>
+                .Setup(c => c.GetReplicas(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<byte[]>()))
+                .Returns<string, string, byte[]>((keyspace, table, key) =>
                 {
                     var i = key[0];
                     return hostList.Where(h =>
@@ -550,8 +551,8 @@ namespace Cassandra.Tests
                 .Returns(hostList)
                 .Verifiable();
             clusterMock
-                .Setup(c => c.GetReplicas(It.IsAny<string>(), It.IsAny<byte[]>()))
-                .Returns<string, byte[]>((keyspace, key) =>
+                .Setup(c => c.GetReplicas(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<byte[]>()))
+                .Returns<string, string, byte[]>((keyspace, table, key) =>
                 {
                     var i = key[0];
                     return hostList.Where(h =>
@@ -584,6 +585,54 @@ namespace Cassandra.Tests
             Assert.That(queryPlansWithHost1AsFirst / times, Is.GreaterThan(0.45).And.LessThan(0.55));
             Assert.That(queryPlansWithHost2AsFirst / times, Is.GreaterThan(0.45).And.LessThan(0.55));
             clusterMock.Verify();
+        }
+
+        [Test]
+        public void TokenAwarePolicyUsesStatementKeyspaceAndTableToGetRoutingReplicas()
+        {
+            var rawRoutingKey = new byte[] { 1, 2, 3, 4 };
+            var clusterMock = new Mock<IInternalCluster>();
+            clusterMock
+                .Setup(c => c.AllHosts())
+                .Returns(new List<Host>());
+            clusterMock
+                .Setup(c => c.GetRoutingReplicas(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<byte[]>()))
+                .Returns(new List<HostShard>());
+            var policy = new TokenAwarePolicy(new RoundRobinPolicy());
+            policy.Initialize(clusterMock.Object);
+
+            var _ = policy.NewQueryPlan("ks2", CreateStatement("ks1", "tbl1", rawRoutingKey)).ToList();
+
+            clusterMock.Verify(c => c.GetRoutingReplicas("ks1", "tbl1", rawRoutingKey), Times.Once);
+            clusterMock.Verify(c => c.GetReplicas(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<byte[]>()), Times.Never);
+        }
+
+        [Test]
+        public void TokenAwarePolicyUsesStatementKeyspaceAndTableToGetReplicas_When_ClusterIsNotInternal()
+        {
+            var rawRoutingKey = new byte[] { 1, 2, 3, 4 };
+            var clusterMock = new Mock<ICluster>();
+            clusterMock
+                .Setup(c => c.AllHosts())
+                .Returns(new List<Host>());
+            clusterMock
+                .Setup(c => c.GetReplicas(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<byte[]>()))
+                .Returns(new List<HostShard>());
+            var policy = new TokenAwarePolicy(new RoundRobinPolicy());
+            policy.Initialize(clusterMock.Object);
+
+            var _ = policy.NewQueryPlan("ks2", CreateStatement("ks1", "tbl1", rawRoutingKey)).ToList();
+
+            clusterMock.Verify(c => c.GetReplicas("ks1", "tbl1", rawRoutingKey), Times.Once);
+        }
+
+        private static Statement CreateStatement(string keyspace, string table, byte[] rawRoutingKey)
+        {
+            var statementMock = new Mock<Statement>(MockBehavior.Loose);
+            statementMock.Setup(s => s.RoutingKey).Returns(new RoutingKey(rawRoutingKey));
+            statementMock.Setup(s => s.Keyspace).Returns(keyspace);
+            statementMock.Setup(s => s.TableName).Returns(table);
+            return statementMock.Object;
         }
 
         [Test]

@@ -476,15 +476,29 @@ namespace Cassandra
         }
 
         /// <inheritdoc />
+        [Obsolete("Use GetReplicas(string keyspace, string table, byte[] partitionKey) for tablet-aware replica resolution.")]
         public ICollection<HostShard> GetReplicas(byte[] partitionKey)
         {
-            return Metadata.GetReplicas(partitionKey);
+            return Metadata.GetReplicas(null, null, partitionKey);
         }
 
         /// <inheritdoc />
+        [Obsolete("Use GetReplicas(string keyspace, string table, byte[] partitionKey) for tablet-aware replica resolution.")]
         public ICollection<HostShard> GetReplicas(string keyspace, byte[] partitionKey)
         {
-            return Metadata.GetReplicas(keyspace, partitionKey);
+            return Metadata.GetReplicas(keyspace, null, partitionKey);
+        }
+
+        /// <inheritdoc />
+        public ICollection<HostShard> GetReplicas(string keyspace, string table, byte[] partitionKey)
+        {
+            return Metadata.GetReplicas(keyspace, table, partitionKey);
+        }
+
+        /// <inheritdoc />
+        ICollection<HostShard> IInternalCluster.GetRoutingReplicas(string keyspace, string table, byte[] partitionKey)
+        {
+            return Metadata.GetRoutingReplicas(keyspace, table, partitionKey);
         }
 
         private void OnHostRemoved(Host h)

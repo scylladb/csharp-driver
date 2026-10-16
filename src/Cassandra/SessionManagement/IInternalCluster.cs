@@ -56,6 +56,12 @@ namespace Cassandra.SessionManagement
         IReadOnlyDictionary<IContactPoint, IEnumerable<IConnectionEndPoint>> GetResolvedEndpoints();
 
         /// <summary>
+        /// Gets the replicas used for token-aware routing, falling back to the token map when no tablet of the
+        /// table is cached.
+        /// </summary>
+        ICollection<HostShard> GetRoutingReplicas(string keyspace, string table, byte[] partitionKey);
+
+        /// <summary>
         /// Helper method to retrieve the aggregate distance from all configured LoadBalancingPolicies and set it at Host level.
         /// </summary>
         HostDistance RetrieveAndSetDistance(Host host);
