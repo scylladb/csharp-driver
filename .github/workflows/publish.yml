@@ -61,7 +61,7 @@ jobs:
       already_signed: ${{ steps.gate.outputs.already_signed }}
     steps:
       - name: Checkout trusted release tooling
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: master
           persist-credentials: false
@@ -111,14 +111,14 @@ jobs:
       target_commit: ${{ steps.target.outputs.target_commit }}
     steps:
       - name: Checkout trusted release tooling
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: master
           persist-credentials: false
 
       - name: Checkout exact release source
         if: ${{ !inputs.dry_run && !inputs.resume_partial_publication && needs.preflight.outputs.already_signed != 'true' }}
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.target_commit }}
           path: source
@@ -243,13 +243,13 @@ jobs:
       contents: read
     steps:
       - name: Checkout exact release source
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.prepare-target.outputs.target_commit }}
           persist-credentials: false
 
       - name: Checkout current docs site tooling
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: master
           path: site
@@ -329,13 +329,13 @@ jobs:
       pull-requests: read
     steps:
       - name: Checkout trusted release tooling
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: master
           persist-credentials: false
 
       - name: Checkout exact release source
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.prepare-target.outputs.target_commit }}
           path: source
@@ -423,13 +423,13 @@ jobs:
       pull-requests: read
     steps:
       - name: Checkout trusted release tooling
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: master
           persist-credentials: false
 
       - name: Checkout signed release commit for tag creation
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.prepare-target.outputs.target_commit }}
           path: source
