@@ -51,7 +51,7 @@ namespace Cassandra.Data.Linq
         {
             if (_batchScript.IsEmpty)
             {
-                return TaskHelper.FromException<RowSet>(new RequestInvalidException("The Batch must contain queries to execute"));
+                return Task.FromException<RowSet>(new RequestInvalidException("The Batch must contain queries to execute"));
             }
             _batchScript.SetBatchType(_batchType);
             this.CopyQueryPropertiesTo(_batchScript);

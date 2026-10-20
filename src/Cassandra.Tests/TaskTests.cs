@@ -19,6 +19,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -183,31 +184,76 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public void TaskHelper_TaskCompletionSourceWithTimeout_Sets_Exception_When_Expired()
+        public async Task TaskHelper_WaitToCompleteAsync_Completes_When_The_Task_Completes_In_Time()
         {
-            var ex = new TimeoutException("Test message");
-            var tcs = TaskHelper.TaskCompletionSourceWithTimeout<int>(20, () => ex);
-            var task = tcs.Task;
-            Thread.Sleep(200);
-            Assert.AreEqual(TaskStatus.Faulted, task.Status);
-            Assert.NotNull(task.Exception);
-            Assert.AreEqual(ex, task.Exception.InnerException);
+            var tcs = new TaskCompletionSource<bool>();
+            var wait = tcs.Task.WaitToCompleteAsync(10000);
+            tcs.SetResult(true);
+            await wait.ConfigureAwait(false);
+            Assert.AreEqual(TaskStatus.RanToCompletion, wait.Status);
         }
 
         [Test]
-        public void TaskHelper_TaskCompletionSourceWithTimeout_Does_Not_Invoke_Delegate_When_Transitioned()
+        public async Task TaskHelper_WaitToCompleteAsync_Throws_TimeoutException_When_Expired()
         {
-            bool called = false;
-            var tcs = TaskHelper.TaskCompletionSourceWithTimeout<int>(200, () =>
+            var tcs = new TaskCompletionSource<bool>();
+            var ex = await NUnit.Framework.Assert.ThrowsAsync<TimeoutException>(
+                () => tcs.Task.WaitToCompleteAsync(20)).ConfigureAwait(false);
+            Assert.AreEqual("The task didn't complete before timeout.", ex.Message);
+        }
+
+        [Test]
+        public async Task TaskHelper_WaitToCompleteAsync_Observes_A_Fault_After_The_Timeout()
+        {
+            var lateFault = new InvalidOperationException("late fault");
+            var unobserved = 0;
+            EventHandler<UnobservedTaskExceptionEventArgs> handler = (sender, e) =>
             {
-                called = true;
-                return new Exception();
-            });
-            var task = tcs.Task;
-            tcs.TrySetResult(1);
-            Assert.AreEqual(TaskStatus.RanToCompletion, task.Status);
-            Thread.Sleep(200);
-            Assert.False(called);
+                // The event is process-wide: only count this test's exception
+                if (e.Exception.InnerExceptions.Contains(lateFault))
+                {
+                    Interlocked.Increment(ref unobserved);
+                }
+            };
+            TaskScheduler.UnobservedTaskException += handler;
+            try
+            {
+                await FaultAfterTimeoutAsync(lateFault).ConfigureAwait(false);
+                for (var i = 0; i < 3; i++)
+                {
+                    GC.Collect();
+                    GC.WaitForPendingFinalizers();
+                }
+                Assert.AreEqual(0, Volatile.Read(ref unobserved));
+            }
+            finally
+            {
+                TaskScheduler.UnobservedTaskException -= handler;
+            }
+        }
+
+        /// <summary>
+        /// Times out waiting on a task and faults it afterwards. Kept in its own method so that the task is unreachable
+        /// once it returns, and its exception is reported when the GC finalizes it if nothing observed it.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static async Task FaultAfterTimeoutAsync(Exception lateFault)
+        {
+            var tcs = new TaskCompletionSource<bool>();
+            await NUnit.Framework.Assert.ThrowsAsync<TimeoutException>(
+                () => tcs.Task.WaitToCompleteAsync(1)).ConfigureAwait(false);
+            // Fault well after WaitAsync's timeout cleanup has detached it from the task
+            await Task.Delay(20).ConfigureAwait(false);
+            tcs.SetException(lateFault);
+        }
+
+        [Test]
+        public async Task TaskHelper_WaitToCompleteAsync_Propagates_The_Task_Exception()
+        {
+            var expected = new TimeoutException("from the task");
+            var ex = await NUnit.Framework.Assert.ThrowsAsync<TimeoutException>(
+                () => Task.FromException(expected).WaitToCompleteAsync(10000)).ConfigureAwait(false);
+            Assert.AreSame(expected, ex);
         }
 
         [Test]

@@ -17,8 +17,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using Cassandra.Mapping;
-using Cassandra.Tasks;
 using Cassandra.Tests.Mapping.Pocos;
 using Cassandra.Tests.Mapping.TestData;
 using Moq;
@@ -221,7 +221,7 @@ namespace Cassandra.Tests.Mapping
         {
             string query = null;
             object[] parameters = null;
-            var mapperAndSession = GetMappingClientAndSession(() => TaskHelper.ToTask(RowSet.Empty()), (q, p) =>
+            var mapperAndSession = GetMappingClientAndSession(() => Task.FromResult(RowSet.Empty()), (q, p) =>
             {
                 query = q;
                 parameters = p;
@@ -254,7 +254,7 @@ namespace Cassandra.Tests.Mapping
         {
             string query = null;
             object[] parameters = null;
-            var mapperAndSession = GetMappingClientAndSession(() => TaskHelper.ToTask(RowSet.Empty()), (q, p) =>
+            var mapperAndSession = GetMappingClientAndSession(() => Task.FromResult(RowSet.Empty()), (q, p) =>
             {
                 query = q;
                 parameters = p;

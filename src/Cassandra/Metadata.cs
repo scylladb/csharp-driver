@@ -590,9 +590,9 @@ namespace Cassandra
                     ControlConnection.QueryAsync(SelectSchemaVersionPeers)
                 };
 
-                await Task.WhenAll(queries).ConfigureAwait(false);
+                var results = await Task.WhenAll(queries).ConfigureAwait(false);
 
-                return CheckSchemaVersionResults(queries[0].Result, queries[1].Result);
+                return CheckSchemaVersionResults(results[0], results[1]);
             }
             catch (Exception ex)
             {
@@ -657,13 +657,13 @@ namespace Cassandra
                             QueryProtocolOptions.Default,
                             false,
                             null);
-                    var queries = new[] { connection.Send(schemaVersionLocalQuery), connection.Send(schemaVersionPeersQuery) };
-                    // ReSharper disable once CoVariantArrayConversion
-                    await Task.WhenAll(queries).WaitToCompleteAsync(Configuration.DefaultRequestOptions.QueryAbortTimeout).ConfigureAwait(false);
+                    var queries = Task.WhenAll(connection.Send(schemaVersionLocalQuery), connection.Send(schemaVersionPeersQuery));
+                    await queries.WaitToCompleteAsync(Configuration.DefaultRequestOptions.QueryAbortTimeout).ConfigureAwait(false);
+                    var responses = await queries.ConfigureAwait(false);
 
                     if (Metadata.CheckSchemaVersionResults(
-                        Configuration.MetadataRequestHandler.GetRowSet(queries[0].Result),
-                        Configuration.MetadataRequestHandler.GetRowSet(queries[1].Result)))
+                        Configuration.MetadataRequestHandler.GetRowSet(responses[0]),
+                        Configuration.MetadataRequestHandler.GetRowSet(responses[1])))
                     {
                         return true;
                     }

@@ -15,7 +15,6 @@
 //
 
 using System;
-using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Tasks;
@@ -34,6 +33,7 @@ namespace Cassandra.ProtocolEvents
         private readonly Action _act;
         private readonly ITimer _timer;
         private readonly TaskFactory _timerTaskFactory;
+        private readonly TimeProvider _timeProvider;
 
         private long _windowFirstTimestamp;
         private volatile bool _isRunning;
@@ -44,6 +44,11 @@ namespace Cassandra.ProtocolEvents
             {
                 throw new ArgumentException("delayIncrement can not be greater than maxDelay");
             }
+
+            // Measure the window with the same clock that drives the timer. Checked before creating the timer, so a
+            // factory without a clock fails fast instead of leaving a timer behind.
+            _timeProvider = timerFactory.TimeProvider
+                            ?? throw new ArgumentException("The timer factory must provide a TimeProvider.", nameof(timerFactory));
 
             var scheduler = new ConcurrentExclusiveSchedulerPair().ExclusiveScheduler;
             var taskFactory = new TaskFactory(
@@ -78,7 +83,7 @@ namespace Cassandra.ProtocolEvents
             // delegate can't be async or shared exclusive scheduler is pointless
             return _timerTaskFactory.StartNew(() =>
             {
-                var currentTimestamp = Stopwatch.GetTimestamp();
+                var currentTimestamp = _timeProvider.GetTimestamp();
                 var timeUntilNextTrigger = processNow ? TimeSpan.Zero : ComputeTimeUntilNextTrigger(currentTimestamp);
 
                 // if the computation resulted in Zero, then call _act() now and skip creating the timer
@@ -98,21 +103,20 @@ namespace Cassandra.ProtocolEvents
         private TimeSpan ComputeTimeUntilNextTrigger(long currentTimestamp)
         {
             TimeSpan timeUntilNextTrigger;
-            long diffTimestamp;
+            TimeSpan timeSinceLastTrigger;
 
             // get time past since last trigger
             if (!_isRunning)
             {
                 Volatile.Write(ref _windowFirstTimestamp, currentTimestamp);
-                diffTimestamp = 0;
+                timeSinceLastTrigger = TimeSpan.Zero;
                 _isRunning = true;
             }
             else
             {
-                diffTimestamp = currentTimestamp - Volatile.Read(ref _windowFirstTimestamp);
+                // Timestamp ticks are not TimeSpan ticks: their frequency is platform dependent (1 GHz on Linux)
+                timeSinceLastTrigger = _timeProvider.GetElapsedTime(Volatile.Read(ref _windowFirstTimestamp), currentTimestamp);
             }
-
-            var timeSinceLastTrigger = new TimeSpan(diffTimestamp);
 
             // compute time until next trigger based on how long has passed and _maxDelay
             if (timeSinceLastTrigger >= _maxDelay)

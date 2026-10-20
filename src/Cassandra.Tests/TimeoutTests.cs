@@ -16,10 +16,10 @@
 
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using Cassandra.Tasks;
+using Microsoft.Extensions.Time.Testing;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 using CollectionAssert = NUnit.Framework.CollectionAssert;
@@ -124,71 +124,110 @@ namespace Cassandra.Tests
         [Test]
         public void HashedWheelTimer_Should_Schedule_In_Order()
         {
+            var time = new FakeTimeProvider();
             var results = new List<int>();
             var actions = new Action[10];
-            var timer = new HashedWheelTimer(200, 8);
-            for (var i = 0; i < actions.Length; i++)
+            using (var timer = new HashedWheelTimer(200, 8, time))
             {
-                var index = i;
-                actions[i] = () =>
+                for (var i = 0; i < actions.Length; i++)
                 {
-                    // ReSharper disable once AccessToDisposedClosure
-                    timer.NewTimeout(_ =>
+                    var index = i;
+                    actions[i] = () =>
                     {
-                        results.Add(index);
-                    }, null, 200 * (actions.Length - index));
-                };
+                        // ReSharper disable once AccessToDisposedClosure
+                        timer.NewTimeout(_ =>
+                        {
+                            results.Add(index);
+                        }, null, 200 * (actions.Length - index));
+                    };
+                }
+                TestHelper.ParallelInvoke(actions);
+                // The longest delay is 2000 ms (10 ticks). Timer ticks run synchronously within Advance.
+                AdvanceTicks(time, 200, 12);
+                Assert.AreEqual(actions.Length, results.Count);
+                var counter = 10;
+                CollectionAssert.AreEqual(Enumerable.Repeat(0, actions.Length).Select(_ => --counter), results);
             }
-            TestHelper.ParallelInvoke(actions);
-            var counter = 0;
-            while (results.Count < actions.Length && ++counter < 20)
-            {
-                Thread.Sleep(500);
-                Trace.WriteLine("Slept " + counter);
-            }
-            Assert.AreEqual(actions.Length, results.Count);
-            counter = 10;
-            CollectionAssert.AreEqual(Enumerable.Repeat(0, actions.Length).Select(_ => --counter), results);
-            timer.Dispose();
         }
 
         [Test]
         public void HashedWheelTimer_Should_Not_Execute_Cancelled()
         {
             //Schedule 3 actions
-            //sleep a couple of ms
+            //let one tick pass
             //Cancel one of them
             //Check that it has not been executed
-            using (var timer = new HashedWheelTimer(200, 8))
+            var time = new FakeTimeProvider();
+            using (var timer = new HashedWheelTimer(200, 8, time))
             {
                 var flag = 0;
                 timer.NewTimeout(_ => flag += 1, null, 500);
                 var timeout2 = timer.NewTimeout(_ => flag += 2, null, 500);
                 timer.NewTimeout(_ => flag += 4, null, 500);
-                Thread.Sleep(300);
+                AdvanceTicks(time, 200, 1);
+                Assert.AreEqual(0, flag);
                 timeout2.Cancel();
-                Thread.Sleep(800);
+                AdvanceTicks(time, 200, 4);
                 Assert.AreEqual(5, flag);
-                timer.Dispose();
             }
         }
 
         [Test]
         public void HashedWheelTimer_Cancelled_Should_Be_Removed_From_Bucket()
         {
-            using (var timer = new HashedWheelTimer(200, 8))
+            var time = new FakeTimeProvider();
+            using (var timer = new HashedWheelTimer(200, 8, time))
             {
                 var flag = 0;
                 timer.NewTimeout(_ => flag += 1, null, 500);
                 //this callback should never be executed
                 var timeout2 = (TimeoutItem)timer.NewTimeout(_ => flag += 2, null, 500);
                 timer.NewTimeout(_ => flag += 4, null, 500);
-                Thread.Sleep(300);
+                AdvanceTicks(time, 200, 1);
                 Assert.NotNull(timeout2.Bucket);
                 timeout2.Cancel();
-                Thread.Sleep(800);
+                AdvanceTicks(time, 200, 4);
                 Assert.AreEqual(5, flag);
+            }
+        }
+
+        [Test]
+        public void HashedWheelTimer_Should_Not_Expire_Before_The_Delay()
+        {
+            var time = new FakeTimeProvider();
+            using (var timer = new HashedWheelTimer(100, 8, time))
+            {
+                var expired = false;
+                timer.NewTimeout(_ => expired = true, null, 1000);
+                AdvanceTicks(time, 100, 9);
+                Assert.False(expired);
+                AdvanceTicks(time, 100, 2);
+                Assert.True(expired);
+            }
+        }
+
+        [Test]
+        public void HashedWheelTimer_Should_Not_Throw_When_Disposed_By_An_Expiring_Action()
+        {
+            // The tick reschedules the timer after running expired actions, so it calls Change on a disposed timer.
+            var time = new FakeTimeProvider();
+            var timer = new HashedWheelTimer(100, 8, time);
+            var expired = false;
+            timer.NewTimeout(_ =>
+            {
+                expired = true;
                 timer.Dispose();
+            }, null, 100);
+
+            Assert.DoesNotThrow(() => AdvanceTicks(time, 100, 3));
+            Assert.True(expired);
+        }
+
+        private static void AdvanceTicks(FakeTimeProvider time, int tickMilliseconds, int ticks)
+        {
+            for (var i = 0; i < ticks; i++)
+            {
+                time.Advance(TimeSpan.FromMilliseconds(tickMilliseconds));
             }
         }
 

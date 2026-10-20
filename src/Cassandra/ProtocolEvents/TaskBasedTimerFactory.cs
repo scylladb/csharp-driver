@@ -14,15 +14,23 @@
 //   limitations under the License.
 //
 
+using System;
 using System.Threading.Tasks;
 
 namespace Cassandra.ProtocolEvents
 {
     internal class TaskBasedTimerFactory : ITimerFactory
     {
+        public TaskBasedTimerFactory(TimeProvider timeProvider = null)
+        {
+            TimeProvider = timeProvider ?? TimeProvider.System;
+        }
+
+        public TimeProvider TimeProvider { get; }
+
         public ITimer Create(TaskScheduler scheduler)
         {
-            return new TaskBasedTimer(scheduler);
+            return new TaskBasedTimer(scheduler, TimeProvider);
         }
     }
 }

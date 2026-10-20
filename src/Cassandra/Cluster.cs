@@ -642,7 +642,7 @@ namespace Cassandra
                 && completedEntry.TryGetCompletedTask(fastPathGeneration, out var completedTask)
                 && Volatile.Read(ref _preparedStatementCacheGeneration) == fastPathGeneration)
             {
-                return completedTask.Result;
+                return await completedTask.ConfigureAwait(false);
             }
 
             PreparedStatementCacheEntry prepareEntry;

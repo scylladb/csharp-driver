@@ -312,12 +312,12 @@ namespace Cassandra.Serialization
             {
                 // When quoted, this is a custom type.
                 dataType.TypeInfo = new CustomColumnInfo(typeName.Substring(startIndex + 1, length - 2));
-                return TaskHelper.ToTask(dataType);
+                return Task.FromResult(dataType);
             }
             if (typeName == CqlNames.Empty)
             {
                 // A custom without type info
-                return TaskHelper.ToTask(dataType);
+                return Task.FromResult(dataType);
             }
             if (typeName.AsSpan(startIndex).StartsWith(CqlNames.List, comparison))
             {
@@ -327,7 +327,7 @@ namespace Cassandra.Serialization
                 var innerTypes = ParseParams(typeName, startIndex, length, '<', '>');
                 if (innerTypes.Count != 1)
                 {
-                    return TaskHelper.FromException<ColumnDesc>(GetTypeException(typeName));
+                    return Task.FromException<ColumnDesc>(GetTypeException(typeName));
                 }
                 dataType.TypeCode = ColumnTypeCode.List;
                 return ParseTypeName(udtResolver, keyspace, innerTypes[0].Trim())
@@ -349,7 +349,7 @@ namespace Cassandra.Serialization
                 var innerTypes = ParseParams(typeName, startIndex, length, '<', '>');
                 if (innerTypes.Count != 1)
                 {
-                    return TaskHelper.FromException<ColumnDesc>(GetTypeException(typeName));
+                    return Task.FromException<ColumnDesc>(GetTypeException(typeName));
                 }
                 dataType.TypeCode = ColumnTypeCode.Set;
                 return ParseTypeName(udtResolver, keyspace, innerTypes[0].Trim())
@@ -372,22 +372,12 @@ namespace Cassandra.Serialization
                 //It should contain the key and value types
                 if (innerTypes.Count != 2)
                 {
-                    return TaskHelper.FromException<ColumnDesc>(GetTypeException(typeName));
+                    return Task.FromException<ColumnDesc>(GetTypeException(typeName));
                 }
                 dataType.TypeCode = ColumnTypeCode.Map;
                 var keyTypeTask = ParseTypeName(udtResolver, keyspace, innerTypes[0].Trim());
                 var valueTypeTask = ParseTypeName(udtResolver, keyspace, innerTypes[1].Trim());
-                return Task.Factory.ContinueWhenAll(new[] { keyTypeTask, valueTypeTask }, tasks =>
-                {
-                    dataType.TypeInfo = new MapColumnInfo
-                    {
-                        KeyTypeCode = tasks[0].Result.TypeCode,
-                        KeyTypeInfo = tasks[0].Result.TypeInfo,
-                        ValueTypeCode = tasks[1].Result.TypeCode,
-                        ValueTypeInfo = tasks[1].Result.TypeInfo
-                    };
-                    return dataType;
-                });
+                return SetMapTypeInfoAsync(dataType, keyTypeTask, valueTypeTask);
             }
             if (typeName.AsSpan(startIndex).StartsWith(CqlNames.Tuple, comparison))
             {
@@ -398,17 +388,13 @@ namespace Cassandra.Serialization
                 if (tupleParams.Count < 1)
                 {
                     //It should contain at least the keyspace, name of the udt and a type
-                    return TaskHelper.FromException<ColumnDesc>(GetTypeException(typeName));
+                    return Task.FromException<ColumnDesc>(GetTypeException(typeName));
                 }
                 dataType.TypeCode = ColumnTypeCode.Tuple;
                 var elementTasks = tupleParams
                     .Select(subTypeName => ParseTypeName(udtResolver, keyspace, subTypeName.Trim()))
                     .ToArray();
-                return Task.Factory.ContinueWhenAll(elementTasks, tasks =>
-                {
-                    dataType.TypeInfo = new TupleColumnInfo(tasks.Select(t => t.Result));
-                    return dataType;
-                });
+                return SetTupleTypeInfoAsync(dataType, elementTasks);
             }
             if (typeName.AsSpan(startIndex).StartsWith(CqlNames.Vector, comparison))
             {
@@ -418,7 +404,7 @@ namespace Cassandra.Serialization
                 var parameters = ParseParams(typeName, startIndex, length, '<', '>');
                 if (parameters.Count != 2)
                 {
-                    return TaskHelper.FromException<ColumnDesc>(GetTypeException(typeName));
+                    return Task.FromException<ColumnDesc>(GetTypeException(typeName));
                 }
                 dataType.TypeCode = ColumnTypeCode.Custom;
                 if (!int.TryParse(parameters[1].Trim(), out var dimensions))
@@ -444,7 +430,7 @@ namespace Cassandra.Serialization
             if (SingleCqlNames.TryGetValue(typeName, out ColumnTypeCode typeCode))
             {
                 dataType.TypeCode = typeCode;
-                return TaskHelper.ToTask(dataType);
+                return Task.FromResult(dataType);
             }
             typeName = typeName.Replace("\"", "");
             ArgumentNullException.ThrowIfNull(udtResolver);
@@ -454,6 +440,26 @@ namespace Cassandra.Serialization
                 dataType.TypeInfo = typeInfo ?? throw GetTypeException(typeName);
                 return dataType;
             });
+        }
+
+        private static async Task<ColumnDesc> SetMapTypeInfoAsync(
+            ColumnDesc dataType, Task<ColumnDesc> keyTypeTask, Task<ColumnDesc> valueTypeTask)
+        {
+            var types = await Task.WhenAll(keyTypeTask, valueTypeTask).ConfigureAwait(false);
+            dataType.TypeInfo = new MapColumnInfo
+            {
+                KeyTypeCode = types[0].TypeCode,
+                KeyTypeInfo = types[0].TypeInfo,
+                ValueTypeCode = types[1].TypeCode,
+                ValueTypeInfo = types[1].TypeInfo
+            };
+            return dataType;
+        }
+
+        private static async Task<ColumnDesc> SetTupleTypeInfoAsync(ColumnDesc dataType, Task<ColumnDesc>[] elementTasks)
+        {
+            dataType.TypeInfo = new TupleColumnInfo(await Task.WhenAll(elementTasks).ConfigureAwait(false));
+            return dataType;
         }
 
         /// <summary>

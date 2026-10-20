@@ -57,6 +57,19 @@ namespace Cassandra.Tests.MetadataTests
         }
 
         [Test]
+        public void Should_NotThrow_When_DueIsBeyondTheTaskDelayLimit()
+        {
+            var target = new TaskBasedTimer(_scheduler);
+
+            // Task.Delay rejects delays above ~49.7 days; Change logs that instead of throwing, since its
+            // callers discard exceptions.
+            Assert.DoesNotThrow(() => WrapExclusiveScheduler(
+                () => target.Change(() => Interlocked.Increment(ref _counter), TimeSpan.FromDays(100))));
+            Assert.AreEqual(0, Interlocked.Read(ref _counter));
+            target.Dispose();
+        }
+
+        [Test]
         public async Task Should_NotInvokeAct_When_CancelIsCalled()
         {
             var target = new TaskBasedTimer(_scheduler);

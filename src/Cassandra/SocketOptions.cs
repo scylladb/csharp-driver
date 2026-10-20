@@ -140,9 +140,10 @@ namespace Cassandra
         /// </summary>
         public SocketOptions SetConnectTimeoutMillis(int connectTimeoutMillis)
         {
-            // Only a positive number of milliseconds and Timeout.Infinite are meaningful. The value is handed to
-            // Timer.Change, so 0 fires the timeout immediately and fails every connection attempt before it can
-            // be established, and anything below Timeout.Infinite makes Timer.Change throw. Rejected here rather
+            // Only a positive number of milliseconds and Timeout.Infinite are meaningful. The value bounds the
+            // connect and TLS handshake through Task.WaitAsync, so 0 times out immediately and fails every
+            // connection attempt before it can be established, and anything below Timeout.Infinite makes
+            // WaitAsync throw. Rejected here rather
             // than at the first connection, so the mistake surfaces while the cluster is being configured.
             if (connectTimeoutMillis != Timeout.Infinite && connectTimeoutMillis <= 0)
             {
