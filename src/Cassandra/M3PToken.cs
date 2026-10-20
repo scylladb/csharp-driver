@@ -15,6 +15,8 @@
 //
 
 using System;
+using System.Buffers.Binary;
+using System.Numerics;
 
 namespace Cassandra
 {
@@ -78,7 +80,8 @@ namespace Cassandra
                 // for M3P. Compared to that methods, there's a few inlining of arguments and we
                 // only return the first 64-bits of the result since that's all M3P uses.
 
-                //Convert to sbyte as in Java byte are signed
+                //Blocks are read as unsigned little-endian longs, but the tail as sbyte: Java bytes are signed, and the
+                //tail's sign extension must be kept to produce Cassandra's tokens
                 sbyte[] data = (sbyte[])(Array)bytes;
 
                 int offset = 0;
@@ -99,8 +102,8 @@ namespace Cassandra
 
                 for (int i = 0; i < nblocks; i++)
                 {
-                    long k1 = GetBlock(data, offset, i * 2 + 0);
-                    long k2 = GetBlock(data, offset, i * 2 + 1);
+                    long k1 = BinaryPrimitives.ReadInt64LittleEndian(bytes.AsSpan(offset + i * 16));
+                    long k2 = BinaryPrimitives.ReadInt64LittleEndian(bytes.AsSpan(offset + i * 16 + 8));
 
                     k1 *= c1;
                     k1 = Rotl64(k1, 31);
@@ -204,19 +207,9 @@ namespace Cassandra
                 }
             }
 
-            private static long GetBlock(sbyte[] key, int offset, int index)
-            {
-                int i8 = index << 3;
-                int blockOffset = offset + i8;
-                return ((long)key[blockOffset + 0] & 0xff) + (((long)key[blockOffset + 1] & 0xff) << 8) +
-                       (((long)key[blockOffset + 2] & 0xff) << 16) + (((long)key[blockOffset + 3] & 0xff) << 24) +
-                       (((long)key[blockOffset + 4] & 0xff) << 32) + (((long)key[blockOffset + 5] & 0xff) << 40) +
-                       (((long)key[blockOffset + 6] & 0xff) << 48) + (((long)key[blockOffset + 7] & 0xff) << 56);
-            }
-
             private static long Rotl64(long v, int n)
             {
-                return ((v << n) | ((long)((ulong)v >> (64 - n))));
+                return (long)BitOperations.RotateLeft((ulong)v, n);
             }
 
             private static long Fmix(long k)
