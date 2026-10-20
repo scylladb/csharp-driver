@@ -15,7 +15,7 @@
 //
 
 using System;
-using System.Buffers;
+using System.Buffers.Binary;
 
 namespace Cassandra
 {
@@ -30,7 +30,9 @@ namespace Cassandra
         /// </summary>
         public static byte[] GetBytes(short value)
         {
-            return new[] { (byte)((value & 0xFF00) >> 8), (byte)(value & 0xFF) };
+            var buffer = new byte[2];
+            BinaryPrimitives.WriteInt16BigEndian(buffer, value);
+            return buffer;
         }
 
         /// <summary>
@@ -38,7 +40,9 @@ namespace Cassandra
         /// </summary>
         public static byte[] GetBytes(ushort value)
         {
-            return GetBytes((short)value);
+            var buffer = new byte[2];
+            BinaryPrimitives.WriteUInt16BigEndian(buffer, value);
+            return buffer;
         }
 
         /// <summary>
@@ -46,13 +50,9 @@ namespace Cassandra
         /// </summary>
         public static byte[] GetBytes(int value)
         {
-            return new[]
-            {
-                (byte) ((value & 0xFF000000) >> 24),
-                (byte) ((value & 0xFF0000) >> 16),
-                (byte) ((value & 0xFF00) >> 8),
-                (byte) (value & 0xFF)
-            };
+            var buffer = new byte[4];
+            BinaryPrimitives.WriteInt32BigEndian(buffer, value);
+            return buffer;
         }
 
         /// <summary>
@@ -60,17 +60,9 @@ namespace Cassandra
         /// </summary>
         public static byte[] GetBytes(long value)
         {
-            return new[]
-            {
-                (byte) (((ulong) value & 0xFF00000000000000) >> 56),
-                (byte) ((value & 0xFF000000000000) >> 48),
-                (byte) ((value & 0xFF0000000000) >> 40),
-                (byte) ((value & 0xFF00000000) >> 32),
-                (byte) ((value & 0xFF000000) >> 24),
-                (byte) ((value & 0xFF0000) >> 16),
-                (byte) ((value & 0xFF00) >> 8),
-                (byte) (value & 0xFF)
-            };
+            var buffer = new byte[8];
+            BinaryPrimitives.WriteInt64BigEndian(buffer, value);
+            return buffer;
         }
 
         /// <summary>
@@ -78,25 +70,19 @@ namespace Cassandra
         /// </summary>
         public static byte[] GetBytes(double value)
         {
-            var buffer = BitConverter.GetBytes(value);
-            if (!BitConverter.IsLittleEndian)
-            {
-                return buffer;
-            }
-            return new[] { buffer[7], buffer[6], buffer[5], buffer[4], buffer[3], buffer[2], buffer[1], buffer[0] };
+            var buffer = new byte[8];
+            BinaryPrimitives.WriteDoubleBigEndian(buffer, value);
+            return buffer;
         }
 
         /// <summary>
-        /// Converts a double to a big endian byte array
+        /// Converts a float to a big endian byte array
         /// </summary>
         public static byte[] GetBytes(float value)
         {
-            var buffer = BitConverter.GetBytes(value);
-            if (!BitConverter.IsLittleEndian)
-            {
-                return buffer;
-            }
-            return new[] { buffer[3], buffer[2], buffer[1], buffer[0] };
+            var buffer = new byte[4];
+            BinaryPrimitives.WriteSingleBigEndian(buffer, value);
+            return buffer;
         }
 
         /// <summary>
@@ -104,7 +90,7 @@ namespace Cassandra
         /// </summary>
         public static short ToInt16(byte[] value, int offset = 0)
         {
-            return (short)((value[offset] << 8) | value[offset + 1]);
+            return BinaryPrimitives.ReadInt16BigEndian(value.AsSpan(offset));
         }
 
         /// <summary>
@@ -112,7 +98,7 @@ namespace Cassandra
         /// </summary>
         public static ushort ToUInt16(byte[] value)
         {
-            return (ushort)((value[0] << 8) | value[1]);
+            return BinaryPrimitives.ReadUInt16BigEndian(value);
         }
 
         /// <summary>
@@ -120,7 +106,7 @@ namespace Cassandra
         /// </summary>
         public static int ToInt32(byte[] value, int offset = 0)
         {
-            return (value[offset] << 24 | value[offset + 1] << 16 | value[offset + 2] << 8 | value[offset + 3]);
+            return BinaryPrimitives.ReadInt32BigEndian(value.AsSpan(offset));
         }
 
         /// <summary>
@@ -128,16 +114,7 @@ namespace Cassandra
         /// </summary>
         public static long ToInt64(byte[] value, int offset = 0)
         {
-            return (long)(
-                  ((ulong)value[offset] << 56)
-                | ((ulong)value[offset + 1] << 48)
-                | ((ulong)value[offset + 2] << 40)
-                | ((ulong)value[offset + 3] << 32)
-                | ((ulong)value[offset + 4] << 24)
-                | ((ulong)value[offset + 5] << 16)
-                | ((ulong)value[offset + 6] << 8)
-                | (value[offset + 7])
-            );
+            return BinaryPrimitives.ReadInt64BigEndian(value.AsSpan(offset));
         }
 
         /// <summary>
@@ -145,13 +122,7 @@ namespace Cassandra
         /// </summary>
         public static double ToDouble(byte[] value, int offset = 0)
         {
-            if (!BitConverter.IsLittleEndian)
-            {
-                return BitConverter.ToDouble(value, offset);
-            }
-
-            // We avoid using temporary array by constructing int64 value from reversed bytes 
-            return BitConverter.Int64BitsToDouble(ToInt64(value, offset));
+            return BinaryPrimitives.ReadDoubleBigEndian(value.AsSpan(offset));
         }
 
         /// <summary>
@@ -159,20 +130,7 @@ namespace Cassandra
         /// </summary>
         public static float ToSingle(byte[] value, int offset = 0)
         {
-            if (!BitConverter.IsLittleEndian)
-            {
-                return BitConverter.ToSingle(value, offset);
-            }
-
-            // Invert the first 4 bytes, starting from offset
-            var rentedArray = ArrayPool<byte>.Shared.Rent(4);
-            rentedArray[3] = value[offset + 0];
-            rentedArray[2] = value[offset + 1];
-            rentedArray[1] = value[offset + 2];
-            rentedArray[0] = value[offset + 3];
-            var result = BitConverter.ToSingle(rentedArray, 0);
-            ArrayPool<byte>.Shared.Return(rentedArray);
-            return result;
+            return BinaryPrimitives.ReadSingleBigEndian(value.AsSpan(offset));
         }
     }
 }

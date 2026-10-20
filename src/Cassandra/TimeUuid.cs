@@ -15,6 +15,7 @@
 //
 
 using System;
+using System.Buffers.Binary;
 using System.Threading;
 
 namespace Cassandra
@@ -57,18 +58,13 @@ namespace Cassandra
             {
                 throw new ArgumentException("clock Id should contain 2 bytes", nameof(clockId));
             }
-            var timeBytes = BitConverter.GetBytes((time - GregorianCalendarTime).Ticks);
-            if (!BitConverter.IsLittleEndian)
-            {
-                Array.Reverse(timeBytes);
-            }
-            var buffer = new byte[16];
+            Span<byte> buffer = stackalloc byte[16];
             //Positions 0-7 Timestamp
-            Buffer.BlockCopy(timeBytes, 0, buffer, 0, 8);
+            BinaryPrimitives.WriteInt64LittleEndian(buffer, (time - GregorianCalendarTime).Ticks);
             //Position 8-9 Clock
-            Buffer.BlockCopy(clockId, 0, buffer, 8, 2);
+            clockId.CopyTo(buffer.Slice(8));
             //Positions 10-15 Node
-            Buffer.BlockCopy(nodeId, 0, buffer, 10, 6);
+            nodeId.CopyTo(buffer.Slice(10));
 
             //Version Byte: Time based
             //0001xxxx
@@ -109,16 +105,11 @@ namespace Cassandra
         /// </summary>
         public DateTimeOffset GetDate()
         {
-            var bytes = _value.ToByteArray();
+            Span<byte> bytes = stackalloc byte[16];
+            _value.TryWriteBytes(bytes);
             //Remove version bit
             bytes[7] &= 0x0f; //00001111
-            //Remove variant
-            bytes[8] &= 0x3f; //00111111
-            if (!BitConverter.IsLittleEndian)
-            {
-                Array.Reverse(bytes);
-            }
-            var timestamp = BitConverter.ToInt64(bytes, 0);
+            var timestamp = BinaryPrimitives.ReadInt64LittleEndian(bytes);
             var ticks = timestamp + GregorianCalendarTime.Ticks;
 
             return new DateTimeOffset(ticks, TimeSpan.Zero);
