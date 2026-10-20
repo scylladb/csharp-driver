@@ -15,6 +15,8 @@
 //
 
 using System;
+using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Numerics;
 
 namespace Cassandra.Serialization.Primitive
@@ -32,12 +34,8 @@ namespace Cassandra.Serialization.Primitive
         public override decimal Deserialize(ushort protocolVersion, byte[] buffer, int offset, int length, IColumnInfo typeInfo)
         {
             var scale = BeConverter.ToInt32(buffer, offset);
-            var unscaledBytes = Utils.SliceBuffer(buffer, offset + 4, length - 4);
-            if (BitConverter.IsLittleEndian)
-            {
-                Array.Reverse(unscaledBytes);
-            }
-            return ToDecimal(new BigInteger(unscaledBytes), scale);
+            var unscaledValue = new BigInteger(buffer.AsSpan(offset + 4, length - 4), isUnsigned: false, isBigEndian: true);
+            return ToDecimal(unscaledValue, scale);
         }
 
         internal static decimal ToDecimal(BigInteger unscaledValue, int scale)
@@ -64,35 +62,44 @@ namespace Cassandra.Serialization.Primitive
             }
             var isNegative = unscaledValue < 0;
             unscaledValue = BigInteger.Abs(unscaledValue);
-            var bigintBytes = unscaledValue.ToByteArray();
-            if (bigintBytes.Length > 13 || (bigintBytes.Length == 13 && bigintBytes[12] != 0))
+            // System.Decimal holds a 96-bit magnitude
+            if (unscaledValue.GetByteCount(isUnsigned: true) > 12)
             {
                 throw new ArgumentOutOfRangeException(
                     "unscaledValue", unscaledValue, "Value can not be represented as a CLR Decimal");
             }
-            var intArray = new int[3];
-            Buffer.BlockCopy(bigintBytes, 0, intArray, 0, Math.Min(12, bigintBytes.Length));
-            return new decimal(intArray[0], intArray[1], intArray[2], isNegative, (byte)scale);
+            Span<byte> magnitude = stackalloc byte[12];
+            var written = unscaledValue.TryWriteBytes(magnitude, out _, isUnsigned: true);
+            Debug.Assert(written, "The magnitude was checked to fit in 12 bytes");
+            return new decimal(
+                BinaryPrimitives.ReadInt32LittleEndian(magnitude),
+                BinaryPrimitives.ReadInt32LittleEndian(magnitude.Slice(4)),
+                BinaryPrimitives.ReadInt32LittleEndian(magnitude.Slice(8)),
+                isNegative,
+                (byte)scale);
         }
 
         public override byte[] Serialize(ushort protocolVersion, decimal value)
         {
-            int[] bits = decimal.GetBits(value);
+            Span<int> bits = stackalloc int[4];
+            decimal.GetBits(value, bits);
             int scale = (bits[3] >> 16) & 31;
-            byte[] scaleBytes = BeConverter.GetBytes(scale);
-            var bigintBytes = new byte[13]; // 13th byte is for making sure that the number is positive
-            Buffer.BlockCopy(bits, 0, bigintBytes, 0, 12);
-            var bigInteger = new BigInteger(bigintBytes);
+            // The 96-bit magnitude, little-endian regardless of the machine's byte order (as ToDecimal reads it)
+            Span<byte> magnitude = stackalloc byte[12];
+            BinaryPrimitives.WriteInt32LittleEndian(magnitude, bits[0]);
+            BinaryPrimitives.WriteInt32LittleEndian(magnitude.Slice(4), bits[1]);
+            BinaryPrimitives.WriteInt32LittleEndian(magnitude.Slice(8), bits[2]);
+            var bigInteger = new BigInteger(magnitude, isUnsigned: true);
             if (value < 0)
             {
                 bigInteger = -bigInteger;
             }
 
-            bigintBytes = bigInteger.ToByteArray();
-            Array.Reverse(bigintBytes);
-            var resultBytes = new byte[scaleBytes.Length + bigintBytes.Length];
-            Array.Copy(scaleBytes, resultBytes, scaleBytes.Length);
-            Array.Copy(bigintBytes, 0, resultBytes, scaleBytes.Length, bigintBytes.Length);
+            // <scale: 4-byte big-endian int><unscaled value: big-endian varint>
+            var resultBytes = new byte[4 + bigInteger.GetByteCount()];
+            BinaryPrimitives.WriteInt32BigEndian(resultBytes, scale);
+            var written = bigInteger.TryWriteBytes(resultBytes.AsSpan(4), out _, isUnsigned: false, isBigEndian: true);
+            Debug.Assert(written, "The result was sized with GetByteCount");
             return resultBytes;
         }
     }
