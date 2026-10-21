@@ -396,12 +396,16 @@ namespace Cassandra
                     {
                         throw new FormatException("The client route address is missing or contains whitespace.");
                     }
-                    var port = row.GetValue<int>(_useTls ? "tls_port" : "port");
-                    if (port < 1 || port > 65535)
+                    var port = row.GetValue<int?>(_useTls ? "tls_port" : "port");
+                    if (!port.HasValue)
+                    {
+                        continue;
+                    }
+                    if (port.Value < 1 || port.Value > 65535)
                     {
                         throw new ArgumentOutOfRangeException(nameof(port));
                     }
-                    routes[new ClientRouteKey(hostId, connectionId)] = new ClientRouteEndpoint(connectionId, address, port);
+                    routes[new ClientRouteKey(hostId, connectionId)] = new ClientRouteEndpoint(connectionId, address, port.Value);
                 }
             }
             catch (Exception ex) when (!Utils.IsFatalException(ex))

@@ -494,7 +494,7 @@ namespace Cassandra.Tests
 
         [TestCase(false)]
         [TestCase(true)]
-        public async Task Should_RejectMissingSelectedPort(bool useTls)
+        public async Task Should_RejectMissingSelectedPortColumn(bool useTls)
         {
             var hostId = Guid.NewGuid();
             var row = useTls
@@ -508,12 +508,79 @@ namespace Cassandra.Tests
                     ("address", "proxy.example.com"),
                     ("tls_port", 9142),
                     ("connection_id", ConnectionA));
+            var handler = new RecordingLoggerHandler();
             var provider = CreateProvider((_, __) => Task.FromResult(Rows(row)));
-            var cache = CreateCache(provider.Object, useTls: useTls);
+            var cache = CreateCache(provider.Object, useTls: useTls, logger: new Logger(handler));
 
-            await cache.RefreshAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-
+            Assert.That(await cache.RefreshAsync(new[] { hostId }).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false),
+                Is.EqualTo(ClientRoutesRefreshOutcome.Malformed));
             Assert.That(cache.Routes, Is.Empty);
+            Assert.That(cache.WaitForInitialSnapshotAsync().IsCompleted, Is.False);
+            AssertCoverage(cache, hostId, false);
+            Assert.That(handler.Errors, Has.Count.EqualTo(1));
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_SkipNullSelectedPortAndPublishOtherHosts(bool useTls)
+        {
+            var a = Guid.NewGuid();
+            var b = Guid.NewGuid();
+            var inapplicable = useTls
+                ? Route(a, "other-transport", 9042, null, ConnectionA)
+                : Route(a, "other-transport", null, 9142, ConnectionA);
+            var handler = new RecordingLoggerHandler();
+            var provider = CreateProvider((_, __) => Task.FromResult(Rows(inapplicable,
+                Route(b, "usable", 9043, 9143, ConnectionA))));
+            var cache = CreateCache(provider.Object, useTls: useTls, logger: new Logger(handler));
+
+            Assert.That(await cache.RefreshAsync(new[] { a, b }).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false),
+                Is.EqualTo(ClientRoutesRefreshOutcome.Applied));
+            Assert.That(cache.Routes.ContainsKey(a), Is.False);
+            AssertEndpoint(cache.Routes[b], ConnectionA, "usable", useTls ? 9143 : 9043);
+            AssertCoverage(cache, a, true);
+            AssertCoverage(cache, b, true);
+            Assert.That(cache.WaitForInitialSnapshotAsync().IsCompletedSuccessfully, Is.True);
+            Assert.That(handler.Errors, Is.Empty);
+            Assert.That(handler.Warnings, Is.Empty);
+        }
+
+        [TestCase(false, false, false)]
+        [TestCase(true, false, false)]
+        [TestCase(false, true, false)]
+        [TestCase(true, true, false)]
+        [TestCase(false, true, true)]
+        [TestCase(true, true, true)]
+        public async Task Should_ApplyNullOnlyResultWithoutEmptyConfirmation(bool useTls, bool warm, bool targeted)
+        {
+            var host = Guid.NewGuid();
+            var inapplicable = useTls
+                ? Route(host, "other-transport", 9042, null, ConnectionA)
+                : Route(host, "other-transport", null, 9142, ConnectionA);
+            var handler = new RecordingLoggerHandler();
+            var calls = 0;
+            var provider = CreateProvider((_, __) =>
+            {
+                var call = Interlocked.Increment(ref calls);
+                return Task.FromResult(Rows(warm && call == 1
+                    ? Route(host, "old", 9042, 9142, ConnectionA) : inapplicable));
+            });
+            var cache = CreateCache(provider.Object, useTls: useTls, logger: new Logger(handler));
+            if (warm)
+            {
+                await cache.RefreshAsync(new[] { host }).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
+
+            var refresh = targeted ? cache.RefreshAsync(Change((ConnectionA, host))) : cache.RefreshAsync(new[] { host });
+            Assert.That(await refresh.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false),
+                Is.EqualTo(ClientRoutesRefreshOutcome.Applied));
+            Assert.That(cache.Routes, Is.Empty);
+            Assert.That(cache.HasCompleteSnapshot, Is.True);
+            AssertCoverage(cache, host, true);
+            Assert.That(cache.WaitForInitialSnapshotAsync().IsCompletedSuccessfully, Is.True);
+            Assert.That(handler.Errors, Is.Empty);
+            Assert.That(handler.Warnings, Is.Empty);
+            Assert.That(calls, Is.EqualTo(warm ? 2 : 1));
         }
 
         [Test]
@@ -600,7 +667,7 @@ namespace Cassandra.Tests
             row.Setup(r => r.GetValue<string>("address"))
                .Callback(() => reads.Add("address"))
                .Returns("proxy.example.com");
-            row.Setup(r => r.GetValue<int>("port"))
+            row.Setup(r => r.GetValue<int?>("port"))
                .Callback(() => reads.Add("port"))
                .Returns(9042);
             var provider = CreateProvider((_, __) => Task.FromResult(Rows(row.Object)));
