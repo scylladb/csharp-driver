@@ -38,9 +38,7 @@ namespace Cassandra
 
         private readonly IMetadataQueryProvider _queryProvider;
         private readonly Logger _logger;
-        private readonly string[] _connectionIds;
-        private readonly ImmutableDictionary<string, string> _addressOverrides;
-        private readonly ImmutableDictionary<string, int> _connectionPriorities;
+        private readonly ClientRoutesSelection _selection;
         private readonly bool _useTls;
         private readonly Lock _refreshLock = new Lock();
         private readonly HashSet<Guid> _pendingHostIds = new HashSet<Guid>();
@@ -61,39 +59,7 @@ namespace Cassandra
         {
             _queryProvider = queryProvider ?? throw new ArgumentNullException(nameof(queryProvider));
             _logger = logger ?? new Logger(typeof(ClientRoutesCache));
-            ArgumentNullException.ThrowIfNull(connectionIds);
-
-            _connectionIds = connectionIds.ToArray();
-            if (_connectionIds.Length == 0)
-            {
-                throw new ArgumentException("At least one connection ID must be configured.", nameof(connectionIds));
-            }
-
-            var priorities = ImmutableDictionary.CreateBuilder<string, int>(StringComparer.Ordinal);
-            for (var i = 0; i < _connectionIds.Length; i++)
-            {
-                var connectionId = _connectionIds[i];
-                if (string.IsNullOrWhiteSpace(connectionId))
-                {
-                    throw new ArgumentException("Connection IDs must not be null, empty, or whitespace.", nameof(connectionIds));
-                }
-                if (priorities.ContainsKey(connectionId))
-                {
-                    throw new ArgumentException("Connection IDs must be unique.", nameof(connectionIds));
-                }
-                priorities.Add(connectionId, i);
-            }
-            _connectionPriorities = priorities.ToImmutable();
-
-            var overrides = ImmutableDictionary.CreateBuilder<string, string>(StringComparer.Ordinal);
-            if (addressOverrides != null)
-            {
-                foreach (var item in addressOverrides)
-                {
-                    overrides.Add(item.Key, item.Value);
-                }
-            }
-            _addressOverrides = overrides.ToImmutable();
+            _selection = ClientRoutesSelection.Create(connectionIds, addressOverrides);
             _useTls = useTls;
         }
 
@@ -378,7 +344,7 @@ namespace Cassandra
                     ", ",
                     escalatedRouteKeys
                         .OrderBy(key => key.HostId)
-                        .ThenBy(key => _connectionPriorities[key.ConnectionId])
+                        .ThenBy(key => _selection.ConnectionPriorities[key.ConnectionId])
                         .Select(key => $"{key}={updatedSnapshot[key]}"));
                 _logger.Error(
                     "Serving {0} client route(s) that this refresh could not rebuild. " +
@@ -418,7 +384,7 @@ namespace Cassandra
                 try
                 {
                     connectionId = row.GetValue<string>("connection_id");
-                    if (connectionId == null || !_connectionPriorities.ContainsKey(connectionId))
+                    if (connectionId == null || !_selection.ConnectionPriorities.ContainsKey(connectionId))
                     {
                         throw new FormatException("The client route connection ID is not configured.");
                     }
@@ -436,7 +402,7 @@ namespace Cassandra
                 var routeKey = new ClientRouteKey(hostId, connectionId);
                 try
                 {
-                    var address = _addressOverrides.TryGetValue(connectionId, out var addressOverride)
+                    var address = _selection.AddressOverrides.TryGetValue(connectionId, out var addressOverride)
                         ? addressOverride
                         : row.GetValue<string>("address");
                     if (!IsValidAddress(address))
@@ -475,7 +441,7 @@ namespace Cassandra
             foreach (var routesForHost in routesByKey.GroupBy(route => route.Key.HostId))
             {
                 routesByHost[routesForHost.Key] = routesForHost
-                    .OrderBy(route => _connectionPriorities[route.Key.ConnectionId])
+                    .OrderBy(route => _selection.ConnectionPriorities[route.Key.ConnectionId])
                     .Select(route => route.Value)
                     .ToImmutableArray();
             }
@@ -537,7 +503,7 @@ namespace Cassandra
 
             if (eventArgs.ConnectionIds.Length > 0 &&
                 !eventArgs.ConnectionIds.Any(connectionId =>
-                    connectionId != null && _connectionPriorities.ContainsKey(connectionId)))
+                    connectionId != null && _selection.ConnectionPriorities.ContainsKey(connectionId)))
             {
                 return false;
             }
@@ -552,7 +518,7 @@ namespace Cassandra
 
         private string BuildQuery(HashSet<Guid> hostIds)
         {
-            var connectionIds = string.Join(", ", _connectionIds.Select(id => $"'{EscapeCqlString(id)}'"));
+            var connectionIds = string.Join(", ", _selection.ConnectionIds.Select(id => $"'{EscapeCqlString(id)}'"));
             var query = $"SELECT {SelectColumns} FROM system.client_routes " +
                         $"WHERE connection_id IN ({connectionIds})";
             if (hostIds != null)
