@@ -47,6 +47,7 @@ PACKAGE_CONTRACTS = (
             "K4os.Compression.LZ4": "1.3.8",
             "Microsoft.Extensions.Logging": "10.0.12",
             "Microsoft.Extensions.Logging.Abstractions": "10.0.12",
+            "Microsoft.IO.RecyclableMemoryStream": "3.0.1",
             "Newtonsoft.Json": "13.0.4",
         },
     ),

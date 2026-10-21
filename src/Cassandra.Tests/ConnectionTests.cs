@@ -505,6 +505,84 @@ namespace Cassandra.Tests
             Assert.AreEqual("ks1", connectionMock.Object.Keyspace);
         }
 
+        [Test]
+        public void ReadParse_Handles_Frames_Split_At_Random_Points([Range(0, 19)] int seed)
+        {
+            var random = new Random(seed);
+            const int frameCount = 100;
+            var frames = Enumerable.Range(0, frameCount)
+                .Select(i =>
+                {
+                    // Mostly small frames, and some larger than the read pipe's segments
+                    var bodyLength = random.Next(10) == 0 ? random.Next(4096, 12000) : random.Next(4, 64);
+                    return GetVoidResultFrame((short)i, bodyLength);
+                })
+                .SelectMany(frame => frame)
+                .ToArray();
+            var connectionMock = GetConnectionMock();
+            var streamIds = new List<short>();
+            var responses = new ConcurrentBag<Response>();
+            var exceptions = new ConcurrentBag<Exception>();
+            connectionMock.Setup(c => c.RemoveFromPending(It.IsAny<short>()))
+                .Callback<short>(id => streamIds.Add(id))
+                .Returns(() => OperationStateExtensions.CreateMock((ex, r) =>
+                {
+                    if (ex != null)
+                    {
+                        exceptions.Add(ex);
+                        return;
+                    }
+                    responses.Add(r);
+                }));
+            var connection = connectionMock.Object;
+            // Like a socket, reuse the same receive buffer for every read
+            var receiveBuffer = new byte[16 * 1024];
+            var maxReadLength = random.Next(2) == 0 ? 16 : receiveBuffer.Length;
+            for (var offset = 0; offset < frames.Length;)
+            {
+                var length = Math.Min(random.Next(1, maxReadLength + 1), frames.Length - offset);
+                Buffer.BlockCopy(frames, offset, receiveBuffer, 0, length);
+                Array.Clear(receiveBuffer, length, receiveBuffer.Length - length);
+                connection.ReadParse(receiveBuffer, length);
+                offset += length;
+            }
+            CollectionAssert.AreEqual(Enumerable.Range(0, frameCount).Select(i => (short)i), streamIds);
+            TestHelper.WaitUntil(() => responses.Count + exceptions.Count == frameCount);
+            CollectionAssert.IsEmpty(exceptions);
+            CollectionAssert.AreEqual(
+                Enumerable.Repeat(ResultResponse.ResultResponseKind.Void, frameCount),
+                responses.Select(r => ((ResultResponse)r).Kind));
+        }
+
+        [Test]
+        public void ReadParse_Throws_For_Negative_Body_Length()
+        {
+            var connection = GetConnectionMock().Object;
+            var buffer = GetVoidResultFrame(1, 4);
+            // Body length of -1
+            buffer[5] = buffer[6] = buffer[7] = buffer[8] = 0xFF;
+            NUnit.Framework.Assert.Throws<DriverInternalError>(() => connection.ReadParse(buffer, buffer.Length));
+        }
+
+        /// <summary>
+        /// Gets a protocol v4 RESULT frame of kind Void, with the body padded to the provided length.
+        /// </summary>
+        private static byte[] GetVoidResultFrame(short streamId, int bodyLength)
+        {
+            var frame = new byte[9 + bodyLength];
+            frame[0] = 0x84;
+            frame[2] = (byte)(streamId >> 8);
+            frame[3] = (byte)streamId;
+            frame[4] = ResultResponse.OpCode;
+            frame[5] = (byte)(bodyLength >> 24);
+            frame[6] = (byte)(bodyLength >> 16);
+            frame[7] = (byte)(bodyLength >> 8);
+            frame[8] = (byte)bodyLength;
+            // Result kind Void
+            frame[12] = 1;
+            return frame;
+        }
+
         /// <summary>
         /// Gets a buffer containing 8 bytes for header and 4 bytes for the body.
         /// For result + void response message  (protocol v2)

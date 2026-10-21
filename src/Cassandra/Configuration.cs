@@ -383,7 +383,12 @@ namespace Cassandra
             // Create the buffer pool with 16KB for small buffers and 256Kb for large buffers.
             // The pool does not eagerly reserve the buffers, so it doesn't take unnecessary memory
             // to create the instance.
-            BufferPool = new RecyclableMemoryStreamManager(16 * 1024, 256 * 1024, ProtocolOptions.MaximumFrameLength);
+            BufferPool = new RecyclableMemoryStreamManager(new RecyclableMemoryStreamManager.Options
+            {
+                BlockSize = 16 * 1024,
+                LargeBufferMultiple = 256 * 1024,
+                MaximumBufferSize = ProtocolOptions.MaximumFrameLength
+            });
             Timer = new HashedWheelTimer();
         }
 

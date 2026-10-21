@@ -15,6 +15,8 @@
 //
 
 using System;
+using System.Buffers;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
@@ -28,6 +30,10 @@ namespace Cassandra
     internal class FrameWriter
     {
         private readonly MemoryStream _stream;
+        /// <summary>
+        /// The stream as a buffer writer, when it supports it (pooled streams do), so strings are encoded directly into it.
+        /// </summary>
+        private readonly IBufferWriter<byte> _bufferWriter;
         private readonly ISerializer _serializer;
         private readonly long _offset;
         private readonly ProtocolVersion _version;
@@ -64,6 +70,7 @@ namespace Cassandra
         public FrameWriter(MemoryStream stream, ISerializer serializer, bool useMetadataId)
         {
             _stream = stream;
+            _bufferWriter = stream as IBufferWriter<byte>;
             _serializer = serializer;
             _offset = stream.Position;
             _version = serializer.ProtocolVersion;
@@ -80,7 +87,9 @@ namespace Cassandra
         /// </summary>
         public void WriteUInt16(ushort value)
         {
-            Write(BeConverter.GetBytes(value));
+            Span<byte> buffer = stackalloc byte[2];
+            BinaryPrimitives.WriteUInt16BigEndian(buffer, value);
+            _stream.Write(buffer);
         }
 
         /// <summary>
@@ -88,7 +97,9 @@ namespace Cassandra
         /// </summary>
         public void WriteInt32(int value)
         {
-            Write(BeConverter.GetBytes(value));
+            Span<byte> buffer = stackalloc byte[4];
+            BinaryPrimitives.WriteInt32BigEndian(buffer, value);
+            _stream.Write(buffer);
         }
 
         /// <summary>
@@ -96,7 +107,9 @@ namespace Cassandra
         /// </summary>
         public void WriteLong(long value)
         {
-            Write(BeConverter.GetBytes(value));
+            Span<byte> buffer = stackalloc byte[8];
+            BinaryPrimitives.WriteInt64BigEndian(buffer, value);
+            _stream.Write(buffer);
         }
 
         /// <summary>
@@ -104,9 +117,9 @@ namespace Cassandra
         /// </summary>
         public void WriteString(string str)
         {
-            var bytes = Encoding.UTF8.GetBytes(str);
-            WriteUInt16((ushort)bytes.Length);
-            Write(bytes);
+            var length = Encoding.UTF8.GetByteCount(str);
+            WriteUInt16((ushort)length);
+            WriteUtf8(str, length);
         }
 
         /// <summary>
@@ -114,9 +127,23 @@ namespace Cassandra
         /// </summary>
         public void WriteLongString(string str)
         {
-            var bytes = Encoding.UTF8.GetBytes(str);
-            WriteInt32(bytes.Length);
-            Write(bytes);
+            var length = Encoding.UTF8.GetByteCount(str);
+            WriteInt32(length);
+            WriteUtf8(str, length);
+        }
+
+        /// <summary>
+        /// Writes the UTF-8 bytes of the string, which are <paramref name="byteCount"/> long
+        /// </summary>
+        private void WriteUtf8(string str, int byteCount)
+        {
+            if (_bufferWriter == null)
+            {
+                Write(Encoding.UTF8.GetBytes(str));
+                return;
+            }
+            var written = Encoding.UTF8.GetBytes(str, _bufferWriter.GetSpan(byteCount));
+            _bufferWriter.Advance(written);
         }
 
         /// <summary>
@@ -193,7 +220,10 @@ namespace Cassandra
         /// </summary>
         public void WriteFrameHeader(byte flags, short streamId, byte opCode)
         {
-            byte[] header;
+            Span<byte> header = stackalloc byte[9];
+            header[0] = (byte)_version;
+            header[1] = flags;
+            int headerLength;
             if (!_version.Uses2BytesStreamIds())
             {
                 //8 bytes for the header, dedicating 1 for the streamId
@@ -201,31 +231,20 @@ namespace Cassandra
                 {
                     throw new ArgumentException("StreamId must be smaller than 128 under protocol version " + _version);
                 }
-                header = new byte[]
-                {
-                    (byte) _version,
-                    flags,
-                    (byte) streamId,
-                    opCode,
-                    //Reserved for the body length
-                    0, 0, 0, 0
-                };
-                Write(header);
-                return;
+                header[2] = (byte)streamId;
+                header[3] = opCode;
+                headerLength = 8;
             }
-            //9 bytes for the header, dedicating 2 for the streamId
-            var streamIdBytes = BeConverter.GetBytes(streamId);
-            header = new byte[]
+            else
             {
-                (byte) _version,
-                flags,
-                streamIdBytes[0],
-                streamIdBytes[1],
-                opCode,
-                //Reserved for the body length
-                0, 0, 0, 0
-            };
-            Write(header);
+                //9 bytes for the header, dedicating 2 for the streamId
+                BinaryPrimitives.WriteInt16BigEndian(header.Slice(2), streamId);
+                header[4] = opCode;
+                headerLength = 9;
+            }
+            //Reserved for the body length
+            BinaryPrimitives.WriteInt32BigEndian(header.Slice(headerLength - 4), 0);
+            _stream.Write(header.Slice(0, headerLength));
         }
 
         /// <summary>
@@ -244,7 +263,8 @@ namespace Cassandra
             //Set the length in the header
             //MemoryStream implementation length and offset are ints, so cast is safe
             var frameLength = Convert.ToInt32(_stream.Length - _offset);
-            var lengthBytes = BeConverter.GetBytes(frameLength - _version.GetHeaderSize());
+            Span<byte> lengthBytes = stackalloc byte[4];
+            BinaryPrimitives.WriteInt32BigEndian(lengthBytes, frameLength - _version.GetHeaderSize());
             //The length could start at the 4th or 5th position
             long lengthOffset = 4;
             if (_version.Uses2BytesStreamIds())
@@ -253,7 +273,7 @@ namespace Cassandra
             }
             //Set the position of the stream where the frame body length should be written
             _stream.Position = _offset + lengthOffset;
-            _stream.Write(lengthBytes, 0, lengthBytes.Length);
+            _stream.Write(lengthBytes);
             _stream.Position = _stream.Length;
             return frameLength;
         }

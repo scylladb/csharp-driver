@@ -77,6 +77,14 @@ The `ScyllaDBCSharpDriver.AppMetrics` package now depends on
 Applications that reference App.Metrics packages directly should use the 4.3.0
 package family together. The App.Metrics Graphite example also uses 4.3.0.
 
+### Microsoft.IO.RecyclableMemoryStream dependency
+
+The `ScyllaDBCSharpDriver` package now depends on `Microsoft.IO.RecyclableMemoryStream`
+3.0.1 for its internal buffer pool, replacing a copy of an older version of that
+library that was compiled into the driver. The driver does not expose these types
+in its public API. Applications that reference `Microsoft.IO.RecyclableMemoryStream`
+directly must use version 3.0.1 or a compatible later version.
+
 ### TLS protocol selection
 
 The parameterless `SSLOptions` now uses `SslProtocols.None` instead of explicitly
