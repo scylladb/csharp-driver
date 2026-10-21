@@ -205,7 +205,7 @@ This currently takes less than 45 minutes for Apache Cassandra 3.11.x.
 
 ## Benchmarks
 
-[src/Cassandra.Benchmarks](./src/Cassandra.Benchmarks) contains [BenchmarkDotNet][benchmarkdotnet] micro-benchmarks for the driver's hot paths: big-endian conversions, value serialization, partition-key hashing and RESULT/Rows decoding. They need no cluster. CI only checks that they compile and are formatted (`make check-benchmarks`; `make check` leaves them out).
+[src/Cassandra.Benchmarks](./src/Cassandra.Benchmarks) contains [BenchmarkDotNet][benchmarkdotnet] micro-benchmarks for the driver's hot paths: big-endian conversions, value serialization, request frame writing, partition-key hashing and RESULT/Rows decoding. They need no cluster. CI only checks that they compile and are formatted (`make check-benchmarks`; `make check` leaves them out).
 
 ```bash
 make benchmark                                # all benchmarks

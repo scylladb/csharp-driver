@@ -298,6 +298,69 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public void FrameWriter_Writes_Big_Endian_Values_And_Utf8_Strings()
+        {
+            var expected = new byte[]
+            {
+                // Header: version, flags, stream id, opcode, body length
+                4, 0, 0x01, 0x02, 7, 0, 0, 0, 36,
+                0xAB, 0xCD,
+                0xFF, 0xFF, 0xFF, 0xFE,
+                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+                0x00, 0x02, 0xC5, 0xBC,
+                0x00, 0x00, 0x00, 0x05, 0x61, 0x62, 0xE2, 0x82, 0xAC,
+                0x00, 0x02, 0x00, 0x01, 0x61, 0x00, 0x02, 0x62, 0x63
+            };
+            // Small blocks, so that values and strings span block boundaries
+            var bufferPool = new RecyclableMemoryStreamManager(new RecyclableMemoryStreamManager.Options
+            {
+                BlockSize = 16,
+                LargeBufferMultiple = 1024,
+                MaximumBufferSize = 1024 * 1024
+            });
+            using (var pooledStream = bufferPool.GetStream())
+            {
+                foreach (var stream in new MemoryStream[] { pooledStream, new MemoryStream() })
+                {
+                    var writer = new FrameWriter(stream, new SerializerManager(ProtocolVersion.V4).GetCurrentSerializer(), false);
+                    writer.WriteFrameHeader(0, 0x0102, 7);
+                    writer.WriteUInt16(0xABCD);
+                    writer.WriteInt32(-2);
+                    writer.WriteLong(0x0102030405060708);
+                    writer.WriteString("\u017C");
+                    writer.WriteLongString("ab\u20AC");
+                    writer.WriteStringList(new[] { "a", "bc" });
+                    Assert.AreEqual(expected.Length, writer.Close());
+                    CollectionAssert.AreEqual(expected, stream.ToArray(), stream.GetType().Name);
+                }
+            }
+        }
+
+        [Test]
+        public void FrameWriter_Writes_Strings_Across_Pooled_Blocks()
+        {
+            var text = string.Concat(Enumerable.Repeat("za\u017C\u00F3\u0142\u0107 \U0001F980 ", 20));
+            var textBytes = System.Text.Encoding.UTF8.GetBytes(text);
+            var bufferPool = new RecyclableMemoryStreamManager(new RecyclableMemoryStreamManager.Options
+            {
+                BlockSize = 16,
+                LargeBufferMultiple = 1024,
+                MaximumBufferSize = 1024 * 1024
+            });
+            using (var stream = bufferPool.GetStream())
+            {
+                var writer = new FrameWriter(stream, new SerializerManager(ProtocolVersion.V4).GetCurrentSerializer(), false);
+                writer.WriteByte(1);
+                writer.WriteString(text);
+                writer.WriteLongString(text);
+                var expected = new byte[] { 1 }
+                    .Concat(new[] { (byte)(textBytes.Length >> 8), (byte)textBytes.Length }).Concat(textBytes)
+                    .Concat(new byte[] { 0, 0, (byte)(textBytes.Length >> 8), (byte)textBytes.Length }).Concat(textBytes);
+                CollectionAssert.AreEqual(expected, stream.ToArray());
+            }
+        }
+
+        [Test]
         public void WrappedStream_Tests()
         {
             var memoryStream = new MemoryStream(Enumerable.Range(0, 128).Select(i => (byte)i).ToArray(), false);
