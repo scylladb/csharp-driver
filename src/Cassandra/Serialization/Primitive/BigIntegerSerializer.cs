@@ -31,18 +31,14 @@ namespace Cassandra.Serialization.Primitive
 
         public override BigInteger Deserialize(ushort protocolVersion, byte[] buffer, int offset, int length, IColumnInfo typeInfo)
         {
-            buffer = Utils.SliceBuffer(buffer, offset, length);
             //Cassandra uses big endian encoding
-            Array.Reverse(buffer);
-            return new BigInteger(buffer);
+            return new BigInteger(buffer.AsSpan(offset, length), isUnsigned: false, isBigEndian: true);
         }
 
         public override byte[] Serialize(ushort protocolVersion, BigInteger value)
         {
-            var buffer = value.ToByteArray();
             //Cassandra expects big endian encoding
-            Array.Reverse(buffer);
-            return buffer;
+            return value.ToByteArray(isUnsigned: false, isBigEndian: true);
         }
     }
 }

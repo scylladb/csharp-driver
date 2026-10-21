@@ -21,6 +21,7 @@ using CollectionAssert = NUnit.Framework.CollectionAssert;
 using StringAssert = NUnit.Framework.StringAssert;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Net;
 using System.Numerics;
@@ -589,6 +590,59 @@ namespace Cassandra.Tests
             {
                 Assert.Throws<ArgumentOutOfRangeException>(() => DecimalSerializer.ToDecimal(v.Item1, v.Item2), "For value: " + v.Item1);
             }
+        }
+
+        // Known-answer vectors for the CQL varint/decimal wire format (big-endian two's complement varint; decimal is
+        // a 4-byte big-endian scale followed by the unscaled value as a varint), so that a symmetric mistake in both
+        // directions cannot go unnoticed by round trips.
+        [TestCase("0", "00")]
+        [TestCase("1", "01")]
+        [TestCase("-1", "FF")]
+        [TestCase("127", "7F")]
+        [TestCase("128", "0080")]
+        [TestCase("-128", "80")]
+        [TestCase("-129", "FF7F")]
+        [TestCase("9223372036854775808", "008000000000000000")]
+        public void Varint_Should_Match_The_Wire_Format(string value, string hex)
+        {
+            var serializer = NewInstance();
+            var expected = Convert.FromHexString(hex);
+            var bigInteger = BigInteger.Parse(value, CultureInfo.InvariantCulture);
+
+            CollectionAssert.AreEqual(expected, serializer.Serialize(bigInteger));
+            var padded = Pad(expected);
+            Assert.AreEqual(bigInteger, serializer.Deserialize(padded, 3, expected.Length, ColumnTypeCode.Varint, null));
+        }
+
+        [TestCase("0", "0000000000")]
+        [TestCase("1", "0000000001")]
+        [TestCase("-1", "00000000FF")]
+        [TestCase("1.10", "000000026E")]
+        [TestCase("-0.5", "00000001FB")]
+        [TestCase("79228162514264337593543950335", "0000000000FFFFFFFFFFFFFFFFFFFFFFFF")]
+        [TestCase("-79228162514264337593543950335", "00000000FF000000000000000000000001")]
+        [TestCase("0.0000000000000000000000000001", "0000001C01")]
+        public void Decimal_Should_Match_The_Wire_Format(string value, string hex)
+        {
+            var serializer = NewInstance();
+            var expected = Convert.FromHexString(hex);
+            var decimalValue = decimal.Parse(value, CultureInfo.InvariantCulture);
+
+            CollectionAssert.AreEqual(expected, serializer.Serialize(decimalValue));
+            var padded = Pad(expected);
+            var deserialized = (decimal)serializer.Deserialize(padded, 3, expected.Length, ColumnTypeCode.Decimal, null);
+            // Compare the bits too, so that the scale is checked (1.10m must keep scale 2)
+            CollectionAssert.AreEqual(decimal.GetBits(decimalValue), decimal.GetBits(deserialized));
+        }
+
+        /// <summary>
+        /// Surrounds a value with unrelated bytes, as in a frame body, to check that offset and length are honoured.
+        /// </summary>
+        private static byte[] Pad(byte[] value)
+        {
+            var padded = Enumerable.Repeat((byte)0xAA, value.Length + 6).ToArray();
+            Array.Copy(value, 0, padded, 3, value.Length);
+            return padded;
         }
 
         private static ISerializer NewInstance(ProtocolVersion protocolVersion = ProtocolVersion.MaxSupported)

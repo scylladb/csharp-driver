@@ -63,6 +63,13 @@ namespace Cassandra.Tests
                 {new byte[] {000, 001, 002, 003, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255},           new M3PToken(6463632673159404390L)},
                 {new byte[] {226, 231},                                                                                 new M3PToken(-8582699461035929883L)},
                 {new byte[] {226, 231, 226, 231, 226, 231, 1},                                                          new M3PToken(2222373981930033306)},
+                // Keys spanning several 16-byte blocks, with and without a tail (values from the Python driver's
+                // cassandra.murmur3, which reproduces all of the vectors above)
+                {TestHelper.HexToByteArray("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"),       new M3PToken(-4148501202978516977L)},
+                {TestHelper.HexToByteArray("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"),     new M3PToken(9025539228862924306L)},
+                {Enumerable.Repeat((byte)254, 47).ToArray(),                                                            new M3PToken(-8321085875872806633L)},
+                {Enumerable.Repeat((byte)255, 48).ToArray(),                                                            new M3PToken(4075458572414813156L)},
+                {Enumerable.Range(0, 64).Select(i => (byte)(i * 7 % 256)).ToArray(),                                    new M3PToken(-3594314470401150512L)},
             };
             var factory = new M3PToken.M3PTokenFactory();
             foreach (var kv in values)
