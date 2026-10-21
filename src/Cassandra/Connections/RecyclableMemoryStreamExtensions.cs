@@ -24,6 +24,18 @@ namespace Cassandra.Connections
     internal static class RecyclableMemoryStreamExtensions
     {
         /// <summary>
+        /// Gets a stream from the pool without generating a random id for it.
+        /// </summary>
+        /// <remarks>
+        /// The id only identifies the stream in the pool's diagnostic events and error messages, and generating it
+        /// with <see cref="Guid.NewGuid"/> costs more than the rest of getting the stream from the pool.
+        /// </remarks>
+        public static RecyclableMemoryStream GetStreamWithoutId(this RecyclableMemoryStreamManager manager, string tag)
+        {
+            return manager.GetStream(Guid.Empty, tag);
+        }
+
+        /// <summary>
         /// Returns the written bytes of the stream as a list of segments over its pooled buffers, without copying,
         /// to be used as <see cref="System.Net.Sockets.SocketAsyncEventArgs.BufferList"/>.
         /// </summary>

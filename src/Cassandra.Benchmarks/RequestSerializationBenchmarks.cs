@@ -16,6 +16,7 @@
 
 using System;
 using BenchmarkDotNet.Attributes;
+using Cassandra.Connections;
 using Cassandra.Requests;
 using Cassandra.Serialization;
 using Microsoft.IO;
@@ -80,7 +81,7 @@ namespace Cassandra.Benchmarks
 
         private int WriteFrame(IRequest request)
         {
-            using (var stream = _bufferPool.GetStream())
+            using (var stream = _bufferPool.GetStreamWithoutId("benchmark"))
             {
                 return request.WriteFrame(1, stream, _serializer, false);
             }

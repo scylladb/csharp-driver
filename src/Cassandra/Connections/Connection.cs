@@ -758,7 +758,7 @@ namespace Cassandra.Connections
                 }
 
                 // Get read stream
-                stream = stream ?? Configuration.BufferPool.GetStream(Connection.StreamReadTag);
+                stream = stream ?? Configuration.BufferPool.GetStreamWithoutId(Connection.StreamReadTag);
 
                 // Get callback and operation state
                 Func<IRequestError, Response, long, Task> callback;
@@ -848,7 +848,7 @@ namespace Cassandra.Connections
             else
             {
                 // Allocate a new stream for store in it
-                nextMessageStream = Configuration.BufferPool.GetStream(Connection.StreamReadTag);
+                nextMessageStream = Configuration.BufferPool.GetStreamWithoutId(Connection.StreamReadTag);
             }
             nextMessageStream.Write(buffer, offset, length - offset);
             Volatile.Write(ref _readStream, nextMessageStream);
@@ -1273,7 +1273,7 @@ namespace Cassandra.Connections
                 try
                 {
                     //lazy initialize the stream
-                    stream = stream ?? Configuration.BufferPool.GetStream(Connection.StreamWriteTag);
+                    stream = stream ?? Configuration.BufferPool.GetStreamWithoutId(Connection.StreamWriteTag);
                     var frameLength = state.WriteFrame(streamId, stream, Serializer, UseMetadataId, timestamp);
                     _connectionObserver.OnBytesSent(frameLength);
                     totalLength += frameLength;
