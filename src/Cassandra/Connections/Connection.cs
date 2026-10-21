@@ -1273,7 +1273,7 @@ namespace Cassandra.Connections
                 try
                 {
                     //lazy initialize the stream
-                    stream = stream ?? (RecyclableMemoryStream)Configuration.BufferPool.GetStream(Connection.StreamWriteTag);
+                    stream = stream ?? Configuration.BufferPool.GetStream(Connection.StreamWriteTag);
                     var frameLength = state.WriteFrame(streamId, stream, Serializer, UseMetadataId, timestamp);
                     _connectionObserver.OnBytesSent(frameLength);
                     totalLength += frameLength;

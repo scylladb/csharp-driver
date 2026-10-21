@@ -24,6 +24,7 @@ using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Compression;
+using Cassandra.Connections;
 using Cassandra.Responses;
 using Cassandra.Serialization;
 using Cassandra.Tasks;
@@ -235,7 +236,7 @@ namespace Cassandra.Tests
                 {
                     var buffer = new byte[frameLength];
                     stream.Position = i * frameLength;
-                    stream.Read(buffer, 0, frameLength);
+                    stream.ReadExactly(buffer, 0, frameLength);
                     CollectionAssert.AreEqual(new byte[] { 2, 0, 127, 8, 0, 0, 0, 2, 9, i }, buffer);
                 }
             }
@@ -250,27 +251,32 @@ namespace Cassandra.Tests
             {
                 buffer[i] = (byte)i;
             }
-            var bufferPool = new RecyclableMemoryStreamManager(blockSize, 1024, 1024 * 1024 * 10);
-            using (var stream = (RecyclableMemoryStream)bufferPool.GetStream())
+            var bufferPool = new RecyclableMemoryStreamManager(new RecyclableMemoryStreamManager.Options
+            {
+                BlockSize = blockSize,
+                LargeBufferMultiple = 1024,
+                MaximumBufferSize = 1024 * 1024 * 10
+            });
+            using (var stream = bufferPool.GetStream())
             {
                 stream.Write(buffer, 0, 12);
                 CollectionAssert.AreEqual(new[] { new ArraySegment<byte>(buffer, 0, 12) }, stream.GetBufferList());
             }
-            using (var stream = (RecyclableMemoryStream)bufferPool.GetStream())
+            using (var stream = bufferPool.GetStream())
             {
                 stream.Write(buffer, 0, blockSize);
                 var bufferList = stream.GetBufferList();
                 Assert.AreEqual(1, bufferList.Count);
                 CollectionAssert.AreEqual(new[] { new ArraySegment<byte>(buffer, 0, blockSize) }, bufferList);
             }
-            using (var stream = (RecyclableMemoryStream)bufferPool.GetStream())
+            using (var stream = bufferPool.GetStream())
             {
                 stream.Write(buffer, 0, blockSize * 2);
                 var bufferList = stream.GetBufferList();
                 Assert.AreEqual(2, bufferList.Count);
                 CollectionAssert.AreEqual(new[] { new ArraySegment<byte>(buffer, 0, blockSize), new ArraySegment<byte>(buffer, blockSize, blockSize) }, bufferList);
             }
-            using (var stream = (RecyclableMemoryStream)bufferPool.GetStream())
+            using (var stream = bufferPool.GetStream())
             {
                 stream.Write(buffer, 0, blockSize * 2 + 1);
                 var bufferList = stream.GetBufferList();
@@ -281,6 +287,13 @@ namespace Cassandra.Tests
                     new ArraySegment<byte>(buffer, blockSize, blockSize),
                     new ArraySegment<byte>(buffer, blockSize * 2, 1)
                 }, bufferList);
+            }
+            using (var stream = bufferPool.GetStream())
+            {
+                stream.Write(buffer, 0, blockSize * 2 + 1);
+                // Converts the blocks into a single large buffer
+                stream.GetBuffer();
+                CollectionAssert.AreEqual(new[] { new ArraySegment<byte>(buffer, 0, blockSize * 2 + 1) }, stream.GetBufferList());
             }
         }
 
