@@ -15,12 +15,18 @@
 //
 
 using System;
+using System.Buffers.Binary;
 
 namespace Cassandra
 {
     internal class FrameHeader
     {
         public const int MaxFrameSize = 256 * 1024 * 1024;
+
+        /// <summary>
+        /// The size of the header in protocol v3 and above, with 2-byte stream ids.
+        /// </summary>
+        public const int MaxHeaderSize = 9;
 
         /// <summary>
         /// Protocol version byte (in case of responses 0x81, 0x82, ... in case of requests 0x01, 0x02)
@@ -65,11 +71,20 @@ namespace Cassandra
         /// </summary>
         public static FrameHeader ParseResponseHeader(ProtocolVersion version, byte[] buffer, int offset)
         {
+            return ParseResponseHeader(version, buffer.AsSpan(offset));
+        }
+
+        /// <summary>
+        /// Parses the first 8 or 9 bytes and returns a FrameHeader
+        /// </summary>
+        public static FrameHeader ParseResponseHeader(ProtocolVersion version, ReadOnlySpan<byte> buffer)
+        {
             var header = new FrameHeader()
             {
-                _versionByte = buffer[offset++],
-                Flags = (HeaderFlags)buffer[offset++]
+                _versionByte = buffer[0],
+                Flags = (HeaderFlags)buffer[1]
             };
+            var offset = 2;
             if (!version.Uses2BytesStreamIds())
             {
                 //Stream id is a signed byte in v1 and v2 of the protocol
@@ -77,31 +92,20 @@ namespace Cassandra
             }
             else
             {
-                header.StreamId = BeConverter.ToInt16(buffer, offset);
+                header.StreamId = BinaryPrimitives.ReadInt16BigEndian(buffer.Slice(offset));
                 offset += 2;
             }
             header.Opcode = buffer[offset++];
-            header.BodyLength = BeConverter.ToInt32(Utils.SliceBuffer(buffer, offset, 4));
+            header.BodyLength = BinaryPrimitives.ReadInt32BigEndian(buffer.Slice(offset));
             return header;
-        }
-
-        /// <summary>
-        /// Parses the first 8 or 9 bytes from multiple buffers and returns a FrameHeader
-        /// </summary>
-        public static FrameHeader ParseResponseHeader(ProtocolVersion version, byte[] buffer1, byte[] buffer2)
-        {
-            var headerBuffer = new byte[!version.Uses2BytesStreamIds() ? 8 : 9];
-            Buffer.BlockCopy(buffer1, 0, headerBuffer, 0, buffer1.Length);
-            Buffer.BlockCopy(buffer2, 0, headerBuffer, buffer1.Length, headerBuffer.Length - buffer1.Length);
-            return ParseResponseHeader(version, headerBuffer, 0);
         }
 
         /// <summary>
         /// Gets the protocol version based on the first byte of the header
         /// </summary>
-        public static ProtocolVersion GetProtocolVersion(byte[] buffer)
+        public static ProtocolVersion GetProtocolVersion(byte firstHeaderByte)
         {
-            return (ProtocolVersion)(buffer[0] & 0x7F);
+            return (ProtocolVersion)(firstHeaderByte & 0x7F);
         }
     }
 }

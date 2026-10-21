@@ -74,10 +74,14 @@ namespace Cassandra.Connections
         private long _nextKeyspaceOperationId;
 
         /// <summary>
-        /// Small buffer (less than 8 bytes) that is used when the next received message is smaller than 8 bytes,
-        /// and it is not possible to read the header.
+        /// The first bytes of a header that didn't fit in the previous read. Reads are parsed one at a time.
         /// </summary>
-        private byte[] _minHeaderBuffer;
+        private readonly byte[] _partialHeader = new byte[FrameHeader.MaxHeaderSize];
+
+        /// <summary>
+        /// The number of bytes in <see cref="_partialHeader"/>.
+        /// </summary>
+        private int _partialHeaderLength;
 
         private ISerializer _serializer;
         private int _frameHeaderSize;
@@ -701,7 +705,7 @@ namespace Cassandra.Connections
             if (headerLength == 0)
             {
                 // The server replies the first message with the max protocol version supported
-                protocolVersion = FrameHeader.GetProtocolVersion(buffer);
+                protocolVersion = FrameHeader.GetProtocolVersion(buffer[0]);
                 serializer = serializer.CloneWithProtocolVersion(protocolVersion);
                 headerLength = protocolVersion.GetHeaderSize();
 
@@ -741,6 +745,10 @@ namespace Cassandra.Connections
                     }
 
                     Connection.Logger.Verbose("Received #{0} from {1}", header.StreamId, EndPoint.EndpointFriendlyName);
+                    if (header.BodyLength < 0)
+                    {
+                        throw new DriverInternalError("Received a frame with a negative body length: " + header.BodyLength);
+                    }
                     remainingBodyLength = header.BodyLength;
                 }
                 else
@@ -803,32 +811,32 @@ namespace Cassandra.Connections
         private FrameHeader ReadHeader(byte[] buffer, ref int offset, int length, int headerLength,
                                        ProtocolVersion version)
         {
-            if (offset == 0)
+            if (offset == 0 && _partialHeaderLength > 0)
             {
-                var previousHeaderBuffer = Interlocked.Exchange(ref _minHeaderBuffer, null);
-                if (previousHeaderBuffer != null)
+                var missingLength = headerLength - _partialHeaderLength;
+                if (length < missingLength)
                 {
-                    if (previousHeaderBuffer.Length + length < headerLength)
-                    {
-                        // Unlikely scenario where there were a few bytes for a header buffer and the new bytes are
-                        // not enough to complete the header
-                        Volatile.Write(ref _minHeaderBuffer,
-                            Utils.JoinBuffers(previousHeaderBuffer, 0, previousHeaderBuffer.Length, buffer, 0, length));
-                        return null;
-                    }
-                    offset += headerLength - previousHeaderBuffer.Length;
-                    // Use the previous and the current buffer to build the header
-                    return FrameHeader.ParseResponseHeader(version, previousHeaderBuffer, buffer);
+                    // Unlikely scenario where there were a few bytes for a header buffer and the new bytes are
+                    // not enough to complete the header
+                    Buffer.BlockCopy(buffer, 0, _partialHeader, _partialHeaderLength, length);
+                    _partialHeaderLength += length;
+                    return null;
                 }
+                // Use the previous and the current buffer to build the header
+                Buffer.BlockCopy(buffer, 0, _partialHeader, _partialHeaderLength, missingLength);
+                _partialHeaderLength = 0;
+                offset += missingLength;
+                return FrameHeader.ParseResponseHeader(version, _partialHeader);
             }
             if (length - offset < headerLength)
             {
                 // There aren't enough bytes in the current buffer to read the header, store it for later
-                Volatile.Write(ref _minHeaderBuffer, Utils.SliceBuffer(buffer, offset, length - offset));
+                Buffer.BlockCopy(buffer, offset, _partialHeader, 0, length - offset);
+                _partialHeaderLength = length - offset;
                 return null;
             }
             // The header is contained in the current buffer
-            var header = FrameHeader.ParseResponseHeader(version, buffer, offset);
+            var header = FrameHeader.ParseResponseHeader(version, buffer.AsSpan(offset));
             offset += headerLength;
             return header;
         }
