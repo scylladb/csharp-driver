@@ -235,6 +235,16 @@ in 3.9 (see the 3.9 section below). Query plans of `DCAwareRoundRobinPolicy` con
 nodes of the local datacenter; use `new DCAwareRoundRobinPolicy(localDc)`. Datacenter
 failover is a decision for the application or its operations, not for the driver.
 
+#### `RowSet.Dispose` and the legacy `Row` members
+
+`RowSet` no longer implements `IDisposable`: its `Dispose` method did nothing. Remove
+the `Dispose` calls, and replace `using (var rs = session.Execute(...)) { ... }` with
+`var rs = session.Execute(...);`.
+
+The `Row(int, byte[][], CqlColumn[], Dictionary<string, int>)` constructor and the
+protected `Row.Values` and `Row.ProtocolVersion` properties are removed. To create a
+`Row` in a test, use the parameterless constructor and override `GetValue<T>()`.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.
