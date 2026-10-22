@@ -38,19 +38,6 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public void ISession_WaitForSchemaAgreement_Obsolete()
-        {
-            var methods = typeof(ISession).GetMethods(BindingFlags.Public | BindingFlags.Instance)
-                .Where(m => m.Name == "WaitForSchemaAgreement")
-                .ToArray();
-            Assert.AreEqual(2, methods.Length);
-            foreach (var m in methods)
-            {
-                Assert.AreEqual(1, m.GetCustomAttributes(typeof(ObsoleteAttribute), true).Count());
-            }
-        }
-
-        [Test]
         public void RowSet_Dispose_Obsolete()
         {
             var method = typeof(RowSet).GetMethod("Dispose", BindingFlags.Public | BindingFlags.Instance);

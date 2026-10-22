@@ -129,6 +129,12 @@ ignore. Unlike the `Table<T>` constructors, it still uses case-sensitive names b
 default: unless the class has a `Table` attribute, whose `CaseSensitive` property then
 applies. A class without attributes is mapped exactly as before.
 
+#### `ISession.WaitForSchemaAgreement`
+
+Both `WaitForSchemaAgreement` overloads are removed from `ISession`. They did nothing:
+the driver waits for schema agreement itself after each schema change, for up to
+`ProtocolOptions.MaxSchemaAgreementWaitSeconds`. Remove the calls.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.
