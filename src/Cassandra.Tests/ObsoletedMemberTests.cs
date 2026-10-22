@@ -30,14 +30,6 @@ namespace Cassandra.Tests
     public class ObsoletedMemberTests
     {
         [Test]
-        public void SimpleStatement_Bind_Obsolete()
-        {
-            var method = typeof(SimpleStatement).GetTypeInfo().GetMethod("Bind", BindingFlags.Public | BindingFlags.Instance);
-            Assert.NotNull(method);
-            Assert.AreEqual(1, method.GetCustomAttributes(typeof(ObsoleteAttribute), true).Count());
-        }
-
-        [Test]
         public void RowSet_Dispose_Obsolete()
         {
             var method = typeof(RowSet).GetMethod("Dispose", BindingFlags.Public | BindingFlags.Instance);
