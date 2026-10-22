@@ -17,6 +17,43 @@ foreach (var row in rs)
 }
 ```
 
+### Asynchronous automatic paging
+
+When iterating with `foreach` or LINQ, the calling thread is blocked while each following page is retrieved. Use
+`await foreach` to retrieve the following pages without blocking:
+
+```csharp
+var ps = await session.PrepareAsync("SELECT * from tbl1 WHERE key = ?");
+var statement = ps.Bind(key).SetPageSize(1000);
+var rs = await session.ExecuteAsync(statement);
+await foreach (var row in rs)
+{
+   // The async enumerator yields all the rows from the database,
+   // retrieving them in the background in blocks of 1000.
+}
+```
+
+`RowSet` does not implement `IAsyncEnumerable<Row>`, so that synchronous LINQ operators such as `rs.Select(...)` and
+`rs.Where(...)` remain unambiguous. Use `AsAsyncEnumerable()` when you need an `IAsyncEnumerable<Row>`, for example
+to use the asynchronous LINQ operators or to pass a cancellation token:
+
+```csharp
+await foreach (var row in rs.AsAsyncEnumerable().WithCancellation(cancellationToken))
+{
+   // ...
+}
+
+List<Row> rows = await rs.AsAsyncEnumerable().ToListAsync(cancellationToken);
+```
+
+Cancellation stops waiting for the following page. A page request that was already sent is not cancelled: once it
+completes, its rows are added to the `RowSet` and are yielded by the next enumeration.
+
+Like synchronous enumerations, concurrent asynchronous enumerations of the same `RowSet` are thread-safe: each row is
+yielded once, and each page is fetched once.
+
+Note that `RowSet.IsExhausted()` blocks the calling thread when it needs to fetch the following page.
+
 ## Manual paging 
 
 If you want to retrieve the next page of results only when you ask for it (for example, in a webpager), use the

@@ -281,6 +281,56 @@ namespace Cassandra.IntegrationTests.Core
         }
 
         [Test]
+        [TestCassandraVersion(2, 0), Repeat(10)]
+        public async Task Should_IteratePaging_When_ParallelSyncAndAsyncClientsReadRowSet()
+        {
+            const int pageSize = 25;
+            const int totalRowLength = 300;
+            const string table = "tbl_parallel_paging_read";
+            var query = new SimpleStatement($"SELECT * FROM {table} LIMIT 10000").SetPageSize(pageSize);
+            var rs = await Session.ExecuteAsync(query).ConfigureAwait(false);
+            Assert.AreEqual(pageSize, rs.GetAvailableWithoutFetching());
+
+            var counter = 0;
+
+            async Task IterateAsync()
+            {
+                var count = 0;
+                await foreach (var row in rs)
+                {
+                    count++;
+                }
+                Interlocked.Add(ref counter, count);
+            }
+
+            await Task.WhenAll(
+                IterateAsync(),
+                Task.Run(() => Interlocked.Add(ref counter, rs.Count())),
+                IterateAsync(),
+                Task.Run(() => Interlocked.Add(ref counter, rs.Count()))).ConfigureAwait(false);
+
+            //Check that the sum of all rows in different enumerators is the same as total rows
+            Assert.AreEqual(totalRowLength, Volatile.Read(ref counter));
+        }
+
+        [Test]
+        [TestCassandraVersion(2, 0)]
+        public async Task Should_IteratePagingAsync_When_PreparedStatementIsUsed()
+        {
+            const int pageSize = 25;
+            const int totalRowLength = 300;
+            var ps = await Session.PrepareAsync("SELECT * FROM tbl_parallel_paging_read").ConfigureAwait(false);
+            var rs = await Session.ExecuteAsync(ps.Bind().SetPageSize(pageSize)).ConfigureAwait(false);
+            Assert.AreEqual(pageSize, rs.GetAvailableWithoutFetching());
+
+            var rows = await rs.AsAsyncEnumerable().ToListAsync().ConfigureAwait(false);
+
+            Assert.AreEqual(totalRowLength, rows.Count);
+            Assert.AreEqual(totalRowLength, rows.Select(r => r.GetValue<Guid>("id")).Distinct().Count());
+            Assert.IsTrue(rs.IsFullyFetched);
+        }
+
+        [Test]
         [TestCassandraVersion(2, 0)]
         public void Should_IteratePaging_When_SerialReadRowSet()
         {
