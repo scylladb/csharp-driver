@@ -15,14 +15,12 @@
 //
 
 using System;
-using System.Runtime.Serialization;
 
 namespace Cassandra
 {
     /// <summary>
     /// Top level class for exceptions thrown by the driver.
     /// </summary>
-    [Serializable]
     public class DriverException : Exception
     {
         public DriverException(string message)
@@ -34,12 +32,5 @@ namespace Cassandra
             : base(message, innerException)
         {
         }
-
-#pragma warning disable SYSLIB0051 // Type or member is obsolete
-        protected DriverException(SerializationInfo info, StreamingContext context)
-            : base(info, context)
-        {
-        }
-#pragma warning restore SYSLIB0051 // Type or member is obsolete
     }
 }
