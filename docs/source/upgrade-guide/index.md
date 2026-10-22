@@ -227,6 +227,14 @@ below for the reasons). Choose the consistency level for each use case upfront. 
 application that still needs to retry at a lower consistency level can implement
 `IRetryPolicy` or `IExtendedRetryPolicy` itself.
 
+#### `DCAwareRoundRobinPolicy` remote hosts
+
+The `DCAwareRoundRobinPolicy(string localDc, int usedHostsPerRemoteDc)` constructor and
+the `UsedHostsPerRemoteDc` property are removed, as announced when they were deprecated
+in 3.9 (see the 3.9 section below). Query plans of `DCAwareRoundRobinPolicy` contain only
+nodes of the local datacenter; use `new DCAwareRoundRobinPolicy(localDc)`. Datacenter
+failover is a decision for the application or its operations, not for the driver.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.
