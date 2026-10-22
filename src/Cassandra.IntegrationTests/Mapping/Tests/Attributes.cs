@@ -32,8 +32,6 @@ using Assert = NUnit.Framework.Legacy.ClassicAssert;
 using StringAssert = NUnit.Framework.StringAssert;
 
 #pragma warning disable 169
-#pragma warning disable 618
-#pragma warning disable 612
 
 using Linq = Cassandra.Data.Linq;
 
@@ -172,74 +170,6 @@ namespace Cassandra.IntegrationTests.Mapping.Tests
             var e = Assert.Throws<ArgumentException>(() => rows[0].GetValue<string>(IgnoredStringAttribute));
             var expectedErrMsg = "Column " + IgnoredStringAttribute + " not found";
             Assert.AreEqual(expectedErrMsg, e.Message);
-        }
-
-        /// <summary>
-        /// Validate that the mapping mechanism ignores the class variable marked as "Ignore"
-        /// The fact that the request does not fail trying to find a non-existing custom named column proves that
-        /// the request is not looking for the column for reads or writes.
-        ///
-        /// This also validates that attributes from  Cassandra.Mapping and Cassandra.Data.Linq can be used successfully on the same object
-        /// </summary>
-        [Test]
-        public void Attributes_Ignore_LinqAndMappingAttributes()
-        {
-            var config = new MappingConfiguration();
-            config.MapperFactory.PocoDataFactory.AddDefinitionDefault(
-                typeof(PocoWithIgnrdAttr_LinqAndMapping),
-                () => Linq::LinqAttributeBasedTypeDefinition.DetermineAttributes(typeof(PocoWithIgnrdAttr_LinqAndMapping)));
-            var table = new Linq::Table<PocoWithIgnrdAttr_LinqAndMapping>(Session, config);
-            table.Create();
-
-            VerifyQuery(
-                "CREATE TABLE \"pocowithignrdattr_linqandmapping\" " +
-                    "(\"ignoredstringattribute\" text, \"somenonignoreddouble\" double, " +
-                    "\"somepartitionkey\" text, PRIMARY KEY (\"somepartitionkey\"))",
-                1);
-
-            var cqlClient = GetMapper();
-            var pocoToInsert = new PocoWithIgnrdAttr_LinqAndMapping
-            {
-                SomePartitionKey = Guid.NewGuid().ToString(),
-                IgnoredStringAttribute = Guid.NewGuid().ToString(),
-            };
-            cqlClient.Insert(pocoToInsert);
-
-            VerifyBoundStatement(
-                "INSERT INTO PocoWithIgnrdAttr_LinqAndMapping (SomeNonIgnoredDouble, SomePartitionKey) " +
-                "VALUES (?, ?)",
-                1,
-                pocoToInsert.SomeNonIgnoredDouble, pocoToInsert.SomePartitionKey);
-
-            // Get records using mapped object, validate that the value from Cassandra was ignored in favor of the default val
-            var cqlSelect = "SELECT * from " + table.Name;
-            TestCluster.PrimeFluent(
-                b => b.WhenQuery(cqlSelect)
-                      .ThenRowsSuccess(
-                          new[]
-                          {
-                              ("somenonignoreddouble", DataType.Double),
-                              ("somepartitionkey", DataType.Text),
-                              ("ignoredstringattribute", DataType.Text)
-                          },
-                          r => r.WithRow(
-                              pocoToInsert.SomeNonIgnoredDouble,
-                              pocoToInsert.SomePartitionKey,
-                              null)));
-
-            var records = cqlClient.Fetch<PocoWithIgnrdAttr_LinqAndMapping>(cqlSelect).ToList();
-            Assert.AreEqual(1, records.Count);
-            Assert.AreEqual(pocoToInsert.SomePartitionKey, records[0].SomePartitionKey);
-            var defaultPoco = new PocoWithIgnrdAttr_LinqAndMapping();
-            Assert.AreEqual(defaultPoco.IgnoredStringAttribute, records[0].IgnoredStringAttribute);
-            Assert.AreEqual(defaultPoco.SomeNonIgnoredDouble, records[0].SomeNonIgnoredDouble);
-
-            // Query for the column that the Linq table create created, verify no value was uploaded to it
-            var rows = Session.Execute(cqlSelect).GetRows().ToList();
-            Assert.AreEqual(1, rows.Count);
-            Assert.AreEqual(pocoToInsert.SomePartitionKey, rows[0].GetValue<string>("somepartitionkey"));
-            Assert.AreEqual(pocoToInsert.SomeNonIgnoredDouble, rows[0].GetValue<double>("somenonignoreddouble"));
-            Assert.AreEqual(null, rows[0].GetValue<string>(IgnoredStringAttribute));
         }
 
         /// <summary>
@@ -491,8 +421,6 @@ namespace Cassandra.IntegrationTests.Mapping.Tests
         public void Attributes_MultipleClusteringKeys()
         {
             var config = new MappingConfiguration();
-            config.MapperFactory.PocoDataFactory.AddDefinitionDefault(typeof(PocoWithClusteringKeys),
-                () => Linq::LinqAttributeBasedTypeDefinition.DetermineAttributes(typeof(PocoWithClusteringKeys)));
             var table = new Linq::Table<PocoWithClusteringKeys>(Session, config);
             table.Create();
 
@@ -585,8 +513,8 @@ namespace Cassandra.IntegrationTests.Mapping.Tests
             table.Create();
 
             VerifyQuery(
-                "CREATE TABLE \"test_map_empty_clust_column_name\" (\"cluster\" text, \"id\" int, \"value\" text, " +
-                    "PRIMARY KEY (\"id\", \"cluster\"))",
+                "CREATE TABLE test_map_empty_clust_column_name (cluster text, id int, value text, " +
+                    "PRIMARY KEY (id, cluster))",
                 1);
 
             var definition = new AttributeBasedTypeDefinition(typeof(EmptyClusteringColumnName));
@@ -915,43 +843,6 @@ namespace Cassandra.IntegrationTests.Mapping.Tests
         }
 
         /// <summary>
-        /// Test poco class that uses both Linq and Cassandra.Mapping attributes at the same time
-        /// </summary>
-        [Linq::Table("pocowithignrdattr_linqandmapping")]
-        private class PocoWithIgnrdAttr_LinqAndMapping
-        {
-            [Linq::PartitionKey]
-            [PartitionKey]
-            [Linq::Column("somepartitionkey")]
-            public string SomePartitionKey = "somePartitionKeyDefaultValue";
-
-            [Linq::Column("somenonignoreddouble")]
-            public double SomeNonIgnoredDouble = 123456;
-
-            [Cassandra.Mapping.Attributes.Ignore]
-            [Linq::Column(Attributes.IgnoredStringAttribute)]
-            public string IgnoredStringAttribute = "someIgnoredString";
-        }
-
-        /// <summary>
-        /// See PocoWithIgnoredAttributes for correctly implemented counterpart
-        /// </summary>
-        [Linq::Table("pocowithwrongfieldlabeledpk")]
-        private class PocoWithWrongFieldLabeledPk
-        {
-            [Linq::PartitionKey]
-            [Linq::Column("somepartitionkey")]
-            public string SomePartitionKey = "somePartitionKeyDefaultValue";
-
-            [Linq::Column("somenonignoreddouble")]
-            public double SomeNonIgnoredDouble = 123456;
-
-            [PartitionKey]
-            [Linq::Column("someotherstring")]
-            public string SomeOtherString = "someOtherString";
-        }
-
-        /// <summary>
         /// Class with Mapping.Attributes.Partition key ommitted
         /// </summary>
         private class PocoWithOnlyPartitionKeyNotLabeled
@@ -1011,48 +902,37 @@ namespace Cassandra.IntegrationTests.Mapping.Tests
             }
         }
 
-        [Linq::Table("pocowithcompositekey")]
         private class PocoWithCompositeKey
         {
-            [Linq::PartitionKey(1)]
             [PartitionKey(1)]
-            [Linq::Column("somepartitionkey1")]
             public string SomePartitionKey1 = "somepartitionkey1_val";
 
-            [Linq::PartitionKey(2)]
             [PartitionKey(2)]
-            [Linq::Column("somepartitionkey2")]
             public string SomePartitionKey2 = "somepartitionkey2_val";
 
-            [Linq::Column("listofguids")]
             public List<Guid> ListOfGuids;
 
             [Cassandra.Mapping.Attributes.Ignore]
-            [Linq::Column("ignoredstring")]
             public string IgnoredString = "someIgnoredString_val";
         }
 
-        [Linq::Table("pocowithclusteringkeys")]
+        [Table("pocowithclusteringkeys", CaseSensitive = true)]
         private class PocoWithClusteringKeys
         {
-            [Linq::PartitionKey(1)]
             [PartitionKey(1)]
-            [Linq::Column("somepartitionkey1")]
+            [Column("somepartitionkey1")]
             public string SomePartitionKey1 = "somepartitionkey1_val";
 
-            [Linq::PartitionKey(2)]
             [PartitionKey(2)]
-            [Linq::Column("somepartitionkey2")]
+            [Column("somepartitionkey2")]
             public string SomePartitionKey2 = "somepartitionkey2_val";
 
-            [Linq::ClusteringKey(1)]
             [ClusteringKey(1)]
-            [Linq::Column("guid1")]
+            [Column("guid1")]
             public Guid Guid1;
 
-            [Linq::ClusteringKey(2)]
             [ClusteringKey(2)]
-            [Linq::Column("guid2")]
+            [Column("guid2")]
             public Guid Guid2;
         }
     }

@@ -36,59 +36,6 @@ namespace Cassandra.Tasks
         public static Task<bool> Completed { get; }
 
         /// <summary>
-        /// Returns an AsyncResult according to the .net async programming model (Begin)
-        /// </summary>
-        public static Task<TResult> ToApm<TResult>(this Task<TResult> task, AsyncCallback callback, object state)
-        {
-            if (task.AsyncState == state)
-            {
-                if (callback != null)
-                {
-                    // Task implements IAsyncResult.CompletedSynchronously as false. Do not invoke an APM callback
-                    // inline for an already-completed task while reporting that the operation completed
-                    // asynchronously. This is especially common for operations satisfied from a cache.
-                    task.ContinueWith(
-                        t => callback(t),
-                        CancellationToken.None,
-                        TaskContinuationOptions.None,
-                        TaskScheduler.Default);
-                }
-                return task;
-            }
-
-            var tcs = new TaskCompletionSource<TResult>(state);
-            task.ContinueWith(delegate
-            {
-                if (task.IsFaulted)
-                {
-                    // ReSharper disable once PossibleNullReferenceException
-                    tcs.TrySetException(task.Exception.InnerExceptions);
-                }
-                else if (task.IsCanceled)
-                {
-                    tcs.TrySetCanceled();
-                }
-                else
-                {
-                    tcs.TrySetResult(task.Result);
-                }
-
-            }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
-            if (callback != null)
-            {
-                // Keep callback invocation asynchronous without delaying the IAsyncResult's completion. In
-                // particular, a completed source with a caller-provided state must remain completed when this
-                // method returns instead of depending on a ThreadPool work item to copy its result.
-                tcs.Task.ContinueWith(
-                    t => callback(t),
-                    CancellationToken.None,
-                    TaskContinuationOptions.None,
-                    TaskScheduler.Default);
-            }
-            return tcs.Task;
-        }
-
-        /// <summary>
         /// Waits the task to transition to RanToComplete and returns the Task.Result.
         /// It throws the inner exception of the AggregateException in case there is a single exception.
         /// It throws the Aggregate exception when there is more than 1 inner exception.

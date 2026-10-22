@@ -28,8 +28,6 @@ using Newtonsoft.Json;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 
-#pragma warning disable 612
-
 namespace Cassandra.IntegrationTests.Linq.LinqMethods
 {
     [TestCassandraVersion(2, 0)]
@@ -43,8 +41,6 @@ namespace Cassandra.IntegrationTests.Linq.LinqMethods
             base.SetUp();
 
             MappingConfiguration movieMappingConfig = new MappingConfiguration();
-            movieMappingConfig.MapperFactory.PocoDataFactory.AddDefinitionDefault(typeof(Movie),
-                 () => LinqAttributeBasedTypeDefinition.DetermineAttributes(typeof(Movie)));
             _movieTable = new Table<Movie>(Session, movieMappingConfig);
         }
 

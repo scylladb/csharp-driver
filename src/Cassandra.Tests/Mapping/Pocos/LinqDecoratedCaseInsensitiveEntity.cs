@@ -15,8 +15,7 @@
 //
 
 using System;
-using Cassandra.Data.Linq;
-#pragma warning disable 618
+using Cassandra.Mapping.Attributes;
 
 namespace Cassandra.Tests.Mapping.Pocos
 {

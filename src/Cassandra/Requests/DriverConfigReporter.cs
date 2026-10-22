@@ -573,15 +573,6 @@ namespace Cassandra.Requests
                     return new JObject { ["type"] = "standard-error-aware" };
                 }
 
-                // Deprecated, but an application can still configure it and the report describes what is
-                // configured rather than what is recommended.
-#pragma warning disable 618
-                if (policy is DowngradingConsistencyRetryPolicy)
-#pragma warning restore 618
-                {
-                    return new JObject { ["type"] = "downgrading-consistency" };
-                }
-
                 if (policy is FallthroughRetryPolicy)
                 {
                     return new JObject { ["type"] = "fallthrough" };
@@ -683,7 +674,6 @@ namespace Cassandra.Requests
         {
             var tokenAware = false;
             var allRecognized = true;
-            DCAwareRoundRobinPolicy dcAware = null;
 
             foreach (var policy in chain)
             {
@@ -691,14 +681,11 @@ namespace Cassandra.Requests
                 {
                     tokenAware = true;
                 }
-                else if (policy is DCAwareRoundRobinPolicy dcAwarePolicy)
+                else if (policy is DCAwareRoundRobinPolicy || policy is RoundRobinPolicy || policy is DefaultLoadBalancingPolicy)
                 {
-                    dcAware = dcAwarePolicy;
-                }
-                else if (policy is RoundRobinPolicy || policy is DefaultLoadBalancingPolicy)
-                {
-                    // Known, and contributing no flag of its own: round robin has no node preference, and
-                    // DefaultLoadBalancingPolicy only delegates.
+                    // Known, and contributing no flag of its own: the datacenter preference is reported under
+                    // node-preference, round robin has no node preference, and DefaultLoadBalancingPolicy only
+                    // delegates.
                 }
                 // RetryLoadBalancingPolicy is deliberately absent from that list, so its presence forces the
                 // custom branch below. It is not a transparent delegator: its query plan re-enumerates the
@@ -721,17 +708,6 @@ namespace Cassandra.Requests
                 return DriverConfigReporter.CustomPolicy(chain[0]);
             }
 
-            // Whether a request may go to a node outside the preference reported under node-preference. A
-            // datacenter-aware policy keeps a configurable number of hosts per remote datacenter as failover, so
-            // for it the answer is whether that number is positive. Round robin reports false, and not because
-            // it never leaves the local datacenter — it treats every host as local, so in a multi-datacenter
-            // cluster a query can certainly land on a remote one. It reports false because it declares no
-            // preference for a request to fall outside of: no node-preference is reported for such a chain, which
-            // is what this flag is defined against. Cross-driver decision, deliberately not "true".
-#pragma warning disable 618
-            var fallbackToNonPreferred = dcAware != null && dcAware.UsedHostsPerRemoteDc > 0;
-#pragma warning restore 618
-
             return new JObject
             {
                 ["type"] = "token-aware",
@@ -740,7 +716,15 @@ namespace Cassandra.Requests
                 // randomizes selection across query plans rather than rotating it deterministically. Not
                 // configurable, hence a constant here.
                 ["load-distribution"] = "shuffle",
-                ["fallback-to-non-preferred-nodes"] = fallbackToNonPreferred
+
+                // Whether a request may go to a node outside the preference reported under node-preference. A
+                // datacenter-aware policy never does: its query plans contain only local nodes. Round robin reports
+                // false too, and not because it never leaves the local datacenter — it treats every host as local,
+                // so in a multi-datacenter cluster a query can certainly land on a remote one. It reports false
+                // because it declares no preference for a request to fall outside of: no node-preference is reported
+                // for such a chain, which is what this flag is defined against. Cross-driver decision, deliberately
+                // not "true".
+                ["fallback-to-non-preferred-nodes"] = false
 
                 // "adaptive-ordering" is omitted: the driver does not reorder candidates on runtime signals.
             };

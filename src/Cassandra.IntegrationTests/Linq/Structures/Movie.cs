@@ -18,6 +18,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Cassandra.Data.Linq;
+using Cassandra.Mapping.Attributes;
 using Cassandra.IntegrationTests.SimulacronAPI;
 using Cassandra.IntegrationTests.SimulacronAPI.PrimeBuilder.Then;
 using Cassandra.IntegrationTests.TestBase;
@@ -25,12 +26,9 @@ using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 using NUnit.Framework.Internal;
 
-#pragma warning disable 618
-
 namespace Cassandra.IntegrationTests.Linq.Structures
 {
-    [AllowFiltering]
-    [Table(Movie.TableName)]
+    [Table(Movie.TableName, CaseSensitive = true, AllowFiltering = true)]
     public class Movie
     {
         public const string TableName = "coolMovies";

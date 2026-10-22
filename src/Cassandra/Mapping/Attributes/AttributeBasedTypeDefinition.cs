@@ -40,11 +40,21 @@ namespace Cassandra.Mapping.Attributes
         /// <summary>
         /// Creates a new TypeDefinition for the POCO Type specified using any attributes on the class to determine mappings.
         /// </summary>
-        public AttributeBasedTypeDefinition(Type type)
+        public AttributeBasedTypeDefinition(Type type) : this(type, false)
+        {
+        }
+
+        /// <summary>
+        /// Creates a new TypeDefinition for the POCO Type specified using any attributes on the class to determine mappings.
+        /// </summary>
+        /// <param name="type">The POCO type.</param>
+        /// <param name="caseSensitiveByDefault">Whether names are case-sensitive when the class has no <see cref="TableAttribute"/>.</param>
+        internal AttributeBasedTypeDefinition(Type type, bool caseSensitiveByDefault)
         {
             PocoType = type ?? throw new ArgumentNullException("type");
             //Get the table name from the attribute or the type name
             TableName = type.Name;
+            CaseSensitive = caseSensitiveByDefault;
             var tableAttribute = type.GetTypeInfo().GetCustomAttribute<TableAttribute>(true);
             if (tableAttribute != null)
             {

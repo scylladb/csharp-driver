@@ -17,16 +17,14 @@
 using System;
 using System.Collections.Generic;
 using Cassandra.Data.Linq;
+using Cassandra.Mapping.Attributes;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 using NUnit.Framework.Internal;
 
-#pragma warning disable 618
-
 namespace Cassandra.IntegrationTests.CqlFunctions.Structures
 {
-    [Table("EntityWithNullableTimeUuid")]
-    [AllowFiltering]
+    [Table("EntityWithNullableTimeUuid", CaseSensitive = true, AllowFiltering = true)]
     public class EntityWithNullableTimeUuid
     {
         private const int DefaultRecordCount = 6;

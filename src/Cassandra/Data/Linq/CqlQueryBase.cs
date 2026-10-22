@@ -163,17 +163,6 @@ namespace Cassandra.Data.Linq
             return ExecuteCqlQuery(executionProfile);
         }
 
-        public IAsyncResult BeginExecute(AsyncCallback callback, object state)
-        {
-            return ExecuteAsync().ToApm(callback, state);
-        }
-
-        public IEnumerable<TEntity> EndExecute(IAsyncResult ar)
-        {
-            var task = (Task<IEnumerable<TEntity>>)ar;
-            return task.Result;
-        }
-
         private IEnumerable<TEntity> ExecuteCqlQuery(string executionProfile)
         {
             return WaitToCompleteWithMetrics(ExecuteCqlQueryAsync(executionProfile), QueryAbortTimeout);

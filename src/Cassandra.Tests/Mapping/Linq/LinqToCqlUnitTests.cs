@@ -23,14 +23,13 @@ using System.Threading.Tasks;
 using Cassandra.Connections.Control;
 using Cassandra.Data.Linq;
 using Cassandra.Mapping;
+using Cassandra.Mapping.Attributes;
 using Cassandra.Serialization;
 using Cassandra.Tests.Mapping.Pocos;
 using Moq;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 using StringAssert = NUnit.Framework.StringAssert;
-
-#pragma warning disable 618
 
 namespace Cassandra.Tests.Mapping.Linq
 {
@@ -388,7 +387,7 @@ APPLY BATCH".Replace("\r", ""));
             }
         }
 
-        [Table]
+        [Table(CaseSensitive = true)]
         private class AllowFilteringTestTable
         {
             [PartitionKey]
@@ -415,7 +414,7 @@ APPLY BATCH".Replace("\r", ""));
             Trace.WriteLine(cqlQuery.ToString());
         }
 
-        [Table]
+        [Table(CaseSensitive = true)]
         private class CounterTestTable1
         {
             [PartitionKey]
@@ -428,7 +427,7 @@ APPLY BATCH".Replace("\r", ""));
             public long Value { get; set; }
         }
 
-        [Table]
+        [Table(CaseSensitive = true)]
         public class CounterTestTable2
         {
             [PartitionKey(0)]

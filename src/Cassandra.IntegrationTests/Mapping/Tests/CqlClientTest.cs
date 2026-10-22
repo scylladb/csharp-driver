@@ -23,9 +23,6 @@ using Cassandra.Mapping;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 
-#pragma warning disable 618
-#pragma warning disable 612
-
 namespace Cassandra.IntegrationTests.Mapping.Tests
 {
     public class CqlClientTest : SimulacronTest
@@ -38,12 +35,10 @@ namespace Cassandra.IntegrationTests.Mapping.Tests
         {
             // Setup
             MappingConfiguration config1 = new MappingConfiguration();
-            config1.MapperFactory.PocoDataFactory.AddDefinitionDefault(typeof(Poco1), () => LinqAttributeBasedTypeDefinition.DetermineAttributes(typeof(Poco1)));
             var table1 = new Table<Poco1>(Session, config1);
             string cqlSelectAll1 = "SELECT * from " + table1.Name;
 
             MappingConfiguration config2 = new MappingConfiguration();
-            config2.MapperFactory.PocoDataFactory.AddDefinitionDefault(typeof(Poco2), () => LinqAttributeBasedTypeDefinition.DetermineAttributes(typeof(Poco2)));
             var table2 = new Table<Poco2>(Session, config2);
             string cqlSelectAll2 = "SELECT * from " + table2.Name;
 
@@ -110,27 +105,25 @@ namespace Cassandra.IntegrationTests.Mapping.Tests
         /// Test Classes
         ////////////////////////////////////////////////////
 
-        [Cassandra.Data.Linq.Table("poco1")]
+        [Cassandra.Mapping.Attributes.Table("poco1", CaseSensitive = true)]
         private class Poco1
         {
-            [Cassandra.Data.Linq.PartitionKeyAttribute]
             [Cassandra.Mapping.Attributes.PartitionKey]
-            [Cassandra.Data.Linq.Column("somestring1")]
+            [Cassandra.Mapping.Attributes.Column("somestring1")]
             public string SomeString1 = "somevalue_1_";
 
-            [Cassandra.Data.Linq.Column("somedouble1")]
+            [Cassandra.Mapping.Attributes.Column("somedouble1")]
             public double SomeDouble1 = 1;
         }
 
-        [Cassandra.Data.Linq.Table("poco2")]
+        [Cassandra.Mapping.Attributes.Table("poco2", CaseSensitive = true)]
         private class Poco2
         {
-            [Cassandra.Data.Linq.PartitionKeyAttribute]
             [Cassandra.Mapping.Attributes.PartitionKey]
-            [Cassandra.Data.Linq.Column("somestring2")]
+            [Cassandra.Mapping.Attributes.Column("somestring2")]
             public string SomeString2 = "somevalue_2_";
 
-            [Cassandra.Data.Linq.Column("somedouble2")]
+            [Cassandra.Mapping.Attributes.Column("somedouble2")]
             public double SomeDouble2 = 2;
         }
 
