@@ -91,6 +91,22 @@ Connection pools now recover when a load balancing policy temporarily ignores a
 host and later treats it as local or remote again, including when the pool was
 empty or still draining its old connections.
 
+### Asynchronous automatic paging
+
+`RowSet` can now be iterated with `await foreach`. The following pages are retrieved
+without blocking the calling thread, whereas `foreach` and LINQ operators block
+it for each page fetch. Applications that use `ExecuteAsync` with automatic paging
+should replace `foreach (var row in rs)` with `await foreach (var row in rs)`.
+
+`RowSet` does not implement `IAsyncEnumerable<Row>`: `System.Linq.AsyncEnumerable`
+is part of .NET 10, and implementing both interfaces would make existing calls
+such as `rs.Select(...)` or `rs.Where(...)` ambiguous. Use `rs.AsAsyncEnumerable()` when
+an `IAsyncEnumerable<Row>` is required. Subclasses and mocks of `RowSet` that
+override `GetEnumerator()` should also override `GetAsyncEnumerator()`.
+
+A page fetch that ended with the session disposed no longer throws a
+`NullReferenceException`; the iteration ends instead.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.

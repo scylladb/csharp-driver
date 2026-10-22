@@ -674,6 +674,287 @@ namespace Cassandra.Tests
             }
         }
 
+        [Test]
+        public async Task RowSetAsyncFetchNext3Pages()
+        {
+            const int rowLength = 10;
+            var rs = CreateStringsRowset(10, rowLength, "page_0_");
+            rs.PagingState = new byte[0];
+            var fetchCounter = 0;
+            SetFetchNextMethod(rs, async pagingState =>
+            {
+                await Task.Yield();
+                fetchCounter++;
+                var pageRowSet = CreateStringsRowset(10, rowLength, "page_" + fetchCounter + "_");
+                pageRowSet.PagingState = fetchCounter < 3 ? new byte[0] : null;
+                return pageRowSet;
+            });
+
+            var rows = new List<Row>();
+            await foreach (var row in rs)
+            {
+                rows.Add(row);
+            }
+
+            Assert.AreEqual(3, fetchCounter, "Fetch must have been called 3 times");
+            Assert.AreEqual(rowLength * 4, rows.Count, "RowSet must contain 4 pages in total");
+            Assert.AreEqual("page_0_row_0_col_0", rows[0].GetValue<string>(0));
+            Assert.AreEqual("page_1_row_0_col_0", rows[rowLength].GetValue<string>(0));
+            Assert.AreEqual("page_2_row_0_col_0", rows[rowLength * 2].GetValue<string>(0));
+            Assert.AreEqual("page_3_row_0_col_0", rows[rowLength * 3].GetValue<string>(0));
+            Assert.IsTrue(rs.IsFullyFetched);
+        }
+
+        /// <summary>
+        /// Tests that the asynchronous enumerator yields control while the following page is being retrieved.
+        /// </summary>
+        [Test]
+        public async Task RowSetAsyncDoesNotBlockWhileFetching()
+        {
+            var rs = CreateStringsRowset(1, 1, "a_");
+            rs.PagingState = new byte[0];
+            var pageTcs = new TaskCompletionSource<RowSet>(TaskCreationOptions.RunContinuationsAsynchronously);
+            SetFetchNextMethod(rs, pagingState => pageTcs.Task);
+
+            await using var enumerator = rs.GetAsyncEnumerator();
+            Assert.True(await enumerator.MoveNextAsync());
+            Assert.AreEqual("a_row_0_col_0", enumerator.Current.GetValue<string>(0));
+
+            var moveNext = enumerator.MoveNextAsync();
+            Assert.False(moveNext.IsCompleted, "MoveNextAsync must not complete before the page is retrieved");
+
+            pageTcs.SetResult(CreateStringsRowset(1, 1, "b_"));
+            Assert.True(await moveNext);
+            Assert.AreEqual("b_row_0_col_0", enumerator.Current.GetValue<string>(0));
+            Assert.False(await enumerator.MoveNextAsync());
+        }
+
+        [Test]
+        public async Task RowSetAsyncDoesNotCallFetchNextWhenAutoPageFalse()
+        {
+            var rs = CreateStringsRowset(1, 1, "a_");
+            rs.AutoPage = false;
+            rs.PagingState = new byte[] { 0 };
+            var called = false;
+            SetFetchNextMethod(rs, pagingState =>
+            {
+                called = true;
+                return CreateStringsRowset(1, 1, "b_");
+            });
+
+            var rows = await rs.AsAsyncEnumerable().ToListAsync();
+
+            Assert.False(called);
+            Assert.AreEqual(1, rows.Count);
+        }
+
+        [Test]
+        public async Task RowSetAsyncMustDequeue()
+        {
+            const int rowLength = 10;
+            var rs = CreateStringsRowset(2, rowLength);
+
+            Assert.AreEqual(rowLength, (await rs.AsAsyncEnumerable().ToListAsync()).Count);
+            Assert.AreEqual(0, (await rs.AsAsyncEnumerable().ToListAsync()).Count);
+            Assert.AreEqual(0, rs.Count());
+        }
+
+        [Test]
+        public async Task RowSetAsyncFetchNextPropagatesException()
+        {
+            var rs = CreateStringsRowset(1, 1);
+            rs.PagingState = new byte[] { 0 };
+            var counter = 0;
+            SetFetchNextMethod(rs, async pagingState =>
+            {
+                await Task.Yield();
+                counter++;
+                throw new TestException();
+            });
+
+            Assert.AreEqual(1, rs.GetAvailableWithoutFetching());
+            await NUnit.Framework.Assert.ThrowsAsync<TestException>(async () => await rs.AsAsyncEnumerable().ToListAsync());
+            await NUnit.Framework.Assert.ThrowsAsync<TestException>(async () => await rs.AsAsyncEnumerable().ToListAsync());
+            // The failed fetch can be retried using the synchronous enumerator as well
+            Assert.Throws<TestException>(() => rs.ToList());
+            Assert.AreEqual(3, counter);
+            Assert.IsFalse(rs.IsFullyFetched);
+        }
+
+        /// <summary>
+        /// Tests that cancelling the enumeration stops waiting for the page, while the page that was already requested
+        /// is still added to the RowSet.
+        /// </summary>
+        [Test]
+        public async Task RowSetAsyncCancellationPreservesFetchedPage()
+        {
+            const int rowLength = 5;
+            var rs = CreateStringsRowset(1, rowLength, "a_");
+            rs.PagingState = new byte[0];
+            var fetchCounter = 0;
+            var pageTcs = new TaskCompletionSource<RowSet>(TaskCreationOptions.RunContinuationsAsynchronously);
+            SetFetchNextMethod(rs, pagingState =>
+            {
+                Interlocked.Increment(ref fetchCounter);
+                return pageTcs.Task;
+            });
+
+            using var cts = new CancellationTokenSource();
+            await using (var enumerator = rs.GetAsyncEnumerator(cts.Token))
+            {
+                for (var i = 0; i < rowLength; i++)
+                {
+                    Assert.True(await enumerator.MoveNextAsync());
+                }
+
+                var moveNext = enumerator.MoveNextAsync();
+                Assert.False(moveNext.IsCompleted);
+                cts.Cancel();
+                await NUnit.Framework.Assert.CatchAsync<OperationCanceledException>(async () => await moveNext);
+            }
+
+            Assert.AreEqual(0, rs.GetAvailableWithoutFetching());
+            var page = CreateStringsRowset(1, rowLength, "b_");
+            page.PagingState = null;
+            pageTcs.SetResult(page);
+            // Waits for the in-flight fetch without starting a new one
+            await rs.FetchMoreResultsAsync();
+
+            Assert.AreEqual(1, fetchCounter);
+            Assert.AreEqual(rowLength, rs.GetAvailableWithoutFetching());
+            Assert.IsTrue(rs.IsFullyFetched);
+            var rows = await rs.AsAsyncEnumerable().ToListAsync();
+            Assert.AreEqual(rowLength, rows.Count);
+            Assert.AreEqual("b_row_0_col_0", rows[0].GetValue<string>(0));
+        }
+
+        [Test]
+        public async Task RowSetAsyncThrowsWhenAlreadyCancelled()
+        {
+            var rs = CreateStringsRowset(1, 1);
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+
+            await NUnit.Framework.Assert.CatchAsync<OperationCanceledException>(async () =>
+            {
+                await foreach (var row in rs.AsAsyncEnumerable().WithCancellation(cts.Token))
+                {
+                    Assert.Fail("No row must be yielded once cancelled");
+                }
+            });
+            Assert.AreEqual(1, rs.GetAvailableWithoutFetching(), "Rows must not be dequeued once cancelled");
+        }
+
+        [Test]
+        public async Task RowSetFetchMoreResultsAsyncCancellationDoesNotCancelFetch()
+        {
+            var rs = CreateStringsRowset(1, 1);
+            rs.PagingState = new byte[0];
+            var pageTcs = new TaskCompletionSource<RowSet>(TaskCreationOptions.RunContinuationsAsynchronously);
+            SetFetchNextMethod(rs, pagingState => pageTcs.Task);
+            using var cts = new CancellationTokenSource();
+
+            var fetch = rs.FetchMoreResultsAsync(cts.Token);
+            cts.Cancel();
+            await NUnit.Framework.Assert.CatchAsync<OperationCanceledException>(async () => await fetch);
+
+            pageTcs.SetResult(CreateStringsRowset(1, 3));
+            rs.FetchMoreResults();
+            Assert.AreEqual(4, rs.GetAvailableWithoutFetching());
+        }
+
+        /// <summary>
+        /// Tests that synchronous and asynchronous enumerators iterating concurrently share each page fetch.
+        /// </summary>
+        [Test, Repeat(10)]
+        public async Task RowSetIteratingConcurrentlySyncAndAsyncWithMultiplePages()
+        {
+            const int pageSize = 10;
+            const int pages = 20;
+            var rs = CreateStringsRowset(10, pageSize);
+            rs.PagingState = new byte[16];
+            var fetchCounter = 0;
+            SetFetchNextMethod(rs, async pagingState =>
+            {
+                var hasNextPage = Interlocked.Increment(ref fetchCounter) < pages - 1;
+                await Task.Delay(20).ConfigureAwait(false);
+                var result = CreateStringsRowset(10, pageSize);
+                result.PagingState = hasNextPage ? new byte[16] : null;
+                return result;
+            });
+
+            var counter = 0;
+            var tasks = new List<Task>();
+            for (var i = 0; i < Environment.ProcessorCount; i++)
+            {
+                tasks.Add(Task.Run(() => Interlocked.Add(ref counter, rs.Count())));
+                tasks.Add(Task.Run(async () =>
+                {
+                    var asyncCount = 0;
+                    await foreach (var row in rs)
+                    {
+                        asyncCount++;
+                    }
+                    Interlocked.Add(ref counter, asyncCount);
+                }));
+            }
+            await Task.WhenAll(tasks);
+            Interlocked.Add(ref counter, (await rs.AsAsyncEnumerable().ToListAsync()).Count);
+
+            Assert.AreEqual(pages - 1, fetchCounter);
+            Assert.AreEqual(pageSize * pages, Volatile.Read(ref counter));
+        }
+
+        /// <summary>
+        /// When the session is disposed, the next page handler returns an empty RowSet for VOID results.
+        /// </summary>
+        [Test]
+        public async Task RowSetStopsPagingWhenFetchReturnsEmptyRowSet()
+        {
+            var rs = CreateStringsRowset(1, 1);
+            rs.PagingState = new byte[0];
+            SetFetchNextMethod(rs, pagingState => RowSet.Empty());
+
+            Assert.AreEqual(1, (await rs.AsAsyncEnumerable().ToListAsync()).Count);
+            Assert.IsTrue(rs.IsFullyFetched);
+
+            rs = CreateStringsRowset(1, 1);
+            rs.PagingState = new byte[0];
+            SetFetchNextMethod(rs, pagingState => RowSet.Empty());
+
+            Assert.AreEqual(1, rs.ToList().Count);
+            Assert.IsTrue(rs.IsFullyFetched);
+        }
+
+        [Test]
+        public async Task RowSetEmptyIteratesAsync()
+        {
+            var rs = RowSet.Empty();
+            var count = 0;
+            await foreach (var row in rs)
+            {
+                count++;
+            }
+            Assert.AreEqual(0, count);
+            await rs.FetchMoreResultsAsync(CancellationToken.None);
+        }
+
+        [Test]
+        public async Task RowsetIsMockableAsync()
+        {
+            var rowMock = new Mock<Row>();
+            rowMock.Setup(r => r.GetValue<int>(It.Is<string>(n => n == "int_value"))).Returns(100);
+            var rows = new[] { rowMock.Object };
+            var mock = new Mock<RowSet>();
+            mock
+                .Setup(r => r.GetAsyncEnumerator(It.IsAny<CancellationToken>()))
+                .Returns(() => rows.ToAsyncEnumerable().GetAsyncEnumerator());
+
+            var rowArray = await mock.Object.AsAsyncEnumerable().ToArrayAsync();
+            Assert.AreEqual(1, rowArray.Length);
+            Assert.AreEqual(100, rowArray[0].GetValue<int>("int_value"));
+        }
+
         private static void SetFetchNextMethod(RowSet rs, Func<byte[], Task<RowSet>> handler)
         {
             rs.SetFetchNextPageHandler(handler, 10000, Mock.Of<IMetricsManager>());
