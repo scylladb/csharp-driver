@@ -178,6 +178,20 @@ The `Row(int, byte[][], CqlColumn[], Dictionary<string, int>)` constructor and t
 protected `Row.Values` and `Row.ProtocolVersion` properties are removed. To create a
 `Row` in a test, use the parameterless constructor and override `GetValue<T>()`.
 
+### Removed `Begin`/`End` asynchronous methods
+
+The methods of the `IAsyncResult` pattern are removed. Use the `Task`-based methods
+instead, which they wrapped:
+
+| Removed | Replacement |
+|---|---|
+| `ISession.BeginExecute` / `EndExecute` | `ISession.ExecuteAsync` |
+| `ISession.BeginPrepare` / `EndPrepare` | `ISession.PrepareAsync` |
+| `BeginExecute` / `EndExecute` of `CqlQueryBase<T>` (including `CqlQuery<T>` and `Table<T>`), `CqlCommand`, `CqlScalar<T>`, `CqlQuerySingleElement<T>` and `Batch` (`Cassandra.Data.Linq`) | their `ExecuteAsync` |
+
+Code that still needs an `IAsyncResult` can use the returned `Task`, which implements
+it.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.

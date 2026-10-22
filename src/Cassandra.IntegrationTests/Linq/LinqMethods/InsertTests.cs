@@ -56,7 +56,7 @@ namespace Cassandra.IntegrationTests.Linq.LinqMethods
             };
 
             batch.Append(from m in movies select nerdMoviesTable.Insert(m));
-            Task taskSaveMovies = Task.Factory.FromAsync(batch.BeginExecute, batch.EndExecute, null);
+            Task taskSaveMovies = batch.ExecuteAsync();
             taskSaveMovies.Wait();
 
             VerifyBatchStatement(
@@ -159,7 +159,7 @@ namespace Cassandra.IntegrationTests.Linq.LinqMethods
             };
 
             batch.Append(from m in movies select nerdMoviesTable.Insert(m));
-            Task taskSaveMovies = Task.Factory.FromAsync(batch.BeginExecute, batch.EndExecute, null);
+            Task taskSaveMovies = batch.ExecuteAsync();
 
             taskSaveMovies.Wait();
 

@@ -192,23 +192,6 @@ namespace Cassandra.Data.Linq
             return rs;
         }
 
-        /// <summary>
-        /// Starts executing the statement async
-        /// </summary>
-        public virtual IAsyncResult BeginExecute(AsyncCallback callback, object state)
-        {
-            return ExecuteAsync().ToApm(callback, state);
-        }
-
-        /// <summary>
-        /// Starts the async executing of the statement
-        /// </summary>
-        public virtual void EndExecute(IAsyncResult ar)
-        {
-            var task = (Task<RowSet>)ar;
-            task.Wait();
-        }
-
         internal T WaitToCompleteWithMetrics<T>(Task<T> task, int timeout = Timeout.Infinite)
         {
             return TaskHelper.WaitToCompleteWithMetrics(_metricsManager, task, timeout);

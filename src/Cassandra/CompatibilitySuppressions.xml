@@ -81,6 +81,96 @@
   </Suppression>
   <Suppression>
     <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.Data.Linq.Batch.BeginExecute(System.AsyncCallback,System.Object)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.Data.Linq.Batch.EndExecute(System.IAsyncResult)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.Data.Linq.CqlCommand.BeginExecute(System.AsyncCallback,System.Object)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.Data.Linq.CqlCommand.EndExecute(System.IAsyncResult)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.Data.Linq.CqlQueryBase`1.BeginExecute(System.AsyncCallback,System.Object)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.Data.Linq.CqlQueryBase`1.EndExecute(System.IAsyncResult)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.Data.Linq.CqlQuerySingleElement`1.BeginExecute(System.AsyncCallback,System.Object)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.Data.Linq.CqlQuerySingleElement`1.EndExecute(System.IAsyncResult)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.Data.Linq.CqlScalar`1.BeginExecute(System.AsyncCallback,System.Object)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.Data.Linq.CqlScalar`1.EndExecute(System.IAsyncResult)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.ISession.BeginExecute(Cassandra.IStatement,System.AsyncCallback,System.Object)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.ISession.BeginExecute(System.String,Cassandra.ConsistencyLevel,System.AsyncCallback,System.Object)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.ISession.BeginPrepare(System.String,System.AsyncCallback,System.Object)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.ISession.EndExecute(System.IAsyncResult)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.ISession.EndPrepare(System.IAsyncResult)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
     <Target>M:Cassandra.ISession.WaitForSchemaAgreement(Cassandra.RowSet)</Target>
     <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
     <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
@@ -124,6 +214,36 @@
   <Suppression>
     <DiagnosticId>CP0002</DiagnosticId>
     <Target>M:Cassandra.RowSet.Dispose</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.Session.BeginExecute(Cassandra.IStatement,System.AsyncCallback,System.Object)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.Session.BeginExecute(System.String,Cassandra.ConsistencyLevel,System.AsyncCallback,System.Object)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.Session.BeginPrepare(System.String,System.AsyncCallback,System.Object)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.Session.EndExecute(System.IAsyncResult)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.Session.EndPrepare(System.IAsyncResult)</Target>
     <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
     <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
   </Suppression>
