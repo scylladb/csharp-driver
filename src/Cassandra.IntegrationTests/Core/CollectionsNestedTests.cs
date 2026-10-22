@@ -46,7 +46,7 @@ namespace Cassandra.IntegrationTests.Core
                 var list1Value = GetList1Val();
 
                 // Insert data
-                session.Execute(new SimpleStatement(cqlUpdateStr).Bind(map1Value, map2Value, list1Value, id));
+                session.Execute(new SimpleStatement(cqlUpdateStr, map1Value, map2Value, list1Value, id));
 
                 // Validate the end state of data in C*
                 string cqlSelectStr = string.Format("SELECT * FROM {0} WHERE id = 1", fqTableName);
@@ -79,14 +79,14 @@ namespace Cassandra.IntegrationTests.Core
                 list1ValueUpdated.Add(new SortedDictionary<string, float> { { "somethingdifferent_m1", 199898.9899898F } });
 
                 // Insert data
-                session.Execute(new SimpleStatement(cqlInsertStr).Bind(1, map1Value, map2Value, list1Value));
+                session.Execute(new SimpleStatement(cqlInsertStr, 1, map1Value, map2Value, list1Value));
                 // Validate Data Initial state
                 string cqlSelectStr = string.Format("SELECT * FROM {0} WHERE id = 1", fqTableName);
                 var row = session.Execute(new SimpleStatement(cqlSelectStr)).First();
                 ValidateSelectedNestedFrozenRow(row);
 
                 // Upate data
-                session.Execute(new SimpleStatement(cqlUpdateStr).Bind(map1ValueUpdated, map2ValueUpdated, list1ValueUpdated, id));
+                session.Execute(new SimpleStatement(cqlUpdateStr, map1ValueUpdated, map2ValueUpdated, list1ValueUpdated, id));
                 // Validate the end state of data in C*
                 cqlSelectStr = string.Format("SELECT * FROM {0} WHERE id = 1", fqTableName);
                 row = session.Execute(new SimpleStatement(cqlSelectStr)).First();
@@ -116,7 +116,7 @@ namespace Cassandra.IntegrationTests.Core
                 List<IDictionary<string, float>> list1Value = GetList1Val();
 
                 // Insert original data
-                session.Execute(new SimpleStatement(cqlInsertStr).Bind(1, map1Value, map2Value, list1Value));
+                session.Execute(new SimpleStatement(cqlInsertStr, 1, map1Value, map2Value, list1Value));
                 // Validate Data Initial state
                 string cqlSelectStr = string.Format("SELECT * FROM {0} WHERE id = 1", fqTableName);
                 var row = session.Execute(new SimpleStatement(cqlSelectStr)).First();
@@ -147,7 +147,7 @@ namespace Cassandra.IntegrationTests.Core
                 var list1Value = GetList1Val();
 
                 // Insert data
-                var err = Assert.Throws<InvalidQueryException>(() => session.Execute(new SimpleStatement(cqlInsertStr).Bind(id, map1Value, map2Value, list1Value, id)));
+                var err = Assert.Throws<InvalidQueryException>(() => session.Execute(new SimpleStatement(cqlInsertStr, id, map1Value, map2Value, list1Value, id)));
                 Assert.AreEqual("PRIMARY KEY part id found in SET part", err.Message);
             }
         }
@@ -167,7 +167,7 @@ namespace Cassandra.IntegrationTests.Core
                 var list1Value = GetList1Val();
 
                 // Insert
-                session.Execute(new SimpleStatement(cqlInsertStr).Bind(1, map1Value, map2Value, list1Value));
+                session.Execute(new SimpleStatement(cqlInsertStr, 1, map1Value, map2Value, list1Value));
 
                 // Validate the end state of data in C*
                 string cqlSelectStr = string.Format("SELECT * FROM {0} WHERE id = 1", fqTableName);

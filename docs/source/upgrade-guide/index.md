@@ -141,6 +141,18 @@ the driver waits for schema agreement itself after each schema change, for up to
 no longer public. Use `TableMetadata.Indexes`, whose `IndexMetadata` describes every
 secondary index of the table on all server versions.
 
+#### `SimpleStatement.Bind` and `BindObjects`
+
+Pass the query values to the `SimpleStatement` constructor instead:
+
+```csharp
+// Before
+var statement = new SimpleStatement("INSERT INTO users (id, name) VALUES (?, ?)").Bind(id, name);
+
+// After
+var statement = new SimpleStatement("INSERT INTO users (id, name) VALUES (?, ?)", id, name);
+```
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.
