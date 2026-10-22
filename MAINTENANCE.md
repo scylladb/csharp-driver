@@ -67,6 +67,23 @@ support-only release changes → Run workflow** and its PR number before
 publishing a release. The run reapplies the path rule. To override its
 decision, edit the PR label directly after the last classifier run.
 
+### Intended public API breaks
+
+`build/validate-packages.py` compares each package's public API with 3.22.0.4
+and fails on any difference that isn't declared in a `CompatibilitySuppressions.xml`
+next to the package's project. Only a major release may break the public API.
+A pull request that does so regenerates those files and commits them with the
+change:
+
+```bash
+python3 build/validate-packages.py --update-api-suppressions
+```
+
+The command records every current difference, so review the diff of the
+regenerated files: it should show exactly the intended breaks. The PR also adds
+an upgrade-guide entry for each break. A suppression that no longer matches a
+difference fails validation, so the files stay accurate.
+
 ### Canonical release workflow
 
 Run **Release NuGet packages** from the protected branch being released:
