@@ -102,17 +102,6 @@ namespace Cassandra.Data.Linq
             return InternalExecuteAsync(executionProfile);
         }
 
-        public IAsyncResult BeginExecute(AsyncCallback callback, object state)
-        {
-            return InternalExecuteAsync().ToApm(callback, state);
-        }
-
-        public void EndExecute(IAsyncResult ar)
-        {
-            var task = (Task)ar;
-            task.Wait();
-        }
-
         protected string BatchTypeString()
         {
             switch (_batchType)

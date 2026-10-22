@@ -85,7 +85,7 @@ namespace Cassandra.IntegrationTests.Core
                 }
 
                 int RowsNo = 1000;
-                var ar = new IAsyncResult[RowsNo];
+                var ar = new Task<RowSet>[RowsNo];
                 var threads = new List<Thread>();
                 var monit = new object();
                 int readyCnt = 0;
@@ -104,10 +104,10 @@ namespace Cassandra.IntegrationTests.Core
                                 Monitor.Wait(monit);
                             }
 
-                            ar[i] = localSession.BeginExecute(string.Format(@"
+                            ar[i] = localSession.ExecuteAsync(new SimpleStatement(string.Format(@"
                                 INSERT INTO {0} (tweet_id, author, isok, body)
                                 VALUES ({1},'test{2}',{3},'body{2}');",
-                                tableName, Guid.NewGuid(), i, i % 2 == 0 ? "false" : "true"), ConsistencyLevel.One, null, null);
+                                tableName, Guid.NewGuid(), i, i % 2 == 0 ? "false" : "true")).SetConsistencyLevel(ConsistencyLevel.One));
                             Interlocked.MemoryBarrier();
                         }
                         catch
@@ -150,11 +150,11 @@ namespace Cassandra.IntegrationTests.Core
                         Interlocked.MemoryBarrier();
                         if (!done.Contains(i) && ar[i] != null)
                         {
-                            if (ar[i].AsyncWaitHandle.WaitOne(10))
+                            if (((IAsyncResult)ar[i]).AsyncWaitHandle.WaitOne(10))
                             {
                                 try
                                 {
-                                    localSession.EndExecute(ar[i]);
+                                    ar[i].GetAwaiter().GetResult();
                                 }
                                 catch (Exception ex)
                                 {
@@ -250,17 +250,18 @@ namespace Cassandra.IntegrationTests.Core
                 for (int i = 0; i < RowsNo; i++)
                 {
                     int tmpi = i;
-                    localSession.BeginExecute(string.Format(@"INSERT INTO {0} (
+                    localSession.ExecuteAsync(new SimpleStatement(string.Format(@"INSERT INTO {0} (
                              tweet_id,
                              author,
                              isok,
                              body)
-                            VALUES ({1},'test{2}',{3},'body{2}');", tableName, Guid.NewGuid(), i, i % 2 == 0 ? "false" : "true")
-                        , ConsistencyLevel.One, _ =>
+                            VALUES ({1},'test{2}',{3},'body{2}');", tableName, Guid.NewGuid(), i, i % 2 == 0 ? "false" : "true"))
+                        .SetConsistencyLevel(ConsistencyLevel.One))
+                        .ContinueWith(_ =>
                         {
                             ar[tmpi] = true;
                             Interlocked.MemoryBarrier();
-                        }, null);
+                        });
                 }
             });
 
@@ -324,11 +325,11 @@ namespace Cassandra.IntegrationTests.Core
                 {
                     var query = string.Format(@"INSERT INTO {0} (tweet_id, author, isok, body) VALUES ({1},'test{2}',{3},'body{2}');",
                         tableName, Guid.NewGuid(), i, i % 2 == 0 ? "false" : "true");
-                    localSession.BeginExecute(query, ConsistencyLevel.Quorum, arx =>
+                    localSession.ExecuteAsync(new SimpleStatement(query).SetConsistencyLevel(ConsistencyLevel.Quorum)).ContinueWith(task =>
                     {
                         try
                         {
-                            localSession.EndExecute(arx);
+                            task.GetAwaiter().GetResult();
                         }
                         catch (ObjectDisposedException)
                         {
@@ -339,7 +340,7 @@ namespace Cassandra.IntegrationTests.Core
                             ar[tmpi] = true;
                             Interlocked.MemoryBarrier();
                         }
-                    }, null);
+                    });
                 }
                 catch (ObjectDisposedException)
                 {
