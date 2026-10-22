@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Generic;
 using Cassandra.Data.Linq;
+using Cassandra.Mapping.Attributes;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 using NUnit.Framework.Internal;
@@ -25,8 +26,7 @@ using NUnit.Framework.Internal;
 
 namespace Cassandra.IntegrationTests.CqlFunctions.Structures
 {
-    [Table("EntityWithTimeUuid")]
-    [AllowFiltering]
+    [Table("EntityWithTimeUuid", CaseSensitive = true, AllowFiltering = true)]
     public class EntityWithTimeUuid
     {
         private const int DefaultRecordCount = 6;

@@ -20,6 +20,7 @@ using System.Linq;
 using Cassandra.Data.Linq;
 using Cassandra.IntegrationTests.SimulacronAPI;
 using Cassandra.IntegrationTests.TestBase;
+using Cassandra.Mapping.Attributes;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 using NUnit.Framework.Internal;
@@ -28,8 +29,7 @@ using NUnit.Framework.Internal;
 
 namespace Cassandra.IntegrationTests.Linq.Structures
 {
-    [AllowFiltering]
-    [Table(ManyDataTypesEntity.TableName)]
+    [Table(ManyDataTypesEntity.TableName, CaseSensitive = true, AllowFiltering = true)]
     public class ManyDataTypesEntity
     {
         public const string TableName = "ManyDataTypesEntity";

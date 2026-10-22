@@ -40,11 +40,23 @@ namespace Cassandra.Mapping.Attributes
         /// <summary>
         /// Creates a new TypeDefinition for the POCO Type specified using any attributes on the class to determine mappings.
         /// </summary>
-        public AttributeBasedTypeDefinition(Type type)
+        public AttributeBasedTypeDefinition(Type type) : this(type, false)
+        {
+        }
+
+        /// <summary>
+        /// Creates a new TypeDefinition for the POCO Type specified using any attributes on the class to determine mappings.
+        /// </summary>
+        /// <param name="type">The POCO type.</param>
+        /// <param name="caseSensitiveByDefault">Whether names are case-sensitive when the class has no <see cref="TableAttribute"/>.</param>
+        /// <param name="tableName">If not null, the table name, instead of the one from the attributes or the type name.</param>
+        /// <param name="keyspaceName">If not null, the keyspace name, instead of the one from the attributes.</param>
+        internal AttributeBasedTypeDefinition(Type type, bool caseSensitiveByDefault, string tableName = null, string keyspaceName = null)
         {
             PocoType = type ?? throw new ArgumentNullException("type");
             //Get the table name from the attribute or the type name
             TableName = type.Name;
+            CaseSensitive = caseSensitiveByDefault;
             var tableAttribute = type.GetTypeInfo().GetCustomAttribute<TableAttribute>(true);
             if (tableAttribute != null)
             {
@@ -54,6 +66,14 @@ namespace Cassandra.Mapping.Attributes
                 CompactStorage = tableAttribute.CompactStorage;
                 AllowFiltering = tableAttribute.AllowFiltering;
                 ExplicitColumns = tableAttribute.ExplicitColumns;
+            }
+            if (tableName != null)
+            {
+                TableName = tableName;
+            }
+            if (keyspaceName != null)
+            {
+                KeyspaceName = keyspaceName;
             }
 
             //Fields and properties that can be mapped

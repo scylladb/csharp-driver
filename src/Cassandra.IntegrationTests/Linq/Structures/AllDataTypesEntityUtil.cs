@@ -26,8 +26,6 @@ using NUnit.Framework.Internal;
 
 namespace Cassandra.IntegrationTests.Linq.Structures
 {
-    [AllowFiltering]
-    [Table("allDataTypes")]
     public static class AllDataTypesEntityUtil
     {
         public const int DefaultListLength = 5;
