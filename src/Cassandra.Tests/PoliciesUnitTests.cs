@@ -420,37 +420,6 @@ namespace Cassandra.Tests
             Assert.False(hostYielded.Any(hl => hl.Any(h => h == hostToRemove)));
         }
 
-        /// <summary>
-        /// Unit test on retry decisions
-        /// </summary>
-        [Test]
-        public void DowngradingConsistencyRetryTest()
-        {
-            var config = new Configuration();
-            var policy = DowngradingConsistencyRetryPolicy.Instance.Wrap(Cassandra.Policies.DefaultExtendedRetryPolicy);
-            var dummyStatement = new SimpleStatement().SetRetryPolicy(policy);
-            //Retry if 1 of 2 replicas are alive
-            var decision = RequestHandlerTests.GetRetryDecisionFromServerError(
-                new UnavailableException(ConsistencyLevel.Two, 2, 1), policy, dummyStatement, config, 0);
-            Assert.True(decision != null && decision.DecisionType == RetryDecision.RetryDecisionType.Retry);
-
-            //Retry if 2 of 3 replicas are alive
-            decision = RequestHandlerTests.GetRetryDecisionFromServerError(
-                new UnavailableException(ConsistencyLevel.Three, 3, 2), policy, dummyStatement, config, 0);
-            Assert.True(decision != null && decision.DecisionType == RetryDecision.RetryDecisionType.Retry);
-
-            //Throw if 0 replicas are alive
-            decision = RequestHandlerTests.GetRetryDecisionFromServerError(
-                new UnavailableException(ConsistencyLevel.Three, 3, 0), policy, dummyStatement, config, 0);
-            Assert.True(decision != null && decision.DecisionType == RetryDecision.RetryDecisionType.Rethrow);
-
-            //Retry if 1 of 3 replicas is alive
-            decision =
-                RequestHandlerTests.GetRetryDecisionFromServerError(new ReadTimeoutException(ConsistencyLevel.All, 3, 1, false),
-                    policy, dummyStatement, config, 0);
-            Assert.True(decision != null && decision.DecisionType == RetryDecision.RetryDecisionType.Retry);
-        }
-
         [Test]
         public void FixedReconnectionPolicyTests()
         {

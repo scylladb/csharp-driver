@@ -573,15 +573,6 @@ namespace Cassandra.Requests
                     return new JObject { ["type"] = "standard-error-aware" };
                 }
 
-                // Deprecated, but an application can still configure it and the report describes what is
-                // configured rather than what is recommended.
-#pragma warning disable 618
-                if (policy is DowngradingConsistencyRetryPolicy)
-#pragma warning restore 618
-                {
-                    return new JObject { ["type"] = "downgrading-consistency" };
-                }
-
                 if (policy is FallthroughRetryPolicy)
                 {
                     return new JObject { ["type"] = "fallthrough" };
