@@ -62,9 +62,9 @@ Applications must target `net10.0` or a compatible later target framework to use
 version 4. Applications that cannot move to .NET 10 should remain on version
 `3.22.0.4` of every driver package they use.
 
-The target-framework transition does not remove any public API signatures from
-the `3.22.0.4` assemblies. This includes the protected exception-serialization
-constructors, which remain available for binary and source compatibility.
+The target-framework transition itself does not remove any public API signatures
+from the `3.22.0.4` assemblies. The APIs that version 4 removes are described in the
+sections below.
 
 Version 4 builds use the C# language version supplied by `net10.0`, without a
 project-level `LangVersion` override. The `branch-3.22` branch retains its C# 7.1
@@ -191,6 +191,18 @@ instead, which they wrapped:
 
 Code that still needs an `IAsyncResult` can use the returned `Task`, which implements
 it.
+
+### Removed exception serialization constructors
+
+The protected `(SerializationInfo, StreamingContext)` constructors of
+`DriverException`, `NoHostAvailableException` and `FunctionFailureException` are
+removed, and these exceptions are no longer `[Serializable]`. They only supported
+formatter-based serialization (`BinaryFormatter`), which .NET 9 removed from the
+runtime; .NET marks the same constructor of `Exception` obsolete as `SYSLIB0051`.
+
+An exception class that derives from a driver exception and declares a serialization
+constructor calling one of them no longer compiles: remove that constructor, as for
+the `SYSLIB0051` warning on `Exception`.
 
 ## 3.13.0 - Unified driver
 
