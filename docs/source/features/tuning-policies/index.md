@@ -72,10 +72,9 @@ The `IExtendedRetryPolicy` interface consists of four methods:
 - `OnWriteTimeout()`
 - `OnRequestError()`
 
-By default, the driver uses a default retry policy. The driver includes these five policy classes:
+By default, the driver uses a default retry policy. The driver includes these four policy classes:
 
 - `DefaultRetryPolicy`
-- `DowngradingConsistencyRetryPolicy`
 - `FallthroughRetryPolicy`
 - `LoggingRetryPolicy`
 - `IdempotenceAwareRetryPolicy`

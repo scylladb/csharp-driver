@@ -577,25 +577,6 @@ namespace Cassandra.Tests.Requests
         }
 
         [Test]
-        public void Should_ReportACustomRetryPolicy_When_ABuiltInImplementsOnlyIRetryPolicy()
-        {
-            // DowngradingConsistencyRetryPolicy implements only IRetryPolicy, so Policies wraps it in a
-            // WrappedExtendedRetryPolicy whose OnRequestError goes to a DefaultRetryPolicy rather than to it. What
-            // runs is a composite — downgrading for the three consistency-level decisions, standard for request
-            // errors — and the schema has no shape for that, so reporting "downgrading-consistency" would describe
-            // a policy the driver is not using. Named after the configured policy, never after the wrapper.
-#pragma warning disable 618
-            var report = DriverConfigReporterTests.BuildReport(
-                DriverConfigReporterTests.WithPolicies(retryPolicy: DowngradingConsistencyRetryPolicy.Instance));
-#pragma warning restore 618
-
-            var policy = report["query"]["retry"]["policy"];
-            Assert.AreEqual("custom", policy["type"].Value<string>());
-            Assert.AreEqual("DowngradingConsistencyRetryPolicy", policy["name"].Value<string>());
-            DriverConfigReporterTests.AssertConformsToSchema(report);
-        }
-
-        [Test]
         public void Should_ReportACustomRetryPolicy_When_LoggingWrapsAPolicyItCannotDelegateEveryDecisionTo()
         {
             // LoggingRetryPolicy substitutes a DefaultRetryPolicy for the request-error path when its child does

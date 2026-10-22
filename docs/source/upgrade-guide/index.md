@@ -153,6 +153,13 @@ var statement = new SimpleStatement("INSERT INTO users (id, name) VALUES (?, ?)"
 var statement = new SimpleStatement("INSERT INTO users (id, name) VALUES (?, ?)", id, name);
 ```
 
+#### `DowngradingConsistencyRetryPolicy`
+
+The policy is removed, as announced when it was deprecated in 3.6 (see the 3.6 section
+below for the reasons). Choose the consistency level for each use case upfront. An
+application that still needs to retry at a lower consistency level can implement
+`IRetryPolicy` or `IExtendedRetryPolicy` itself.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.
