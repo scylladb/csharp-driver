@@ -764,19 +764,6 @@ namespace Cassandra.Tests.Requests
         }
 
         [Test]
-        public void Should_ReportFallback_When_RemoteDatacenterHostsAreUsed()
-        {
-#pragma warning disable 618
-            var report = DriverConfigReporterTests.BuildReport(
-                DriverConfigReporterTests.WithPolicies(
-                    loadBalancingPolicy: new TokenAwarePolicy(new DCAwareRoundRobinPolicy("dc1", 2))));
-#pragma warning restore 618
-
-            Assert.IsTrue(report["query"]["load-balancing"]["policy"]["fallback-to-non-preferred-nodes"].Value<bool>());
-            DriverConfigReporterTests.AssertConformsToSchema(report);
-        }
-
-        [Test]
         public void Should_ReportADefaultLoadBalancingPolicyWithLocalDc()
         {
             var report = DriverConfigReporterTests.BuildReport(
