@@ -14,7 +14,6 @@
 //   limitations under the License.
 //
 
-using System;
 using System.Collections.Generic;
 
 namespace Cassandra
@@ -34,11 +33,14 @@ namespace Cassandra
         /// </para>
         /// </summary>
         public KeyType KeyType { get; set; }
-        [Obsolete("The driver provides a new secondary index metadata API, IndexMetadata, that is returned as part of the TableMetadata.")]
-        public string SecondaryIndexName { get; set; }
-        [Obsolete("The driver provides a new secondary index metadata API, IndexMetadata, that is returned as part of the TableMetadata.")]
-        public string SecondaryIndexType { get; set; }
-        [Obsolete("The driver provides a new secondary index metadata API, IndexMetadata, that is returned as part of the TableMetadata.")]
-        public IDictionary<string, string> SecondaryIndexOptions { get; set; }
+
+        /// <summary>
+        /// The secondary index on this column, as stored by Cassandra 2.x, which <see cref="IndexMetadata"/> is built from.
+        /// </summary>
+        internal string SecondaryIndexName { get; set; }
+
+        internal string SecondaryIndexType { get; set; }
+
+        internal IDictionary<string, string> SecondaryIndexOptions { get; set; }
     }
 }
