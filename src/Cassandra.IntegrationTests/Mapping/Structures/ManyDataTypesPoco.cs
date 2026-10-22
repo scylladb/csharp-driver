@@ -20,6 +20,7 @@ using System.Linq;
 using System.Threading;
 
 using Cassandra.Data.Linq;
+using Cassandra.Mapping.Attributes;
 using Cassandra.IntegrationTests.SimulacronAPI;
 using Cassandra.IntegrationTests.TestBase;
 using Cassandra.Mapping;
@@ -32,8 +33,7 @@ using NUnit.Framework.Internal;
 
 namespace Cassandra.IntegrationTests.Mapping.Structures
 {
-    [AllowFiltering]
-    [Table(TableName)]
+    [Table(TableName, CaseSensitive = true, AllowFiltering = true)]
     public class ManyDataTypesPoco
     {
         public const string TableName = "allDataTypes";

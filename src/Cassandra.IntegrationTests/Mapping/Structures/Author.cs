@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Generic;
 using Cassandra.Data.Linq;
+using Cassandra.Mapping.Attributes;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 #pragma warning disable 618
@@ -26,7 +27,7 @@ namespace Cassandra.IntegrationTests.Mapping.Structures
     /// <summary>
     /// Lower case meta tags used so class can be used easily by Linq and CqlPoco
     /// </summary>
-    [Table("author")]
+    [Table("author", CaseSensitive = true)]
     public class Author
     {
         [PartitionKey]

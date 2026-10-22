@@ -69,8 +69,6 @@ namespace Cassandra.IntegrationTests.Linq.LinqMethods
         {
             //var mapping = new Map<PocoWithCounter>();
             var mappingConfig = new MappingConfiguration();
-            mappingConfig.MapperFactory.PocoDataFactory.AddDefinitionDefault(typeof(CounterEntityWithLinqAttributes),
-                 () => LinqAttributeBasedTypeDefinition.DetermineAttributes(typeof(CounterEntityWithLinqAttributes)));
             var table = new Table<CounterEntityWithLinqAttributes>(Session, mappingConfig);
             table.Create();
 
@@ -106,8 +104,6 @@ namespace Cassandra.IntegrationTests.Linq.LinqMethods
         {
             // Create config that uses linq based attributes
             var mappingConfig = new MappingConfiguration();
-            mappingConfig.MapperFactory.PocoDataFactory.AddDefinitionDefault(typeof(CounterEntityWithLinqAttributes),
-                 () => LinqAttributeBasedTypeDefinition.DetermineAttributes(typeof(CounterEntityWithLinqAttributes)));
             var table = new Table<CounterEntityWithLinqAttributes>(Session, mappingConfig);
 
             CounterEntityWithLinqAttributes pocoAndLinqAttributesLinqPocos = new CounterEntityWithLinqAttributes()
@@ -310,16 +306,16 @@ namespace Cassandra.IntegrationTests.Linq.LinqMethods
             Assert.IsTrue(counters.Contains(counter2));
         }
 
-        [Cassandra.Data.Linq.Table]
+        [Cassandra.Mapping.Attributes.Table(CaseSensitive = true)]
         private class CounterEntityWithLinqAttributes
         {
-            [Cassandra.Data.Linq.Counter]
+            [Cassandra.Mapping.Attributes.Counter]
             public long Counter;
 
-            [Cassandra.Data.Linq.PartitionKey(1)]
+            [Cassandra.Mapping.Attributes.PartitionKey(1)]
             public Guid KeyPart1;
 
-            [Cassandra.Data.Linq.PartitionKey(2)]
+            [Cassandra.Mapping.Attributes.PartitionKey(2)]
             public Decimal KeyPart2;
 
             public static IWhenQueryBuilder WithParams(IWhenQueryBuilder builder, params (string, CounterEntityWithLinqAttributes)[] parameters)

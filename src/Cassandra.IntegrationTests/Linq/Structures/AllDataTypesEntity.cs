@@ -18,6 +18,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Cassandra.Data.Linq;
+using Cassandra.Mapping.Attributes;
 using Cassandra.IntegrationTests.SimulacronAPI;
 using Cassandra.IntegrationTests.SimulacronAPI.PrimeBuilder;
 using Cassandra.IntegrationTests.SimulacronAPI.PrimeBuilder.Then;
@@ -29,8 +30,7 @@ using Guid = System.Guid;
 
 namespace Cassandra.IntegrationTests.Linq.Structures
 {
-    [AllowFiltering]
-    [Table(AllDataTypesEntity.TableName)]
+    [Table(AllDataTypesEntity.TableName, CaseSensitive = true, AllowFiltering = true)]
     public class AllDataTypesEntity : IAllDataTypesEntity
     {
         public const string TableName = "allDataTypes";

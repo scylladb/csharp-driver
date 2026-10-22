@@ -30,7 +30,6 @@ using NUnit.Framework.Internal;
 
 namespace Cassandra.IntegrationTests.Mapping.Structures
 {
-    [AllowFiltering]
     public class NestedCollectionsPoco
     {
         public const int DefaultListLength = 5;

@@ -91,6 +91,44 @@ Connection pools now recover when a load balancing policy temporarily ignores a
 host and later treats it as local or remote again, including when the pool was
 empty or still draining its old connections.
 
+### Removed obsolete APIs
+
+Version 4 removes public APIs that version 3 marked `[Obsolete]`. Each section below
+names the replacement.
+
+#### `Cassandra.Data.Linq` mapping attributes
+
+The mapping attributes in the `Cassandra.Data.Linq` namespace, deprecated since 2.5,
+are removed: `Table`, `Column`, `PartitionKey`, `ClusteringKey`, `SecondaryIndex`,
+`Counter`, `StaticColumn`, `Ignore`, `AllowFiltering` and `CompactStorage`. Use the
+attributes with the same names in `Cassandra.Mapping.Attributes`, or a fluent mapping.
+`AllowFiltering` and `CompactStorage` are properties of the new `Table` attribute, and
+`ClusteringKey` takes a `SortOrder` instead of the `"ASC"`/`"DESC"` strings.
+
+The two `Table` attributes have different defaults. The removed one used
+case-sensitive (quoted) table and column names unless it set `CaseSensitive = false`;
+the new one uses case-insensitive names unless it sets `CaseSensitive = true`. To keep
+the same names, set `CaseSensitive = true` where the old attribute didn't set it:
+
+```csharp
+// Before
+[Cassandra.Data.Linq.Table("users")]
+[Cassandra.Data.Linq.AllowFiltering]
+public class User { ... }
+
+// After
+[Cassandra.Mapping.Attributes.Table("users", CaseSensitive = true, AllowFiltering = true)]
+public class User { ... }
+```
+
+The new attributes are read by every component, so after migrating, the Mapper
+(`IMapper`) also uses the names they define; it never read the removed attributes.
+
+`ISession.GetTable<T>()` now reads the `Cassandra.Mapping.Attributes`, which it used to
+ignore. Unlike the `Table<T>` constructors, it still uses case-sensitive names by
+default: unless the class has a `Table` attribute, whose `CaseSensitive` property then
+applies. A class without attributes is mapped exactly as before.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.
