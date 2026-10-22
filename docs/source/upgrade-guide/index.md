@@ -202,6 +202,12 @@ Both `WaitForSchemaAgreement` overloads are removed from `ISession`. They did no
 the driver waits for schema agreement itself after each schema change, for up to
 `ProtocolOptions.MaxSchemaAgreementWaitSeconds`. Remove the calls.
 
+#### `TableColumn` secondary index properties
+
+`TableColumn.SecondaryIndexName`, `SecondaryIndexType` and `SecondaryIndexOptions` are
+no longer public. Use `TableMetadata.Indexes`, whose `IndexMetadata` describes every
+secondary index of the table on all server versions.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.
