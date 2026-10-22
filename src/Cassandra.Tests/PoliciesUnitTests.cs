@@ -27,7 +27,6 @@ using CollectionAssert = NUnit.Framework.CollectionAssert;
 using Moq;
 using System.Threading.Tasks;
 using System.Threading;
-#pragma warning disable 618
 
 namespace Cassandra.Tests
 {

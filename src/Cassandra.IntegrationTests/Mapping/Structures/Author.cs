@@ -20,7 +20,6 @@ using Cassandra.Data.Linq;
 using Cassandra.Mapping.Attributes;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
-#pragma warning disable 618
 
 namespace Cassandra.IntegrationTests.Mapping.Structures
 {

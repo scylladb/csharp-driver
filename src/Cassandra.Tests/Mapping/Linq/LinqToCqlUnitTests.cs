@@ -31,8 +31,6 @@ using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 using StringAssert = NUnit.Framework.StringAssert;
 
-#pragma warning disable 618
-
 namespace Cassandra.Tests.Mapping.Linq
 {
     [TestFixture]

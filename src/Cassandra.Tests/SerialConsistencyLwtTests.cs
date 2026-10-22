@@ -5,7 +5,6 @@ using Cassandra.Requests;
 using Moq;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
-#pragma warning disable 618
 
 namespace Cassandra.Tests
 {

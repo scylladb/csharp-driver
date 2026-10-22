@@ -24,7 +24,6 @@ using Cassandra.Mapping;
 using Cassandra.Tests;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
-#pragma warning disable 612
 
 namespace Cassandra.IntegrationTests.CqlFunctions.Tests
 {

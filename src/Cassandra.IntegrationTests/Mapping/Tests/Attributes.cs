@@ -32,8 +32,6 @@ using Assert = NUnit.Framework.Legacy.ClassicAssert;
 using StringAssert = NUnit.Framework.StringAssert;
 
 #pragma warning disable 169
-#pragma warning disable 618
-#pragma warning disable 612
 
 using Linq = Cassandra.Data.Linq;
 
