@@ -28,8 +28,6 @@ using Newtonsoft.Json;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 
-#pragma warning disable 612
-
 namespace Cassandra.IntegrationTests.Linq.LinqMethods
 {
     [TestCassandraVersion(2, 0)]

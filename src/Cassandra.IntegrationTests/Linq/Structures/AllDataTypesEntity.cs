@@ -26,8 +26,6 @@ using Cassandra.IntegrationTests.SimulacronAPI.PrimeBuilder.When;
 using Cassandra.IntegrationTests.TestClusterManagement.Simulacron;
 using Guid = System.Guid;
 
-#pragma warning disable 618
-
 namespace Cassandra.IntegrationTests.Linq.Structures
 {
     [Table(AllDataTypesEntity.TableName, CaseSensitive = true, AllowFiltering = true)]

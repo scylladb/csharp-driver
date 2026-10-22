@@ -26,7 +26,6 @@ using Cassandra.Tasks;
 using Cassandra.Tests;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
-#pragma warning disable 618
 
 namespace Cassandra.IntegrationTests.Core
 {

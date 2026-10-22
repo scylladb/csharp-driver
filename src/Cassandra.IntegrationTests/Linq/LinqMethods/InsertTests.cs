@@ -30,8 +30,6 @@ using Cassandra.Tests.Mapping.Pocos;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 
-#pragma warning disable 612
-
 namespace Cassandra.IntegrationTests.Linq.LinqMethods
 {
     public class InsertTests : SimulacronTest

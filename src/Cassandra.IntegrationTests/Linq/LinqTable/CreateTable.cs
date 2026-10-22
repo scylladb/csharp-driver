@@ -30,8 +30,6 @@ using Cassandra.Mapping;
 using Cassandra.Tests.Mapping.Pocos;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
-#pragma warning disable 612
-#pragma warning disable 618
 
 namespace Cassandra.IntegrationTests.Linq.LinqTable
 {
