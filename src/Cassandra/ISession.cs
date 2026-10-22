@@ -16,7 +16,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Net;
 using System.Threading.Tasks;
 using Cassandra.Metrics;
 
@@ -70,25 +69,6 @@ namespace Cassandra
         string SessionName { get; }
 
         /// <summary>
-        /// Begins asynchronous execute operation.
-        /// </summary>
-        IAsyncResult BeginExecute(IStatement statement, AsyncCallback callback, object state);
-
-        /// <summary>
-        /// Begins asynchronous execute operation
-        /// </summary>
-        IAsyncResult BeginExecute(string cqlQuery, ConsistencyLevel consistency, AsyncCallback callback, object state);
-
-        /// <summary>
-        /// Begins asynchronous prepare operation
-        /// </summary>
-        /// <remarks>
-        /// Prepared statements are cached per cluster using the query and effective keyspace. Concurrent calls
-        /// for the same statement share a single preparation attempt; failed attempts are not cached.
-        /// </remarks>
-        IAsyncResult BeginPrepare(string cqlQuery, AsyncCallback callback, object state);
-
-        /// <summary>
         /// Switches to the specified keyspace.
         /// </summary>
         /// <param name="keyspaceName">Case-sensitive name of keyspace to be used.</param>
@@ -135,24 +115,6 @@ namespace Cassandra
         /// </summary>
         /// <param name="keyspaceName">Name of keyspace to be deleted.</param>
         void DeleteKeyspaceIfExists(string keyspaceName);
-
-        /// <summary>
-        /// Ends asynchronous execute operation
-        /// </summary>
-        /// <param name="ar"></param>
-        /// <returns></returns>
-        RowSet EndExecute(IAsyncResult ar);
-
-        /// <summary>
-        /// Ends asynchronous prepare operation
-        /// </summary>
-        /// <exception cref="PreparedStatementIdMismatchException">
-        /// When different hosts return different IDs for the prepared statement.
-        /// </exception>
-        /// <exception cref="InvalidOperationException">
-        /// When the statement is invalidated while preparation is in progress.
-        /// </exception>
-        PreparedStatement EndPrepare(IAsyncResult ar);
 
         /// <summary>
         /// Executes the provided statement with the provided execution profile.
@@ -361,10 +323,5 @@ namespace Cassandra
         /// Disposes the session asynchronously.
         /// </summary>
         Task ShutdownAsync();
-
-        [Obsolete("Method deprecated. The driver internally waits for schema agreement when there is an schema change. See ProtocolOptions.MaxSchemaAgreementWaitSeconds for more info.")]
-        void WaitForSchemaAgreement(RowSet rs);
-        [Obsolete("Method deprecated. The driver internally waits for schema agreement when there is an schema change. See ProtocolOptions.MaxSchemaAgreementWaitSeconds for more info.")]
-        bool WaitForSchemaAgreement(IPEndPoint forHost);
     }
 }

@@ -24,9 +24,7 @@ namespace Cassandra
     ///  retrieved.</li> <li>On a write timeout, if we timeout while writting the
     ///  distributed log used by batch statements.</li> </ul> </p> <p> This retry policy is
     ///  conservative in that it will never retry with a different consistency level
-    ///  than the one of the initial operation. </p><p> In some cases, it may be
-    ///  convenient to use a more aggressive retry policy like
-    ///  <link>DowngradingConsistencyRetryPolicy</link>.</p>
+    ///  than the one of the initial operation. </p>
     /// </summary>
     public class DefaultRetryPolicy : IExtendedRetryPolicy
     {

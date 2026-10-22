@@ -16,8 +16,6 @@
 
 using Cassandra.Mapping.Attributes;
 
-#pragma warning disable 618
-
 namespace Cassandra.Tests.Mapping.Pocos
 {
     [Table("x_ts", CaseSensitive = true)]

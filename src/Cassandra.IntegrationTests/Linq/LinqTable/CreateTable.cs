@@ -18,6 +18,7 @@ using System;
 using System.Linq;
 using System.Threading.Tasks;
 using Cassandra.Data.Linq;
+using Cassandra.Mapping.Attributes;
 using Cassandra.IntegrationTests.Linq.Structures;
 using Cassandra.IntegrationTests.SimulacronAPI;
 using Cassandra.IntegrationTests.SimulacronAPI.Models.Logs;
@@ -29,8 +30,6 @@ using Cassandra.Mapping;
 using Cassandra.Tests.Mapping.Pocos;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
-#pragma warning disable 612
-#pragma warning disable 618
 
 namespace Cassandra.IntegrationTests.Linq.LinqTable
 {
@@ -455,8 +454,6 @@ namespace Cassandra.IntegrationTests.Linq.LinqTable
         public void TableCreate_ClassMissingPartitionKey()
         {
             var mappingConfig = new MappingConfiguration();
-            mappingConfig.MapperFactory.PocoDataFactory.AddDefinitionDefault(typeof(PrivateClassMissingPartitionKey),
-                 () => LinqAttributeBasedTypeDefinition.DetermineAttributes(typeof(PrivateClassMissingPartitionKey)));
             var table = new Table<PrivateClassMissingPartitionKey>(Session, mappingConfig);
 
             try
@@ -476,8 +473,6 @@ namespace Cassandra.IntegrationTests.Linq.LinqTable
         public void TableCreate_ClassEmpty()
         {
             var mappingConfig = new MappingConfiguration();
-            mappingConfig.MapperFactory.PocoDataFactory.AddDefinitionDefault(typeof(PrivateEmptyClass),
-                 () => LinqAttributeBasedTypeDefinition.DetermineAttributes(typeof(PrivateEmptyClass)));
             var table = new Table<PrivateEmptyClass>(Session, mappingConfig);
 
             try
@@ -690,7 +685,7 @@ namespace Cassandra.IntegrationTests.Linq.LinqTable
         {
         }
 
-        [Table("test_empty_clustering_column_name")]
+        [Table("test_empty_clustering_column_name", CaseSensitive = true)]
         // ReSharper disable once ClassNeverInstantiated.Local
         private class TestEmptyClusteringColumnName
         {

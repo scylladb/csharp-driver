@@ -66,17 +66,6 @@ namespace Cassandra.Data.Linq
             return rs.FirstOrDefault();
         }
 
-        public new IAsyncResult BeginExecute(AsyncCallback callback, object state)
-        {
-            return ExecuteAsync().ToApm(callback, state);
-        }
-
-        public new TEntity EndExecute(IAsyncResult ar)
-        {
-            var task = (Task<TEntity>)ar;
-            return task.Result;
-        }
-
         /// <summary>
         /// Evaluates the Linq query, executes the cql statement and returns the first result.
         /// </summary>

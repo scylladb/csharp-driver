@@ -118,24 +118,6 @@ namespace Cassandra
         }
 
         /// <inheritdoc />
-        public IAsyncResult BeginExecute(IStatement statement, AsyncCallback callback, object state)
-        {
-            return ExecuteAsync(statement).ToApm(callback, state);
-        }
-
-        /// <inheritdoc />
-        public IAsyncResult BeginExecute(string cqlQuery, ConsistencyLevel consistency, AsyncCallback callback, object state)
-        {
-            return BeginExecute(new SimpleStatement(cqlQuery).SetConsistencyLevel(consistency), callback, state);
-        }
-
-        /// <inheritdoc />
-        public IAsyncResult BeginPrepare(string cqlQuery, AsyncCallback callback, object state)
-        {
-            return PrepareAsync(cqlQuery).ToApm(callback, state);
-        }
-
-        /// <inheritdoc />
         public void ChangeKeyspace(string keyspace)
         {
             if (Keyspace != keyspace)
@@ -148,7 +130,7 @@ namespace Cassandra
         /// <inheritdoc />
         public void CreateKeyspace(string keyspace, Dictionary<string, string> replication = null, bool durableWrites = true)
         {
-            WaitForSchemaAgreement(Execute(CqlQueryTools.GetCreateKeyspaceCql(keyspace, replication, durableWrites, false)));
+            Execute(CqlQueryTools.GetCreateKeyspaceCql(keyspace, replication, durableWrites, false));
             Session.Logger.Info("Keyspace [" + keyspace + "] has been successfully CREATED.");
         }
 
@@ -276,22 +258,6 @@ namespace Cassandra
                 // Log and continue as the ControlConnection is connected
                 Session.Logger.Error($"Connection pools for {hosts.Length} host(s) failed to be warmed up");
             }
-        }
-
-        /// <inheritdoc />
-        public RowSet EndExecute(IAsyncResult ar)
-        {
-            var task = (Task<RowSet>)ar;
-            TaskHelper.WaitToCompleteWithMetrics(_metricsManager, task, Configuration.DefaultRequestOptions.QueryAbortTimeout);
-            return task.Result;
-        }
-
-        /// <inheritdoc />
-        public PreparedStatement EndPrepare(IAsyncResult ar)
-        {
-            var task = (Task<PreparedStatement>)ar;
-            TaskHelper.WaitToCompleteWithMetrics(_metricsManager, task, Configuration.DefaultRequestOptions.QueryAbortTimeout);
-            return task.Result;
         }
 
         /// <inheritdoc />
@@ -477,15 +443,6 @@ namespace Cassandra
             }
             var request = new InternalPrepareRequest(serializer, cqlQuery, keyspace, customPayload);
             return await _cluster.Prepare(this, _serializerManager, request).ConfigureAwait(false);
-        }
-
-        public void WaitForSchemaAgreement(RowSet rs)
-        {
-        }
-
-        public bool WaitForSchemaAgreement(IPEndPoint hostAddress)
-        {
-            return false;
         }
 
         private IStatement GetDefaultStatement(string cqlQuery)

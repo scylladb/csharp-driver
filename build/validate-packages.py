@@ -23,6 +23,10 @@ NUGET_ORG = "https://api.nuget.org/v3/index.json"
 BASELINE_VERSION = "3.22.0.4"
 CANDIDATE_VERSION = "4.0.0"
 APICOMPAT_VERSION = "10.0.401"
+# Declares the intended public API breaks against BASELINE_VERSION, next to each project
+API_COMPAT_SUPPRESSIONS_FILE = "CompatibilitySuppressions.xml"
+# Where the candidate packages are extracted, in a directory named after each package ID
+CANDIDATE_EXTRACTION_DIRECTORY = "candidate-extracted"
 DOTNET = os.environ.get("DOTNET_HOST_PATH", "dotnet")
 
 
@@ -595,12 +599,37 @@ def prepare_reference_sets(
     return left_references, right_references
 
 
+def api_compat_suppressions_file(contract: PackageContract) -> Path:
+    return (REPOSITORY_ROOT / contract.project).parent / API_COMPAT_SUPPRESSIONS_FILE
+
+
+def api_compat_candidate(
+    work_directory: Path, contract: PackageContract, assembly: Path
+) -> Path:
+    """Returns the candidate assembly at the path a normal run extracts it to.
+
+    Suppressions record the compared assembly paths, and a dry run extracts the
+    packages under their .DRYRUN IDs, so it compares a copy at the canonical path.
+    """
+    canonical = (
+        work_directory
+        / CANDIDATE_EXTRACTION_DIRECTORY
+        / contract.package_id
+        / f"lib/net10.0/{contract.assembly_name}.dll"
+    )
+    if assembly != canonical:
+        canonical.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(assembly, canonical)
+    return canonical
+
+
 def run_api_compat(
     work_directory: Path,
     baseline_assemblies: dict[str, Path],
     candidate_assemblies: dict[str, Path],
     left_references: Path,
     right_references: Path,
+    update_suppressions: bool = False,
 ) -> None:
     log("\nComparing public APIs with 3.22.0.4")
     tool_directory = work_directory / "tools"
@@ -626,25 +655,50 @@ def run_api_compat(
     )
     tool_assembly = tool_assemblies[0]
 
+    def relative_to_work_directory(path: Path) -> str:
+        # Suppressions record the assembly paths, so they must not include the temporary directory
+        return Path(os.path.relpath(path, work_directory)).as_posix()
+
     for contract in PACKAGE_CONTRACTS:
+        command = [
+            DOTNET,
+            "exec",
+            str(tool_assembly),
+            "--left-assembly",
+            relative_to_work_directory(baseline_assemblies[contract.package_id]),
+            "--right-assembly",
+            relative_to_work_directory(
+                api_compat_candidate(
+                    work_directory,
+                    contract,
+                    candidate_assemblies[contract.package_id],
+                )
+            ),
+            "--left-assembly-references",
+            str(left_references),
+            "--right-assembly-references",
+            str(right_references),
+            "--noWarn",
+            "CP0003",
+            "--verbosity",
+            "High",
+        ]
+        suppressions_file = api_compat_suppressions_file(contract)
+        if update_suppressions:
+            # Records every difference as intended; review the file's diff. ApiCompat
+            # writes no file when there is no difference, so remove an old one first.
+            suppressions_file.unlink(missing_ok=True)
+            command += [
+                "--generate-suppression-file",
+                "--suppression-output-file",
+                str(suppressions_file),
+            ]
+        elif suppressions_file.is_file():
+            # Suppressions that no longer match a difference fail the comparison
+            command += ["--suppression-file", str(suppressions_file)]
         result = run(
-            [
-                DOTNET,
-                "exec",
-                str(tool_assembly),
-                "--left-assembly",
-                str(baseline_assemblies[contract.package_id]),
-                "--right-assembly",
-                str(candidate_assemblies[contract.package_id]),
-                "--left-assembly-references",
-                str(left_references),
-                "--right-assembly-references",
-                str(right_references),
-                "--noWarn",
-                "CP0003",
-                "--verbosity",
-                "High",
-            ],
+            command,
+            cwd=work_directory,
             capture_output=True,
             merge_stderr=True,
             check=False,
@@ -659,6 +713,12 @@ def run_api_compat(
         require(
             result.returncode == 0,
             f"ApiCompat found a public API break in {contract.package_id}",
+        )
+        # ApiCompat also only reports suppressions that match no difference
+        require(
+            "Unnecessary suppressions found" not in result.stdout,
+            f"{suppressions_file} declares API breaks that no longer exist; "
+            "regenerate it with --update-api-suppressions",
         )
 
 
@@ -894,6 +954,14 @@ def parse_arguments(arguments: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--update-api-suppressions",
+        action="store_true",
+        help=(
+            f"record the current public API differences from {BASELINE_VERSION} "
+            f"as intended, in each project's {API_COMPAT_SUPPRESSIONS_FILE}"
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="validate packages published under the ScyllaDBCSharpDriver.DRYRUN IDs",
@@ -931,7 +999,7 @@ def main(arguments: list[str] | None = None) -> None:
             package_directory = staged_package_directory
         candidate_assemblies = inspect_candidates(
             package_directory,
-            work_directory / "candidate-extracted",
+            work_directory / CANDIDATE_EXTRACTION_DIRECTORY,
             contracts,
         )
         candidate_assemblies_by_canonical_id = {
@@ -950,6 +1018,7 @@ def main(arguments: list[str] | None = None) -> None:
             candidate_assemblies_by_canonical_id,
             left_references,
             right_references,
+            options.update_api_suppressions,
         )
         validate_consumers(work_directory, package_directory, contracts)
 

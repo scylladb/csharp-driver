@@ -62,9 +62,9 @@ Applications must target `net10.0` or a compatible later target framework to use
 version 4. Applications that cannot move to .NET 10 should remain on version
 `3.22.0.4` of every driver package they use.
 
-The target-framework transition does not remove any public API signatures from
-the `3.22.0.4` assemblies. This includes the protected exception-serialization
-constructors, which remain available for binary and source compatibility.
+The target-framework transition itself does not remove any public API signatures
+from the `3.22.0.4` assemblies. The APIs that version 4 removes are described in the
+sections below.
 
 Version 4 builds use the C# language version supplied by `net10.0`, without a
 project-level `LangVersion` override. The `branch-3.22` branch retains its C# 7.1
@@ -90,6 +90,119 @@ explicit `SslProtocols` value continue to use that configured value.
 Connection pools now recover when a load balancing policy temporarily ignores a
 host and later treats it as local or remote again, including when the pool was
 empty or still draining its old connections.
+
+### Removed obsolete APIs
+
+Version 4 removes public APIs that version 3 marked `[Obsolete]`. Each section below
+names the replacement.
+
+#### `Cassandra.Data.Linq` mapping attributes
+
+The mapping attributes in the `Cassandra.Data.Linq` namespace, deprecated since 2.5,
+are removed: `Table`, `Column`, `PartitionKey`, `ClusteringKey`, `SecondaryIndex`,
+`Counter`, `StaticColumn`, `Ignore`, `AllowFiltering` and `CompactStorage`. Use the
+attributes with the same names in `Cassandra.Mapping.Attributes`, or a fluent mapping.
+`AllowFiltering` and `CompactStorage` are properties of the new `Table` attribute, and
+`ClusteringKey` takes a `SortOrder` instead of the `"ASC"`/`"DESC"` strings.
+
+The two `Table` attributes have different defaults. The removed one used
+case-sensitive (quoted) table and column names unless it set `CaseSensitive = false`;
+the new one uses case-insensitive names unless it sets `CaseSensitive = true`. To keep
+the same names, set `CaseSensitive = true` where the old attribute didn't set it:
+
+```csharp
+// Before
+[Cassandra.Data.Linq.Table("users")]
+[Cassandra.Data.Linq.AllowFiltering]
+public class User { ... }
+
+// After
+[Cassandra.Mapping.Attributes.Table("users", CaseSensitive = true, AllowFiltering = true)]
+public class User { ... }
+```
+
+The new attributes are read by every component, so after migrating, the Mapper
+(`IMapper`) also uses the names they define; it never read the removed attributes.
+
+`ISession.GetTable<T>()` now reads the `Cassandra.Mapping.Attributes`, which it used to
+ignore. Unlike the `Table<T>` constructors, it still uses case-sensitive names by
+default: unless the class has a `Table` attribute, whose `CaseSensitive` property then
+applies. A class without attributes is mapped exactly as before.
+
+#### `ISession.WaitForSchemaAgreement`
+
+Both `WaitForSchemaAgreement` overloads are removed from `ISession`. They did nothing:
+the driver waits for schema agreement itself after each schema change, for up to
+`ProtocolOptions.MaxSchemaAgreementWaitSeconds`. Remove the calls.
+
+#### `TableColumn` secondary index properties
+
+`TableColumn.SecondaryIndexName`, `SecondaryIndexType` and `SecondaryIndexOptions` are
+no longer public. Use `TableMetadata.Indexes`, whose `IndexMetadata` describes every
+secondary index of the table on all server versions.
+
+#### `SimpleStatement.Bind` and `BindObjects`
+
+Pass the query values to the `SimpleStatement` constructor instead:
+
+```csharp
+// Before
+var statement = new SimpleStatement("INSERT INTO users (id, name) VALUES (?, ?)").Bind(id, name);
+
+// After
+var statement = new SimpleStatement("INSERT INTO users (id, name) VALUES (?, ?)", id, name);
+```
+
+#### `DowngradingConsistencyRetryPolicy`
+
+The policy is removed, as announced when it was deprecated in 3.6 (see the 3.6 section
+below for the reasons). Choose the consistency level for each use case upfront. An
+application that still needs to retry at a lower consistency level can implement
+`IRetryPolicy` or `IExtendedRetryPolicy` itself.
+
+#### `DCAwareRoundRobinPolicy` remote hosts
+
+The `DCAwareRoundRobinPolicy(string localDc, int usedHostsPerRemoteDc)` constructor and
+the `UsedHostsPerRemoteDc` property are removed, as announced when they were deprecated
+in 3.9 (see the 3.9 section below). Query plans of `DCAwareRoundRobinPolicy` contain only
+nodes of the local datacenter; use `new DCAwareRoundRobinPolicy(localDc)`. Datacenter
+failover is a decision for the application or its operations, not for the driver.
+
+#### `RowSet.Dispose` and the legacy `Row` members
+
+`RowSet` no longer implements `IDisposable`: its `Dispose` method did nothing. Remove
+the `Dispose` calls, and replace `using (var rs = session.Execute(...)) { ... }` with
+`var rs = session.Execute(...);`.
+
+The `Row(int, byte[][], CqlColumn[], Dictionary<string, int>)` constructor and the
+protected `Row.Values` and `Row.ProtocolVersion` properties are removed. To create a
+`Row` in a test, use the parameterless constructor and override `GetValue<T>()`.
+
+### Removed `Begin`/`End` asynchronous methods
+
+The methods of the `IAsyncResult` pattern are removed. Use the `Task`-based methods
+instead, which they wrapped:
+
+| Removed | Replacement |
+|---|---|
+| `ISession.BeginExecute` / `EndExecute` | `ISession.ExecuteAsync` |
+| `ISession.BeginPrepare` / `EndPrepare` | `ISession.PrepareAsync` |
+| `BeginExecute` / `EndExecute` of `CqlQueryBase<T>` (including `CqlQuery<T>` and `Table<T>`), `CqlCommand`, `CqlScalar<T>`, `CqlQuerySingleElement<T>` and `Batch` (`Cassandra.Data.Linq`) | their `ExecuteAsync` |
+
+Code that still needs an `IAsyncResult` can use the returned `Task`, which implements
+it.
+
+### Removed exception serialization constructors
+
+The protected `(SerializationInfo, StreamingContext)` constructors of
+`DriverException`, `NoHostAvailableException` and `FunctionFailureException` are
+removed, and these exceptions are no longer `[Serializable]`. They only supported
+formatter-based serialization (`BinaryFormatter`), which .NET 9 removed from the
+runtime; .NET marks the same constructor of `Exception` obsolete as `SYSLIB0051`.
+
+An exception class that derives from a driver exception and declares a serialization
+constructor calling one of them no longer compiles: remove that constructor, as for
+the `SYSLIB0051` warning on `Exception`.
 
 ## 3.13.0 - Unified driver
 

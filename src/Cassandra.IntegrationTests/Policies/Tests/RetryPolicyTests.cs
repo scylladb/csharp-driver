@@ -22,67 +22,12 @@ using Cassandra.IntegrationTests.TestClusterManagement;
 using Cassandra.Tests;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
-#pragma warning disable 618
 
 namespace Cassandra.IntegrationTests.Policies.Tests
 {
     [TestFixture, Category(TestCategory.Long), Ignore("tests that are not marked with 'short' need to be refactored/deleted")]
     public class RetryPolicyTests : TestGlobals
     {
-
-        /// <summary>
-        ///  Tests DowngradingConsistencyRetryPolicy
-        /// </summary>
-        [Test]
-        public void RetryPolicy_DowngradingConsistency()
-        {
-            Builder builder = ClusterBuilder().WithRetryPolicy(DowngradingConsistencyRetryPolicy.Instance);
-            DowngradingConsistencyRetryPolicyTest(builder);
-        }
-
-        /// <summary>
-        ///  Tests DowngradingConsistencyRetryPolicy with LoggingRetryPolicy
-        /// 
-        /// @test_category connection:retry_policy
-        /// </summary>
-        [Test]
-        public void LoggingRetryPolicy_DowngradingConsistency()
-        {
-            Builder builder = ClusterBuilder().WithRetryPolicy(new LoggingRetryPolicy(DowngradingConsistencyRetryPolicy.Instance));
-            DowngradingConsistencyRetryPolicyTest(builder);
-        }
-
-        /// <summary>
-        ///  Tests DowngradingConsistencyRetryPolicy
-        /// 
-        /// @test_category connection:retry_policy
-        /// </summary>
-        public void DowngradingConsistencyRetryPolicyTest(Builder builder)
-        {
-            PolicyTestTools policyTestTools = new PolicyTestTools();
-
-            ITestCluster testCluster = TestClusterManager.GetNonShareableTestCluster(3);
-            testCluster.Builder = builder;
-            testCluster.InitClient();
-            policyTestTools.CreateSchema(testCluster.Session, 3);
-
-            // FIXME: Race condition where the nodes are not fully up yet and assertQueried reports slightly different numbers
-            TestUtils.WaitForSchemaAgreement(testCluster.Cluster);
-
-            policyTestTools.InitPreparedStatement(testCluster, 12, ConsistencyLevel.All);
-
-            policyTestTools.Query(testCluster, 12, ConsistencyLevel.All);
-            policyTestTools.AssertAchievedConsistencyLevel(ConsistencyLevel.All);
-
-            //Kill one node: 2 nodes alive
-            testCluster.Stop(2);
-            TestUtils.WaitForDown(testCluster.ClusterIpPrefix + "2", testCluster.Cluster, 20);
-
-            //After killing one node, the achieved consistency level should be downgraded
-            policyTestTools.ResetCoordinators();
-            policyTestTools.Query(testCluster, 12, ConsistencyLevel.All);
-            policyTestTools.AssertAchievedConsistencyLevel(ConsistencyLevel.Two);
-        }
 
         /// <summary>
         /// Test AlwaysIgnoreRetryPolicy with Logging enabled

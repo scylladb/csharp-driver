@@ -15,16 +15,15 @@
 //
 
 using System;
-using Cassandra.Data.Linq;
+using Cassandra.Mapping.Attributes;
 
-#pragma warning disable 618
 
 namespace Cassandra.Tests.Mapping.Pocos
 {
     /// <summary>
     /// Test utility: Represents an application entity with most of single types as properties
     /// </summary>
-    [Table("atd")]
+    [Table("atd", CaseSensitive = true)]
     public class AllTypesDecorated
     {
         [Column("boolean_VALUE")]

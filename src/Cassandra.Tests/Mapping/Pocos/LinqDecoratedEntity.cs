@@ -14,13 +14,11 @@
 //   limitations under the License.
 //
 
-using Cassandra.Data.Linq;
-#pragma warning disable 618
+using Cassandra.Mapping.Attributes;
 
 namespace Cassandra.Tests.Mapping.Pocos
 {
-    [AllowFiltering]
-    [Table("x_t")]
+    [Table("x_t", CaseSensitive = true, AllowFiltering = true)]
     public class LinqDecoratedEntity
     {
         [PartitionKey]
