@@ -294,8 +294,8 @@ namespace Cassandra.IntegrationTests.Mapping.Tests
         [Test]
         public void Insert_UnconfiguredTable()
         {
-            // Setup
-            var mapper = new Mapper(_session, new MappingConfiguration());
+            // Setup: map by class name, ignoring the attributes that point the type to an existing table
+            var mapper = new Mapper(_session, new MappingConfiguration().Define(new Map<ManyDataTypesPoco>()));
             ManyDataTypesPoco manyTypesPoco = ManyDataTypesPoco.GetRandomInstance();
 
             // Validate Error Message

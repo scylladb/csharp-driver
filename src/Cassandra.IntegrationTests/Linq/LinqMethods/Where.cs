@@ -19,6 +19,7 @@ using System.Collections.Generic;
 using System.Linq;
 
 using Cassandra.Data.Linq;
+using Cassandra.Mapping.Attributes;
 using Cassandra.IntegrationTests.Linq.Structures;
 using Cassandra.IntegrationTests.SimulacronAPI;
 using Cassandra.IntegrationTests.SimulacronAPI.PrimeBuilder.Then;
@@ -28,9 +29,6 @@ using Cassandra.Tests.Mapping.Pocos;
 
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
-
-#pragma warning disable 618
-#pragma warning disable 612
 
 namespace Cassandra.IntegrationTests.Linq.LinqMethods
 {
@@ -52,10 +50,6 @@ namespace Cassandra.IntegrationTests.Linq.LinqMethods
 
             // drop table if exists, re-create
             var movieMappingConfig = new MappingConfiguration();
-            movieMappingConfig.MapperFactory.PocoDataFactory.AddDefinitionDefault(typeof(Movie),
-                () => LinqAttributeBasedTypeDefinition.DetermineAttributes(typeof(Movie)));
-            movieMappingConfig.MapperFactory.PocoDataFactory.AddDefinitionDefault(typeof(ManyDataTypesEntity),
-                () => LinqAttributeBasedTypeDefinition.DetermineAttributes(typeof(ManyDataTypesEntity)));
             _movieTable = new Table<Movie>(Session, movieMappingConfig);
 
             _manyDataTypesEntitiesTable = new Table<ManyDataTypesEntity>(Session, movieMappingConfig);
@@ -234,7 +228,6 @@ namespace Cassandra.IntegrationTests.Linq.LinqMethods
             long time = 3;
 
             var config = new MappingConfiguration();
-            config.MapperFactory.PocoDataFactory.AddDefinitionDefault(typeof(TestTable), () => LinqAttributeBasedTypeDefinition.DetermineAttributes(typeof(TestTable)));
             var table = new Table<TestTable>(Session, config);
 
             var data = new List<TestTable>
@@ -766,8 +759,7 @@ namespace Cassandra.IntegrationTests.Linq.LinqMethods
             Assert.AreEqual(0, table.Where(x => x.Title == "Do I Wanna Know").Execute().Count());
         }
 
-        [AllowFiltering]
-        [Table(TestTable.TableName)]
+        [Table(TestTable.TableName, CaseSensitive = true, AllowFiltering = true)]
         public class TestTable
         {
             public const string TableName = "test1";

@@ -5,7 +5,6 @@ using Cassandra.Requests;
 using Moq;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
-#pragma warning disable 618
 
 namespace Cassandra.Tests
 {
@@ -95,7 +94,7 @@ namespace Cassandra.Tests
         public void RetryPolicy_Should_Not_Downgrade_Serial_Consistency_On_ReadTimeout()
         {
             var config = new Configuration();
-            var policy = DowngradingConsistencyRetryPolicy.Instance.Wrap(Cassandra.Policies.DefaultExtendedRetryPolicy);
+            var policy = DowngradingRetryPolicy.Instance;
             var statement = new SimpleStatement("SELECT v FROM ks.t WHERE pk = ?");
             statement.SetConsistencyLevel(ConsistencyLevel.Serial);
             statement.SetRetryPolicy(policy);
@@ -114,7 +113,7 @@ namespace Cassandra.Tests
         public void RetryPolicy_Should_Not_Downgrade_LocalSerial_Consistency_On_ReadTimeout()
         {
             var config = new Configuration();
-            var policy = DowngradingConsistencyRetryPolicy.Instance.Wrap(Cassandra.Policies.DefaultExtendedRetryPolicy);
+            var policy = DowngradingRetryPolicy.Instance;
             var statement = new SimpleStatement("SELECT v FROM ks.t WHERE pk = ?");
             statement.SetConsistencyLevel(ConsistencyLevel.LocalSerial);
             statement.SetRetryPolicy(policy);
@@ -131,7 +130,7 @@ namespace Cassandra.Tests
         public void RetryPolicy_Should_Not_Downgrade_Serial_Consistency_On_Unavailable()
         {
             var config = new Configuration();
-            var policy = DowngradingConsistencyRetryPolicy.Instance.Wrap(Cassandra.Policies.DefaultExtendedRetryPolicy);
+            var policy = DowngradingRetryPolicy.Instance;
             var statement = new SimpleStatement("SELECT v FROM ks.t WHERE pk = ?");
             statement.SetConsistencyLevel(ConsistencyLevel.Serial);
             statement.SetRetryPolicy(policy);
@@ -246,7 +245,7 @@ namespace Cassandra.Tests
         public void RetryPolicy_Should_Allow_Downgrade_For_NonSerial_Consistency()
         {
             var config = new Configuration();
-            var policy = DowngradingConsistencyRetryPolicy.Instance.Wrap(Cassandra.Policies.DefaultExtendedRetryPolicy);
+            var policy = DowngradingRetryPolicy.Instance;
             var statement = new SimpleStatement("SELECT v FROM ks.t WHERE pk = ?");
             statement.SetConsistencyLevel(ConsistencyLevel.Quorum);
             statement.SetRetryPolicy(policy);
@@ -256,9 +255,36 @@ namespace Cassandra.Tests
                 new ReadTimeoutException(ConsistencyLevel.Quorum, 1, 3, false),
                 policy, statement, config, 0);
 
-            // DowngradingConsistencyRetryPolicy downgrades to CL.One - that's fine for non-serial
+            // The policy downgrades to CL.One - that's fine for non-serial
             Assert.AreEqual(RetryDecision.RetryDecisionType.Retry, decision.DecisionType,
                 "Downgrade for non-serial consistency should still be allowed");
+        }
+
+        /// <summary>
+        /// A policy that downgrades the consistency level: it retries every timeout and unavailable error at CL.One.
+        /// </summary>
+        private class DowngradingRetryPolicy : IRetryPolicy
+        {
+            public static readonly IExtendedRetryPolicy Instance =
+                new DowngradingRetryPolicy().Wrap(Cassandra.Policies.DefaultExtendedRetryPolicy);
+
+            public RetryDecision OnReadTimeout(
+                IStatement query, ConsistencyLevel cl, int requiredResponses, int receivedResponses, bool dataRetrieved, int nbRetry)
+            {
+                return RetryDecision.Retry(ConsistencyLevel.One);
+            }
+
+            public RetryDecision OnWriteTimeout(
+                IStatement query, ConsistencyLevel cl, string writeType, int requiredAcks, int receivedAcks, int nbRetry)
+            {
+                return RetryDecision.Retry(ConsistencyLevel.One);
+            }
+
+            public RetryDecision OnUnavailable(
+                IStatement query, ConsistencyLevel cl, int requiredReplica, int aliveReplica, int nbRetry)
+            {
+                return RetryDecision.Retry(ConsistencyLevel.One);
+            }
         }
     }
 }

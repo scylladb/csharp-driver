@@ -202,29 +202,6 @@ namespace Cassandra
         }
 
         /// <summary>
-        /// Sets the parameter values for the query.
-        /// <para>
-        /// The same amount of values must be provided as parameter markers in the query.
-        /// </para>
-        /// <para>
-        /// Specify the parameter values by the position of the markers in the query or by name, 
-        /// using a single instance of an anonymous type, with property names as parameter names.
-        /// </para>
-        /// </summary>
-        [Obsolete("The method Bind() is deprecated, use SimpleStatement constructor parameters to provide query values")]
-        public SimpleStatement Bind(params object[] values)
-        {
-            SetValues(values, Serializer);
-            return this;
-        }
-
-        [Obsolete("The method BindObject() is deprecated, use SimpleStatement constructor parameters to provide query values")]
-        public SimpleStatement BindObjects(object[] values)
-        {
-            return Bind(values);
-        }
-
-        /// <summary>
         /// Sets the keyspace this Statement operates on. The keyspace should only be set when the
         /// <see cref="IStatement"/> applies to a different keyspace to the logged keyspace of the
         /// <see cref="ISession"/>.

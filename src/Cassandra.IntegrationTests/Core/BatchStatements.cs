@@ -105,10 +105,9 @@ namespace Cassandra.IntegrationTests.Core
         {
             var batch = new BatchStatement();
 
-            var simpleStatement = new SimpleStatement($"INSERT INTO {_tableName} (id, label, number) VALUES (?, ?, ?)");
-#pragma warning disable 618
-            batch.Add(simpleStatement.Bind(100, "label 100", 10000));
-#pragma warning restore 618
+            var simpleStatement = new SimpleStatement(
+                $"INSERT INTO {_tableName} (id, label, number) VALUES (?, ?, ?)", 100, "label 100", 10000);
+            batch.Add(simpleStatement);
             Session.Execute(batch);
 
             VerifyBatchStatement(

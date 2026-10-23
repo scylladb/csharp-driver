@@ -14,25 +14,19 @@
 //   limitations under the License.
 //
 
-using Linq = Cassandra.Data.Linq;
 using Mapping = Cassandra.Mapping;
 
-#pragma warning disable 618
 namespace Cassandra.IntegrationTests.Linq.Structures
 {
-    [Linq::Table("test_map_empty_clust_column_name")]
     [Mapping::Attributes.Table("test_map_empty_clust_column_name")]
     // ReSharper disable once ClassNeverInstantiated.Local
     class EmptyClusteringColumnName
     {
-        [Linq::PartitionKey]
-        [Linq::Column("id")]
         [Mapping::Attributes.PartitionKey]
         [Mapping::Attributes.Column("id")]
         // ReSharper disable once UnusedMember.Local
         public int Id { get; set; }
 
-        [Linq::ClusteringKey(1)]
         [Mapping::Attributes.ClusteringKey(1)]
         [Mapping::Attributes.Column]
         // ReSharper disable once InconsistentNaming
@@ -45,4 +39,3 @@ namespace Cassandra.IntegrationTests.Linq.Structures
         public string value { get; set; }
     }
 }
-#pragma warning restore 618
