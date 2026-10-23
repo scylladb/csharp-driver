@@ -25,31 +25,53 @@ using Cassandra.Tasks;
 
 namespace Cassandra
 {
+    internal enum ClientRoutesRefreshOutcome
+    {
+        Applied,
+        EmptyIgnored,
+        QueryFailed,
+        Malformed,
+        Ignored
+    }
+
     /// <summary>
-    /// Discovers all configured client routes and publishes immutable, priority-ordered candidate
-    /// snapshots for lock-free readers.
-    /// Refresh requests are serialized and coalesced behind one in-flight query.
+    /// Publishes immutable route snapshots for lock-free readers. One active batch and one
+    /// pending coalesced batch serialize metadata queries; each batch reports its own attempt.
     /// </summary>
     internal sealed class ClientRoutesCache
     {
         private const string SelectColumns = "host_id, address, port, tls_port, connection_id";
+        private const string TableName = "system.client_routes";
         private const int EmptyFullRefreshThreshold = 3;
-        private const int CarryOversBeforeEscalation = 3;
+        private const int MaxFailedRefreshRetryBackoffExponent = 6;
+
+        // Task.Delay supports at most UInt32.MaxValue - 1 finite milliseconds.
+        private const long MaxFailedRefreshRetryDelayTicks = (uint.MaxValue - 1L) * TimeSpan.TicksPerMillisecond;
+        private static readonly Logger DefaultLogger = new Logger(typeof(ClientRoutesCache));
 
         private readonly IMetadataQueryProvider _queryProvider;
         private readonly Logger _logger;
-        private readonly string[] _connectionIds;
-        private readonly ImmutableDictionary<string, string> _addressOverrides;
-        private readonly ImmutableDictionary<string, int> _connectionPriorities;
+        private readonly ClientRoutesSelection _selection;
         private readonly bool _useTls;
+        private readonly bool _retryQueries;
         private readonly Lock _refreshLock = new Lock();
-        private readonly HashSet<Guid> _pendingHostIds = new HashSet<Guid>();
+        private readonly TimeSpan _failedRefreshRetryDelay;
+        private readonly TimeProvider _timeProvider;
+        private readonly CancellationTokenSource _shutdownCancellation = new CancellationTokenSource();
+        private readonly TaskCompletionSource<bool> _initialSnapshotReady =
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         private RoutesSnapshot _snapshot = RoutesSnapshot.Empty;
-        private ImmutableDictionary<ClientRouteKey, int> _unconfirmedRouteCounts =
-            ImmutableDictionary<ClientRouteKey, int>.Empty;
-        private TaskCompletionSource _inFlightRefresh;
-        private bool _pendingFullRefresh;
+        private RefreshBatch _activeRefresh;
+        private RefreshBatch _pendingRefresh;
+
+        // Intent survives malformed-result coverage revocation and is captured at full-query dispatch.
+        private ImmutableHashSet<Guid> _latestTopology;
+        private bool _shutdown;
+        private bool _needsFullRetry;
+        private long _retryGeneration;
+        private long _scheduledRetryGeneration;
+        private int _consecutiveFailedRefreshes;
         private int _consecutiveEmptyFullRefreshes;
 
         public ClientRoutesCache(
@@ -57,51 +79,42 @@ namespace Cassandra
             IEnumerable<string> connectionIds,
             IReadOnlyDictionary<string, string> addressOverrides,
             bool useTls,
-            Logger logger = null)
+            Logger logger = null,
+            bool retryQueries = true,
+            TimeSpan? failedRefreshRetryDelay = null,
+            TimeProvider timeProvider = null)
+            : this(queryProvider, ClientRoutesSelection.Create(connectionIds, addressOverrides),
+                useTls, logger, retryQueries, failedRefreshRetryDelay, timeProvider)
+        {
+        }
+
+        internal ClientRoutesCache(
+            IMetadataQueryProvider queryProvider,
+            ClientRoutesSelection selection,
+            bool useTls,
+            Logger logger = null,
+            bool retryQueries = true,
+            TimeSpan? failedRefreshRetryDelay = null,
+            TimeProvider timeProvider = null)
         {
             _queryProvider = queryProvider ?? throw new ArgumentNullException(nameof(queryProvider));
-            _logger = logger ?? new Logger(typeof(ClientRoutesCache));
-            ArgumentNullException.ThrowIfNull(connectionIds);
-
-            _connectionIds = connectionIds.ToArray();
-            if (_connectionIds.Length == 0)
-            {
-                throw new ArgumentException("At least one connection ID must be configured.", nameof(connectionIds));
-            }
-
-            var priorities = ImmutableDictionary.CreateBuilder<string, int>(StringComparer.Ordinal);
-            for (var i = 0; i < _connectionIds.Length; i++)
-            {
-                var connectionId = _connectionIds[i];
-                if (string.IsNullOrWhiteSpace(connectionId))
-                {
-                    throw new ArgumentException("Connection IDs must not be null, empty, or whitespace.", nameof(connectionIds));
-                }
-                if (priorities.ContainsKey(connectionId))
-                {
-                    throw new ArgumentException("Connection IDs must be unique.", nameof(connectionIds));
-                }
-                priorities.Add(connectionId, i);
-            }
-            _connectionPriorities = priorities.ToImmutable();
-
-            var overrides = ImmutableDictionary.CreateBuilder<string, string>(StringComparer.Ordinal);
-            if (addressOverrides != null)
-            {
-                foreach (var item in addressOverrides)
-                {
-                    overrides.Add(item.Key, item.Value);
-                }
-            }
-            _addressOverrides = overrides.ToImmutable();
+            _selection = selection ?? throw new ArgumentNullException(nameof(selection));
+            _logger = logger ?? DefaultLogger;
             _useTls = useTls;
+            _retryQueries = retryQueries;
+            _timeProvider = timeProvider ?? TimeProvider.System;
+            _failedRefreshRetryDelay = failedRefreshRetryDelay ?? TimeSpan.FromSeconds(1);
+            if (_failedRefreshRetryDelay != Timeout.InfiniteTimeSpan && _failedRefreshRetryDelay <= TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(failedRefreshRetryDelay),
+                    "The retry delay must be positive, or Timeout.InfiniteTimeSpan to disable retries.");
+            }
         }
 
         public ImmutableDictionary<Guid, ImmutableArray<ClientRouteEndpoint>> Routes =>
             Volatile.Read(ref _snapshot).ByHost;
 
-        internal ImmutableDictionary<ClientRouteKey, int> UnconfirmedRouteCounts =>
-            Volatile.Read(ref _unconfirmedRouteCounts);
+        public bool HasCompleteSnapshot => Volatile.Read(ref _snapshot).IsComplete;
 
         public bool TryGetRoutes(Guid hostId, out ImmutableArray<ClientRouteEndpoint> routes)
         {
@@ -113,416 +126,369 @@ namespace Cassandra
             return false;
         }
 
-        public Task RefreshAsync()
+        public bool TryGetHostSnapshot(
+            Guid hostId,
+            out ImmutableArray<ClientRouteEndpoint> routes,
+            out bool isComplete,
+            out bool isCovered)
+        {
+            var snapshot = Volatile.Read(ref _snapshot);
+            isComplete = snapshot.IsComplete;
+            isCovered = snapshot.CoveredHostIds.Contains(hostId);
+            if (snapshot.ByHost.TryGetValue(hostId, out routes))
+            {
+                return true;
+            }
+
+            routes = ImmutableArray<ClientRouteEndpoint>.Empty;
+            return false;
+        }
+
+        public Task WaitForInitialSnapshotAsync()
+        {
+            return _initialSnapshotReady.Task;
+        }
+
+        /// <summary>
+        /// Requests a full pass, optionally replacing the latest topology intent. Completion reports
+        /// this batch's attempt; initial readiness and ignored-empty confirmation are separate work.
+        /// Requests made during an active query share the pending batch.
+        /// </summary>
+        public Task<ClientRoutesRefreshOutcome> RefreshAsync(IEnumerable<Guid> topologyHostIds = null)
         {
             lock (_refreshLock)
             {
-                _pendingFullRefresh = true;
-                _pendingHostIds.Clear();
-                return StartDrainIfNeeded();
+                if (_shutdown)
+                {
+                    return Task.FromException<ClientRoutesRefreshOutcome>(CreateShutdownException());
+                }
+                if (topologyHostIds != null)
+                {
+                    _latestTopology = topologyHostIds.ToImmutableHashSet();
+                }
+                return QueueRefresh(ClientRoutesRefreshWorkItem.Full, hasCaller: true);
             }
         }
 
-        public Task RefreshAsync(ClientRoutesChangeEventArgs eventArgs)
+        public Task<ClientRoutesRefreshOutcome> RefreshAsync(ClientRoutesChangeEventArgs eventArgs)
         {
             if (!TryGetAffectedHostIds(eventArgs, out var hostIds))
             {
-                return Task.CompletedTask;
+                return Task.FromResult(ClientRoutesRefreshOutcome.Ignored);
             }
             if (hostIds.Count == 0)
             {
                 return RefreshAsync();
             }
-
             lock (_refreshLock)
             {
-                if (!_pendingFullRefresh)
+                if (_shutdown)
                 {
-                    _pendingHostIds.UnionWith(hostIds);
+                    return Task.FromException<ClientRoutesRefreshOutcome>(CreateShutdownException());
                 }
-                return StartDrainIfNeeded();
+                return QueueRefresh(ClientRoutesRefreshWorkItem.CreateTargeted(hostIds), hasCaller: true);
             }
         }
 
-        private Task StartDrainIfNeeded()
+        // Callers hold _refreshLock. A running batch is immutable; only pending work coalesces.
+        private Task<ClientRoutesRefreshOutcome> QueueRefresh(ClientRoutesRefreshWorkItem work, bool hasCaller)
         {
-            if (_inFlightRefresh == null)
+            if (_pendingRefresh == null)
             {
-                _inFlightRefresh = CreateRefreshCompletionSource();
-                StartRefresh(_inFlightRefresh);
+                _pendingRefresh = new RefreshBatch(work, hasCaller);
             }
-            return _inFlightRefresh.Task;
+            else
+            {
+                _pendingRefresh.Work = _pendingRefresh.Work.MergePending(work);
+                _pendingRefresh.HasCaller |= hasCaller;
+            }
+            var completion = _pendingRefresh.Completion.Task;
+            if (_activeRefresh == null)
+            {
+                _activeRefresh = _pendingRefresh;
+                _pendingRefresh = null;
+                try
+                {
+                    Task.Run(DrainRefreshesAsync).Forget();
+                }
+                catch (Exception ex)
+                {
+                    FailDrain(_activeRefresh, ex);
+                    throw;
+                }
+            }
+            return completion;
         }
 
-        private async Task DrainRefreshesAsync(TaskCompletionSource completion)
+        private async Task DrainRefreshesAsync()
         {
-            bool fullRefresh;
-            HashSet<Guid> hostIds;
-            lock (_refreshLock)
-            {
-                fullRefresh = _pendingFullRefresh;
-                if (fullRefresh)
-                {
-                    _pendingFullRefresh = false;
-                    _pendingHostIds.Clear();
-                    hostIds = null;
-                }
-                else if (_pendingHostIds.Count > 0)
-                {
-                    hostIds = new HashSet<Guid>(_pendingHostIds);
-                    _pendingHostIds.Clear();
-                }
-                else
-                {
-                    if (ReferenceEquals(_inFlightRefresh, completion))
-                    {
-                        _inFlightRefresh = null;
-                    }
-                    completion.TrySetResult();
-                    return;
-                }
-            }
-
+            RefreshBatch batch = null;
             try
             {
-                await ExecuteRefreshAsync(fullRefresh, hostIds).ConfigureAwait(false);
+                while (true)
+                {
+                    ImmutableHashSet<Guid> topology;
+                    lock (_refreshLock)
+                    {
+                        if (_shutdown || _activeRefresh == null)
+                        {
+                            return;
+                        }
+                        batch = _activeRefresh;
+                        topology = batch.Work.IsFull ? _latestTopology : null;
+                        if (batch.Work.IsFull)
+                        {
+                            // This full attempt supersedes the outstanding timer, including when
+                            // it was requested explicitly. A failure starts its next backoff delay.
+                            _scheduledRetryGeneration = 0;
+                        }
+                    }
+
+                    var outcome = await ExecuteRefreshAsync(batch.Work, topology).ConfigureAwait(false);
+                    lock (_refreshLock)
+                    {
+                        if (_shutdown)
+                        {
+                            return;
+                        }
+                        if (outcome == ClientRoutesRefreshOutcome.QueryFailed ||
+                            outcome == ClientRoutesRefreshOutcome.Malformed)
+                        {
+                            _needsFullRetry = true;
+                            _consecutiveFailedRefreshes = Math.Min(
+                                _consecutiveFailedRefreshes + 1, MaxFailedRefreshRetryBackoffExponent + 1);
+                            ScheduleFailedRefreshRetry();
+                        }
+                        else if (batch.Work.IsFull && outcome == ClientRoutesRefreshOutcome.Applied)
+                        {
+                            _needsFullRetry = false;
+                            _consecutiveFailedRefreshes = 0;
+                            _scheduledRetryGeneration = 0;
+                        }
+                        if (outcome == ClientRoutesRefreshOutcome.EmptyIgnored)
+                        {
+                            QueueRefresh(ClientRoutesRefreshWorkItem.Full, hasCaller: false);
+                        }
+                        batch.Completion.TrySetResult(outcome);
+                        _activeRefresh = _pendingRefresh;
+                        _pendingRefresh = null;
+                        if (_activeRefresh == null)
+                        {
+                            return;
+                        }
+                    }
+                }
             }
             catch (Exception ex)
             {
-                lock (_refreshLock)
-                {
-                    _pendingFullRefresh = false;
-                    _pendingHostIds.Clear();
-                    if (ReferenceEquals(_inFlightRefresh, completion))
-                    {
-                        _inFlightRefresh = null;
-                    }
-                }
-                completion.TrySetException(ex);
-                return;
+                FailDrain(batch, ex);
+                throw;
             }
+        }
 
-            TaskCompletionSource nextCompletion = null;
+        private void FailDrain(RefreshBatch batch, Exception exception)
+        {
+            RefreshBatch pending;
             lock (_refreshLock)
             {
-                if (_pendingFullRefresh || _pendingHostIds.Count > 0)
-                {
-                    nextCompletion = CreateRefreshCompletionSource();
-                    _inFlightRefresh = nextCompletion;
-                }
-                else if (ReferenceEquals(_inFlightRefresh, completion))
-                {
-                    _inFlightRefresh = null;
-                }
+                pending = _pendingRefresh;
+                _pendingRefresh = null;
+                _activeRefresh = null;
+                _needsFullRetry = false;
+                _consecutiveFailedRefreshes = 0;
+                _scheduledRetryGeneration = 0;
             }
-
-            // Match the Java driver's completion contract: callers that queued during this
-            // refresh complete with it, even though their coalesced work runs in the next query.
-            completion.TrySetResult();
-            if (nextCompletion != null)
-            {
-                // This completion can be internally owned when no request arrives during the
-                // follow-up refresh, so observe any fatal exception that faults it.
-                nextCompletion.Task.Forget();
-                StartRefresh(nextCompletion);
-            }
-        }
-
-        private static TaskCompletionSource CreateRefreshCompletionSource()
-        {
-            return new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        }
-
-        private void StartRefresh(TaskCompletionSource completion)
-        {
-            _ = Task.Run(() => DrainRefreshesAsync(completion));
-        }
-
-        private async Task ExecuteRefreshAsync(bool fullRefresh, HashSet<Guid> hostIds)
-        {
-            ParsedRoutes parsedRoutes;
             try
             {
-                var rows = await _queryProvider
-                    .QueryUnpagedAsync(BuildQuery(hostIds), true)
-                    .ConfigureAwait(false);
+                if (batch != null && !batch.HasCaller && pending?.HasCaller != true)
+                {
+                    _logger.Error("Client routes background refresh stopped after a fatal failure.", exception);
+                }
+            }
+            finally
+            {
+                batch?.Completion.TrySetException(exception);
+                pending?.Completion.TrySetException(exception);
+            }
+        }
+
+        private void ScheduleFailedRefreshRetry()
+        {
+            if (!_needsFullRetry || _scheduledRetryGeneration != 0 ||
+                _failedRefreshRetryDelay == Timeout.InfiniteTimeSpan)
+            {
+                return;
+            }
+            var multiplier = 1L << Math.Max(_consecutiveFailedRefreshes - 1, 0);
+
+            // Task.Delay truncates sub-millisecond waits to zero; keep every retry paced.
+            var ticks = Math.Max(_failedRefreshRetryDelay.Ticks, TimeSpan.TicksPerMillisecond);
+            var delay = TimeSpan.FromTicks(ticks > MaxFailedRefreshRetryDelayTicks / multiplier
+                ? MaxFailedRefreshRetryDelayTicks : ticks * multiplier);
+            do
+            {
+                _retryGeneration++;
+            }
+            while (_retryGeneration == 0);
+            var generation = _retryGeneration;
+            _scheduledRetryGeneration = generation;
+            _logger.Verbose("Retrying the failed client routes refresh in {0}ms.", delay.TotalMilliseconds);
+            var delayTask = Task.Delay(delay, _timeProvider, _shutdownCancellation.Token);
+            RetryAfterDelayAsync(delayTask, generation).Forget();
+        }
+
+        private async Task RetryAfterDelayAsync(Task delayTask, long generation)
+        {
+            await delayTask.ConfigureAwait(false);
+            lock (_refreshLock)
+            {
+                if (_shutdown || !_needsFullRetry || _scheduledRetryGeneration != generation)
+                {
+                    return;
+                }
+                _scheduledRetryGeneration = 0;
+                QueueRefresh(ClientRoutesRefreshWorkItem.Full, hasCaller: false);
+            }
+        }
+
+        private async Task<ClientRoutesRefreshOutcome> ExecuteRefreshAsync(
+            ClientRoutesRefreshWorkItem work, ImmutableHashSet<Guid> topology)
+        {
+            IEnumerable<IRow> rows;
+            try
+            {
+                rows = await _queryProvider.QueryUnpagedAsync(BuildQuery(work), _retryQueries).ConfigureAwait(false);
                 if (rows == null)
                 {
                     throw new InvalidOperationException("The client routes query returned a null result.");
                 }
-                parsedRoutes = ParseRows(rows, hostIds);
-                LogUnattributedMalformedRows(parsedRoutes, fullRefresh ? null : hostIds);
+
+                // Materialize before parsing so query/enumeration failures retain their own outcome.
+                rows = rows.ToArray();
             }
-            catch (Exception ex) when (!IsFatalException(ex))
+            catch (Exception ex) when (!Utils.IsFatalException(ex))
             {
-                _logger.Warning("Could not refresh client routes. The previous routes will be retained. Exception: {0}", ex);
-                return;
+                _logger.Warning("Could not refresh client routes. Existing routes are retained; " +
+                                "a full refresh will be retried when background retries are enabled. Exception: {0}", ex);
+                return ClientRoutesRefreshOutcome.QueryFailed;
             }
 
-            if (fullRefresh)
+            var routes = ImmutableDictionary.CreateBuilder<ClientRouteKey, ClientRouteEndpoint>();
+            var rowCount = 0;
+            try
             {
-                ApplyFullRefresh(parsedRoutes);
-            }
-            else
-            {
-                ApplyTargetedRefresh(parsedRoutes, hostIds);
-            }
-        }
-
-        private void ApplyFullRefresh(ParsedRoutes parsedRoutes)
-        {
-            var currentRoutes = Volatile.Read(ref _snapshot).ByKey;
-            if (parsedRoutes.RowCount == 0 && currentRoutes.Count > 0)
-            {
-                _consecutiveEmptyFullRefreshes++;
-                if (_consecutiveEmptyFullRefreshes < EmptyFullRefreshThreshold)
+                foreach (var row in rows)
                 {
-                    return;
-                }
-                _consecutiveEmptyFullRefreshes = 0;
-            }
-            else
-            {
-                _consecutiveEmptyFullRefreshes = 0;
-            }
-
-            var updatedRoutes = parsedRoutes.Routes.ToBuilder();
-            RetainUnsafeRoutes(currentRoutes, updatedRoutes, parsedRoutes);
-            var updatedSnapshot = CreateSnapshot(updatedRoutes.ToImmutable());
-            Volatile.Write(ref _snapshot, updatedSnapshot);
-            RecordCarryOvers(updatedSnapshot.ByKey, parsedRoutes.Routes);
-        }
-
-        private void ApplyTargetedRefresh(ParsedRoutes parsedRoutes, HashSet<Guid> hostIds)
-        {
-            var currentRoutes = Volatile.Read(ref _snapshot).ByKey;
-            var updatedRoutes = currentRoutes.ToBuilder();
-            foreach (var routeKey in currentRoutes.Keys.Where(key => hostIds.Contains(key.HostId)))
-            {
-                updatedRoutes.Remove(routeKey);
-            }
-            foreach (var route in parsedRoutes.Routes)
-            {
-                updatedRoutes[route.Key] = route.Value;
-            }
-            RetainUnsafeRoutes(currentRoutes, updatedRoutes, parsedRoutes, hostIds);
-            var updatedSnapshot = CreateSnapshot(updatedRoutes.ToImmutable());
-            Volatile.Write(ref _snapshot, updatedSnapshot);
-            RecordCarryOvers(updatedSnapshot.ByKey, parsedRoutes.Routes, hostIds);
-        }
-
-        private static void RetainUnsafeRoutes(
-            ImmutableDictionary<ClientRouteKey, ClientRouteEndpoint> currentRoutes,
-            ImmutableDictionary<ClientRouteKey, ClientRouteEndpoint>.Builder updatedRoutes,
-            ParsedRoutes parsedRoutes,
-            HashSet<Guid> refreshScope = null)
-        {
-            foreach (var route in currentRoutes)
-            {
-                var retainWholeScope = parsedRoutes.HasUnattributedMalformedRows &&
-                                       (refreshScope == null || refreshScope.Contains(route.Key.HostId));
-                if ((retainWholeScope ||
-                     parsedRoutes.UnsafeHostIds.Contains(route.Key.HostId) ||
-                     parsedRoutes.UnsafeRouteKeys.Contains(route.Key)) &&
-                    !updatedRoutes.ContainsKey(route.Key))
-                {
-                    updatedRoutes[route.Key] = route.Value;
-                }
-            }
-        }
-
-        private void RecordCarryOvers(
-            ImmutableDictionary<ClientRouteKey, ClientRouteEndpoint> installedRoutes,
-            ImmutableDictionary<ClientRouteKey, ClientRouteEndpoint> freshRoutes,
-            HashSet<Guid> refreshScope = null)
-        {
-            // A retained route is safer than falling back to an address that may be unreachable,
-            // but repeated carry-over must not remain silent. Only advance hosts this refresh
-            // actually covered; targeted refreshes preserve counts outside their scope.
-            var previousCounts = Volatile.Read(ref _unconfirmedRouteCounts);
-            var updatedCounts = ImmutableDictionary.CreateBuilder<ClientRouteKey, int>();
-            var escalatedRouteKeys = new List<ClientRouteKey>();
-
-            foreach (var routeKey in installedRoutes.Keys)
-            {
-                if (freshRoutes.ContainsKey(routeKey))
-                {
-                    continue;
-                }
-
-                if (refreshScope != null && !refreshScope.Contains(routeKey.HostId))
-                {
-                    if (previousCounts.TryGetValue(routeKey, out var previousCount))
+                    rowCount++;
+                    var hostId = row.GetValue<Guid>("host_id");
+                    if (!work.IncludesHost(hostId))
                     {
-                        updatedCounts[routeKey] = previousCount;
+                        continue;
                     }
-                    continue;
-                }
-
-                var count = previousCounts.TryGetValue(routeKey, out var carriedCount)
-                    ? carriedCount + 1
-                    : 1;
-                updatedCounts[routeKey] = count;
-                if (count >= CarryOversBeforeEscalation)
-                {
-                    escalatedRouteKeys.Add(routeKey);
-                }
-            }
-
-            var updatedSnapshot = updatedCounts.ToImmutable();
-            Volatile.Write(ref _unconfirmedRouteCounts, updatedSnapshot);
-
-            if (escalatedRouteKeys.Count > 0)
-            {
-                var counts = string.Join(
-                    ", ",
-                    escalatedRouteKeys
-                        .OrderBy(key => key.HostId)
-                        .ThenBy(key => _connectionPriorities[key.ConnectionId])
-                        .Select(key => $"{key}={updatedSnapshot[key]}"));
-                _logger.Error(
-                    "Serving {0} client route(s) that this refresh could not rebuild. " +
-                    "Consecutive unconfirmed refresh counts: {1}. Check system.client_routes " +
-                    "for unreadable connection_id, host_id, address, or port values.",
-                    escalatedRouteKeys.Count,
-                    counts);
-            }
-        }
-
-        private ParsedRoutes ParseRows(IEnumerable<IRow> rows, HashSet<Guid> requestedHostIds)
-        {
-            var parsedRoutes = new ParsedRoutes();
-            foreach (var row in rows)
-            {
-                parsedRoutes.RowCount++;
-
-                Guid hostId;
-                try
-                {
-                    hostId = row.GetValue<Guid>("host_id");
-                }
-                catch (Exception ex) when (!IsFatalException(ex))
-                {
-                    _logger.Warning("Could not read a client route host ID. The row will be ignored. Exception: {0}", ex);
-                    parsedRoutes.UnattributedMalformedRowCount++;
-                    continue;
-                }
-
-                if (requestedHostIds != null && !requestedHostIds.Contains(hostId))
-                {
-                    continue;
-                }
-                parsedRoutes.ReadableHostIds.Add(hostId);
-
-                string connectionId;
-                try
-                {
-                    connectionId = row.GetValue<string>("connection_id");
-                    if (connectionId == null || !_connectionPriorities.ContainsKey(connectionId))
+                    var connectionId = row.GetValue<string>("connection_id");
+                    if (connectionId == null || !_selection.ConnectionPriorities.ContainsKey(connectionId))
                     {
                         throw new FormatException("The client route connection ID is not configured.");
                     }
-                }
-                catch (Exception ex) when (!IsFatalException(ex))
-                {
-                    _logger.Warning(
-                        "Could not read a client route connection ID for host {0}. The row will be ignored. Exception: {1}",
-                        hostId,
-                        ex);
-                    parsedRoutes.UnsafeHostIds.Add(hostId);
-                    continue;
-                }
-
-                var routeKey = new ClientRouteKey(hostId, connectionId);
-                try
-                {
-                    var address = _addressOverrides.TryGetValue(connectionId, out var addressOverride)
-                        ? addressOverride
-                        : row.GetValue<string>("address");
-                    if (!IsValidAddress(address))
+                    var address = _selection.AddressOverrides.TryGetValue(connectionId, out var addressOverride)
+                        ? addressOverride : row.GetValue<string>("address");
+                    if (string.IsNullOrEmpty(address) || address.Any(char.IsWhiteSpace))
                     {
                         throw new FormatException("The client route address is missing or contains whitespace.");
                     }
-
-                    var port = row.GetValue<int>(_useTls ? "tls_port" : "port");
-                    if (port < 1 || port > 65535)
+                    var port = row.GetValue<int?>(_useTls ? "tls_port" : "port");
+                    if (!port.HasValue)
+                    {
+                        continue;
+                    }
+                    if (port.Value < 1 || port.Value > 65535)
                     {
                         throw new ArgumentOutOfRangeException(nameof(port));
                     }
-
-                    parsedRoutes.Routes = parsedRoutes.Routes.SetItem(
-                        routeKey,
-                        new ClientRouteEndpoint(connectionId, address, port));
-                }
-                catch (Exception ex) when (!IsFatalException(ex))
-                {
-                    _logger.Warning(
-                        "Could not read a client route endpoint for host {0} and connection {1}. " +
-                        "The row will be ignored. Exception: {2}",
-                        hostId,
-                        connectionId,
-                        ex);
-                    parsedRoutes.UnsafeRouteKeys.Add(routeKey);
+                    routes[new ClientRouteKey(hostId, connectionId)] = new ClientRouteEndpoint(connectionId, address, port.Value);
                 }
             }
-            return parsedRoutes;
+            catch (Exception ex) when (!Utils.IsFatalException(ex))
+            {
+                if (work.IsFull)
+                {
+                    _consecutiveEmptyFullRefreshes = 0;
+                }
+                var current = Volatile.Read(ref _snapshot);
+                PublishSnapshot(new RoutesSnapshot(current.ByKey, current.ByHost,
+                    current.CoveredHostIds.Where(id => !work.IncludesHost(id)).ToImmutableHashSet(), current.IsComplete));
+                _logger.Error("Rejected malformed client routes result. Cached routes are retained; " +
+                              "this result cannot confirm direct-fallback coverage.", ex);
+                return ClientRoutesRefreshOutcome.Malformed;
+            }
+
+            var snapshot = Volatile.Read(ref _snapshot);
+            if (work.IsFull)
+            {
+                if (rowCount == 0 && snapshot.ByKey.Count > 0)
+                {
+                    _consecutiveEmptyFullRefreshes++;
+                    if (_consecutiveEmptyFullRefreshes < EmptyFullRefreshThreshold)
+                    {
+                        _logger.Warning("The client routes query returned no rows ({0} of {1} consecutive empty results). " +
+                                        "Keeping cached routes until the empty result is confirmed.",
+                            _consecutiveEmptyFullRefreshes, EmptyFullRefreshThreshold);
+                        return ClientRoutesRefreshOutcome.EmptyIgnored;
+                    }
+                }
+                _consecutiveEmptyFullRefreshes = 0;
+                PublishSnapshot(CreateSnapshot(routes.ToImmutable(), topology ?? snapshot.CoveredHostIds,
+                    snapshot.IsComplete || topology != null));
+                if (rowCount == 0 && snapshot.ByKey.Count > 0)
+                {
+                    _logger.Error("The client routes query returned no rows {0} consecutive times. " +
+                                  "The full refresh result is empty.",
+                        EmptyFullRefreshThreshold);
+                }
+            }
+            else
+            {
+                var updated = snapshot.ByKey.RemoveRange(snapshot.ByKey.Keys.Where(key => work.IncludesHost(key.HostId)));
+                PublishSnapshot(CreateSnapshot(updated.SetItems(routes), snapshot.CoveredHostIds, snapshot.IsComplete));
+            }
+            return ClientRoutesRefreshOutcome.Applied;
         }
 
         private RoutesSnapshot CreateSnapshot(
-            ImmutableDictionary<ClientRouteKey, ClientRouteEndpoint> routesByKey)
+            ImmutableDictionary<ClientRouteKey, ClientRouteEndpoint> routesByKey,
+            ImmutableHashSet<Guid> coveredHostIds,
+            bool isComplete)
         {
             var routesByHost = ImmutableDictionary.CreateBuilder<Guid, ImmutableArray<ClientRouteEndpoint>>();
             foreach (var routesForHost in routesByKey.GroupBy(route => route.Key.HostId))
             {
                 routesByHost[routesForHost.Key] = routesForHost
-                    .OrderBy(route => _connectionPriorities[route.Key.ConnectionId])
+                    .OrderBy(route => _selection.ConnectionPriorities[route.Key.ConnectionId])
                     .Select(route => route.Value)
                     .ToImmutableArray();
             }
-            return new RoutesSnapshot(routesByKey, routesByHost.ToImmutable());
+            return new RoutesSnapshot(
+                routesByKey,
+                routesByHost.ToImmutable(),
+                coveredHostIds,
+                isComplete);
         }
 
-        private void LogUnattributedMalformedRows(ParsedRoutes parsedRoutes, HashSet<Guid> refreshScope)
+        private void PublishSnapshot(RoutesSnapshot snapshot)
         {
-            if (parsedRoutes.UnattributedMalformedRowCount == 0)
+            lock (_refreshLock)
             {
-                return;
-            }
-
-            var cachedRoutes = Volatile.Read(ref _snapshot).ByKey;
-            var cachedRouteCount = refreshScope == null
-                ? cachedRoutes.Count
-                : cachedRoutes.Keys.Count(key => refreshScope.Contains(key.HostId));
-            if (parsedRoutes.ReadableHostIds.Count == 0)
-            {
-                if (cachedRouteCount == 0)
+                if (_shutdown)
                 {
-                    _logger.Error(
-                        "None of the {0} client route rows named a readable host ID and no route " +
-                        "was cached, so this refresh installs none.",
-                        parsedRoutes.RowCount);
+                    return;
                 }
-                else
+
+                Volatile.Write(ref _snapshot, snapshot);
+                if (snapshot.IsComplete)
                 {
-                    _logger.Error(
-                        "None of the {0} client route rows named a readable host ID. Keeping all " +
-                        "{1} cached routes in the refresh scope.",
-                        parsedRoutes.RowCount,
-                        cachedRouteCount);
+                    _initialSnapshotReady.TrySetResult(true);
                 }
-                return;
             }
-
-            _logger.Warning(
-                "{0} of {1} client route rows named no readable host ID. Cached routes that this " +
-                "refresh cannot prove deleted will be retained.",
-                parsedRoutes.UnattributedMalformedRowCount,
-                parsedRoutes.RowCount);
-        }
-
-        private static bool IsValidAddress(string address)
-        {
-            return !string.IsNullOrEmpty(address) && !address.Any(char.IsWhiteSpace);
         }
 
         private bool TryGetAffectedHostIds(
@@ -537,35 +503,25 @@ namespace Cassandra
 
             if (eventArgs.ConnectionIds.Length > 0 &&
                 !eventArgs.ConnectionIds.Any(connectionId =>
-                    connectionId != null && _connectionPriorities.ContainsKey(connectionId)))
+                    connectionId != null && _selection.ConnectionPriorities.ContainsKey(connectionId)))
             {
                 return false;
             }
 
             // For refresh purposes, treat the lists as independent scopes rather than positional
             // pairs, matching the Java driver. Connection IDs only decide whether the event
-            // concerns this cache; all named hosts are re-queried across every configured
-            // connection so absence is safe to interpret as deletion.
+            // concerns this cache, and an empty list is unscoped. All named hosts are re-queried
+            // across every configured connection so absence is safe to interpret as deletion.
             hostIds.UnionWith(eventArgs.HostIds);
             return true;
         }
 
-        private string BuildQuery(HashSet<Guid> hostIds)
+        private string BuildQuery(ClientRoutesRefreshWorkItem workItem)
         {
-            var connectionIds = string.Join(", ", _connectionIds.Select(id => $"'{EscapeCqlString(id)}'"));
-            var query = $"SELECT {SelectColumns} FROM system.client_routes " +
+            var connectionIds = string.Join(", ", _selection.ConnectionIds.Select(id => $"'{EscapeCqlString(id)}'"));
+            var query = $"SELECT {SelectColumns} FROM {TableName} " +
                         $"WHERE connection_id IN ({connectionIds})";
-            if (hostIds != null)
-            {
-                query += " AND host_id IN (" +
-                         string.Join(", ", hostIds.OrderBy(id => id).Select(id => id.ToString())) + ")";
-            }
-            else
-            {
-                // Match the Java driver and the server's full client-routes query convention.
-                query += " ALLOW FILTERING";
-            }
-            return query;
+            return workItem.AppendQueryFilter(query);
         }
 
         private static string EscapeCqlString(string value)
@@ -573,51 +529,76 @@ namespace Cassandra
             return value.Replace("'", "''");
         }
 
-        private static bool IsFatalException(Exception ex)
+        public void Shutdown()
         {
-            return ex is OutOfMemoryException ||
-                   ex is StackOverflowException ||
-                   ex is ThreadAbortException ||
-                   ex is AccessViolationException ||
-                   ex is AppDomainUnloadedException ||
-                   ex is BadImageFormatException;
+            lock (_refreshLock)
+            {
+                if (_shutdown)
+                {
+                    return;
+                }
+                _shutdown = true;
+                _needsFullRetry = false;
+                _scheduledRetryGeneration = 0;
+                var exception = CreateShutdownException();
+                _activeRefresh?.Completion.TrySetException(exception);
+                _pendingRefresh?.Completion.TrySetException(exception);
+                _pendingRefresh = null;
+                _initialSnapshotReady.Task.Forget();
+                _initialSnapshotReady.TrySetException(exception);
+            }
+            _shutdownCancellation.Cancel();
         }
 
-        private sealed class ParsedRoutes
+        private static ObjectDisposedException CreateShutdownException()
         {
-            public ImmutableDictionary<ClientRouteKey, ClientRouteEndpoint> Routes { get; set; } =
-                ImmutableDictionary<ClientRouteKey, ClientRouteEndpoint>.Empty;
+            return new ObjectDisposedException(nameof(ClientRoutesCache));
+        }
 
-            public HashSet<Guid> UnsafeHostIds { get; } = new HashSet<Guid>();
+        private sealed class RefreshBatch
+        {
+            public RefreshBatch(ClientRoutesRefreshWorkItem work, bool hasCaller)
+            {
+                Work = work;
+                HasCaller = hasCaller;
+                Completion.Task.Forget();
+            }
 
-            public HashSet<ClientRouteKey> UnsafeRouteKeys { get; } = new HashSet<ClientRouteKey>();
+            public ClientRoutesRefreshWorkItem Work { get; set; }
 
-            public HashSet<Guid> ReadableHostIds { get; } = new HashSet<Guid>();
+            public bool HasCaller { get; set; }
 
-            public bool HasUnattributedMalformedRows => UnattributedMalformedRowCount > 0;
-
-            public int UnattributedMalformedRowCount { get; set; }
-
-            public int RowCount { get; set; }
+            public TaskCompletionSource<ClientRoutesRefreshOutcome> Completion { get; } =
+                new TaskCompletionSource<ClientRoutesRefreshOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
         private sealed class RoutesSnapshot
         {
             public static readonly RoutesSnapshot Empty = new RoutesSnapshot(
                 ImmutableDictionary<ClientRouteKey, ClientRouteEndpoint>.Empty,
-                ImmutableDictionary<Guid, ImmutableArray<ClientRouteEndpoint>>.Empty);
+                ImmutableDictionary<Guid, ImmutableArray<ClientRouteEndpoint>>.Empty,
+                ImmutableHashSet<Guid>.Empty,
+                false);
 
             public RoutesSnapshot(
                 ImmutableDictionary<ClientRouteKey, ClientRouteEndpoint> byKey,
-                ImmutableDictionary<Guid, ImmutableArray<ClientRouteEndpoint>> byHost)
+                ImmutableDictionary<Guid, ImmutableArray<ClientRouteEndpoint>> byHost,
+                ImmutableHashSet<Guid> coveredHostIds,
+                bool isComplete)
             {
                 ByKey = byKey;
                 ByHost = byHost;
+                CoveredHostIds = coveredHostIds;
+                IsComplete = isComplete;
             }
 
             public ImmutableDictionary<ClientRouteKey, ClientRouteEndpoint> ByKey { get; }
 
             public ImmutableDictionary<Guid, ImmutableArray<ClientRouteEndpoint>> ByHost { get; }
+
+            public ImmutableHashSet<Guid> CoveredHostIds { get; }
+
+            public bool IsComplete { get; }
         }
     }
 }
