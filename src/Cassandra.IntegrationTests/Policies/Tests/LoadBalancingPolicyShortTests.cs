@@ -395,10 +395,16 @@ namespace Cassandra.IntegrationTests.Policies.Tests
 
                 // Manually calculate the routing key
                 var routingKey = SerializerManager.Default.GetCurrentSerializer().Serialize(id);
-                // Get the replicas
-                var replicas = cluster.GetReplicas(ks, routingKey);
-                Assert.AreEqual(metadataSync ? 2 : 1, replicas.Count);
-                CollectionAssert.AreEquivalent(replicas.Select(h => h.Host.Address), coordinators);
+                // Get the replicas used for routing, which fall back to the token map when the keyspace is not cached
+                var routingReplicas = cluster.Metadata.GetRoutingReplicas(ks, "tbl1", routingKey);
+                Assert.AreEqual(metadataSync ? 2 : 1, routingReplicas.Count);
+                CollectionAssert.AreEquivalent(routingReplicas.Select(h => h.Host.Address), coordinators);
+
+                // With metadata synchronization disabled the keyspace is not cached. On servers supporting tablets it
+                // is then unknown whether it uses tablets, so no replica is returned instead of the token ring ones.
+                var replicas = cluster.Metadata.GetReplicas(ks, "tbl1", routingKey);
+                var expectedReplicas = metadataSync ? 2 : cluster.Metadata.ControlConnection.SupportsTablets ? 0 : 1;
+                Assert.AreEqual(expectedReplicas, replicas.Count);
             }
             finally
             {

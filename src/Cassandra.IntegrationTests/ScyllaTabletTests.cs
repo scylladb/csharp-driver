@@ -4,6 +4,7 @@ using System.Linq;
 using System.Collections.Generic;
 using Cassandra.IntegrationTests.TestBase;
 using Cassandra.IntegrationTests.TestClusterManagement;
+using Cassandra.Tests;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 
@@ -96,6 +97,89 @@ namespace Cassandra.IntegrationTests
             {
                 _session.Execute(populateStatement.Bind(i.ToString(), "ck" + i, "v" + i));
             }
+        }
+
+        [Test]
+        public void GetReplicas_Should_ReturnEmpty_When_TabletKeyspaceIsNotCached()
+        {
+            _realCluster = TestClusterManager.CreateNew();
+            using var cluster = ClusterBuilder()
+                                .WithSocketOptions(new SocketOptions().SetReadTimeoutMillis(22000).SetConnectTimeoutMillis(60000))
+                                .AddContactPoint(_realCluster.InitialContactPoint)
+                                .WithMetadataSyncOptions(new MetadataSyncOptions().SetMetadataSyncEnabled(false))
+                                .Build();
+            var session = cluster.Connect();
+            session.Execute("CREATE KEYSPACE uncached_tablets WITH replication = " +
+                            "{'class': 'NetworkTopologyStrategy', 'replication_factor': '1'} AND tablets = {'enabled': true}");
+            session.Execute("CREATE TABLE uncached_tablets.t (pk text PRIMARY KEY, v text)");
+            var routingKey = session.Prepare("INSERT INTO uncached_tablets.t (pk, v) VALUES (?, ?)")
+                                    .Bind("1", "v").RoutingKey.RawRoutingKey;
+
+            // With metadata synchronization disabled the keyspace is not cached, so it is unknown whether it uses
+            // tablets, and its token ring replicas must not be returned.
+            Assert.IsNull(cluster.Metadata.GetKeyspaceFromCache("uncached_tablets"));
+            Assert.IsEmpty(cluster.Metadata.GetReplicas("uncached_tablets", "t", routingKey));
+            Assert.IsEmpty(cluster.Metadata.GetReplicas("uncached_tablets", null, routingKey));
+        }
+
+        [Test]
+        public void GetReplicas_Should_UseKeyspaceSchemaToResolveReplicas()
+        {
+            _realCluster = TestClusterManager.CreateNew(3);
+            using var cluster = ClusterBuilder()
+                                .WithSocketOptions(new SocketOptions().SetReadTimeoutMillis(22000).SetConnectTimeoutMillis(60000))
+                                .AddContactPoint(_realCluster.InitialContactPoint)
+                                .Build();
+            var session = cluster.Connect();
+
+            const int rf = 1;
+            const int keys = 50;
+            session.Execute("DROP KEYSPACE IF EXISTS tablet_replicas");
+            session.Execute("DROP KEYSPACE IF EXISTS vnode_replicas");
+            session.Execute("CREATE KEYSPACE tablet_replicas WITH replication = " +
+                            $"{{'class': 'NetworkTopologyStrategy', 'replication_factor': '{rf}'}} AND tablets = {{'enabled': true}}");
+            session.Execute("CREATE KEYSPACE vnode_replicas WITH replication = " +
+                            $"{{'class': 'NetworkTopologyStrategy', 'replication_factor': '{rf}'}} AND tablets = {{'enabled': false}}");
+            session.Execute("CREATE TABLE tablet_replicas.t (pk text PRIMARY KEY, v text)");
+            session.Execute("CREATE TABLE vnode_replicas.t (pk text PRIMARY KEY, v text)");
+
+            TestHelper.RetryAssert(
+                () =>
+                {
+                    Assert.AreEqual(true, cluster.Metadata.GetKeyspace("tablet_replicas")?.UsesTablets);
+                    Assert.AreEqual(false, cluster.Metadata.GetKeyspace("vnode_replicas")?.UsesTablets);
+                },
+                500,
+                60);
+
+            var insert = session.Prepare("INSERT INTO tablet_replicas.t (pk, v) VALUES (?, ?)");
+            var routingKeys = Enumerable.Range(0, keys)
+                                        .Select(i => insert.Bind(i.ToString(), "v").RoutingKey.RawRoutingKey)
+                                        .ToList();
+
+            // The tablet table has not been queried yet, so the driver knows none of its tablets. The token map
+            // does not describe tablet placement, so no replica must be returned instead of token ring replicas.
+            foreach (var routingKey in routingKeys)
+            {
+                Assert.IsEmpty(cluster.Metadata.GetReplicas("tablet_replicas", "t", routingKey));
+                Assert.AreEqual(rf, cluster.Metadata.GetReplicas("vnode_replicas", "t", routingKey).Count);
+            }
+
+            for (var i = 0; i < keys; i++)
+            {
+                session.Execute(insert.Bind(i.ToString(), "v"));
+            }
+
+            // Executing the queries makes the server send the tablets owning the keys.
+            TestHelper.RetryAssert(
+                () =>
+                {
+                    var replicas = routingKeys.Select(k => cluster.Metadata.GetReplicas("tablet_replicas", "t", k)).ToList();
+                    Assert.IsTrue(replicas.Any(r => r.Count > 0), "no tablet replica was learned from the server");
+                    Assert.IsTrue(replicas.All(r => r.Count == 0 || r.Count == rf));
+                },
+                500,
+                20);
         }
 
         private void VerifyCorrectShardSingleRow(ISession _session, string pk, string ck, string v)

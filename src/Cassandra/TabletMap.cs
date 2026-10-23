@@ -11,7 +11,7 @@ namespace Cassandra
     internal class TabletMap
     {
         private static readonly Logger Logger = new Logger(typeof(TabletMap));
-        private static readonly IReadOnlyList<HostShard> EMPTY_LIST = new List<HostShard>();
+        private static readonly ICollection<HostShard> EMPTY_LIST = new HostShard[0];
 
         private readonly ConcurrentDictionary<KeyspaceTableNamePair, TabletSet> _mapping;
         private readonly Metadata _metadata;
@@ -103,38 +103,49 @@ namespace Cassandra
 
         public IDictionary<KeyspaceTableNamePair, TabletSet> GetMapping() => _mapping;
 
-        public IReadOnlyList<HostShard> GetReplicas(string keyspace, string table, IToken token)
+        /// <summary>
+        /// Gets the tablet replicas owning the token for the provided table.
+        /// </summary>
+        /// <returns>
+        /// <c>false</c> when there is no tablet mapping for the table. Otherwise <c>true</c>, with
+        /// <paramref name="replicas"/> empty when no cached tablet owns the token or one of its replica hosts is unknown.
+        /// </returns>
+        public bool TryGetReplicas(string keyspace, string table, IToken token, out ICollection<HostShard> replicas)
         {
-            if (token == null)
-            {
-                return EMPTY_LIST;
-            }
-
+            replicas = EMPTY_LIST;
             var key = new KeyspaceTableNamePair(keyspace, table);
 
             if (!_mapping.TryGetValue(key, out var tabletSet))
             {
-                Logger.Info($"No tablets for {keyspace}.{table} in mapping.", keyspace, table);
-                return EMPTY_LIST;
+                return false;
+            }
+
+            if (token == null)
+            {
+                return true;
             }
 
             var row = tabletSet.Tablets.FirstOrDefault(t => token.CompareTo(new M3PToken(t.LastToken)) <= 0);
             if (row == null || token.CompareTo(new M3PToken(row.FirstToken)) <= 0)
             {
-                Logger.Info($"Could not find tablet for {keyspace}.{table} owning token {token}.", keyspace, table, token);
-                return EMPTY_LIST;
+                Logger.Verbose("Could not find tablet for {0}.{1} owning token {2}.", keyspace, table, token);
+                return true;
             }
 
-            var replicas = new List<HostShard>();
+            var tabletReplicas = new List<HostShard>();
             foreach (var hostShardPair in row.Replicas)
             {
                 Host replica = _metadata.Hosts.ToCollection().FirstOrDefault(h => h.HostId == hostShardPair.HostID);
                 if (replica == null)
-                    return EMPTY_LIST;
+                {
+                    Logger.Verbose("Could not find host {0} owning a tablet replica for {1}.{2}.", hostShardPair.HostID, keyspace, table);
+                    return true;
+                }
 
-                replicas.Add(new HostShard(replica, hostShardPair.Shard));
+                tabletReplicas.Add(new HostShard(replica, hostShardPair.Shard));
             }
-            return replicas.ToList(); // Return as List<HostDummy>, which implements IReadOnlyList<HostDummy>
+            replicas = tabletReplicas;
+            return true;
         }
 
         public void RemoveTableMappings(KeyspaceTableNamePair key) => _mapping.TryRemove(key, out _);

@@ -78,6 +78,12 @@ namespace Cassandra
 
         internal IReplicationStrategy Strategy { get; }
 
+        /// <summary>
+        /// Determines whether the keyspace uses tablets instead of vnodes for data distribution, or <c>null</c> when
+        /// the driver could not determine it.
+        /// </summary>
+        internal bool? UsesTablets { get; }
+
         internal KeyspaceMetadata(
             Metadata parent,
             string name,
@@ -86,7 +92,8 @@ namespace Cassandra
             IDictionary<string, string> replicationOptions,
             IReplicationStrategyFactory replicationStrategyFactory,
             string graphEngine,
-            bool isVirtual = false)
+            bool isVirtual = false,
+            bool? usesTablets = false)
         {
             //Can not directly reference to schemaParser as it might change
             _parent = parent;
@@ -116,6 +123,7 @@ namespace Cassandra
                 : replicationStrategyFactory.Create(StrategyClass, parsedReplicationOptions);
 
             GraphEngine = graphEngine;
+            UsesTablets = usesTablets;
         }
 
         /// <summary>

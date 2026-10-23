@@ -43,7 +43,7 @@ namespace Cassandra.IntegrationTests.MetadataTests
             Assert.AreEqual(3, newCluster.Metadata.Hosts.Count);
 
             Assert.IsNull(newCluster.Metadata.TokenToReplicasMap.GetByKeyspace(keyspaceName));
-            var createKeyspaceCql = $"CREATE KEYSPACE {keyspaceName} WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor' : 3}}";
+            var createKeyspaceCql = $"CREATE KEYSPACE {keyspaceName} WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor' : 3}}" + TestUtils.VnodeKeyspaceOptions;
 
             newSession.Execute(createKeyspaceCql);
             TestUtils.WaitForSchemaAgreement(newCluster);
@@ -65,7 +65,7 @@ namespace Cassandra.IntegrationTests.MetadataTests
         public void TokenMap_Should_UpdateExistingTokenMap_When_KeyspaceIsRemoved()
         {
             var keyspaceName = TestUtils.GetUniqueKeyspaceName().ToLower();
-            var createKeyspaceCql = $"CREATE KEYSPACE {keyspaceName} WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor' : 3}}";
+            var createKeyspaceCql = $"CREATE KEYSPACE {keyspaceName} WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor' : 3}}" + TestUtils.VnodeKeyspaceOptions;
             Session.Execute(createKeyspaceCql);
             TestUtils.WaitForSchemaAgreement(Cluster);
 
@@ -86,7 +86,7 @@ namespace Cassandra.IntegrationTests.MetadataTests
         public void TokenMap_Should_UpdateExistingTokenMap_When_KeyspaceIsChanged()
         {
             var keyspaceName = TestUtils.GetUniqueKeyspaceName().ToLower();
-            var createKeyspaceCql = $"CREATE KEYSPACE {keyspaceName} WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor' : 3}}";
+            var createKeyspaceCql = $"CREATE KEYSPACE {keyspaceName} WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor' : 3}}" + TestUtils.VnodeKeyspaceOptions;
             Session.Execute(createKeyspaceCql);
             TestUtils.WaitForSchemaAgreement(Cluster);
 
@@ -96,7 +96,12 @@ namespace Cassandra.IntegrationTests.MetadataTests
             {
                 var replicas = newCluster.Metadata.TokenToReplicasMap.GetByKeyspace(keyspaceName);
                 Assert.AreEqual(newCluster.Metadata.Hosts.Sum(h => h.Tokens.Count()), replicas.Count);
-                Assert.AreEqual(3, newCluster.Metadata.GetReplicas(keyspaceName, Encoding.UTF8.GetBytes("123")).Count);
+                Assert.AreEqual(3, newCluster.Metadata.GetReplicas(keyspaceName, null, Encoding.UTF8.GetBytes("123")).Count);
+#pragma warning disable 618
+                Assert.AreEqual(3, newCluster.GetReplicas(keyspaceName, Encoding.UTF8.GetBytes("123")).Count);
+                //Without a keyspace only the primary replica is returned
+                Assert.AreEqual(1, newCluster.GetReplicas(Encoding.UTF8.GetBytes("123")).Count);
+#pragma warning restore 618
             });
 
             Assert.AreEqual(3, newCluster.Metadata.Hosts.Count(h => h.IsUp));
@@ -109,7 +114,7 @@ namespace Cassandra.IntegrationTests.MetadataTests
             {
                 var replicas = newCluster.Metadata.TokenToReplicasMap.GetByKeyspace(keyspaceName);
                 Assert.AreEqual(newCluster.Metadata.Hosts.Sum(h => h.Tokens.Count()), replicas.Count);
-                Assert.AreEqual(2, newCluster.Metadata.GetReplicas(keyspaceName, Encoding.UTF8.GetBytes("123")).Count);
+                Assert.AreEqual(2, newCluster.Metadata.GetReplicas(keyspaceName, null, Encoding.UTF8.GetBytes("123")).Count);
             });
 
             Assert.AreEqual(3, newCluster.Metadata.Hosts.Count(h => h.IsUp));

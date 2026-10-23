@@ -267,6 +267,35 @@ namespace Cassandra.Tests.Connections.Control
         }
 
         [Test]
+        public async Task Should_UpdateTabletsSupport_When_ReconnectingToANodeAdvertisingTablets()
+        {
+            var createdCount = 0;
+            var connectionFactory = new FakeConnectionFactory(endpoint =>
+            {
+                // The first node doesn't support tablets, the node of the reconnection, e.g. after an upgrade, does
+                var supported = System.Threading.Interlocked.Increment(ref createdCount) == 1
+                    ? new Dictionary<string, string[]>()
+                    : new Dictionary<string, string[]> { { "TABLETS_ROUTING_V1", new[] { "" } } };
+                var connection = new Mock<IConnection>();
+                connection.SetupGet(c => c.EndPoint).Returns(endpoint);
+                connection.Setup(c => c.TabletInfo()).Returns(TabletInfo.ParseTabletInfo(supported));
+                return connection.Object;
+            });
+            var createResult = NewInstance(configBuilderAct: builder => builder.ConnectionFactory = connectionFactory);
+
+            using (var cc = createResult.ControlConnection)
+            {
+                await cc.InitAsync().ConfigureAwait(false);
+                Assert.IsFalse(cc.SupportsTablets);
+
+                await cc.Reconnect(null).ConfigureAwait(false);
+
+                Assert.AreEqual(2, createdCount);
+                Assert.IsTrue(cc.SupportsTablets);
+            }
+        }
+
+        [Test]
         public async Task Should_SetCurrentHost_When_ANewConnectionIsOpened()
         {
             using (var cc = NewInstance().ControlConnection)

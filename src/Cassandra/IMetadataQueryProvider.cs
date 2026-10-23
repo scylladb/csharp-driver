@@ -57,5 +57,12 @@ namespace Cassandra
         Task<Response> UnsafeSendQueryRequestAsync(string cqlQuery, QueryProtocolOptions queryProtocolOptions);
 
         IEnumerable<IRow> Query(string cqlQuery, bool retry = false);
+
+        /// <summary>
+        /// Determines whether the server supports tablets, i.e. whether the node of the current control connection
+        /// advertises tablet routing. It is read from the current connection, so it reflects the node the schema
+        /// queries are sent to, also after a reconnection.
+        /// </summary>
+        bool SupportsTablets { get; }
     }
 }

@@ -91,6 +91,54 @@ Connection pools now recover when a load balancing policy temporarily ignores a
 host and later treats it as local or remote again, including when the pool was
 empty or still draining its old connections.
 
+### Table-aware replica resolution
+
+A new table-aware overload resolves replicas according to how the keyspace
+distributes its data:
+
+- `Metadata.GetReplicas(string keyspaceName, string tableName, byte[] partitionKey)`
+
+For a keyspace using tablets, it returns the replicas of the cached tablet
+owning the partition key. The driver learns tablets from server responses while
+executing queries, so the result is empty until the driver has cached that
+tablet, and always empty when no table is provided. The token map is never used
+for these keyspaces, because it does not describe tablet placement. The same
+applies when the server supports tablets but the driver cannot tell whether the
+keyspace uses them, for example when metadata synchronization is disabled and
+the keyspace metadata is not loaded. For any other keyspace, it returns the
+replicas from the token map.
+
+Code that assumes a non-empty result, for example by calling `First()`, must
+handle an empty collection for keyspaces using tablets, and for keyspaces whose
+tablet usage the driver cannot determine, including vnode keyspaces.
+
+The following overloads cannot use tablet metadata and are now marked
+`[Obsolete]`:
+
+- `Metadata.GetReplicas(string keyspaceName, byte[] partitionKey)`
+- `Metadata.GetReplicas(byte[] partitionKey)`
+- `ICluster.GetReplicas(string keyspace, byte[] partitionKey)` and its `Cluster`
+  implementation
+- `ICluster.GetReplicas(byte[] partitionKey)` and its `Cluster` implementation
+
+Calling them produces compiler warning CS0618, which fails builds that use
+`TreatWarningsAsErrors`. Move to the table-aware `Metadata.GetReplicas`
+overload, or suppress CS0618 for those calls.
+
+The `GetReplicas(string keyspace, byte[] partitionKey)` overloads now return an
+empty collection for a keyspace using tablets, and for a keyspace whose tablet
+usage the driver cannot determine, as described above. This includes vnode
+keyspaces, for example when the server supports tablets and metadata
+synchronization is disabled. Previously they returned token map replicas, which
+do not reflect where a tablet keyspace stores its data. The
+`GetReplicas(byte[] partitionKey)` overloads are unchanged: without a keyspace,
+they return the primary replica from the token map.
+
+`TokenAwarePolicy` still routes using the token map when no tablet of the table
+is cached, and the server's response lets the driver learn the tablet for later
+queries. When other tablets of the table are cached but not the one owning the
+partition key, `TokenAwarePolicy` uses its child policy's query plan.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.

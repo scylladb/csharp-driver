@@ -43,8 +43,10 @@ namespace Cassandra.Tests
             return new SchemaParserV1(metadata);
         }
 
-        private static SchemaParserV2 GetV2Instance(IControlConnection cc, Func<string, string, Task<UdtColumnInfo>> udtResolver = null)
+        private static SchemaParserV2 GetV2Instance(
+            IControlConnection cc, Func<string, string, Task<UdtColumnInfo>> udtResolver = null, bool supportsTablets = false)
         {
+            Mock.Get(cc).Setup(c => c.SupportsTablets).Returns(supportsTablets);
             var metadata = new Metadata(new Configuration())
             {
                 ControlConnection = cc
@@ -464,6 +466,204 @@ namespace Cassandra.Tests
             Assert.AreEqual(true, ks.DurableWrites);
             Assert.AreEqual("SimpleStrategy", ks.StrategyClass);
             CollectionAssert.AreEqual(new Dictionary<string, int> { { "replication_factor", 2 } }, ks.Replication);
+            Assert.False(ks.UsesTablets);
+        }
+
+        [TestCase(0, true)]
+        [TestCase(8, true)]
+        [TestCase(null, false)]
+        public void SchemaParserV2_GetKeyspace_Should_Use_InitialTablets_To_Detect_Tablet_Keyspace(int? initialTablets, bool expected)
+        {
+            const string ksName = "ks1";
+            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            queryProviderMock
+                .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.keyspaces.*" + ksName), It.IsAny<bool>()))
+                .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { CreateNetworkTopologyKeyspaceRow(ksName) }));
+            queryProviderMock
+                .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.scylla_keyspaces.*" + ksName), It.IsAny<bool>()))
+                .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { CreateScyllaKeyspaceRow(ksName, initialTablets) }));
+            var parser = GetV2Instance(queryProviderMock.Object, supportsTablets: true);
+
+            var ks = TaskHelper.WaitToComplete(parser.GetKeyspaceAsync(ksName));
+
+            Assert.NotNull(ks);
+            Assert.AreEqual(expected, ks.UsesTablets);
+        }
+
+        [Test]
+        public void SchemaParserV2_GetKeyspace_Should_Detect_Vnode_Keyspace_When_It_Has_No_Scylla_Keyspace_Row()
+        {
+            const string ksName = "ks1";
+            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            queryProviderMock
+                .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.keyspaces.*" + ksName), It.IsAny<bool>()))
+                .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { CreateNetworkTopologyKeyspaceRow(ksName) }));
+            queryProviderMock
+                .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.scylla_keyspaces.*" + ksName), It.IsAny<bool>()))
+                .Returns(() => TestHelper.DelayedTask(Enumerable.Empty<IRow>()));
+            var parser = GetV2Instance(queryProviderMock.Object, supportsTablets: true);
+
+            var ks = TaskHelper.WaitToComplete(parser.GetKeyspaceAsync(ksName));
+
+            Assert.NotNull(ks);
+            Assert.False(ks.UsesTablets);
+        }
+
+        [Test]
+        public void SchemaParserV2_GetKeyspaces_Should_Detect_Tablet_Keyspaces()
+        {
+            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            queryProviderMock
+                .Setup(cc => cc.QueryAsync("SELECT * FROM system_schema.keyspaces", It.IsAny<bool>()))
+                .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[]
+                {
+                    CreateNetworkTopologyKeyspaceRow("ks_tablets"),
+                    CreateNetworkTopologyKeyspaceRow("ks_vnodes"),
+                    CreateNetworkTopologyKeyspaceRow("ks_storage_options")
+                }));
+            queryProviderMock
+                .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.scylla_keyspaces$"), It.IsAny<bool>()))
+                .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[]
+                {
+                    CreateScyllaKeyspaceRow("ks_tablets", 0),
+                    CreateScyllaKeyspaceRow("ks_storage_options", null)
+                }));
+            var parser = GetV2Instance(queryProviderMock.Object, supportsTablets: true);
+
+            var keyspaces = TaskHelper.WaitToComplete(parser.GetKeyspacesAsync(false)).ToDictionary(k => k.Name);
+
+            Assert.True(keyspaces["ks_tablets"].UsesTablets);
+            Assert.False(keyspaces["ks_vnodes"].UsesTablets);
+            Assert.False(keyspaces["ks_storage_options"].UsesTablets);
+        }
+
+        [Test]
+        public void SchemaParserV2_GetKeyspaces_Should_Not_Query_Scylla_Keyspaces_When_Tablets_Are_Not_Supported()
+        {
+            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            queryProviderMock
+                .Setup(cc => cc.QueryAsync("SELECT * FROM system_schema.keyspaces", It.IsAny<bool>()))
+                .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { CreateNetworkTopologyKeyspaceRow("ks1") }));
+            var parser = GetV2Instance(queryProviderMock.Object);
+
+            var keyspaces = TaskHelper.WaitToComplete(parser.GetKeyspacesAsync(false)).ToList();
+
+            Assert.AreEqual(1, keyspaces.Count);
+            Assert.False(keyspaces[0].UsesTablets);
+        }
+
+        [Test]
+        public void SchemaParserV2_GetKeyspaces_Should_Mark_Tablets_Usage_As_Unknown_When_Scylla_Keyspaces_Query_Is_Invalid()
+        {
+            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            queryProviderMock
+                .Setup(cc => cc.QueryAsync("SELECT * FROM system_schema.keyspaces", It.IsAny<bool>()))
+                .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { CreateNetworkTopologyKeyspaceRow("ks1") }));
+            queryProviderMock
+                .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.scylla_keyspaces$"), It.IsAny<bool>()))
+                .Returns(() => Task.FromException<IEnumerable<IRow>>(
+                    new InvalidQueryException("unconfigured table scylla_keyspaces")));
+            var parser = GetV2Instance(queryProviderMock.Object, supportsTablets: true);
+
+            var keyspaces = TaskHelper.WaitToComplete(parser.GetKeyspacesAsync(false)).ToList();
+
+            Assert.AreEqual(1, keyspaces.Count);
+            Assert.IsNull(keyspaces[0].UsesTablets);
+        }
+
+        [Test]
+        public void SchemaParserV2_GetKeyspace_Should_Mark_Tablets_Usage_As_Unknown_When_Scylla_Keyspaces_Query_Is_Invalid()
+        {
+            const string ksName = "ks1";
+            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            queryProviderMock
+                .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.keyspaces.*" + ksName), It.IsAny<bool>()))
+                .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { CreateNetworkTopologyKeyspaceRow(ksName) }));
+            queryProviderMock
+                .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.scylla_keyspaces.*" + ksName), It.IsAny<bool>()))
+                .Returns(() => Task.FromException<IEnumerable<IRow>>(
+                    new InvalidQueryException("Undefined column name initial_tablets")));
+            var parser = GetV2Instance(queryProviderMock.Object, supportsTablets: true);
+
+            var ks = TaskHelper.WaitToComplete(parser.GetKeyspaceAsync(ksName));
+
+            Assert.NotNull(ks);
+            Assert.IsNull(ks.UsesTablets);
+        }
+
+        [Test]
+        [NonParallelizable]
+        public void SchemaParserV2_GetKeyspaces_Should_Warn_Once_While_Scylla_Keyspaces_Query_Keeps_Failing()
+        {
+            var queryResults = new Queue<bool>(new[] { false, false, false, true, false });
+            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            queryProviderMock
+                .Setup(cc => cc.QueryAsync("SELECT * FROM system_schema.keyspaces", It.IsAny<bool>()))
+                .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { CreateNetworkTopologyKeyspaceRow("ks1") }));
+            queryProviderMock
+                .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.scylla_keyspaces$"), It.IsAny<bool>()))
+                .Returns(() => queryResults.Dequeue()
+                    ? TestHelper.DelayedTask(Enumerable.Empty<IRow>())
+                    : Task.FromException<IEnumerable<IRow>>(new InvalidQueryException("unconfigured table scylla_keyspaces")));
+            var parser = GetV2Instance(queryProviderMock.Object, supportsTablets: true);
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            var listener = new LoggingTests.TestTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = System.Diagnostics.TraceLevel.Verbose;
+            System.Diagnostics.Trace.Listeners.Add(listener);
+            try
+            {
+                // Fails three times, succeeds, then fails again
+                for (var i = 0; i < 5; i++)
+                {
+                    TaskHelper.WaitToComplete(parser.GetKeyspacesAsync(false));
+                }
+            }
+            finally
+            {
+                System.Diagnostics.Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+
+            var messages = listener.Messages.Values
+                                   .Where(m => m.Contains("Could not determine which keyspaces use tablets"))
+                                   .ToList();
+            Assert.AreEqual(4, messages.Count);
+            // A warning for the first failure and for the failure following a successful query, verbose otherwise
+            Assert.AreEqual(2, messages.Count(m => m.Contains("#WARNING")));
+        }
+
+        [Test]
+        public void SchemaParserV2_GetKeyspaces_Should_Propagate_Other_Scylla_Keyspaces_Query_Errors()
+        {
+            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            queryProviderMock
+                .Setup(cc => cc.QueryAsync("SELECT * FROM system_schema.keyspaces", It.IsAny<bool>()))
+                .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { CreateNetworkTopologyKeyspaceRow("ks1") }));
+            queryProviderMock
+                .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.scylla_keyspaces$"), It.IsAny<bool>()))
+                .Returns(() => Task.FromException<IEnumerable<IRow>>(new UnauthorizedException("User has no SELECT permission on scylla_keyspaces")));
+            var parser = GetV2Instance(queryProviderMock.Object, supportsTablets: true);
+
+            Assert.ThrowsAsync<UnauthorizedException>(() => parser.GetKeyspacesAsync(false));
+        }
+
+        private static IRow CreateNetworkTopologyKeyspaceRow(string name)
+        {
+            return TestHelper.CreateRow(new Dictionary<string, object>
+            {
+                {"keyspace_name", name},
+                {"durable_writes", true},
+                {"replication", new Dictionary<string, string>{{"class", "org.apache.cassandra.locator.NetworkTopologyStrategy"}, {"dc1", "3"}}},
+            });
+        }
+
+        private static IRow CreateScyllaKeyspaceRow(string name, int? initialTablets)
+        {
+            return TestHelper.CreateRow(new Dictionary<string, object>
+            {
+                {"keyspace_name", name},
+                {"initial_tablets", initialTablets},
+            });
         }
 
         [Test]
