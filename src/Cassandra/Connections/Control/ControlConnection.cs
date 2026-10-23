@@ -47,7 +47,8 @@ namespace Cassandra.Connections.Control
         private readonly Configuration _config;
         private readonly IReconnectionPolicy _reconnectionPolicy;
         private IReconnectionSchedule _reconnectionSchedule;
-        private readonly Timer _reconnectionTimer;
+        private readonly Lock _reconnectLock = new Lock();
+        private ReconnectRetry _reconnectionRetry;
         private int _refreshFlag;
         private Task<IConnection> _reconnectTask;
         private readonly ISerializerManager _serializer;
@@ -55,6 +56,7 @@ namespace Cassandra.Connections.Control
         private readonly IEnumerable<IContactPoint> _contactPoints;
         private readonly ITopologyRefresher _topologyRefresher;
         private readonly ISupportedOptionsInitializer _supportedOptionsInitializer;
+        private readonly SemaphoreSlim _controlLifecycleLock = new SemaphoreSlim(1, 1);
 
         private long _state = ControlConnection.StateRunning;
 
@@ -90,7 +92,6 @@ namespace Cassandra.Connections.Control
             _metadata = metadata;
             _reconnectionPolicy = config.Policies.ReconnectionPolicy;
             _reconnectionSchedule = _reconnectionPolicy.NewSchedule();
-            _reconnectionTimer = new Timer(ReconnectEventHandler, null, Timeout.Infinite, Timeout.Infinite);
             _config = config;
             _serializer = new SerializerManager(initialProtocolVersion, config.Policies.ColumnEncryptionPolicy, config.TypeSerializers);
             _eventDebouncer = eventDebouncer;
@@ -292,6 +293,19 @@ namespace Cassandra.Connections.Control
         /// <exception cref="NoHostAvailableException" />
         /// <exception cref="DriverInternalError" />
         private async Task Connect(bool isInitializing)
+        {
+            await _controlLifecycleLock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                await ConnectUnsafe(isInitializing).ConfigureAwait(false);
+            }
+            finally
+            {
+                _controlLifecycleLock.Release();
+            }
+        }
+
+        private async Task ConnectUnsafe(bool isInitializing)
         {
             if (isInitializing)
             {
@@ -692,9 +706,31 @@ namespace Cassandra.Connections.Control
             }
         }
 
-        private void ReconnectEventHandler(object state)
+        private async void ReconnectEventHandler(object state)
         {
-            ReconnectFireAndForget(null);
+            var retry = (ReconnectRetry)state;
+            try
+            {
+                await retry.OwnerTask.ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // A retry may fire before the failed owner finishes publishing its failure.
+            }
+
+            TaskCompletionSource<IConnection> owner;
+            Task<IConnection> currentTask;
+            lock (_reconnectLock)
+            {
+                if (IsShutdown || !ReferenceEquals(_reconnectionRetry, retry))
+                {
+                    return;
+                }
+                _reconnectionRetry = null;
+                currentTask = GetReconnectTask(out owner);
+            }
+            retry.Timer.Dispose();
+            ObserveReconnect(owner != null ? ReconnectAsOwner(owner) : currentTask);
         }
 
         internal void OnConnectionClosing(IConnection connection)
@@ -738,11 +774,16 @@ namespace Cassandra.Connections.Control
             }
         }
 
-        private async void ReconnectFireAndForget(IConnection closedConnection)
+        private void ReconnectFireAndForget(IConnection closedConnection)
+        {
+            ObserveReconnect(Reconnect(closedConnection));
+        }
+
+        private async void ObserveReconnect(Task<IConnection> reconnect)
         {
             try
             {
-                await Reconnect(closedConnection).ConfigureAwait(false);
+                await reconnect.ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -752,11 +793,20 @@ namespace Cassandra.Connections.Control
 
         internal async Task<IConnection> Reconnect(IConnection closedConnection)
         {
-            var tcs = new TaskCompletionSource<IConnection>();
-            var currentTask = Interlocked.CompareExchange(ref _reconnectTask, tcs.Task, null);
-            if (currentTask != null)
+            while (true)
             {
-                // If there is another thread reconnecting, use the same task
+                TaskCompletionSource<IConnection> tcs;
+                Task<IConnection> currentTask;
+                lock (_reconnectLock)
+                {
+                    currentTask = GetReconnectTask(out tcs);
+                }
+                if (currentTask == null)
+                {
+                    return await ReconnectAsOwner(tcs).ConfigureAwait(false);
+                }
+
+                // If there is another thread reconnecting, use the same task.
                 var oldConnectionInPreviousReconnect = await currentTask.ConfigureAwait(false);
 
                 // if his reconnect was triggered by a connection closed event
@@ -765,56 +815,108 @@ namespace Cassandra.Connections.Control
                 if (closedConnection != null && !ReferenceEquals(closedConnection, oldConnectionInPreviousReconnect) && (_connection?.IsDisposed ?? true))
                 {
                     ControlConnection.Logger.Info("Connection was closed while reconnecting, triggering another reconnection.");
-                    return await Reconnect(null).ConfigureAwait(false);
+                    closedConnection = null;
+                    continue;
                 }
 
                 return oldConnectionInPreviousReconnect;
             }
-            var oldConnection = _connection;
-            var oldHost = _host;
-            Unsubscribe(oldHost, oldConnection);
+        }
+
+        private Task<IConnection> GetReconnectTask(out TaskCompletionSource<IConnection> owner)
+        {
+            // The caller holds _reconnectLock, including when validating a retry identity.
+            owner = null;
+            if (_reconnectTask != null)
+            {
+                return _reconnectTask;
+            }
+            owner = new TaskCompletionSource<IConnection>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _reconnectTask = owner.Task;
+            return null;
+        }
+
+        private async Task<IConnection> ReconnectAsOwner(TaskCompletionSource<IConnection> tcs)
+        {
+            IConnection oldConnection = null;
             try
             {
-                ControlConnection.Logger.Info("Trying to reconnect the ControlConnection");
-                await Connect(false).ConfigureAwait(false);
+                await _controlLifecycleLock.WaitAsync().ConfigureAwait(false);
+                try
+                {
+                    if (IsShutdown)
+                    {
+                        throw new ObjectDisposedException(nameof(ControlConnection));
+                    }
+
+                    // Capture and retire the connection protected by the same lifecycle gate that
+                    // replaces it. A snapshot taken before waiting can refer to an older lifecycle.
+                    oldConnection = _connection;
+                    var oldHost = _host;
+                    Unsubscribe(oldHost, oldConnection);
+                    try
+                    {
+                        ControlConnection.Logger.Info("Trying to reconnect the ControlConnection");
+                        await ConnectUnsafe(false).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        if (!ReferenceEquals(_connection, oldConnection) || IsShutdown)
+                        {
+                            oldConnection?.Dispose();
+                        }
+                    }
+                }
+                finally
+                {
+                    _controlLifecycleLock.Release();
+                }
             }
             catch (Exception ex)
             {
-                // It failed to reconnect, schedule the timer for next reconnection and let go.
-                var _ = Interlocked.Exchange(ref _reconnectTask, null);
-                tcs.TrySetException(ex);
-                var delay = _reconnectionSchedule.NextDelayMs();
-                ControlConnection.Logger.Error("ControlConnection was not able to reconnect: " + ex);
+                // Publish the retry before releasing ownership. A newer owner can then cancel this
+                // exact timer on success, while an older generation can never arm a timer after a
+                // newer connection has already been published.
                 try
                 {
-                    _reconnectionTimer.Change((int)delay, Timeout.Infinite);
+                    ScheduleNextReconnectIfRunning(tcs.Task);
                 }
-                catch (ObjectDisposedException)
+                catch (Exception schedulingException)
                 {
-                    //Control connection is being disposed
+                    // Retry setup must not leave the shared reconnect task incomplete.
+                    ex = schedulingException;
+                }
+                lock (_reconnectLock)
+                {
+                    var _ = Interlocked.CompareExchange(ref _reconnectTask, null, tcs.Task);
+                    tcs.TrySetException(ex);
                 }
 
                 // It will throw the same exception that it was set in the TCS
-                throw;
-            }
-            finally
-            {
-                if (_connection != oldConnection)
-                {
-                    oldConnection?.Dispose();
-                }
+                return await tcs.Task.ConfigureAwait(false);
             }
 
             if (IsShutdown)
             {
-                tcs.TrySetResult(null);
+                lock (_reconnectLock)
+                {
+                    var _ = Interlocked.CompareExchange(ref _reconnectTask, null, tcs.Task);
+                    tcs.TrySetResult(null);
+                }
                 return await tcs.Task.ConfigureAwait(false);
             }
             try
             {
-                _reconnectionSchedule = _reconnectionPolicy.NewSchedule();
-                var _ = Interlocked.Exchange(ref _reconnectTask, null);
-                tcs.TrySetResult(oldConnection);
+                var schedule = _reconnectionPolicy.NewSchedule();
+                ReconnectRetry retry;
+                lock (_reconnectLock)
+                {
+                    retry = TakeScheduledReconnect();
+                    _reconnectionSchedule = schedule;
+                    var _ = Interlocked.CompareExchange(ref _reconnectTask, null, tcs.Task);
+                    tcs.TrySetResult(oldConnection);
+                }
+                retry?.Timer.Dispose();
                 ControlConnection.Logger.Info("ControlConnection reconnected to host {0}", _host.Address);
 
                 // A topology event may have been sent before the new connection
@@ -823,19 +925,77 @@ namespace Cassandra.Connections.Control
             }
             catch (Exception ex)
             {
-                var _ = Interlocked.Exchange(ref _reconnectTask, null);
-                ControlConnection.Logger.Error("There was an error when trying to refresh the ControlConnection", ex);
-                tcs.TrySetException(ex);
                 try
                 {
-                    _reconnectionTimer.Change((int)_reconnectionSchedule.NextDelayMs(), Timeout.Infinite);
+                    ScheduleNextReconnectIfRunning(tcs.Task);
                 }
-                catch (ObjectDisposedException)
+                catch (Exception schedulingException)
                 {
-                    //Control connection is being disposed
+                    ex = schedulingException;
+                }
+                ControlConnection.Logger.Error("There was an error when trying to refresh the ControlConnection", ex);
+                lock (_reconnectLock)
+                {
+                    var _ = Interlocked.CompareExchange(ref _reconnectTask, null, tcs.Task);
+                    tcs.TrySetException(ex);
                 }
             }
             return await tcs.Task.ConfigureAwait(false);
+        }
+
+        private void ScheduleNextReconnectIfRunning(Task<IConnection> ownerTask)
+        {
+            lock (_reconnectLock)
+            {
+                if (IsShutdown || !ReferenceEquals(_reconnectTask, ownerTask))
+                {
+                    return;
+                }
+            }
+
+            var delay = (int)_reconnectionSchedule.NextDelayMs();
+            ReconnectRetry previous = null;
+            ReconnectRetry retry = null;
+            try
+            {
+                lock (_reconnectLock)
+                {
+                    if (IsShutdown || !ReferenceEquals(_reconnectTask, ownerTask))
+                    {
+                        return;
+                    }
+                    retry = new ReconnectRetry(ownerTask);
+                    retry.Timer = _config.TimerFactory.TimeProvider.CreateTimer(
+                        ReconnectEventHandler, retry, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+                    previous = _reconnectionRetry;
+                    _reconnectionRetry = retry;
+                    retry.Timer.Change(TimeSpan.FromMilliseconds(delay), Timeout.InfiniteTimeSpan);
+                }
+            }
+            catch
+            {
+                lock (_reconnectLock)
+                {
+                    if (ReferenceEquals(_reconnectionRetry, retry))
+                    {
+                        _reconnectionRetry = null;
+                    }
+                }
+                retry?.Timer?.Dispose();
+                throw;
+            }
+            finally
+            {
+                previous?.Timer.Dispose();
+            }
+        }
+
+        private ReconnectRetry TakeScheduledReconnect()
+        {
+            // The caller invalidates the retry under _reconnectLock and disposes it outside.
+            var retry = _reconnectionRetry;
+            _reconnectionRetry = null;
+            return retry;
         }
 
         private async Task Refresh()
@@ -899,8 +1059,12 @@ namespace Cassandra.Connections.Control
                     connection.EndPoint.EndpointFriendlyName);
                 connection.Dispose();
             }
-            _reconnectionTimer.Change(Timeout.Infinite, Timeout.Infinite);
-            _reconnectionTimer.Dispose();
+            ReconnectRetry retry;
+            lock (_reconnectLock)
+            {
+                retry = TakeScheduledReconnect();
+            }
+            retry?.Timer.Dispose();
         }
 
         /// <summary>
@@ -1233,6 +1397,18 @@ namespace Cassandra.Connections.Control
                 return false;
             }
             return _supportedOptionsInitializer.GetShardingInfo().ScyllaNrShards > 0;
+        }
+
+        private sealed class ReconnectRetry
+        {
+            public ReconnectRetry(Task<IConnection> ownerTask)
+            {
+                OwnerTask = ownerTask;
+            }
+
+            public Task<IConnection> OwnerTask { get; }
+
+            public System.Threading.ITimer Timer { get; set; }
         }
     }
 }
