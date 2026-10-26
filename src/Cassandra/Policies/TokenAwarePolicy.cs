@@ -32,6 +32,9 @@ namespace Cassandra
     /// <see cref="HostDistance.Local"/> replicas for the statement, based on the <see cref="Statement.RoutingKey"/>.
     /// </item>
     /// </list>
+    /// <para>For strongly consistent ScyllaDB keyspaces with V2 tablet feedback, the tablet leader is
+    /// preferred over other hosts allowed by the child policy. Reads at ONE or LOCAL_ONE continue to
+    /// balance across replicas. Batch leader routing is not supported.</para>
     /// </summary>
     public class TokenAwarePolicy : IExtendedLoadBalancingPolicy
     {
@@ -89,6 +92,11 @@ namespace Cassandra
         /// <inheritdoc />
         public IEnumerable<HostShard> NewQueryPlan(string loggedKeyspace, IStatement query, bool routeAsLwt)
         {
+            return NewQueryPlan(loggedKeyspace, query, routeAsLwt, query?.ConsistencyLevel);
+        }
+
+        internal IEnumerable<HostShard> NewQueryPlan(string loggedKeyspace, IStatement query, bool routeAsLwt, ConsistencyLevel? effectiveConsistency)
+        {
             var routingKey = query?.RoutingKey;
             IEnumerable<HostShard> childIterator;
             if (routingKey == null)
@@ -110,10 +118,37 @@ namespace Cassandra
                                : _cluster.Metadata.GetRoutingReplicas(keyspace, table, routingKey.RawRoutingKey))
                            ?? new HostShard[0];
 
+            List<HostShard> leaderChildPlan = null;
+            HashSet<Host> allowedReplicaHosts = null;
+            Host preferredLeaderHost = null;
+            if (query is not BatchStatement && keyspace != null &&
+                _cluster.Metadata?.GetKeyspaceFromCache(keyspace)?.IsStronglyConsistent == true &&
+                PreferLeader(query, effectiveConsistency))
+            {
+                var tablet = _cluster.Metadata.GetTablet(keyspace, table, routingKey.RawRoutingKey);
+                if (tablet?.Version != null && tablet.Replicas.Count > 0)
+                {
+                    // The leader outranks distance, but never a host exclusion imposed by the child.
+                    // For example, DC-aware policies can disable remote failover entirely.
+                    childIterator = ChildPolicy is IExtendedLoadBalancingPolicy leaderChild
+                        ? leaderChild.NewQueryPlan(loggedKeyspace, query, routeAsLwt)
+                        : ChildPolicy.NewQueryPlan(loggedKeyspace, query);
+                    leaderChildPlan = childIterator.Where(h => ChildPolicy.Distance(h.Host) != HostDistance.Ignored).ToList();
+                    allowedReplicaHosts = new HashSet<Host>(leaderChildPlan.Where(h => h.Host.IsUp).Select(h => h.Host));
+                    var leader = tablet.Replicas[0];
+                    preferredLeaderHost = leaderChildPlan.FirstOrDefault(h => h.Host.HostId == leader.HostID && h.Host.IsUp)?.Host;
+                    if (preferredLeaderHost != null)
+                    {
+                        yield return new HostShard(preferredLeaderHost, leader.Shard);
+                    }
+                }
+            }
+
             var localReplicaSet = new HashSet<HostShard>();
             var localReplicaList = new List<HostShard>(replicas.Count());
             // We can't do it lazily as we need to balance the load between local replicas
-            foreach (var localReplica in replicas.Where(hs => ChildPolicy.Distance(hs.Host) == HostDistance.Local))
+            foreach (var localReplica in replicas.Where(hs => ChildPolicy.Distance(hs.Host) == HostDistance.Local &&
+                hs.Host != preferredLeaderHost && (allowedReplicaHosts == null || allowedReplicaHosts.Contains(hs.Host))))
             {
                 localReplicaSet.Add(localReplica);
                 localReplicaList.Add(localReplica);
@@ -134,17 +169,63 @@ namespace Cassandra
             }
 
             // Then, return the rest of child policy hosts
-            childIterator = ChildPolicy is IExtendedLoadBalancingPolicy extChild2
+            childIterator = leaderChildPlan ?? (ChildPolicy is IExtendedLoadBalancingPolicy extChild2
                 ? extChild2.NewQueryPlan(loggedKeyspace, query, routeAsLwt)
-                : ChildPolicy.NewQueryPlan(loggedKeyspace, query);
+                : ChildPolicy.NewQueryPlan(loggedKeyspace, query));
             foreach (var h in childIterator)
             {
-                if (localReplicaSet.Contains(h))
+                if (localReplicaSet.Contains(h) || (leaderChildPlan != null &&
+                    (h.Host == preferredLeaderHost || localReplicaList.Any(replica => replica.Host == h.Host))))
                 {
                     continue;
                 }
                 yield return h;
             }
+        }
+        private bool PreferLeader(IStatement query, ConsistencyLevel? effectiveConsistency)
+        {
+            var consistency = effectiveConsistency ?? _cluster?.Configuration?.QueryOptions.GetConsistencyLevel() ?? QueryOptions.DefaultConsistencyLevel;
+            return !(consistency == ConsistencyLevel.One || consistency == ConsistencyLevel.LocalOne) || !IsRead(query);
+        }
+
+        internal static bool IsRead(IStatement statement)
+        {
+            var cql = statement is BoundStatement bound ? bound.PreparedStatement.Cql
+                : (statement as RegularStatement)?.QueryString;
+            if (cql == null)
+            {
+                return false;
+            }
+            var text = cql.AsSpan().TrimStart();
+            while (!text.IsEmpty)
+            {
+                if (text.StartsWith("/*", StringComparison.Ordinal))
+                {
+                    var end = text[2..].IndexOf("*/", StringComparison.Ordinal);
+                    if (end < 0)
+                    {
+                        return false;
+                    }
+                    text = text[(end + 4)..].TrimStart();
+                }
+                else if (text.StartsWith("--", StringComparison.Ordinal) || text.StartsWith("//", StringComparison.Ordinal))
+                {
+                    var end = text.IndexOfAny('\r', '\n');
+                    if (end < 0)
+                    {
+                        return false;
+                    }
+                    text = text[end..].TrimStart();
+                }
+                else
+                {
+                    break;
+                }
+            }
+            // Unknown statements keep conservative leader routing; only an identified read can use
+            // a weak-consistency replica. SELECT* is valid CQL, but SELECTED is not a read keyword.
+            return text.StartsWith("SELECT", StringComparison.OrdinalIgnoreCase) &&
+                (text.Length == 6 || !(char.IsLetterOrDigit(text[6]) || text[6] == '_'));
         }
     }
 }

@@ -41,7 +41,12 @@ PM> Install-Package ScyllaDBCSharpDriver
 
 - Shard awarness
 - Tablet awareness
+- Experimental tablet leader awareness for prepared statements in globally consistent keyspaces
 - LWT prepared statements metadata mark
+
+When ScyllaDB advertises V2 tablet routing, `TokenAwarePolicy` prefers the cached tablet leader for
+writes and strongly consistent reads, within the hosts allowed by its child policy. Reads at `ONE`
+or `LOCAL_ONE` continue to balance across replicas. Batch leader routing is not supported.
 
 ## Documentation
 

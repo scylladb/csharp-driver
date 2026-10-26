@@ -68,9 +68,9 @@ namespace Cassandra.Requests
 
         protected abstract void WriteBody(FrameWriter wb);
 
-        public int WriteFrame(short streamId, MemoryStream stream, ISerializer connectionSerializer, bool useMetadataId)
+        public int WriteFrame(short streamId, MemoryStream stream, ISerializer connectionSerializer, bool useMetadataId, bool useTabletsRoutingV2 = false)
         {
-            var wb = new FrameWriter(stream, Serializer ?? connectionSerializer, useMetadataId);
+            var wb = new FrameWriter(stream, Serializer ?? connectionSerializer, useMetadataId, useTabletsRoutingV2);
 
             WriteFrameHeader(wb, streamId);
 

@@ -84,6 +84,9 @@ namespace Cassandra
         /// </summary>
         internal bool? UsesTablets { get; }
 
+        // GLOBAL is the only implemented strong consistency mode. LOCAL is reserved.
+        internal bool IsStronglyConsistent { get; }
+
         internal KeyspaceMetadata(
             Metadata parent,
             string name,
@@ -93,7 +96,8 @@ namespace Cassandra
             IReplicationStrategyFactory replicationStrategyFactory,
             string graphEngine,
             bool isVirtual = false,
-            bool? usesTablets = false)
+            bool? usesTablets = false,
+            bool isStronglyConsistent = false)
         {
             //Can not directly reference to schemaParser as it might change
             _parent = parent;
@@ -124,6 +128,7 @@ namespace Cassandra
 
             GraphEngine = graphEngine;
             UsesTablets = usesTablets;
+            IsStronglyConsistent = isStronglyConsistent;
         }
 
         /// <summary>

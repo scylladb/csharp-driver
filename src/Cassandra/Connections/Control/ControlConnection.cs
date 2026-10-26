@@ -1227,6 +1227,8 @@ namespace Cassandra.Connections.Control
         }
 
         /// <inheritdoc />
+        public bool SupportsTabletsRoutingV2 => _connection?.TabletInfo()?.IsV2 == true;
+
         public bool SupportsTablets => _connection?.TabletInfo()?.IsEnabled() == true;
 
         public bool IsShardAware()

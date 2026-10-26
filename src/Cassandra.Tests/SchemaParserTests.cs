@@ -44,9 +44,11 @@ namespace Cassandra.Tests
         }
 
         private static SchemaParserV2 GetV2Instance(
-            IControlConnection cc, Func<string, string, Task<UdtColumnInfo>> udtResolver = null, bool supportsTablets = false)
+            IControlConnection cc, Func<string, string, Task<UdtColumnInfo>> udtResolver = null, bool supportsTablets = false,
+            bool supportsTabletsRoutingV2 = false)
         {
             Mock.Get(cc).Setup(c => c.SupportsTablets).Returns(supportsTablets);
+            Mock.Get(cc).Setup(c => c.SupportsTabletsRoutingV2).Returns(supportsTabletsRoutingV2);
             var metadata = new Metadata(new Configuration())
             {
                 ControlConnection = cc
@@ -645,6 +647,55 @@ namespace Cassandra.Tests
             var parser = GetV2Instance(queryProviderMock.Object, supportsTablets: true);
 
             Assert.ThrowsAsync<UnauthorizedException>(() => parser.GetKeyspacesAsync(false));
+        }
+
+        [TestCase("global", true)]
+        [TestCase("local", false)]
+        [TestCase("eventual", false)]
+        [TestCase("future-mode", false)]
+        [TestCase(null, false)]
+        public async Task SchemaParserV2_Reads_Consistency_Mode_On_Full_And_Single_Keyspace_Refresh(string mode, bool strong)
+        {
+            var cc = new Mock<IControlConnection>(MockBehavior.Strict);
+            cc.Setup(c => c.QueryAsync(It.IsRegex("SELECT \\* FROM system_schema\\.keyspaces"), It.IsAny<bool>()))
+                .Returns(() => Task.FromResult<IEnumerable<IRow>>(new[] { CreateNetworkTopologyKeyspaceRow("ks") }));
+            cc.Setup(c => c.QueryAsync(It.IsRegex("SELECT keyspace_name, initial_tablets FROM"), It.IsAny<bool>()))
+                .Returns(() => Task.FromResult<IEnumerable<IRow>>(new[] { CreateScyllaKeyspaceRow("ks", 0) }));
+            cc.Setup(c => c.QueryAsync(It.IsRegex("SELECT keyspace_name, consistency FROM"), It.IsAny<bool>()))
+                .Returns(() => Task.FromResult<IEnumerable<IRow>>(new[] { TestHelper.CreateRow(new Dictionary<string, object>
+                {
+                    { "keyspace_name", "ks" }, { "consistency", mode }
+                }) }));
+            var parser = GetV2Instance(cc.Object, supportsTablets: true, supportsTabletsRoutingV2: true);
+
+            Assert.AreEqual(strong, (await parser.GetKeyspacesAsync(false)).Single().IsStronglyConsistent);
+            Assert.AreEqual(strong, (await parser.GetKeyspaceAsync("ks")).IsStronglyConsistent);
+            cc.Verify(c => c.QueryAsync(
+                "SELECT keyspace_name, consistency FROM system_schema.scylla_keyspaces WHERE keyspace_name = 'ks'", true), Times.Once);
+        }
+
+        [TestCase(true)]
+        [TestCase(false)]
+        public async Task SchemaParserV2_Consistency_Query_Only_Absorbs_InvalidQuery(bool invalidQuery)
+        {
+            var cc = new Mock<IControlConnection>(MockBehavior.Strict);
+            cc.Setup(c => c.QueryAsync("SELECT * FROM system_schema.keyspaces", It.IsAny<bool>()))
+                .Returns(() => Task.FromResult<IEnumerable<IRow>>(new[] { CreateNetworkTopologyKeyspaceRow("ks") }));
+            cc.Setup(c => c.QueryAsync(It.IsRegex("SELECT keyspace_name, initial_tablets FROM"), It.IsAny<bool>()))
+                .Returns(() => Task.FromResult<IEnumerable<IRow>>(new[] { CreateScyllaKeyspaceRow("ks", 0) }));
+            Exception error = invalidQuery ? new InvalidQueryException("Undefined column consistency") : new UnauthorizedException("Denied");
+            cc.Setup(c => c.QueryAsync("SELECT keyspace_name, consistency FROM system_schema.scylla_keyspaces", It.IsAny<bool>()))
+                .Returns(() => Task.FromException<IEnumerable<IRow>>(error));
+            var parser = GetV2Instance(cc.Object, supportsTablets: true, supportsTabletsRoutingV2: true);
+
+            if (invalidQuery)
+            {
+                Assert.False((await parser.GetKeyspacesAsync(false)).Single().IsStronglyConsistent);
+            }
+            else
+            {
+                await Assert.ThrowsAsync<UnauthorizedException>(() => parser.GetKeyspacesAsync(false));
+            }
         }
 
         private static IRow CreateNetworkTopologyKeyspaceRow(string name)

@@ -31,6 +31,19 @@ namespace Cassandra.Requests
         private readonly byte[] _id;
         private readonly QueryProtocolOptions _queryOptions;
 
+        // Resolve at serialization time: a retry can use fresher feedback from another execution.
+        internal Func<ulong?> TabletVersionProvider { get; set; }
+
+        internal static byte ChooseTabletVersionBlock(ulong? version)
+        {
+            if (!version.HasValue)
+            {
+                return (byte)Random.Shared.Next(256);
+            }
+            var index = Random.Shared.Next(16);
+            return (byte)((index << 4) | (int)((version.Value >> (index * 4)) & 15));
+        }
+
         public ConsistencyLevel Consistency
         {
             get => _queryOptions.Consistency;
@@ -186,6 +199,10 @@ namespace Cassandra.Requests
             }
 
             _queryOptions.Write(wb, true, canSkip);
+            if (wb.UseTabletsRoutingV2)
+            {
+                wb.WriteByte(ChooseTabletVersionBlock(TabletVersionProvider?.Invoke()));
+            }
         }
 
         public void WriteToBatch(FrameWriter wb)

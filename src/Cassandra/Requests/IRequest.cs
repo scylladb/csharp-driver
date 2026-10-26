@@ -38,7 +38,7 @@ namespace Cassandra.Requests
         /// is chosen and is reused across hosts and retries, so it can only be known here.
         /// See <see cref="Cassandra.Connections.IConnection.UseMetadataId"/>.
         /// </remarks>
-        int WriteFrame(short streamId, MemoryStream stream, ISerializer connectionSerializer, bool useMetadataId);
+        int WriteFrame(short streamId, MemoryStream stream, ISerializer connectionSerializer, bool useMetadataId, bool useTabletsRoutingV2 = false);
 
         /// <summary>
         /// Result Metadata to parse the response rows. Only EXECUTE requests set this value so it will be null

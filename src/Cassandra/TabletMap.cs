@@ -113,22 +113,14 @@ namespace Cassandra
         public bool TryGetReplicas(string keyspace, string table, IToken token, out ICollection<HostShard> replicas)
         {
             replicas = EMPTY_LIST;
-            var key = new KeyspaceTableNamePair(keyspace, table);
-
-            if (!_mapping.TryGetValue(key, out var tabletSet))
+            if (!_mapping.ContainsKey(new KeyspaceTableNamePair(keyspace, table)))
             {
                 return false;
             }
 
-            if (token == null)
+            var row = GetTablet(keyspace, table, token);
+            if (row == null)
             {
-                return true;
-            }
-
-            var row = tabletSet.Tablets.FirstOrDefault(t => token.CompareTo(new M3PToken(t.LastToken)) <= 0);
-            if (row == null || token.CompareTo(new M3PToken(row.FirstToken)) <= 0)
-            {
-                Logger.Verbose("Could not find tablet for {0}.{1} owning token {2}.", keyspace, table, token);
                 return true;
             }
 
@@ -146,6 +138,22 @@ namespace Cassandra
             }
             replicas = tabletReplicas;
             return true;
+        }
+
+        internal Tablet GetTablet(string keyspace, string table, IToken token)
+        {
+            if (token == null || keyspace == null || table == null ||
+                !_mapping.TryGetValue(new KeyspaceTableNamePair(keyspace, table), out var tabletSet))
+            {
+                return null;
+            }
+            var row = tabletSet.Tablets.FirstOrDefault(t => token.CompareTo(new M3PToken(t.LastToken)) <= 0);
+            if (row == null || token.CompareTo(new M3PToken(row.FirstToken)) <= 0)
+            {
+                Logger.Verbose("Could not find tablet for {0}.{1} owning token {2}.", keyspace, table, token);
+                return null;
+            }
+            return row;
         }
 
         public void RemoveTableMappings(KeyspaceTableNamePair key) => _mapping.TryRemove(key, out _);

@@ -49,14 +49,17 @@ namespace Cassandra
         /// </summary>
         public bool UseMetadataId { get; }
 
+        public bool UseTabletsRoutingV2 { get; }
+
         public Frame(
-            FrameHeader header, Stream body, ISerializer serializer, ResultMetadata resultMetadata, bool useMetadataId)
+            FrameHeader header, Stream body, ISerializer serializer, ResultMetadata resultMetadata, bool useMetadataId, bool useTabletsRoutingV2 = false)
         {
             Header = header ?? throw new ArgumentNullException(nameof(header));
             Body = body ?? throw new ArgumentNullException(nameof(body));
             Serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
             ResultMetadata = resultMetadata;
             UseMetadataId = useMetadataId;
+            UseTabletsRoutingV2 = useTabletsRoutingV2;
         }
     }
 }
