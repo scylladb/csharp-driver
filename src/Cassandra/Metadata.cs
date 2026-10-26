@@ -205,6 +205,14 @@ namespace Cassandra
             }
 
             var tokenMap = TokenMap.Build(Partitioner, Hosts.ToCollection(), keyspaces.Values);
+            foreach (var entry in _keyspaces)
+            {
+                if (!keyspaces.TryGetValue(entry.Key, out var next) ||
+                    entry.Value.IsStronglyConsistent != next.IsStronglyConsistent)
+                {
+                    TabletMap.RemoveTableMappings(entry.Key);
+                }
+            }
             _keyspaces = keyspaces;
             _tokenMap = tokenMap;
         }
@@ -243,6 +251,10 @@ namespace Cassandra
                 _keyspaces.AddOrUpdate(keyspaceMetadata.Name, keyspaceMetadata, (k, v) =>
                 {
                     updated = true;
+                    if (v.IsStronglyConsistent != keyspaceMetadata.IsStronglyConsistent)
+                    {
+                        TabletMap.RemoveTableMappings(k);
+                    }
                     return keyspaceMetadata;
                 });
                 Metadata.Logger.Info("Rebuilding token map for keyspace {0}", keyspaceMetadata.Name);
@@ -337,6 +349,11 @@ namespace Cassandra
         public ICollection<HostShard> GetReplicas(byte[] partitionKey)
         {
             return GetReplicas(null, null, partitionKey);
+        }
+
+        internal Tablet GetTablet(string keyspace, string table, byte[] partitionKey)
+        {
+            return partitionKey == null ? null : TabletMap.GetTablet(keyspace, table, GetTokenFactory()?.Hash(partitionKey));
         }
 
         /// <summary>
