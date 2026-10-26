@@ -32,6 +32,9 @@ namespace Cassandra
         private TokenCache _token;
         private ReplicaCache _replicas;
 
+        // Keep statement classification deferred until a strong-table request needs to distinguish a weak read.
+        internal IStatement Statement { get; init; }
+
         /// <summary>
         /// Gets the keyspace of the request: the statement's keyspace, or else the session's. It can be null.
         /// </summary>
@@ -99,6 +102,7 @@ namespace Cassandra
                 Table = statement.TableName,
                 RoutingKey = statement.RoutingKey,
                 IsConfirmedLwt = statement.IsLwt(),
+                Statement = statement,
                 Consistency = statement.ConsistencyLevel ?? requestOptions.ConsistencyLevel,
 
                 // ConsistencyLevel.Any is the statement's "not set" value, as when the driver builds the request

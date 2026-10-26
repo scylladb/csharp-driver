@@ -33,6 +33,15 @@ namespace Cassandra.Tests
     [TestFixture]
     public class SchemaParserTests
     {
+        private static Mock<IControlConnection> CreateControlConnectionMock()
+        {
+            var cc = new Mock<IControlConnection>(MockBehavior.Strict);
+            cc.Setup(c => c.QueryAsync(It.Is<string>(query => query.StartsWith(
+                    "SELECT keyspace_name, consistency FROM system_schema.scylla_keyspaces")), It.IsAny<bool>()))
+                .Returns(() => Task.FromException<IEnumerable<IRow>>(new InvalidQueryException("Undefined column consistency")));
+            return cc;
+        }
+
         private static SchemaParserV1 GetV1Instance(IControlConnection cc)
         {
             var metadata = new Metadata(new Configuration())
@@ -71,7 +80,7 @@ namespace Cassandra.Tests
         public void SchemaParserV1_GetKeyspace_Should_Return_Null_When_Not_Found()
         {
             const string ksName = "ks1";
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system\\.schema_keyspaces.*" + ksName), It.IsAny<bool>()))
                 .Returns(() => Task.FromResult(Enumerable.Empty<IRow>()));
@@ -91,7 +100,7 @@ namespace Cassandra.Tests
                 {"strategy_class", "Simple"},
                 {"strategy_options", "{\"replication_factor\": \"4\"}"}
             });
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system\\.schema_keyspaces.*" + ksName), It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { row }));
@@ -153,7 +162,7 @@ namespace Cassandra.Tests
                 {"strategy_class", "Simple"},
                 {"strategy_options", "{\"replication_factor\": \"1\"}"}
             });
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system\\.schema_keyspaces.*ks1"), It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { ksRow }));
@@ -222,7 +231,7 @@ namespace Cassandra.Tests
                 {"strategy_class", "Simple"},
                 {"strategy_options", "{\"replication_factor\": \"1\"}"}
             });
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system\\.schema_keyspaces.*ks1"), It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { ksRow }));
@@ -272,7 +281,7 @@ namespace Cassandra.Tests
                 {"strategy_class", "Simple"},
                 {"strategy_options", "{\"replication_factor\": \"1\"}"}
             });
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system\\.schema_keyspaces.*ks1"), It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { ksRow }));
@@ -335,7 +344,7 @@ namespace Cassandra.Tests
             {
                 {"keyspace_name", "ks1"}, {"durable_writes", true}, {"strategy_class", "Simple"}, {"strategy_options", "{\"replication_factor\": \"1\"}"}
             });
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system\\.schema_keyspaces.*ks1"), It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { ksRow }));
@@ -404,7 +413,7 @@ namespace Cassandra.Tests
             {
                 {"keyspace_name", "ks1"}, {"durable_writes", true}, {"strategy_class", "Simple"}, {"strategy_options", "{\"replication_factor\": \"1\"}"}
             });
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system\\.schema_keyspaces.*ks1"), It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { ksRow }));
@@ -428,7 +437,7 @@ namespace Cassandra.Tests
             {
                 {"keyspace_name", "ks1"}, {"durable_writes", true}, {"strategy_class", "Simple"}, {"strategy_options", "{\"replication_factor\": \"1\"}"}
             });
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system\\.schema_keyspaces.*ks1"), It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { ksRow }));
@@ -455,7 +464,7 @@ namespace Cassandra.Tests
                 {"durable_writes", true},
                 {"replication", new Dictionary<string, string>{{"class", "org.apache.cassandra.locator.SimpleStrategy"}, {"replication_factor", "2"}}},
             });
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.keyspaces.*" + ksName), It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { row }));
@@ -475,12 +484,12 @@ namespace Cassandra.Tests
         public void SchemaParserV2_GetKeyspace_Should_Use_InitialTablets_To_Detect_Tablet_Keyspace(int? initialTablets, bool expected)
         {
             const string ksName = "ks1";
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.keyspaces.*" + ksName), It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { CreateNetworkTopologyKeyspaceRow(ksName) }));
             queryProviderMock
-                .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.scylla_keyspaces.*" + ksName), It.IsAny<bool>()))
+                .Setup(cc => cc.QueryAsync(It.IsRegex("SELECT keyspace_name, initial_tablets FROM system_schema\\.scylla_keyspaces.*" + ksName), It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { CreateScyllaKeyspaceRow(ksName, initialTablets) }));
             var parser = GetV2Instance(queryProviderMock.Object, supportsTablets: true);
 
@@ -494,12 +503,12 @@ namespace Cassandra.Tests
         public void SchemaParserV2_GetKeyspace_Should_Detect_Vnode_Keyspace_When_It_Has_No_Scylla_Keyspace_Row()
         {
             const string ksName = "ks1";
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.keyspaces.*" + ksName), It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { CreateNetworkTopologyKeyspaceRow(ksName) }));
             queryProviderMock
-                .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.scylla_keyspaces.*" + ksName), It.IsAny<bool>()))
+                .Setup(cc => cc.QueryAsync(It.IsRegex("SELECT keyspace_name, initial_tablets FROM system_schema\\.scylla_keyspaces.*" + ksName), It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask(Enumerable.Empty<IRow>()));
             var parser = GetV2Instance(queryProviderMock.Object, supportsTablets: true);
 
@@ -512,7 +521,7 @@ namespace Cassandra.Tests
         [Test]
         public void SchemaParserV2_GetKeyspaces_Should_Detect_Tablet_Keyspaces()
         {
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync("SELECT * FROM system_schema.keyspaces", It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[]
@@ -522,7 +531,7 @@ namespace Cassandra.Tests
                     CreateNetworkTopologyKeyspaceRow("ks_storage_options")
                 }));
             queryProviderMock
-                .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.scylla_keyspaces$"), It.IsAny<bool>()))
+                .Setup(cc => cc.QueryAsync(It.IsRegex("SELECT keyspace_name, initial_tablets FROM system_schema\\.scylla_keyspaces$"), It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[]
                 {
                     CreateScyllaKeyspaceRow("ks_tablets", 0),
@@ -540,7 +549,7 @@ namespace Cassandra.Tests
         [Test]
         public void SchemaParserV2_GetKeyspaces_Should_Not_Query_Scylla_Keyspaces_When_Tablets_Are_Not_Supported()
         {
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync("SELECT * FROM system_schema.keyspaces", It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { CreateNetworkTopologyKeyspaceRow("ks1") }));
@@ -555,12 +564,12 @@ namespace Cassandra.Tests
         [Test]
         public void SchemaParserV2_GetKeyspaces_Should_Mark_Tablets_Usage_As_Unknown_When_Scylla_Keyspaces_Query_Is_Invalid()
         {
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync("SELECT * FROM system_schema.keyspaces", It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { CreateNetworkTopologyKeyspaceRow("ks1") }));
             queryProviderMock
-                .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.scylla_keyspaces$"), It.IsAny<bool>()))
+                .Setup(cc => cc.QueryAsync(It.IsRegex("SELECT keyspace_name, initial_tablets FROM system_schema\\.scylla_keyspaces$"), It.IsAny<bool>()))
                 .Returns(() => Task.FromException<IEnumerable<IRow>>(
                     new InvalidQueryException("unconfigured table scylla_keyspaces")));
             var parser = GetV2Instance(queryProviderMock.Object, supportsTablets: true);
@@ -575,12 +584,12 @@ namespace Cassandra.Tests
         public void SchemaParserV2_GetKeyspace_Should_Mark_Tablets_Usage_As_Unknown_When_Scylla_Keyspaces_Query_Is_Invalid()
         {
             const string ksName = "ks1";
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.keyspaces.*" + ksName), It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { CreateNetworkTopologyKeyspaceRow(ksName) }));
             queryProviderMock
-                .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.scylla_keyspaces.*" + ksName), It.IsAny<bool>()))
+                .Setup(cc => cc.QueryAsync(It.IsRegex("SELECT keyspace_name, initial_tablets FROM system_schema\\.scylla_keyspaces.*" + ksName), It.IsAny<bool>()))
                 .Returns(() => Task.FromException<IEnumerable<IRow>>(
                     new InvalidQueryException("Undefined column name initial_tablets")));
             var parser = GetV2Instance(queryProviderMock.Object, supportsTablets: true);
@@ -596,12 +605,12 @@ namespace Cassandra.Tests
         public void SchemaParserV2_GetKeyspaces_Should_Warn_Once_While_Scylla_Keyspaces_Query_Keeps_Failing()
         {
             var queryResults = new Queue<bool>(new[] { false, false, false, true, false });
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync("SELECT * FROM system_schema.keyspaces", It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { CreateNetworkTopologyKeyspaceRow("ks1") }));
             queryProviderMock
-                .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.scylla_keyspaces$"), It.IsAny<bool>()))
+                .Setup(cc => cc.QueryAsync(It.IsRegex("SELECT keyspace_name, initial_tablets FROM system_schema\\.scylla_keyspaces$"), It.IsAny<bool>()))
                 .Returns(() => queryResults.Dequeue()
                     ? TestHelper.DelayedTask(Enumerable.Empty<IRow>())
                     : Task.FromException<IEnumerable<IRow>>(new InvalidQueryException("unconfigured table scylla_keyspaces")));
@@ -635,16 +644,102 @@ namespace Cassandra.Tests
         [Test]
         public async Task SchemaParserV2_GetKeyspaces_Should_Propagate_Other_Scylla_Keyspaces_Query_Errors()
         {
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync("SELECT * FROM system_schema.keyspaces", It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { CreateNetworkTopologyKeyspaceRow("ks1") }));
             queryProviderMock
-                .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.scylla_keyspaces$"), It.IsAny<bool>()))
+                .Setup(cc => cc.QueryAsync(It.IsRegex("SELECT keyspace_name, initial_tablets FROM system_schema\\.scylla_keyspaces$"), It.IsAny<bool>()))
                 .Returns(() => Task.FromException<IEnumerable<IRow>>(new UnauthorizedException("User has no SELECT permission on scylla_keyspaces")));
             var parser = GetV2Instance(queryProviderMock.Object, supportsTablets: true);
 
             await Assert.ThrowsAsync<UnauthorizedException>(() => parser.GetKeyspacesAsync(false)).ConfigureAwait(false);
+        }
+
+        [TestCase("global", true)]
+        [TestCase("local", false)]
+        [TestCase("eventual", false)]
+        [TestCase("future-mode", false)]
+        [TestCase(null, false)]
+        public async Task SchemaParserV2_Reads_Consistency_Mode_On_Full_And_Single_Keyspace_Refresh(
+            string mode, bool strong)
+        {
+            var cc = CreateControlConnectionMock();
+            cc.Setup(c => c.QueryAsync(It.IsRegex("SELECT \\* FROM system_schema\\.keyspaces"), It.IsAny<bool>()))
+                .Returns(() => Task.FromResult<IEnumerable<IRow>>(new[] { CreateNetworkTopologyKeyspaceRow("ks") }));
+            cc.Setup(c => c.QueryAsync(It.IsRegex("SELECT keyspace_name, initial_tablets FROM"), It.IsAny<bool>()))
+                .Returns(() => Task.FromResult<IEnumerable<IRow>>(new[] { CreateScyllaKeyspaceRow("ks", 0) }));
+            cc.Setup(c => c.QueryAsync(It.IsRegex("SELECT keyspace_name, consistency FROM"), It.IsAny<bool>()))
+                .Returns(() => Task.FromResult<IEnumerable<IRow>>(new[] { TestHelper.CreateRow(new Dictionary<string, object>
+                {
+                    { "keyspace_name", "ks" }, { "consistency", mode }
+                }) }));
+            var parser = GetV2Instance(cc.Object, supportsTablets: true);
+
+            Assert.AreEqual(strong, (await parser.GetKeyspacesAsync(false)).Single().IsStronglyConsistent);
+            Assert.AreEqual(strong, (await parser.GetKeyspaceAsync("ks")).IsStronglyConsistent);
+            cc.Verify(c => c.QueryAsync(
+                "SELECT keyspace_name, consistency FROM system_schema.scylla_keyspaces WHERE keyspace_name = 'ks'", true), Times.Once);
+        }
+
+        [TestCase(true)]
+        [TestCase(false)]
+        public async Task SchemaParserV2_Consistency_Query_Only_Absorbs_InvalidQuery(bool invalidQuery)
+        {
+            var cc = CreateControlConnectionMock();
+            cc.Setup(c => c.QueryAsync("SELECT * FROM system_schema.keyspaces", It.IsAny<bool>()))
+                .Returns(() => Task.FromResult<IEnumerable<IRow>>(new[] { CreateNetworkTopologyKeyspaceRow("ks") }));
+            cc.Setup(c => c.QueryAsync(It.IsRegex("SELECT keyspace_name, initial_tablets FROM"), It.IsAny<bool>()))
+                .Returns(() => Task.FromResult<IEnumerable<IRow>>(new[] { CreateScyllaKeyspaceRow("ks", 0) }));
+            Exception error = invalidQuery ? new InvalidQueryException("Undefined column consistency") : new UnauthorizedException("Denied");
+            cc.Setup(c => c.QueryAsync("SELECT keyspace_name, consistency FROM system_schema.scylla_keyspaces", It.IsAny<bool>()))
+                .Returns(() => Task.FromException<IEnumerable<IRow>>(error));
+            var parser = GetV2Instance(cc.Object, supportsTablets: true);
+
+            if (invalidQuery)
+            {
+                Assert.False((await parser.GetKeyspacesAsync(false)).Single().IsStronglyConsistent);
+            }
+            else
+            {
+                await Assert.ThrowsAsync<UnauthorizedException>(() => parser.GetKeyspacesAsync(false));
+            }
+        }
+
+        [TestCase(true)]
+        [TestCase(false)]
+        public async Task SchemaParserV2_Unknown_Consistency_Preserves_Known_Mode_And_Tablet(bool fullRefresh)
+        {
+            var cc = CreateControlConnectionMock();
+            cc.Setup(c => c.SupportsTablets).Returns(true);
+            cc.Setup(c => c.QueryAsync(It.Is<string>(query => query.StartsWith("SELECT * FROM system_schema.keyspaces")), It.IsAny<bool>()))
+                .Returns(() => Task.FromResult<IEnumerable<IRow>>(new[] { CreateNetworkTopologyKeyspaceRow("ks") }));
+            cc.Setup(c => c.QueryAsync(It.Is<string>(query => query.StartsWith("SELECT keyspace_name, initial_tablets FROM")), It.IsAny<bool>()))
+                .Returns(() => Task.FromResult<IEnumerable<IRow>>(new[] { CreateScyllaKeyspaceRow("ks", 0) }));
+            var available = true;
+            cc.Setup(c => c.QueryAsync(It.Is<string>(query => query.StartsWith("SELECT keyspace_name, consistency FROM")), It.IsAny<bool>()))
+                .Returns(() => available
+                    ? Task.FromResult<IEnumerable<IRow>>(new[] { TestHelper.CreateRow(new Dictionary<string, object>
+                        { { "keyspace_name", "ks" }, { "consistency", "global" } }) })
+                    : Task.FromException<IEnumerable<IRow>>(new InvalidQueryException("Undefined column consistency")));
+            var metadata = new Metadata(new Configuration()) { ControlConnection = cc.Object, Partitioner = "Murmur3Partitioner" };
+            metadata.SetCassandraVersion(new Version(3, 0));
+            await metadata.RebuildTokenMapAsync(false, true);
+            var tablet = new Tablet(long.MinValue, long.MaxValue, new List<HostShardPair>(), 7);
+            metadata.TabletMap.AddTablet("ks", "tbl", tablet);
+            available = false;
+
+            if (fullRefresh)
+            {
+                await metadata.RebuildTokenMapAsync(false, true);
+            }
+            else
+            {
+                await metadata.UpdateTokenMapForKeyspace("ks");
+            }
+
+            Assert.True(metadata.GetKeyspaceFromCache("ks").IsStronglyConsistent);
+            Assert.AreSame(tablet, metadata.GetTablet("ks", "tbl", new byte[] { 1 }));
         }
 
         private static IRow CreateNetworkTopologyKeyspaceRow(string name)
@@ -700,7 +795,7 @@ namespace Cassandra.Tests
             {
                 {"keyspace_name", "ks1"}, {"durable_writes", true}, {"replication", new SortedDictionary<string, string>{{"class", "org.apache.cassandra.locator.SimpleStrategy"}, {"replication_factor", "1"}}},
             });
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.keyspaces.*ks1"), It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { ksRow }));
@@ -759,7 +854,7 @@ namespace Cassandra.Tests
                 {"keyspace_name", "ks1"}, {"durable_writes", true}, {"replication", new SortedDictionary<string, string>{{"class", "org.apache.cassandra.locator.SimpleStrategy"}, {"replication_factor", "1"}}},
             });
 
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.keyspaces.*ks1"), It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { ksRow }));
@@ -827,7 +922,7 @@ namespace Cassandra.Tests
             {
                 {"keyspace_name", "ks1"}, {"durable_writes", true}, {"replication", new Dictionary<string, string>{{"class", "org.apache.cassandra.locator.SimpleStrategy"}, {"replication_factor", "1"}}},
             });
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.keyspaces.*ks1"), It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { ksRow }));
@@ -865,7 +960,7 @@ namespace Cassandra.Tests
             {
                 {"keyspace_name", "ks1"}, {"durable_writes", true}, {"replication", new Dictionary<string, string>{{"class", "org.apache.cassandra.locator.SimpleStrategy"}, {"replication_factor", "1"}}},
             });
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system_schema\\.keyspaces.*ks1"), It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { ksRow }));
@@ -904,7 +999,7 @@ namespace Cassandra.Tests
                 {"source", IPAddress.Parse("192.168.1.100")},
                 {"thread", "thread name"}
             });
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system_traces\\.sessions"), It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { sessionRow }));
@@ -927,7 +1022,7 @@ namespace Cassandra.Tests
         [Test]
         public void SchemaParser_GetQueryTrace_When_First_QueryAsync_Fails_Exception_Should_Propagate()
         {
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system_traces\\.sessions"), It.IsAny<bool>()))
                 .Returns(() => Task.FromException<IEnumerable<IRow>>(new Exception("Test exception")));
@@ -954,7 +1049,7 @@ namespace Cassandra.Tests
                 {"parameters", null},
                 {"started_at", DateTimeOffset.Now}
             });
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system_traces\\.sessions"), It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(new[] { sessionRow }));
@@ -974,7 +1069,7 @@ namespace Cassandra.Tests
         public void SchemaParser_GetQueryTrace_Should_Try_Multiple_Times_To_Get_The_Trace()
         {
             var counter = 0;
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system_traces\\.sessions"), It.IsAny<bool>()))
                 .Returns(() =>
@@ -1005,7 +1100,7 @@ namespace Cassandra.Tests
         public void SchemaParser_GetQueryTrace_Should_Not_Try_More_Than_Max_Attempts()
         {
             var counter = 0;
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex("system_traces\\.sessions"), It.IsAny<bool>()))
                 .Returns(() =>
@@ -1034,7 +1129,7 @@ namespace Cassandra.Tests
 
         private static Mock<IControlConnection> GetV2ControlConnectionMock(string tableRegex, params IRow[] rows)
         {
-            var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
+            var queryProviderMock = CreateControlConnectionMock();
             queryProviderMock
                 .Setup(cc => cc.QueryAsync(It.IsRegex(tableRegex), It.IsAny<bool>()))
                 .Returns(() => TestHelper.DelayedTask<IEnumerable<IRow>>(rows));

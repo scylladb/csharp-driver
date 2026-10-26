@@ -124,7 +124,10 @@ namespace Cassandra.Requests
 
             if (supportedOptionsInitializer?.GetTabletInfo() != null && supportedOptionsInitializer.GetTabletInfo().IsEnabled())
             {
-                startupOptions.Add(StartupOptionsFactory.TabletsRoutingV1Option, "true");
+                startupOptions.Add(supportedOptionsInitializer.GetTabletInfo().IsV2
+                    ? TabletInfo.TABLETS_ROUTING_V2_OPTION
+                    : StartupOptionsFactory.TabletsRoutingV1Option,
+                    supportedOptionsInitializer.GetTabletInfo().IsV2 ? string.Empty : "true");
             }
 
             var lwtInfo = supportedOptionsInitializer?.GetLwtInfo();

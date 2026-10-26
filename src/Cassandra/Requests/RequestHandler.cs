@@ -20,6 +20,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -45,10 +46,12 @@ namespace Cassandra.Requests
         private readonly IRequestResultHandler _requestResultHandler;
         private long _state;
         private volatile bool _cancelledByCaller;
-        private readonly TaskCompletionSource _stoppedByCaller =
-            new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<Exception> _stoppedByCaller =
+            new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly IEnumerator<RoutingTarget> _queryPlan;
         private readonly Lock _queryPlanLock = new Lock();
+        private bool _queryPlanInUse;
+        private bool _queryPlanDisposed;
         private readonly ICollection<IRequestExecution> _running = new CopyOnWriteList<IRequestExecution>();
         private ISpeculativeExecutionPlan _executionPlan;
         private volatile HashedWheelTimer.ITimeout _nextExecutionTimeout;
@@ -73,7 +76,7 @@ namespace Cassandra.Requests
             _requestObserver = requestObserver;
             _sessionRequestInfo = sessionRequestInfo;
             _requestResultHandler = new TcsMetricsRequestResultHandler(_requestObserver);
-            _request = request;
+            _request = WithTabletVersion(request, sessionRequestInfo.Statement);
             Serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
             Statement = sessionRequestInfo.Statement;
             RequestOptions = requestOptions ?? throw new ArgumentNullException(nameof(requestOptions));
@@ -140,7 +143,18 @@ namespace Cassandra.Requests
         /// <inheritdoc />
         public IRequest BuildRequest()
         {
-            return RequestHandler.GetRequest(Statement, Serializer, RequestOptions);
+            return WithTabletVersion(RequestHandler.GetRequest(Statement, Serializer, RequestOptions), Statement);
+        }
+
+        private IRequest WithTabletVersion(IRequest request, IStatement statement)
+        {
+            if (request is ExecuteRequest execute)
+            {
+                execute.TabletVersionProvider = () => _session.Cluster.Metadata.GetTablet(
+                    statement?.Keyspace ?? _sessionRequestInfo.SessionKeyspace, statement?.TableName,
+                    statement?.RoutingKey?.RawRoutingKey)?.Version;
+            }
+            return request;
         }
 
         public bool OnNewNodeExecution(NodeRequestInfo nodeRequestInfo)
@@ -251,11 +265,21 @@ namespace Cassandra.Requests
         /// </summary>
         private async Task<bool> SetCompletedAsync(Exception ex, RowSet result, Func<Task> action)
         {
-            if (!TryComplete(false))
+            if (!TryComplete(false, out var queryPlanFailure))
             {
                 return false;
             }
 
+            if (queryPlanFailure != null)
+            {
+                if (ex == null)
+                {
+                    // A successful response still aborts its remaining node executions when cleanup fails.
+                    await ClearNodeExecutionsAndCompleteAsync(queryPlanFailure, null).ConfigureAwait(false);
+                    return true;
+                }
+                ex = RequestHandler.FirstFatalException(ex) ?? queryPlanFailure;
+            }
             if (ex != null)
             {
                 await _requestResultHandler.TrySetExceptionAsync(ex, _sessionRequestInfo).ConfigureAwait(false);
@@ -309,26 +333,28 @@ namespace Cassandra.Requests
         }
 
         /// <summary>
-        /// Completes the request as cancelled, unless its task has completed already. This includes a request whose
-        /// response was received but which still waits for schema agreement. The node executions still running are
-        /// reported as aborted, since their responses will no longer be handled.
+        /// Stops the caller's wait without waiting for request observers. An already completed result is retained;
+        /// otherwise fatal cleanup captured while stopping faults the caller's task and ordinary cancellation cancels it.
+        /// This also stops a caller waiting for schema agreement. Remaining node executions are reported as aborted.
         /// </summary>
         private Task SetCanceledAsync(CancellationToken cancellationToken)
         {
-            return NotifyCanceledAsync(cancellationToken, TryStopForCaller());
+            var completedNow = TryStopForCaller(out var queryPlanFailure);
+            return NotifyCanceledAsync(cancellationToken, completedNow, queryPlanFailure);
         }
 
         /// <summary>
-        /// Completes the request as cancelled by the caller, and stops its executions, without notifying the request
-        /// observers. The caller can then stop waiting. Returns false when the request had completed already, or when
-        /// stopping it failed: the failure is logged, and notifying the observers still cancels the task.
+        /// Stops the executions and publishes the caller's stop outcome without notifying request observers.
+        /// The outcome carries a fatal query-plan cleanup failure, or null for ordinary cancellation.
+        /// Returns false when the request had completed already or stopping it failed; stopping failures are logged.
         /// </summary>
-        private bool TryStopForCaller()
+        private bool TryStopForCaller(out Exception queryPlanFailure)
         {
+            queryPlanFailure = null;
             try
             {
-                var completedNow = TryComplete(true);
-                _stoppedByCaller.TrySetResult();
+                var completedNow = TryComplete(true, out queryPlanFailure);
+                _stoppedByCaller.TrySetResult(queryPlanFailure);
                 return completedNow;
             }
             catch (Exception ex)
@@ -339,12 +365,12 @@ namespace Cassandra.Requests
         }
 
         /// <summary>
-        /// Notifies the request observers that the request was cancelled, after <see cref="TryStopForCaller"/>:
-        /// the node executions still running are reported as aborted when it completed the request.
+        /// Notifies request observers after the caller's stop outcome is available. Remaining node executions are
+        /// reported as aborted, then the observer result records fatal query-plan cleanup or ordinary cancellation.
         /// </summary>
-        private async Task NotifyCanceledAsync(CancellationToken cancellationToken, bool completedNow)
+        private async Task NotifyCanceledAsync(CancellationToken cancellationToken, bool completedNow, Exception queryPlanFailure)
         {
-            // Nothing awaits this method: a failing request observer is logged, and the task is still cancelled
+            // Caller completion is independent of these notifications; ordinary observer failures are logged.
             try
             {
                 if (completedNow)
@@ -359,7 +385,14 @@ namespace Cassandra.Requests
 
             try
             {
-                await _requestResultHandler.TrySetCanceledAsync(cancellationToken, _sessionRequestInfo).ConfigureAwait(false);
+                if (queryPlanFailure != null)
+                {
+                    await _requestResultHandler.TrySetExceptionAsync(queryPlanFailure, _sessionRequestInfo).ConfigureAwait(false);
+                }
+                else
+                {
+                    await _requestResultHandler.TrySetCanceledAsync(cancellationToken, _sessionRequestInfo).ConfigureAwait(false);
+                }
             }
             catch (Exception ex)
             {
@@ -372,8 +405,9 @@ namespace Cassandra.Requests
         /// When the caller cancelled the request, the requests already written are left running, see
         /// <see cref="IRequestExecution.CancelUnsent"/>. Returns false when it was already completed.
         /// </summary>
-        private bool TryComplete(bool cancelledByCaller)
+        private bool TryComplete(bool cancelledByCaller, out Exception queryPlanFailure)
         {
+            queryPlanFailure = null;
             if (cancelledByCaller)
             {
                 // Set before completing, so that an execution starting concurrently sees it
@@ -386,13 +420,35 @@ namespace Cassandra.Requests
                 return false;
             }
 
-            //Cancel the current timer
-            //When the next execution timer is being scheduled at the *same time*
-            //the timer is not going to be cancelled, in that case, this instance is going to stay alive a little longer
-            _nextExecutionTimeout?.Cancel();
-            foreach (var execution in _running)
+            try
             {
-                RequestHandler.Stop(execution, cancelledByCaller);
+                //Cancel the current timer
+                //When the next execution timer is being scheduled at the *same time*
+                //the timer is not going to be cancelled, in that case, this instance is going to stay alive a little longer
+                _nextExecutionTimeout?.Cancel();
+                foreach (var execution in _running)
+                {
+                    RequestHandler.Stop(execution, cancelledByCaller);
+                }
+            }
+            finally
+            {
+                // Never wait for a custom policy's MoveNext while completing or cancelling a request.
+                // The advancing thread releases the plan in its finally block after seeing StateCompleted.
+                if (_queryPlanLock.TryEnter())
+                {
+                    try
+                    {
+                        if (!_queryPlanInUse)
+                        {
+                            queryPlanFailure = DisposeQueryPlan();
+                        }
+                    }
+                    finally
+                    {
+                        _queryPlanLock.Exit();
+                    }
+                }
             }
 
             return true;
@@ -456,18 +512,98 @@ namespace Cassandra.Requests
 
         private bool TryGetNextHost(out RoutingTarget target)
         {
-            // Lock to handle multiple threads from multiple executions to get a new host
-            lock (_queryPlanLock)
+            var finished = false;
+            Exception failure = null;
+            try
             {
-                if (_queryPlan.MoveNext())
+                // Advancement and disposal share this lock across retries and speculative executions.
+                lock (_queryPlanLock)
                 {
-                    target = _queryPlan.Current;
-                    return true;
+                    target = default;
+                    if (_queryPlanDisposed || HasCompleted())
+                    {
+                        return false;
+                    }
+                    _queryPlanInUse = true;
+                    try
+                    {
+                        if (_queryPlan.MoveNext())
+                        {
+                            target = _queryPlan.Current;
+                            return !HasCompleted();
+                        }
+                        finished = true;
+                        return false;
+                    }
+                    finally
+                    {
+                        _queryPlanInUse = false;
+                    }
                 }
             }
+            catch (Exception ex)
+            {
+                failure = ex;
+                finished = true;
+                throw;
+            }
+            finally
+            {
+                // Check completion after releasing the advancement lock. A concurrent completer that
+                // could not enter it must not miss cleanup between our last state read and that release.
+                if (finished || HasCompleted())
+                {
+                    Exception cleanupFailure;
+                    lock (_queryPlanLock)
+                    {
+                        cleanupFailure = _queryPlanInUse ? null : DisposeQueryPlan();
+                    }
+                    if (cleanupFailure != null && RequestHandler.FirstFatalException(failure) == null)
+                    {
+                        ExceptionDispatchInfo.Capture(cleanupFailure).Throw();
+                    }
+                }
+            }
+        }
 
-            target = default;
-            return false;
+        // Called only under _queryPlanLock, outside an active MoveNext. Return fatal failures so that
+        // completion publishes them to the caller rather than leaving the request's result unset.
+        private Exception DisposeQueryPlan()
+        {
+            if (_queryPlanDisposed)
+            {
+                return null;
+            }
+            _queryPlanDisposed = true;
+            try
+            {
+                _queryPlan.Dispose();
+            }
+            catch (Exception ex)
+            {
+                var fatal = RequestHandler.FirstFatalException(ex);
+                if (fatal != null)
+                {
+                    return fatal;
+                }
+                try
+                {
+                    RequestHandler.Logger.Warning("The load balancing query plan failed to dispose: {0}", ex);
+                }
+                catch (Exception diagnosticFailure)
+                {
+                    // Ordinary diagnostic failures must not replace the request's existing outcome.
+                    return RequestHandler.FirstFatalException(diagnosticFailure);
+                }
+            }
+            return null;
+        }
+
+        private static Exception FirstFatalException(Exception exception)
+        {
+            return exception is AggregateException aggregate
+                ? aggregate.Flatten().InnerExceptions.FirstOrDefault(Utils.IsFatalException)
+                : Utils.IsFatalException(exception) ? exception : null;
         }
 
         /// <inheritdoc />
@@ -621,8 +757,8 @@ namespace Cassandra.Requests
                 // Stops the request synchronously, before any execution starts, so that nothing is sent. The observers
                 // are notified on the thread pool, as when the token is cancelled later, so that one that blocks
                 // doesn't block the caller
-                var completedNow = TryStopForCaller();
-                _ = Task.Run(() => NotifyCanceledAsync(cancellationToken, completedNow), CancellationToken.None);
+                var completedNow = TryStopForCaller(out var queryPlanFailure);
+                _ = Task.Run(() => NotifyCanceledAsync(cancellationToken, completedNow, queryPlanFailure), CancellationToken.None);
                 return await WaitForResultAsync(cancellationToken).ConfigureAwait(false);
             }
 
@@ -664,9 +800,9 @@ namespace Cassandra.Requests
         }
 
         /// <summary>
-        /// Waits for the result of the request, or for its executions to be stopped after the caller cancelled
-        /// <paramref name="cancellationToken"/>. The task is then cancelled even while the request observers are still
-        /// being notified of the cancellation: a notification that never completes doesn't keep the caller waiting.
+        /// Waits for the request result or the caller's stop outcome. A captured fatal stop outcome faults the task;
+        /// otherwise stopping cancels it with <paramref name="cancellationToken"/>. Pending request-observer
+        /// notifications do not delay either stop outcome. An already completed request result takes precedence.
         /// </summary>
         private async Task<RowSet> WaitForResultAsync(CancellationToken cancellationToken)
         {
@@ -677,6 +813,14 @@ namespace Cassandra.Requests
                 return await result.ConfigureAwait(false);
             }
 
+            var queryPlanFailure = await _stoppedByCaller.Task.ConfigureAwait(false);
+            if (queryPlanFailure != null)
+            {
+                // The caller receives this fatal stop independently of observer completion.
+                // Also observe the eventual notification result, which carries the same failure.
+                result.Forget();
+                ExceptionDispatchInfo.Capture(queryPlanFailure).Throw();
+            }
             return await Task.FromCanceled<RowSet>(cancellationToken).ConfigureAwait(false);
         }
 

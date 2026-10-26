@@ -204,6 +204,16 @@ namespace Cassandra
             return AsReadOnly(tokenMap.GetReplicas(routing.Keyspace, token));
         }
 
+        internal bool IsStronglyConsistent(string keyspace) =>
+            keyspace != null && _tokenMap?.IsStronglyConsistent(keyspace) == true;
+
+        internal Tablet GetTablet(RoutingInfo routing)
+        {
+            return routing?.RoutingKey == null || _tokenMap == null
+                ? null
+                : TabletMap.GetTablet(_tablets, routing.Keyspace, routing.Table, routing.GetToken(_tokenMap.Factory));
+        }
+
         private Host GetHost(Guid hostId)
         {
             return _hostsById.TryGetValue(hostId, out var host) ? host : null;

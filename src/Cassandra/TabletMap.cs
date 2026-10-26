@@ -141,8 +141,8 @@ namespace Cassandra
                 return true;
             }
 
-            var row = tabletSet.Tablets.FirstOrDefault(t => token.CompareTo(new M3PToken(t.LastToken)) <= 0);
-            if (row == null || token.CompareTo(new M3PToken(row.FirstToken)) <= 0)
+            var row = tabletSet.GetTablet(token);
+            if (row == null)
             {
                 Logger.Verbose("Could not find tablet for {0}.{1} owning token {2}.", keyspace, table, token);
                 return true;
@@ -162,6 +162,21 @@ namespace Cassandra
             }
             replicas = tabletReplicas;
             return true;
+        }
+
+        internal Tablet GetTablet(string keyspace, string table, IToken token) =>
+            GetTablet(GetMapping(), keyspace, table, token);
+
+        internal static Tablet GetTablet(
+            IReadOnlyDictionary<KeyspaceTableNamePair, TabletSet> mapping, string keyspace, string table, IToken token)
+        {
+            if (token == null || keyspace == null || table == null || mapping == null ||
+                !mapping.TryGetValue(new KeyspaceTableNamePair(keyspace, table), out var tabletSet))
+            {
+                return null;
+            }
+
+            return tabletSet.GetTablet(token);
         }
 
         public void RemoveTableMappings(KeyspaceTableNamePair key) => ImmutableInterlocked.TryRemove(ref _mapping, key, out _);
@@ -249,6 +264,26 @@ namespace Cassandra
             }
 
             public ImmutableSortedSet<Tablet> Tablets { get; }
+
+            internal Tablet GetTablet(IToken token)
+            {
+                var first = 0;
+                var last = Tablets.Count;
+                while (first < last)
+                {
+                    var middle = first + (last - first) / 2;
+                    if (token.CompareTo(new M3PToken(Tablets[middle].LastToken)) > 0)
+                    {
+                        first = middle + 1;
+                    }
+                    else
+                    {
+                        last = middle;
+                    }
+                }
+                var tablet = first < Tablets.Count ? Tablets[first] : null;
+                return tablet != null && token.CompareTo(new M3PToken(tablet.FirstToken)) > 0 ? tablet : null;
+            }
         }
     }
 }

@@ -68,6 +68,12 @@ namespace Cassandra.Responses
         }
         );
 
+        private static readonly TupleColumnInfo TabletV2ColumnInfo = new TupleColumnInfo(
+            new List<ColumnDesc>(TabletColumnInfo.Elements)
+            {
+                new ColumnDesc { TypeCode = ColumnTypeCode.Bigint }
+            });
+
         internal Response(Frame frame)
         {
             ArgumentNullException.ThrowIfNull(frame);
@@ -98,7 +104,24 @@ namespace Cassandra.Responses
             {
                 CustomPayload = Reader.ReadBytesMap();
 
-                if (CustomPayload.TryGetValue(TabletInfo.TABLETS_ROUTING_V1_CUSTOM_PAYLOAD_KEY, out var tabletInfo))
+                if (frame.UseTabletsRoutingV2 && CustomPayload.TryGetValue(TabletInfo.TABLETS_ROUTING_V2_CUSTOM_PAYLOAD_KEY, out var tabletV2))
+                {
+                    ValidateTabletV2(tabletV2);
+                    var decoded = frame.Serializer.Deserialize(tabletV2, 0, tabletV2.Length, ColumnTypeCode.Tuple, TabletV2ColumnInfo);
+                    if (decoded is Tuple<long, long, IEnumerable<Tuple<Guid, int>>, long> tablet && tablet.Item3 != null)
+                    {
+                        var replicas = new List<HostShardPair>();
+                        foreach (var replica in tablet.Item3)
+                        {
+                            replicas.Add(new HostShardPair(replica.Item1, replica.Item2));
+                        }
+                        if (replicas.Count > 0)
+                        {
+                            Tablet = new Tablet(tablet.Item1, tablet.Item2, replicas, unchecked((ulong)tablet.Item4));
+                        }
+                    }
+                }
+                else if (!frame.UseTabletsRoutingV2 && CustomPayload.TryGetValue(TabletInfo.TABLETS_ROUTING_V1_CUSTOM_PAYLOAD_KEY, out var tabletInfo))
                 {
 
                     var des = frame.Serializer.Deserialize(tabletInfo, 0, tabletInfo.Length, ColumnTypeCode.Tuple, TabletColumnInfo);
@@ -111,6 +134,33 @@ namespace Cassandra.Responses
                         }
                         Tablet = new Tablet(tablet.Item1, tablet.Item2, replicas);
                     }
+                }
+            }
+        }
+
+        private static void ValidateTabletV2(byte[] payload)
+        {
+            // The tuple holds two bigint tokens, a list of (uuid, int) replicas and a bigint version.
+            // Validate its nested lengths before the generic decoder allocates from the replica count.
+            if (payload == null || payload.Length < 44 || BeConverter.ToInt32(payload, 0) != 8 ||
+                BeConverter.ToInt32(payload, 12) != 8)
+            {
+                throw new DriverInternalError("Invalid V2 tablet routing payload.");
+            }
+            var listLength = BeConverter.ToInt32(payload, 24);
+            var count = BeConverter.ToInt32(payload, 28);
+            if (listLength != payload.Length - 40 || count < 0 ||
+                (listLength - 4) % 32 != 0 || count != (listLength - 4) / 32 ||
+                BeConverter.ToInt32(payload, payload.Length - 12) != 8)
+            {
+                throw new DriverInternalError("Invalid V2 tablet routing payload.");
+            }
+            for (var offset = 32; offset < payload.Length - 12; offset += 32)
+            {
+                if (BeConverter.ToInt32(payload, offset) != 28 || BeConverter.ToInt32(payload, offset + 4) != 16 ||
+                    BeConverter.ToInt32(payload, offset + 24) != 4)
+                {
+                    throw new DriverInternalError("Invalid V2 tablet routing replica.");
                 }
             }
         }

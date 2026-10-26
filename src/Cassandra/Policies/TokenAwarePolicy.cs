@@ -36,6 +36,9 @@ namespace Cassandra
     /// for a lightweight transaction, then the fallback targets of the child policy that aren't among them.
     /// </item>
     /// </list>
+    /// <para>For strongly consistent ScyllaDB keyspaces with V2 tablet feedback, the tablet leader is
+    /// preferred over other hosts allowed by the child policy. Reads at ONE or LOCAL_ONE continue to
+    /// balance across replicas. Batch leader routing is not supported.</para>
     /// </summary>
     public class TokenAwarePolicy : ILoadBalancingPolicy
     {
@@ -77,11 +80,20 @@ namespace Cassandra
         ///  Returns a replica of the request whose <c>HostDistance</c> for the child policy is <c>Local</c>,
         ///  chosen at random, or the first one when the request should be routed as a lightweight transaction.
         ///  Without a routing key or such a replica, returns the first target of the child policy.
+        ///  For an operation eligible for tablet leader routing, returns null so that <see cref="Fallback"/>
+        ///  can check the child's allowed targets and select the leader lazily.
         /// </summary>
         /// <param name="routing">The routing information of the request.</param>
         /// <param name="metadata">The snapshot of the cluster metadata, which gives the replicas.</param>
         public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot metadata)
         {
+            if (GetLeaderTablet(routing, metadata) != null)
+            {
+                // Leader eligibility depends on the child's complete set of targets. Defer the selection to
+                // Fallback rather than build that set in Pick, which must not request the fallback plan.
+                return null;
+            }
+
             if (routing?.RoutingKey != null)
             {
                 var replicas = (metadata ?? MetadataSnapshot.Empty).GetReplicas(routing);
@@ -114,6 +126,8 @@ namespace Cassandra
         ///  Returns the replicas of the request whose <c>HostDistance</c> for the child policy is <c>Local</c>, if
         ///  it can determine them (i.e. mainly if <see cref="RoutingInfo.RoutingKey"/> is not <c>null</c>), then the
         ///  fallback targets of the child policy.
+        ///  For an eligible strongly consistent tablet operation, an up leader allowed by the child policy
+        ///  comes first, including an allowed remote leader. The remaining local replicas keep their shard targets.
         /// </summary>
         /// <param name="routing">The routing information of the request.</param>
         /// <param name="metadata">The snapshot of the cluster metadata, which gives the replicas.</param>
@@ -128,13 +142,63 @@ namespace Cassandra
                 yield break;
             }
 
-            var replicas = (metadata ?? MetadataSnapshot.Empty).GetReplicas(routing);
+            List<RoutingTarget> leaderChildPlan = null;
+            HashSet<Host> allowedReplicaHosts = null;
+            Host preferredLeaderHost = null;
+            var tablet = GetLeaderTablet(routing, metadata);
+            using var childTargets = tablet != null ? ChildPolicy.Fallback(routing, metadata).GetEnumerator() : null;
+            if (tablet != null)
+            {
+                // Keep one lazy child enumeration. An allowed leader can be tried as soon as it appears;
+                // buffer the prefix and read the rest only when another target is needed.
+                leaderChildPlan = new List<RoutingTarget>();
+                var leader = tablet.Replicas[0];
+                while (childTargets.MoveNext())
+                {
+                    var target = childTargets.Current;
+                    if (target.Host == null)
+                    {
+                        yield return target;
+                        continue;
+                    }
+                    if (ChildPolicy.Distance(target.Host) == HostDistance.Ignored)
+                    {
+                        continue;
+                    }
+                    leaderChildPlan.Add(target);
+                    if (target.Host.HostId == leader.HostID && target.Host.IsUp)
+                    {
+                        preferredLeaderHost = target.Host;
+                        break;
+                    }
+                }
+                if (preferredLeaderHost != null)
+                {
+                    yield return new RoutingTarget(preferredLeaderHost, leader.Shard);
+                    while (childTargets.MoveNext())
+                    {
+                        var target = childTargets.Current;
+                        if (target.Host == null)
+                        {
+                            yield return target;
+                            continue;
+                        }
+                        if (ChildPolicy.Distance(target.Host) != HostDistance.Ignored)
+                        {
+                            leaderChildPlan.Add(target);
+                        }
+                    }
+                }
+                allowedReplicaHosts = new HashSet<Host>(leaderChildPlan.Where(target => target.Host.IsUp).Select(target => target.Host));
+            }
 
-            // Keyed by host only: tablet replicas carry their shard while the child policy yields no shard
+            var replicas = (metadata ?? MetadataSnapshot.Empty).GetReplicas(routing);
+            // Deduplicate replicas by host, retaining the shard supplied by tablet metadata.
             var localReplicaSet = new HashSet<Host>();
             var localReplicaList = new List<RoutingTarget>(replicas.Count);
             // We can't do it lazily as we need to balance the load between local replicas
-            foreach (var localReplica in replicas.Where(hs => ChildPolicy.Distance(hs.Host) == HostDistance.Local))
+            foreach (var localReplica in replicas.Where(hs => ChildPolicy.Distance(hs.Host) == HostDistance.Local &&
+                hs.Host != preferredLeaderHost && (allowedReplicaHosts == null || allowedReplicaHosts.Contains(hs.Host))))
             {
                 localReplicaSet.Add(localReplica.Host);
                 localReplicaList.Add(localReplica);
@@ -155,14 +219,67 @@ namespace Cassandra
             }
 
             // Then, return the rest of child policy hosts
-            foreach (var h in ChildPolicy.Fallback(routing, metadata))
+            foreach (var h in leaderChildPlan ?? ChildPolicy.Fallback(routing, metadata))
             {
-                if (localReplicaSet.Contains(h.Host))
+                if (h.Host == preferredLeaderHost || localReplicaSet.Contains(h.Host))
                 {
                     continue;
                 }
                 yield return h;
             }
+        }
+
+        private static Tablet GetLeaderTablet(RoutingInfo routing, MetadataSnapshot metadata)
+        {
+            if (routing?.RoutingKey == null || routing.Statement is BatchStatement || metadata == null ||
+                !metadata.IsStronglyConsistent(routing.Keyspace) ||
+                ((routing.Consistency == ConsistencyLevel.One || routing.Consistency == ConsistencyLevel.LocalOne) && IsRead(routing.Statement)))
+            {
+                return null;
+            }
+
+            var tablet = metadata.GetTablet(routing);
+            return tablet?.Version != null && tablet.Replicas.Count > 0 ? tablet : null;
+        }
+
+        internal static bool IsRead(IStatement statement)
+        {
+            var cql = statement is BoundStatement bound ? bound.PreparedStatement.Cql
+                : (statement as RegularStatement)?.QueryString;
+            if (cql == null)
+            {
+                return false;
+            }
+            var text = cql.AsSpan().TrimStart();
+            while (!text.IsEmpty)
+            {
+                if (text.StartsWith("/*", StringComparison.Ordinal))
+                {
+                    var end = text[2..].IndexOf("*/", StringComparison.Ordinal);
+                    if (end < 0)
+                    {
+                        return false;
+                    }
+                    text = text[(end + 4)..].TrimStart();
+                }
+                else if (text.StartsWith("--", StringComparison.Ordinal) || text.StartsWith("//", StringComparison.Ordinal))
+                {
+                    var end = text.IndexOfAny('\r', '\n');
+                    if (end < 0)
+                    {
+                        return false;
+                    }
+                    text = text[end..].TrimStart();
+                }
+                else
+                {
+                    break;
+                }
+            }
+            // Unknown statements keep conservative leader routing; only an identified read can use
+            // a weak-consistency replica. SELECT* is valid CQL, but SELECTED is not a read keyword.
+            return text.StartsWith("SELECT", StringComparison.OrdinalIgnoreCase) &&
+                (text.Length == 6 || !(char.IsLetterOrDigit(text[6]) || text[6] == '_'));
         }
     }
 }
