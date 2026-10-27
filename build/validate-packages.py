@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -14,14 +15,13 @@ import urllib.request
 import xml.etree.ElementTree as ElementTree
 import zipfile
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 NUGET_ORG = "https://api.nuget.org/v3/index.json"
 BASELINE_VERSION = "3.22.0.4"
-CANDIDATE_VERSION = "4.0.0"
 APICOMPAT_VERSION = "10.0.401"
 # Declares the intended public API breaks against BASELINE_VERSION, next to each project
 API_COMPAT_SUPPRESSIONS_FILE = "CompatibilitySuppressions.xml"
@@ -35,43 +35,39 @@ class ValidationError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class PackageContract:
+class PackageProject:
     project: str
     package_id: str
     assembly_name: str
+    consumer_marker: str
+
+
+@dataclass(frozen=True)
+class PackageContract(PackageProject):
+    version: str
+    assembly_version: str
+    file_version: str
     dependencies: dict[str, str]
 
 
-PACKAGE_CONTRACTS = (
-    PackageContract(
+PACKAGE_PROJECTS = (
+    PackageProject(
         project="src/Cassandra/Cassandra.csproj",
         package_id="ScyllaDBCSharpDriver",
         assembly_name="ScyllaDB",
-        dependencies={
-            "K4os.Compression.LZ4": "1.3.8",
-            "Microsoft.Extensions.Logging": "10.0.14",
-            "Microsoft.Extensions.Logging.Abstractions": "10.0.14",
-            "Newtonsoft.Json": "13.0.4",
-        },
+        consumer_marker="Cluster",
     ),
-    PackageContract(
+    PackageProject(
         project="src/Extensions/Cassandra.AppMetrics/Cassandra.AppMetrics.csproj",
         package_id="ScyllaDBCSharpDriver.AppMetrics",
         assembly_name="Cassandra.AppMetrics",
-        dependencies={
-            "ScyllaDBCSharpDriver": CANDIDATE_VERSION,
-            "App.Metrics.Abstractions": "4.3.0",
-            "App.Metrics.Concurrency": "4.3.0",
-        },
+        consumer_marker="DriverAppMetricsOptions",
     ),
-    PackageContract(
+    PackageProject(
         project="src/Extensions/Cassandra.OpenTelemetry/Cassandra.OpenTelemetry.csproj",
         package_id="ScyllaDBCSharpDriver.OpenTelemetry",
         assembly_name="Cassandra.OpenTelemetry",
-        dependencies={
-            "ScyllaDBCSharpDriver": CANDIDATE_VERSION,
-            "OpenTelemetry.Api": "1.20.1",
-        },
+        consumer_marker="CassandraInstrumentationOptions",
     ),
 )
 
@@ -82,21 +78,136 @@ DRY_RUN_PACKAGE_IDS = {
 }
 
 
-def candidate_contracts(dry_run: bool = False) -> tuple[PackageContract, ...]:
-    if not dry_run:
-        return PACKAGE_CONTRACTS
+def normalized_version(version: str) -> str:
+    match = re.fullmatch(
+        r"(\d+(?:\.\d+){0,3})(-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?", version
+    )
+    require(match is not None, f"Invalid package version {version!r}")
+    parts = [int(part) for part in match[1].split(".")]
+    parts += [0] * max(0, 3 - len(parts))
+    if len(parts) == 4 and parts[-1] == 0:
+        parts.pop()
+    return ".".join(str(part) for part in parts) + (match[2] or "")
 
+
+def normalized_dependency_version(version: str) -> str:
+    """Match NuGet's compact nuspec range format without changing its bounds."""
+    version = version.strip()
+    if version.startswith(("[", "(")):
+        bounds = version[1:-1].split(",")
+        lower = normalized_dependency_version(bounds[0]) if bounds[0].strip() else ""
+        upper = (
+            normalized_dependency_version(bounds[-1]) if bounds[-1].strip() else ""
+        )
+        if version[0] == "[":
+            if not upper:
+                return lower
+            if version[-1] == "]" and lower.lower() == upper.lower():
+                return f"[{lower}]"
+        return f"{version[0]}{lower}, {upper}{version[-1]}"
+    # Floating references are written as their minimum version in the nuspec.
+    numeric, separator, release = version.partition("-")
+    numeric = numeric.replace("*", "0")
+    release = re.sub(r"(^|\.)\*", r"\g<1>0", release).replace("*", "")
+    return normalized_version(numeric + separator + release)
+
+
+def load_package_contracts(
+    expected_version: str | None = None,
+) -> tuple[PackageContract, ...]:
+    """Read release metadata from the same evaluated projects that dotnet pack uses."""
+    evaluated = {}
+    for project in PACKAGE_PROJECTS:
+        result = run(
+            [
+                DOTNET,
+                "msbuild",
+                project.project,
+                "-nologo",
+                "-p:Configuration=Release",
+                "-getProperty:PackageId,PackageVersion,AssemblyVersion,FileVersion",
+                "-getItem:PackageReference,ProjectReference",
+            ],
+            capture_output=True,
+        )
+        evaluated[project.project] = json.loads(result.stdout)
+
+    versions = {
+        project.project: normalized_version(
+            evaluated[project.project]["Properties"]["PackageVersion"]
+        )
+        for project in PACKAGE_PROJECTS
+    }
+    release_version = (
+        normalized_version(expected_version)
+        if expected_version
+        else versions[PACKAGE_PROJECTS[0].project]
+    )
+    projects_by_path = {
+        (REPOSITORY_ROOT / project.project).resolve(): project
+        for project in PACKAGE_PROJECTS
+    }
+    contracts = []
+    for project in PACKAGE_PROJECTS:
+        metadata = evaluated[project.project]
+        properties = metadata["Properties"]
+        require(
+            properties["PackageId"]
+            in (project.package_id, DRY_RUN_PACKAGE_IDS[project.package_id]),
+            f"Unexpected PackageId in {project.project}: {properties['PackageId']}",
+        )
+        require(
+            versions[project.project] == release_version,
+            f"{project.package_id} must use release version {release_version}",
+        )
+        dependencies = {}
+        for reference in metadata["Items"]["PackageReference"]:
+            if reference.get("PrivateAssets", "").lower() == "all":
+                continue
+            version = reference.get("VersionOverride") or reference.get("Version")
+            require(
+                bool(version), f"Missing evaluated version for {reference['Identity']}"
+            )
+            dependencies[reference["Identity"]] = normalized_dependency_version(version)
+        for reference in metadata["Items"]["ProjectReference"]:
+            if reference.get("PrivateAssets", "").lower() == "all":
+                continue
+            referenced = projects_by_path.get(Path(reference["FullPath"]).resolve())
+            require(
+                referenced is not None,
+                f"Unexpected project reference {reference['Identity']}",
+            )
+            dependencies[referenced.package_id] = versions[referenced.project]
+        contracts.append(
+            PackageContract(
+                project=project.project,
+                package_id=project.package_id,
+                assembly_name=project.assembly_name,
+                consumer_marker=project.consumer_marker,
+                version=release_version,
+                assembly_version=properties["AssemblyVersion"],
+                file_version=properties["FileVersion"],
+                dependencies=dependencies,
+            )
+        )
+    return tuple(contracts)
+
+
+def candidate_contracts(
+    contracts: tuple[PackageContract, ...], dry_run: bool = False
+) -> tuple[PackageContract, ...]:
+    if not dry_run:
+        return contracts
     return tuple(
-        PackageContract(
-            project=contract.project,
+        replace(
+            contract,
             package_id=DRY_RUN_PACKAGE_IDS[contract.package_id],
-            assembly_name=contract.assembly_name,
             dependencies={
                 DRY_RUN_PACKAGE_IDS.get(dependency_id, dependency_id): version
                 for dependency_id, version in contract.dependencies.items()
             },
         )
-        for contract in PACKAGE_CONTRACTS
+        for contract in contracts
     )
 
 
@@ -224,7 +335,7 @@ def restore_and_audit() -> None:
 def pack_candidates(package_directory: Path) -> None:
     log("\nPacking release candidates")
     package_directory.mkdir(parents=True)
-    for contract in PACKAGE_CONTRACTS:
+    for contract in PACKAGE_PROJECTS:
         run(
             [
                 DOTNET,
@@ -267,7 +378,7 @@ def safely_extract(package: Path, destination: Path) -> None:
 def inspect_candidates(
     package_directory: Path,
     extraction_root: Path,
-    contracts: tuple[PackageContract, ...] = PACKAGE_CONTRACTS,
+    contracts: tuple[PackageContract, ...],
 ) -> dict[str, Path]:
     log("\nInspecting package assets and dependency groups")
     packages = sorted(package_directory.glob("*.nupkg"))
@@ -310,8 +421,8 @@ def inspect_candidates(
                 f"Found more than one package for {package_id}",
             )
             require(
-                child_text(metadata, "version") == CANDIDATE_VERSION,
-                f"{package_id} must pack normalized version {CANDIDATE_VERSION}",
+                child_text(metadata, "version") == contract.version,
+                f"{package_id} must pack normalized version {contract.version}",
             )
 
             expected_files = {
@@ -398,7 +509,7 @@ def download_baselines(baseline_root: Path) -> dict[str, Path]:
     log("\nDownloading published 3.22.0.4 baselines")
     baseline_root.mkdir(parents=True)
     assemblies: dict[str, Path] = {}
-    for contract in PACKAGE_CONTRACTS:
+    for contract in PACKAGE_PROJECTS:
         package_name = contract.package_id.lower()
         package = baseline_root / f"{package_name}.{BASELINE_VERSION}.nupkg"
         url = (
@@ -421,7 +532,7 @@ def write_baseline_restore_project(project: Path) -> None:
     package_references = "\n".join(
         f'    <PackageReference Include="{contract.package_id}" '
         f'Version="{BASELINE_VERSION}" />'
-        for contract in PACKAGE_CONTRACTS
+        for contract in PACKAGE_PROJECTS
     )
     project.write_text(
         "<Project Sdk=\"Microsoft.NET.Sdk\">\n"
@@ -502,7 +613,7 @@ def net10_reference_pack() -> Path:
         [
             DOTNET,
             "msbuild",
-            PACKAGE_CONTRACTS[0].project,
+            PACKAGE_PROJECTS[0].project,
             "-nologo",
             "-target:ResolveFrameworkReferences",
             "-getItem:ResolvedTargetingPack",
@@ -579,7 +690,7 @@ def prepare_reference_sets(
 
     candidate_assets = [
         REPOSITORY_ROOT / Path(contract.project).parent / "obj/project.assets.json"
-        for contract in PACKAGE_CONTRACTS
+        for contract in PACKAGE_PROJECTS
     ]
     candidate_package_references = compile_assets(candidate_assets, "net10.0")
 
@@ -600,12 +711,12 @@ def prepare_reference_sets(
     return left_references, right_references
 
 
-def api_compat_suppressions_file(contract: PackageContract) -> Path:
+def api_compat_suppressions_file(contract: PackageProject) -> Path:
     return (REPOSITORY_ROOT / contract.project).parent / API_COMPAT_SUPPRESSIONS_FILE
 
 
 def api_compat_candidate(
-    work_directory: Path, contract: PackageContract, assembly: Path
+    work_directory: Path, contract: PackageProject, assembly: Path
 ) -> Path:
     """Returns the candidate assembly at the path a normal run extracts it to.
 
@@ -660,7 +771,7 @@ def run_api_compat(
         # Suppressions record the assembly paths, so they must not include the temporary directory
         return Path(os.path.relpath(path, work_directory)).as_posix()
 
-    def compare(contract: PackageContract, command: list[str]) -> subprocess.CompletedProcess[str]:
+    def compare(contract: PackageProject, command: list[str]) -> subprocess.CompletedProcess[str]:
         result = run(
             command,
             cwd=work_directory,
@@ -677,7 +788,7 @@ def run_api_compat(
         )
         return result
 
-    for contract in PACKAGE_CONTRACTS:
+    for contract in PACKAGE_PROJECTS:
         command = [
             DOTNET,
             "exec",
@@ -795,7 +906,7 @@ def write_consumer_project(
 ) -> None:
     package_references = "\n".join(
         f'    <PackageReference Include="{contract.package_id}" '
-        f'Version="{CANDIDATE_VERSION}" />'
+        f'Version="{contract.version}" />'
         for contract in contracts
     )
     project.write_text(
@@ -815,18 +926,18 @@ def write_consumer_project(
 def assert_local_packages_were_restored(
     assets_file: Path,
     package_directory: Path,
-    contracts: tuple[PackageContract, ...] = PACKAGE_CONTRACTS,
+    contracts: tuple[PackageContract, ...],
 ) -> None:
     assets = json.loads(assets_file.read_text(encoding="utf-8"))
     libraries = assets.get("libraries", {})
     for contract in contracts:
-        library_key = f"{contract.package_id}/{CANDIDATE_VERSION}"
+        library_key = f"{contract.package_id}/{contract.version}"
         require(
             library_key in libraries,
             f"The net10.0 consumer did not restore {library_key}",
         )
         packages = list(
-            package_directory.glob(f"{contract.package_id}.{CANDIDATE_VERSION}.nupkg")
+            package_directory.glob(f"{contract.package_id}.{contract.version}.nupkg")
         )
         require(
             len(packages) == 1,
@@ -844,7 +955,7 @@ def assert_local_packages_were_restored(
 def write_consumer_nuget_config(
     config: Path,
     package_directory: Path,
-    contracts: tuple[PackageContract, ...] = PACKAGE_CONTRACTS,
+    contracts: tuple[PackageContract, ...],
 ) -> None:
     configuration = ElementTree.Element("configuration")
     sources = ElementTree.SubElement(configuration, "packageSources")
@@ -872,7 +983,7 @@ def write_consumer_nuget_config(
 def validate_incompatible_consumers(
     work_directory: Path,
     nuget_config: Path,
-    contracts: tuple[PackageContract, ...] = PACKAGE_CONTRACTS,
+    contracts: tuple[PackageContract, ...],
 ) -> None:
     for contract in contracts:
         net9_directory = work_directory / f"consumer-net9-{contract.package_id}"
@@ -920,7 +1031,7 @@ def validate_incompatible_consumers(
 def validate_consumers(
     work_directory: Path,
     package_directory: Path,
-    contracts: tuple[PackageContract, ...] = PACKAGE_CONTRACTS,
+    contracts: tuple[PackageContract, ...],
 ) -> None:
     log("\nValidating local-feed consumers")
     nuget_config = work_directory / "NuGet.Config"
@@ -928,6 +1039,12 @@ def validate_consumers(
     net10_directory = work_directory / "consumer-net10"
     net10_directory.mkdir()
     net10_project = net10_directory / "Consumer.csproj"
+    assertions = "\n".join(
+        f"AssertAssembly(typeof({contract.consumer_marker}), "
+        f"{json.dumps(contract.assembly_name)}, "
+        f"{json.dumps(contract.assembly_version)}, {json.dumps(contract.file_version)});"
+        for contract in contracts
+    )
     write_consumer_project(net10_project, "net10.0", contracts)
     (net10_directory / "Program.cs").write_text(
         "using System;\n"
@@ -938,13 +1055,14 @@ def validate_consumers(
         "using Cassandra.OpenTelemetry;\n"
         "using K4os.Compression.LZ4;\n"
         "\n"
-        "static void AssertAssembly(Type markerType, string expectedName)\n"
+        "static void AssertAssembly(Type markerType, string expectedName, "
+        "string expectedAssemblyVersion, string expectedFileVersion)\n"
         "{\n"
         "    Assembly assembly = markerType.Assembly;\n"
         "    if (assembly.GetName().Name != expectedName ||\n"
-        "        assembly.GetName().Version?.ToString() != \"4.99.0.0\" ||\n"
+        "        assembly.GetName().Version?.ToString() != expectedAssemblyVersion ||\n"
         "        assembly.GetCustomAttribute<AssemblyFileVersionAttribute>()?.Version "
-        "!= \"4.0.0.0\" ||\n"
+        "!= expectedFileVersion ||\n"
         "        assembly.GetCustomAttribute<TargetFrameworkAttribute>()?.FrameworkName "
         '!= ".NETCoreApp,Version=v10.0")\n'
         "    {\n"
@@ -953,10 +1071,7 @@ def validate_consumers(
         "    }\n"
         "}\n"
         "\n"
-        "AssertAssembly(typeof(Cluster), \"ScyllaDB\");\n"
-        "AssertAssembly(typeof(DriverAppMetricsOptions), \"Cassandra.AppMetrics\");\n"
-        "AssertAssembly(typeof(CassandraInstrumentationOptions), "
-        "\"Cassandra.OpenTelemetry\");\n"
+        f"{assertions}\n"
         "if (LZ4Codec.MaximumOutputSize(1) <= 0)\n"
         "{\n"
         '    throw new InvalidOperationException("K4os LZ4 is unavailable");\n'
@@ -1022,6 +1137,14 @@ def parse_arguments(arguments: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--version",
+        default=os.environ.get("RELEASE_VERSION"),
+        help=(
+            "expected release version (defaults to RELEASE_VERSION, then the "
+            "evaluated project package version)"
+        ),
+    )
+    parser.add_argument(
         "--update-api-suppressions",
         action="store_true",
         help=(
@@ -1042,7 +1165,6 @@ def parse_arguments(arguments: list[str] | None = None) -> argparse.Namespace:
 
 def main(arguments: list[str] | None = None) -> None:
     options = parse_arguments(arguments)
-    contracts = candidate_contracts(options.dry_run)
     staged_package_directory = None
     if options.package_directory is not None:
         staged_package_directory = options.package_directory.resolve()
@@ -1055,6 +1177,9 @@ def main(arguments: list[str] | None = None) -> None:
     if staged_package_directory is None:
         ensure_signing_key()
     restore_and_audit()
+    contracts = candidate_contracts(
+        load_package_contracts(options.version), options.dry_run
+    )
 
     with tempfile.TemporaryDirectory(
         prefix="csharp-driver-package-validation-"
@@ -1072,7 +1197,7 @@ def main(arguments: list[str] | None = None) -> None:
         )
         candidate_assemblies_by_canonical_id = {
             canonical.package_id: candidate_assemblies[candidate.package_id]
-            for canonical, candidate in zip(PACKAGE_CONTRACTS, contracts)
+            for canonical, candidate in zip(PACKAGE_PROJECTS, contracts)
         }
         baseline_assemblies = download_baselines(work_directory / "baselines")
         left_references, right_references = prepare_reference_sets(

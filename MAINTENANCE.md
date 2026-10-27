@@ -113,6 +113,12 @@ The workflow also builds the versioned Pages artifact with the candidate
 release tag before publication, then deploys that checked artifact after the
 GitHub Release succeeds. Dry runs never deploy docs.
 
+Package validation reads dependency and assembly versions from the evaluated
+Release projects. The release workflow supplies the expected package version
+through `RELEASE_VERSION`; local runs can use `--version` or default to the
+project version. Updating a dependency or release version does not require
+updating a second version list in the validator.
+
 A dry run validates the input source commit, docs and packages with the
 production strong-name key, but creates no remote commit, tag, NuGet package or
 GitHub Release. Open milestone blockers are reported but do not prevent a dry
