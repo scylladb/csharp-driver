@@ -328,6 +328,16 @@ Hosts whose Cassandra version is unknown no longer lower the protocol version
 either. Before, such a host made the driver use protocol version 1, unless a host
 ran Cassandra 3.0 or later.
 
+### Paging after the session is disposed
+
+Retrieving the following page of a `RowSet` after its session is disposed now
+throws an `ObjectDisposedException`. It previously threw a
+`NullReferenceException`.
+
+When the retry policy ignores the error of a request retrieving the following page,
+the iteration now ends after the rows already retrieved, as for any ignored request.
+It previously threw a `NullReferenceException`.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.

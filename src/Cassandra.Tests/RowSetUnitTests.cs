@@ -674,6 +674,36 @@ namespace Cassandra.Tests
             }
         }
 
+        /// <summary>
+        /// A page fetch that fails must not make the RowSet look fully fetched. The failure after the session is disposed
+        /// is covered by PagingTests.Should_ThrowObjectDisposedException_When_PagingAfterSessionIsDisposed.
+        /// </summary>
+        [Test]
+        public void RowSetIsNotFullyFetchedWhenNextPageFetchFails()
+        {
+            var rs = CreateStringsRowset(1, 1);
+            rs.PagingState = new byte[0];
+            SetFetchNextMethod(rs, new Func<byte[], RowSet>(_ => throw new TestException()));
+
+            Assert.Throws<TestException>(() => rs.ToList());
+            Assert.IsFalse(rs.IsFullyFetched);
+        }
+
+        /// <summary>
+        /// When the retry policy ignores the error of a page request, the request returns a RowSet for VOID results, and
+        /// the paging ends.
+        /// </summary>
+        [Test]
+        public void RowSetPagingEndsWhenNextPageRequestIsIgnored()
+        {
+            var rs = CreateStringsRowset(1, 2);
+            rs.PagingState = new byte[0];
+            SetFetchNextMethod(rs, _ => RowSet.Empty());
+
+            Assert.AreEqual(2, rs.ToList().Count);
+            Assert.IsTrue(rs.IsFullyFetched);
+        }
+
         private static void SetFetchNextMethod(RowSet rs, Func<byte[], Task<RowSet>> handler)
         {
             rs.SetFetchNextPageHandler(handler, 10000, Mock.Of<IMetricsManager>());

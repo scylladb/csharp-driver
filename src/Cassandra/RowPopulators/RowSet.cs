@@ -236,9 +236,14 @@ namespace Cassandra
             try
             {
                 var rs = await fetchMethod(pagingState).ConfigureAwait(false);
-                foreach (var newRow in rs.RowQueue)
+                // A page request whose error the retry policy ignored returns a RowSet for VOID results, without rows
+                // or paging state: the paging ends
+                if (rs.RowQueue != null)
                 {
-                    RowQueue.Enqueue(newRow);
+                    foreach (var newRow in rs.RowQueue)
+                    {
+                        RowQueue.Enqueue(newRow);
+                    }
                 }
 
                 // PagingState must be set AFTER all rows have been enqueued
