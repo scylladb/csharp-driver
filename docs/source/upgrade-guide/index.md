@@ -293,7 +293,7 @@ which invokes the callback and keeps the state:
 ```csharp
 IAsyncResult ar = TaskToAsyncResult.Begin(session.ExecuteAsync(statement), callback, state);
 // In the callback, or to wait for the result:
-RowSet rs = TaskToAsyncResult.End<RowSet>(ar);
+AsyncRowSet rs = TaskToAsyncResult.End<AsyncRowSet>(ar);
 ```
 
 ### Removed exception serialization constructors
@@ -525,10 +525,56 @@ var routing = new RoutingInfo { Keyspace = "ks", Table = "tbl", RoutingKey = rou
 var plan = policy.NewQueryPlan(routing, new ClusterState(cluster));
 ```
 
+### `ExecuteAsync` returns `AsyncRowSet`
+
+`ISession.ExecuteAsync()` and the LINQ `CqlCommand.ExecuteAsync()` (used by `Insert`,
+`Update` and `Delete`) now return `Task<AsyncRowSet>` instead of `Task<RowSet>`. The
+conditional variants (`IfNotExists()`, `UpdateIf()`, `UpdateIfExists()` and
+`DeleteIf()`) still return `Task<AppliedInfo<T>>`. `AsyncRowSet` implements
+`IAsyncEnumerable<Row>`, and retrieves the following pages without blocking the
+calling thread. It does not implement `IEnumerable<Row>`: iterating the result of
+`ExecuteAsync` synchronously no longer compiles. `Execute()` still returns a
+`RowSet`, iterated synchronously.
+
+| 3.x | 4.0 |
+|---|---|
+| `foreach (var row in await session.ExecuteAsync(s))` | `await foreach (var row in await session.ExecuteAsync(s))` |
+| `(await session.ExecuteAsync(s)).ToList()` | `await (await session.ExecuteAsync(s)).ToListAsync()` |
+| `(await session.ExecuteAsync(s)).First()` | `await (await session.ExecuteAsync(s)).FirstAsync()` |
+| `rs.GetAvailableWithoutFetching()`, `rs.Info`, `rs.Columns`, `rs.PagingState`, `rs.IsFullyFetched` | Same members on `AsyncRowSet` |
+| `await rs.FetchMoreResultsAsync()` | Same; it also takes a `CancellationToken` |
+| `rs.IsExhausted()` | Not available. To check without consuming rows: `if (rs.GetAvailableWithoutFetching() == 0) await rs.FetchMoreResultsAsync();`, then `rs.GetAvailableWithoutFetching() == 0`. `AnyAsync()` is not a replacement: it dequeues the first row |
+| `rs.FetchMoreResults()` | `await rs.FetchMoreResultsAsync()` |
+| `rs.GetRows()` | Iterate the `AsyncRowSet` itself, or use `ToListAsync()` |
+
+The asynchronous LINQ operators (`ToListAsync`, `FirstAsync`, `Where`, `Select`, ...)
+are part of .NET 10, in the `System.Linq` namespace, and need no extra package.
+Code that must keep a `RowSet`, for example to pass it to synchronous code, can
+call `Execute()` instead.
+
+Mocks of `ISession.ExecuteAsync` must return a `Task<AsyncRowSet>`. `AsyncRowSet`
+can be mocked like `RowSet`: its members are virtual, and a mock provides rows by
+overriding `GetAsyncEnumerator()`. For the Mapper and LINQ components, which map
+rows by column, it also overrides `Columns`. LINQ also reads the query trace from
+`Info`, so a mock used with LINQ returns an `ExecutionInfo` there, for example
+`new ExecutionInfo()`.
+
+The Mapper and LINQ methods that return entities, such as `IMapper.FetchAsync()`
+or `CqlQuery<T>.ExecuteAsync()`, keep their signatures and still return an
+`IEnumerable<T>`, whose following pages are retrieved synchronously.
+
+The query abort timeout (`Builder.WithQueryTimeout()`) applies only to synchronous
+operations. In 3.x, iterating the `RowSet` returned by `ExecuteAsync()` waited for
+each following page with it, 20 seconds by default. Like `ExecuteAsync()` for the
+first page, iterating an `AsyncRowSet` does not apply it. The socket read timeout
+still applies to each attempt of a page request, but not to the total wait: after a
+timeout, the retry policy can try another host. To bound the wait, pass a
+cancellation token, for example with `WithCancellation()`.
+
 ### Paging after the session is disposed
 
-Retrieving the following page of a `RowSet` after its session is disposed now
-throws an `ObjectDisposedException`. It previously threw a
+Retrieving the following page of a `RowSet` or `AsyncRowSet` after its session is
+disposed now throws an `ObjectDisposedException`. It previously threw a
 `NullReferenceException`.
 
 ### Ignored page requests
