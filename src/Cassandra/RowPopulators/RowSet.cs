@@ -130,6 +130,9 @@ namespace Cassandra
 
         /// <summary>
         /// Whether all results from this result set has been fetched from the database.
+        /// It is also true when <see cref="AutoPage"/> is false, even when <see cref="PagingState"/> states that there
+        /// are more pages, and after the retry policy ignored the error of a page request, which ends the paging
+        /// without retrieving the remaining pages.
         /// </summary>
         public virtual bool IsFullyFetched => PagingState == null || !AutoPage;
 
@@ -236,9 +239,15 @@ namespace Cassandra
             try
             {
                 var rs = await fetchMethod(pagingState).ConfigureAwait(false);
-                foreach (var newRow in rs.RowQueue)
+
+                // A page request whose error the retry policy ignored returns a RowSet for VOID results, without rows
+                // or paging state: the paging ends
+                if (rs.RowQueue != null)
                 {
-                    RowQueue.Enqueue(newRow);
+                    foreach (var newRow in rs.RowQueue)
+                    {
+                        RowQueue.Enqueue(newRow);
+                    }
                 }
 
                 // PagingState must be set AFTER all rows have been enqueued

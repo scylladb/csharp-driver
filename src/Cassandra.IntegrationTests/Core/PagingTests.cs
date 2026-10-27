@@ -282,6 +282,30 @@ namespace Cassandra.IntegrationTests.Core
 
         [Test]
         [TestCassandraVersion(2, 0)]
+        public async Task Should_ThrowObjectDisposedException_When_PagingAfterSessionIsDisposed()
+        {
+            const int pageSize = 25;
+            var session = GetNewTemporarySession(KeyspaceName);
+            var query = new SimpleStatement("SELECT * FROM tbl_parallel_paging_read").SetPageSize(pageSize);
+            var syncRs = session.Execute(query);
+            await session.ShutdownAsync().ConfigureAwait(false);
+
+            var syncCount = 0;
+            Assert.Throws<ObjectDisposedException>(() =>
+            {
+                foreach (var row in syncRs)
+                {
+                    syncCount++;
+                }
+            });
+
+            // The rows of the first page are yielded before paging fails
+            Assert.AreEqual(pageSize, syncCount);
+            Assert.IsFalse(syncRs.IsFullyFetched);
+        }
+
+        [Test]
+        [TestCassandraVersion(2, 0)]
         public void Should_IteratePaging_When_SerialReadRowSet()
         {
             var pageSize = 25;
