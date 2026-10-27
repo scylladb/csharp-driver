@@ -356,14 +356,14 @@ APPLY BATCH".Replace("\r", ""));
             var actualCqlQueries = new List<string>();
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<IStatement>()))
-                .Returns(Task<RowSet>.Factory.StartNew(() => new RowSet()));
+                .Returns(Task<AsyncRowSet>.Factory.StartNew(() => new RowSet().ToAsyncRowSet()));
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
                 .Callback<string>(actualCqlQueries.Add)
                 .Returns(Task.FromResult(GetPrepared("Mock query")));
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<IStatement>(), It.IsAny<string>()))
-                .Returns(Task<RowSet>.Factory.StartNew(() => new RowSet()));
+                .Returns(Task<AsyncRowSet>.Factory.StartNew(() => new RowSet().ToAsyncRowSet()));
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
                 .Callback<string>(query => actualCqlQueries.Add(query))

@@ -46,12 +46,12 @@ namespace Cassandra.Tests.Mapping
             sessionMock.Setup(s => s.Keyspace).Returns<string>(null);
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BatchStatement>()))
-                .Returns(getRowSetFunc)
+                .Returns(() => getRowSetFunc().ToAsyncRowSet())
                 .Callback<IStatement>(stmt => statementCallback((BatchStatement)stmt))
                 .Verifiable();
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BatchStatement>(), It.IsAny<string>()))
-                .Returns(getRowSetFunc)
+                .Returns(() => getRowSetFunc().ToAsyncRowSet())
                 .Callback<IStatement, string>((stmt, profile) => statementCallback((BatchStatement)stmt))
                 .Verifiable();
             sessionMock
@@ -75,12 +75,12 @@ namespace Cassandra.Tests.Mapping
             sessionMock.Setup(s => s.Keyspace).Returns<string>(null);
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BatchStatement>()))
-                .Returns(getRowSetFunc)
+                .Returns(() => getRowSetFunc().ToAsyncRowSet())
                 .Callback<IStatement>(stmt => statementCallback((BatchStatement)stmt))
                 .Verifiable();
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<IStatement>(), It.IsAny<string>()))
-                .Returns(getRowSetFunc)
+                .Returns(() => getRowSetFunc().ToAsyncRowSet())
                 .Callback<IStatement, string>((stmt, ep) => statementCallback((BatchStatement)stmt))
                 .Verifiable();
             sessionMock

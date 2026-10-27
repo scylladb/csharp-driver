@@ -263,7 +263,7 @@ namespace Cassandra
         /// <inheritdoc />
         public RowSet Execute(IStatement statement, string executionProfileName)
         {
-            var task = ExecuteAsync(statement, executionProfileName);
+            var task = InternalRef.ExecuteInternalAsync(statement, InternalRef.GetRequestOptions(executionProfileName));
             TaskHelper.WaitToCompleteWithMetrics(_metricsManager, task, Configuration.DefaultRequestOptions.QueryAbortTimeout);
             return task.Result;
         }
@@ -299,18 +299,25 @@ namespace Cassandra
         }
 
         /// <inheritdoc />
-        public Task<RowSet> ExecuteAsync(IStatement statement)
+        public Task<AsyncRowSet> ExecuteAsync(IStatement statement)
         {
             return ExecuteAsync(statement, Configuration.DefaultExecutionProfileName);
         }
 
         /// <inheritdoc />
-        public Task<RowSet> ExecuteAsync(IStatement statement, string executionProfileName)
+        public Task<AsyncRowSet> ExecuteAsync(IStatement statement, string executionProfileName)
         {
-            return InternalRef.ExecuteAsync(statement, InternalRef.GetRequestOptions(executionProfileName));
+            // Resolve the request options before awaiting, so that an unknown profile still throws synchronously
+            return Session.ToAsyncRowSetAsync(
+                InternalRef.ExecuteInternalAsync(statement, InternalRef.GetRequestOptions(executionProfileName)));
         }
 
-        async Task<RowSet> IInternalSession.ExecuteAsync(IStatement statement, IRequestOptions requestOptions)
+        private static async Task<AsyncRowSet> ToAsyncRowSetAsync(Task<RowSet> rowSet)
+        {
+            return new AsyncRowSet(await rowSet.ConfigureAwait(false));
+        }
+
+        async Task<RowSet> IInternalSession.ExecuteInternalAsync(IStatement statement, IRequestOptions requestOptions)
         {
             var handler = await Configuration.RequestHandlerFactory
                                 .CreateAsync(this, _serializerManager.GetCurrentSerializer(), statement, requestOptions).ConfigureAwait(false);

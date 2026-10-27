@@ -775,9 +775,9 @@ namespace Cassandra.Mapping
 
         private Task<RowSet> ExecuteStatementAsync(IStatement statement, string executionProfile)
         {
-            return executionProfile != null
+            return AsyncRowSet.ToRowSetAsync(executionProfile != null
                 ? _session.ExecuteAsync(statement, executionProfile)
-                : _session.ExecuteAsync(statement);
+                : _session.ExecuteAsync(statement));
         }
     }
 }
