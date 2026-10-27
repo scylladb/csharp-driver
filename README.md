@@ -121,6 +121,11 @@ Session allows asynchronous execution of statements (for any type of statement: 
 ```csharp
 // Execute a statement asynchronously using await
 var rs = await session.ExecuteAsync(statement);
+// Iterate the rows, retrieving the following pages without blocking
+await foreach (var row in rs)
+{
+    // ...
+}
 ```
 
 ### Avoid boilerplate mapping code

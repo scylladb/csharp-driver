@@ -85,7 +85,7 @@ namespace Cassandra.IntegrationTests.Core
                 }
 
                 int RowsNo = 1000;
-                var ar = new Task<RowSet>[RowsNo];
+                var ar = new Task<AsyncRowSet>[RowsNo];
                 var threads = new List<Thread>();
                 var monit = new object();
                 int readyCnt = 0;
@@ -194,7 +194,7 @@ namespace Cassandra.IntegrationTests.Core
                 var insertStatement = localSession.Prepare("INSERT INTO sampletable (id, blob_sample) VALUES (?, ?)");
                 var rowLength = 100;
                 var rnd = new Random();
-                var taskList = new List<Task<RowSet>>();
+                var taskList = new List<Task<AsyncRowSet>>();
                 for (var i = 0; i < rowLength; i++)
                 {
                     taskList.Add(localSession.ExecuteAsync(insertStatement.Bind(Guid.NewGuid(), new byte[1024 * rnd.Next(10)])));

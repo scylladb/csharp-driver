@@ -18,6 +18,7 @@ using System;
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Metrics.Internal;
@@ -37,21 +38,27 @@ namespace Cassandra
     /// either globally through <see cref="QueryOptions.SetPageSize(int)"/> or per-statement
     /// with <see cref="IStatement.SetPageSize(int)"/>. Though new pages are automatically
     /// and transparently fetched when needed, it is possible to force the retrieval
-    /// of the next page early through <see cref="FetchMoreResults"/> and  <see cref="FetchMoreResultsAsync"/>.
+    /// of the next page early through <see cref="FetchMoreResults"/> and  <see cref="FetchMoreResultsAsync()"/>.
     /// </para>
     /// <para>
     /// The RowSet dequeues <see cref="Row"/> items while iterated. After a full enumeration of this instance, following
     /// enumerations will be empty, as all rows have been dequeued.
     /// </para>
+    /// <para>
+    /// Iterating a RowSet blocks the calling thread while each following page is retrieved. To iterate without
+    /// blocking, execute the query with <see cref="ISession.ExecuteAsync(IStatement)"/>, which returns an
+    /// <see cref="AsyncRowSet"/>.
+    /// </para>
     /// </summary>
-    /// <remarks>Parallel enumerations are supported and thread-safe.</remarks>
+    /// <remarks>
+    /// Parallel enumerations are supported and thread-safe. Concurrent enumerators share a single fetch of each page.
+    /// </remarks>
     public class RowSet : IEnumerable<Row>
     {
         private static readonly CqlColumn[] EmptyColumns = new CqlColumn[0];
         private volatile Func<byte[], Task<RowSet>> _fetchNextPage;
         private volatile byte[] _pagingState;
-        private int _isPaging;
-        private volatile Task _currentFetchNextPageTask;
+        private Task _currentFetchNextPageTask;
         private volatile int _pageSyncAbortTimeout = Timeout.Infinite;
         private volatile bool _autoPage;
         private volatile IMetricsManager _metricsManager;
@@ -191,50 +198,67 @@ namespace Cassandra
         /// instances.
         /// </para>
         /// </summary>
-        public async Task FetchMoreResultsAsync()
+        public Task FetchMoreResultsAsync()
         {
+            return FetchNextPageAsync();
+        }
+
+        /// <summary>
+        /// Retrieves the next page of results, unless the token is already cancelled. Cancelling stops waiting for the
+        /// page, but not the page fetch: its rows are still added to the internal queue when it completes.
+        /// </summary>
+        internal Task FetchMoreResultsAsync(CancellationToken cancellationToken)
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return Task.FromCanceled(cancellationToken);
+            }
+            return FetchNextPageAsync().WaitAsync(cancellationToken);
+        }
+
+        /// <summary>
+        /// Returns the in-flight page fetch, starting one when there is none.
+        /// All callers share the same fetch, which is never cancelled to keep the queue and paging state consistent.
+        /// </summary>
+        private Task FetchNextPageAsync()
+        {
+            if (_pagingState == null || !AutoPage)
+            {
+                return Task.CompletedTask;
+            }
+
+            var currentTask = Volatile.Read(ref _currentFetchNextPageTask);
+            if (currentTask != null)
+            {
+                return currentTask;
+            }
+
+            var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            currentTask = Interlocked.CompareExchange(ref _currentFetchNextPageTask, tcs.Task, null);
+            if (currentTask != null)
+            {
+                return currentTask;
+            }
+
+            // Read the paging state again: a fetch may have completed after the first read
             var pagingState = _pagingState;
-            if (pagingState == null || !AutoPage)
-            {
-                return;
-            }
-
-            // Only one concurrent call to page
-            if (Interlocked.CompareExchange(ref _isPaging, 1, 0) != 0)
-            {
-                // Once isPaging flag is set, task will be set shortly
-                Task task;
-                var spin = new SpinWait();
-                while ((task = _currentFetchNextPageTask) == null)
-                {
-                    // Use busy spin as the task should be set immediately after
-                    // There is no risk on task being null after that
-                    spin.SpinOnce();
-                }
-
-                // In a race, the task might be old and completed but that's OK as GetEnumerator()
-                // checks the pagingState in a loop.
-                await task.ConfigureAwait(false);
-                return;
-            }
-
-            pagingState = _pagingState;
             if (pagingState == null)
             {
-                // It finished paging
-                Interlocked.Exchange(ref _isPaging, 0);
-                return;
+                Volatile.Write(ref _currentFetchNextPageTask, null);
+                tcs.SetResult();
+                return tcs.Task;
             }
 
-            var tcs = new TaskCompletionSource();
-            // Set the task field as soon as possible
-            _currentFetchNextPageTask = tcs.Task;
+            _ = FetchNextPageAsync(pagingState, tcs);
+            return tcs.Task;
+        }
 
-            var fetchMethod = _fetchNextPage ??
-                              throw new DriverInternalError("Paging state set but delegate to retrieve is not");
-
+        private async Task FetchNextPageAsync(byte[] pagingState, TaskCompletionSource tcs)
+        {
             try
             {
+                var fetchMethod = _fetchNextPage ??
+                                  throw new DriverInternalError("Paging state set but delegate to retrieve is not");
                 var rs = await fetchMethod(pagingState).ConfigureAwait(false);
                 // A page request whose error the retry policy ignored returns a RowSet for VOID results, without rows
                 // or paging state: the paging ends
@@ -251,15 +275,15 @@ namespace Cassandra
             }
             catch (Exception ex)
             {
+                // Clear the task BEFORE completing it, so that waiters can retry
+                Volatile.Write(ref _currentFetchNextPageTask, null);
                 tcs.SetException(ex);
-                throw;
+                return;
             }
-            finally
-            {
-                // Set task BEFORE allowing other threads to page.
-                tcs.TrySetResult();
-                Interlocked.Exchange(ref _isPaging, 0);
-            }
+
+            // Clear the task BEFORE completing it, so that waiters see the next page as not being fetched
+            Volatile.Write(ref _currentFetchNextPageTask, null);
+            tcs.SetResult();
         }
 
         /// <summary>
@@ -303,6 +327,41 @@ namespace Cassandra
         IEnumerator IEnumerable.GetEnumerator()
         {
             return GetEnumerator();
+        }
+
+        /// <summary>
+        /// Iterates the rows, fetching the following pages without blocking the calling thread. Cancelling stops
+        /// waiting for the following page, but not the page fetch: its rows are still added to the internal queue.
+        /// It does not call <see cref="PageNext"/>.
+        /// </summary>
+        internal async IAsyncEnumerable<Row> EnumerateAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            if (RowQueue == null)
+            {
+                yield break;
+            }
+
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (RowQueue.TryDequeue(out var row))
+                {
+                    yield return row;
+                    continue;
+                }
+
+                if (!AutoPage || _pagingState == null)
+                {
+                    // Rows are enqueued before the paging state is cleared, check the queue one last time
+                    if (RowQueue.IsEmpty)
+                    {
+                        yield break;
+                    }
+                    continue;
+                }
+
+                await FetchNextPageAsync().WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
         }
 
         /// <summary>

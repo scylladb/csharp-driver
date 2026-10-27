@@ -111,7 +111,7 @@ namespace Cassandra.Data.Linq
         public RowSet Execute(string executionProfile)
         {
             ArgumentNullException.ThrowIfNull(executionProfile);
-            return WaitToCompleteWithMetrics(ExecuteAsync(executionProfile), QueryAbortTimeout);
+            return WaitToCompleteWithMetrics(ExecuteAsync(executionProfile), QueryAbortTimeout).ToRowSet();
         }
 
         public void SetQueryTrace(QueryTrace trace)
@@ -166,7 +166,7 @@ namespace Cassandra.Data.Linq
         /// <summary>
         /// Evaluates the Linq command and executes asynchronously the cql statement.
         /// </summary>
-        public Task<RowSet> ExecuteAsync()
+        public Task<AsyncRowSet> ExecuteAsync()
         {
             return ExecuteAsync(Configuration.DefaultExecutionProfileName);
         }
@@ -174,7 +174,7 @@ namespace Cassandra.Data.Linq
         /// <summary>
         /// Evaluates the Linq command and executes asynchronously the cql statement with the provided execution profile.
         /// </summary>
-        public async Task<RowSet> ExecuteAsync(string executionProfile)
+        public async Task<AsyncRowSet> ExecuteAsync(string executionProfile)
         {
             if (executionProfile == null)
             {

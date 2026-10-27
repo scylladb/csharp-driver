@@ -97,10 +97,10 @@ namespace Cassandra.IntegrationTests.ExecutionProfiles
                     b => b.WhenQuery("SELECT * from test.test", query => query.WithConsistency(ConsistencyLevel.Two))
                           .ThenRowsSuccess(new[] { ("text", DataType.Ascii) }, r => r.WithRow("test6").WithRow("test5")));
 
-                var rs = async
-                    ? await session.ExecuteAsync(new SimpleStatement("SELECT * from test.test"), "read").ConfigureAwait(false)
-                    : session.Execute("SELECT * from test.test", "read");
-                var rows = rs.ToList();
+                var rows = async
+                    ? await (await session.ExecuteAsync(new SimpleStatement("SELECT * from test.test"), "read").ConfigureAwait(false))
+                        .ToListAsync().ConfigureAwait(false)
+                    : session.Execute("SELECT * from test.test", "read").ToList();
                 Assert.AreEqual(2, rows.Count);
                 Assert.AreEqual("test6", rows[0].GetValue<string>("text"));
                 Assert.AreEqual("test5", rows[1].GetValue<string>("text"));
@@ -134,10 +134,10 @@ namespace Cassandra.IntegrationTests.ExecutionProfiles
                     b => b.WhenQuery("SELECT * from test.test", query => query.WithConsistency(ConsistencyLevel.Two))
                           .ThenUnavailable("unavailable", (int)ConsistencyLevel.Two, 2, 1));
 
-                var rs = async
-                    ? await session.ExecuteAsync(new SimpleStatement("SELECT * from test.test")).ConfigureAwait(false)
-                    : session.Execute("SELECT * from test.test");
-                var rows = rs.ToList();
+                var rows = async
+                    ? await (await session.ExecuteAsync(new SimpleStatement("SELECT * from test.test")).ConfigureAwait(false))
+                        .ToListAsync().ConfigureAwait(false)
+                    : session.Execute("SELECT * from test.test").ToList();
                 Assert.AreEqual(2, rows.Count);
                 Assert.AreEqual("test10", rows[0].GetValue<string>("text"));
                 Assert.AreEqual("test60", rows[1].GetValue<string>("text"));
@@ -180,10 +180,10 @@ namespace Cassandra.IntegrationTests.ExecutionProfiles
                     b => b.WhenQuery("SELECT * from test.test", query => query.WithConsistency(ConsistencyLevel.Quorum))
                           .ThenUnavailable("unavailable", (int)ConsistencyLevel.Two, 2, 1));
 
-                var rs = async
-                    ? await session.ExecuteAsync(new SimpleStatement("SELECT * from test.test"), "read").ConfigureAwait(false)
-                    : session.Execute("SELECT * from test.test", "read");
-                var rows = rs.ToList();
+                var rows = async
+                    ? await (await session.ExecuteAsync(new SimpleStatement("SELECT * from test.test"), "read").ConfigureAwait(false))
+                        .ToListAsync().ConfigureAwait(false)
+                    : session.Execute("SELECT * from test.test", "read").ToList();
                 Assert.AreEqual(2, rows.Count);
                 Assert.AreEqual("test12", rows[0].GetValue<string>("text"));
                 Assert.AreEqual("test62", rows[1].GetValue<string>("text"));

@@ -17,6 +17,54 @@ foreach (var row in rs)
 }
 ```
 
+### Asynchronous automatic paging
+
+Iterating the `RowSet` returned by `Execute()` blocks the calling thread while each following page is retrieved.
+`ExecuteAsync()` returns an `AsyncRowSet` instead, which implements `IAsyncEnumerable<Row>`: iterate it with
+`await foreach` to retrieve the following pages without blocking.
+
+```csharp
+var ps = await session.PrepareAsync("SELECT * from tbl1 WHERE key = ?");
+var statement = ps.Bind(key).SetPageSize(1000);
+var rs = await session.ExecuteAsync(statement);
+await foreach (var row in rs)
+{
+   // The async enumerator yields all the rows from the database,
+   // retrieving them in the background in blocks of 1000.
+}
+```
+
+The asynchronous LINQ operators of .NET 10 (`System.Linq.AsyncEnumerable`) apply to an `AsyncRowSet` directly, and
+`WithCancellation()` passes a cancellation token to the enumeration:
+
+```csharp
+List<Row> rows = await rs.ToListAsync(cancellationToken);
+
+await foreach (var row in rs.WithCancellation(cancellationToken))
+{
+   // ...
+}
+```
+
+An `AsyncRowSet` also exposes the `Info`, `Columns` and `PagingState` of the result, and `FetchMoreResultsAsync()`
+retrieves the following page before the current one has been consumed.
+
+Cancellation stops waiting for the following page. A page request that was already sent is not cancelled: once it
+completes, its rows are added to the `AsyncRowSet`, and the next enumerator that dequeues rows yields them. That can be
+an enumerator running concurrently rather than the next enumeration.
+
+The query abort timeout (`Builder.WithQueryTimeout()`) applies only to synchronous operations, such as `Execute()` and
+iterating a `RowSet`, which stop waiting once it expires. `ExecuteAsync()` does not apply it to the first page, and
+iterating an `AsyncRowSet` does not apply it to the following ones: each page request is bounded by the socket read
+timeout (`SocketOptions.SetReadTimeoutMillis()`) only, so pass a cancellation token to stop waiting earlier.
+
+Concurrent enumerations of the same `RowSet` or `AsyncRowSet` are thread-safe: each row is yielded once, and concurrent
+enumerators share the request for the following page instead of sending it again. A page whose request failed is
+requested again by the next enumeration.
+
+If the session is disposed before all pages are retrieved, retrieving the following page throws an
+`ObjectDisposedException`.
+
 ## Manual paging 
 
 If you want to retrieve the next page of results only when you ask for it (for example, in a webpager), use the

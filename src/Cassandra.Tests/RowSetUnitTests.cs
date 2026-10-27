@@ -373,7 +373,7 @@ namespace Cassandra.Tests
         /// The columns are named: col_0, ..., col_n
         /// The rows values are: row_0_col_0, ..., row_m_col_n
         /// </summary>
-        private static RowSet CreateStringsRowset(int columnLength, int rowLength, string valueModifier = null)
+        internal static RowSet CreateStringsRowset(int columnLength, int rowLength, string valueModifier = null)
         {
             var columns = new List<CqlColumn>();
             var columnIndexes = new Dictionary<string, int>();
@@ -704,12 +704,12 @@ namespace Cassandra.Tests
             Assert.IsTrue(rs.IsFullyFetched);
         }
 
-        private static void SetFetchNextMethod(RowSet rs, Func<byte[], Task<RowSet>> handler)
+        internal static void SetFetchNextMethod(RowSet rs, Func<byte[], Task<RowSet>> handler)
         {
             rs.SetFetchNextPageHandler(handler, 10000, Mock.Of<IMetricsManager>());
         }
 
-        private static void SetFetchNextMethod(RowSet rs, Func<byte[], RowSet> handler)
+        internal static void SetFetchNextMethod(RowSet rs, Func<byte[], RowSet> handler)
         {
             SetFetchNextMethod(rs, pagingState => Task.FromResult(handler(pagingState)));
         }

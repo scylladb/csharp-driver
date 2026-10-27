@@ -465,7 +465,7 @@ namespace Cassandra.IntegrationTests.Core
                 const int overflowToNextHost = 10;
                 var length = maxRequestsPerConnection * connectionLength + Environment.ProcessorCount +
                              overflowToNextHost;
-                var tasks = new List<Task<RowSet>>(length);
+                var tasks = new List<Task<AsyncRowSet>>(length);
 
                 for (var i = 0; i < length; i++)
                 {
