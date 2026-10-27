@@ -327,6 +327,23 @@ namespace Cassandra.Tests
             return dateTime.Value.ToMillisecondPrecision();
         }
 
+        /// <summary>
+        /// Wraps the RowSet like <see cref="ISession.ExecuteAsync(IStatement)"/> does, for mocks of that method.
+        /// </summary>
+        public static AsyncRowSet ToAsyncRowSet(this RowSet rowSet)
+        {
+            return new AsyncRowSet(rowSet);
+        }
+
+        /// <summary>
+        /// Wraps the RowSet of the task like <see cref="ISession.ExecuteAsync(IStatement)"/> does, for mocks of that
+        /// method.
+        /// </summary>
+        public static async Task<AsyncRowSet> ToAsyncRowSet(this Task<RowSet> rowSet)
+        {
+            return (await rowSet.ConfigureAwait(false)).ToAsyncRowSet();
+        }
+
         public static async Task<T> DelayedTask<T>(T result, int dueTimeMs = 50, Action afterDelay = null)
         {
             await Task.Delay(dueTimeMs).ConfigureAwait(false);

@@ -72,7 +72,7 @@ namespace Cassandra.Data.Linq
                 session,
                 Cql.New(cql, values).WithExecutionProfile(executionProfile)).ConfigureAwait(false);
             this.CopyQueryPropertiesTo(stmt);
-            var rs = await session.ExecuteAsync(stmt, executionProfile).ConfigureAwait(false);
+            var rs = (await session.ExecuteAsync(stmt, executionProfile).ConfigureAwait(false)).ToRowSet();
             return AppliedInfo<TEntity>.FromRowSet(_mapperFactory, cql, rs);
         }
 

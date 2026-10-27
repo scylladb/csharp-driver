@@ -83,6 +83,10 @@ namespace Cassandra.SessionManagement
 
         IObserverFactory ObserverFactory { get; }
 
-        Task<RowSet> ExecuteAsync(IStatement statement, IRequestOptions requestOptions);
+        /// <summary>
+        /// Executes a statement, returning the rows as a RowSet, shared by the synchronous and asynchronous
+        /// execution methods.
+        /// </summary>
+        Task<RowSet> ExecuteInternalAsync(IStatement statement, IRequestOptions requestOptions);
     }
 }

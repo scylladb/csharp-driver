@@ -930,7 +930,7 @@ namespace Cassandra.IntegrationTests.Core
                 var boundStatement = ps.Bind();
                 Assert.AreEqual("system", boundStatement.Keyspace);
                 var rs = await Session.ExecuteAsync(boundStatement).ConfigureAwait(false);
-                Assert.NotNull(rs.First().GetValue<string>("key"));
+                Assert.NotNull((await rs.FirstAsync().ConfigureAwait(false)).GetValue<string>("key"));
                 return rs;
             }, Cluster.AllHosts().Count, Cluster.AllHosts().Count).ConfigureAwait(false);
         }

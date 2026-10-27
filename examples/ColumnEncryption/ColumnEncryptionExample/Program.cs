@@ -108,7 +108,7 @@ namespace ColumnEncryptionExample
 
             var boundSelect = _selectPs.Bind(userId);
             var rs = await _session.ExecuteAsync(boundSelect).ConfigureAwait(false);
-            var users = rs.ToList();
+            var users = await rs.ToListAsync().ConfigureAwait(false);
             if (users.Count != 1)
             {
                 throw new Exception("could not retrieve the inserted user");
@@ -135,7 +135,7 @@ namespace ColumnEncryptionExample
             var select = new SimpleStatement(SelectCqlQuery, new EncryptedValue(userId, _userKeyAndIv));
             var rs = await _session.ExecuteAsync(select).ConfigureAwait(false);
 
-            var users = rs.ToList();
+            var users = await rs.ToListAsync().ConfigureAwait(false);
             if (users.Count != 1)
             {
                 throw new Exception("could not retrieve the inserted user");
