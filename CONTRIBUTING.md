@@ -295,7 +295,7 @@ commit with no upload of its own is compared against the nearest ancestor that h
 
 ## Benchmarks
 
-[src/Cassandra.Benchmarks](./src/Cassandra.Benchmarks) contains [BenchmarkDotNet][benchmarkdotnet] micro-benchmarks for the driver's hot paths: big-endian conversions, value serialization, partition-key hashing and RESULT/Rows decoding. They need no cluster. CI only checks that they compile and are formatted (`make check-benchmarks`; `make check` leaves them out).
+[src/Cassandra.Benchmarks](./src/Cassandra.Benchmarks) contains [BenchmarkDotNet][benchmarkdotnet] micro-benchmarks for the driver's hot paths: big-endian conversions, value serialization, partition-key hashing, RESULT/Rows decoding and `RowSet` paging. They need no cluster. CI only checks that they compile and are formatted (`make check-benchmarks`; `make check` leaves them out).
 
 ```bash
 make benchmark                                # all benchmarks
