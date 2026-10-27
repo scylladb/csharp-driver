@@ -103,11 +103,9 @@ namespace Cassandra.IntegrationTests.Core
             string b = new string('8', UInt16.MaxValue);
             _session.Execute(string.Format("INSERT INTO {0}(k,i) VALUES({1},['{2}'])", uniqueTableName, Key, b), ConsistencyLevel.Quorum);
 
-            using (var rs = _session.Execute(string.Format("SELECT * FROM {0} WHERE k = {1}", uniqueTableName, Key.ToString()), ConsistencyLevel.Quorum))
-            {
-                Row row = rs.GetRows().FirstOrDefault();
-                Assert.True(b.Equals(((List<string>)row["i"])[0]));
-            }
+            var rs = _session.Execute(string.Format("SELECT * FROM {0} WHERE k = {1}", uniqueTableName, Key.ToString()), ConsistencyLevel.Quorum);
+            Row row = rs.GetRows().FirstOrDefault();
+            Assert.True(b.Equals(((List<string>)row["i"])[0]));
         }
 
         /// <summary>
@@ -123,11 +121,9 @@ namespace Cassandra.IntegrationTests.Core
             string setVal = new string('a', UInt16.MaxValue - 9);
             _session.Execute(string.Format("INSERT INTO {0}(k,i) VALUES({1},{{'{2}'}})", uniqueTableName, Key, setVal));
 
-            using (var rs = _session.Execute(string.Format("SELECT * FROM {0} WHERE k = {1}", uniqueTableName, Key), ConsistencyLevel.Quorum))
-            {
-                Row row = rs.GetRows().FirstOrDefault();
-                Assert.AreEqual(setVal, ((List<string>)row["i"]).First());
-            }
+            var rs = _session.Execute(string.Format("SELECT * FROM {0} WHERE k = {1}", uniqueTableName, Key), ConsistencyLevel.Quorum);
+            Row row = rs.GetRows().FirstOrDefault();
+            Assert.AreEqual(setVal, ((List<string>)row["i"]).First());
         }
 
         /// <summary>
@@ -169,12 +165,10 @@ namespace Cassandra.IntegrationTests.Core
             string mapVal = new string('b', UInt16.MaxValue);
             _session.Execute(string.Format("INSERT INTO {0}(k,i) VALUES({1},{{ '{2}' : '{3}' }})", uniqueTableName, Key, mapKey, mapVal), ConsistencyLevel.Quorum);
 
-            using (var rs = _session.Execute(string.Format("SELECT * FROM {0} WHERE k = {1}", uniqueTableName, Key.ToString()), ConsistencyLevel.Quorum))
-            {
-                Row row = rs.GetRows().FirstOrDefault();
-                Assert.AreEqual(mapKey, ((SortedDictionary<string, string>)row["i"]).First().Key);
-                Assert.AreEqual(mapVal, ((SortedDictionary<string, string>)row["i"]).First().Value);
-            }
+            var rs = _session.Execute(string.Format("SELECT * FROM {0} WHERE k = {1}", uniqueTableName, Key.ToString()), ConsistencyLevel.Quorum);
+            Row row = rs.GetRows().FirstOrDefault();
+            Assert.AreEqual(mapKey, ((SortedDictionary<string, string>)row["i"]).First().Key);
+            Assert.AreEqual(mapVal, ((SortedDictionary<string, string>)row["i"]).First().Value);
         }
 
         /// <summary>

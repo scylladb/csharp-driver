@@ -148,7 +148,7 @@ namespace Cassandra
         /// <inheritdoc />
         public void CreateKeyspace(string keyspace, Dictionary<string, string> replication = null, bool durableWrites = true)
         {
-            WaitForSchemaAgreement(Execute(CqlQueryTools.GetCreateKeyspaceCql(keyspace, replication, durableWrites, false)));
+            Execute(CqlQueryTools.GetCreateKeyspaceCql(keyspace, replication, durableWrites, false));
             Session.Logger.Info("Keyspace [" + keyspace + "] has been successfully CREATED.");
         }
 
@@ -477,15 +477,6 @@ namespace Cassandra
             }
             var request = new InternalPrepareRequest(serializer, cqlQuery, keyspace, customPayload);
             return await _cluster.Prepare(this, _serializerManager, request).ConfigureAwait(false);
-        }
-
-        public void WaitForSchemaAgreement(RowSet rs)
-        {
-        }
-
-        public bool WaitForSchemaAgreement(IPEndPoint hostAddress)
-        {
-            return false;
         }
 
         private IStatement GetDefaultStatement(string cqlQuery)

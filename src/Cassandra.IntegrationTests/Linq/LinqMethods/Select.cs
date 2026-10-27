@@ -23,12 +23,11 @@ using Cassandra.IntegrationTests.Linq.Structures;
 using Cassandra.IntegrationTests.SimulacronAPI;
 using Cassandra.IntegrationTests.TestBase;
 using Cassandra.Mapping;
+using Cassandra.Mapping.Attributes;
 using Cassandra.Tests.Mapping.Pocos;
 
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
-
-#pragma warning disable 618
 
 namespace Cassandra.IntegrationTests.Linq.LinqMethods
 {
@@ -573,7 +572,7 @@ namespace Cassandra.IntegrationTests.Linq.LinqMethods
             Assert.AreEqual(value1, c.S1);
         }
 
-        [Table]
+        [Table(CaseSensitive = true)]
         public class TestMapper
         {
             [PartitionKey(1)]

@@ -23,17 +23,15 @@ using Cassandra.Data.Linq;
 using Cassandra.IntegrationTests.SimulacronAPI;
 using Cassandra.IntegrationTests.TestBase;
 using Cassandra.Mapping;
+using Cassandra.Mapping.Attributes;
 
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 using NUnit.Framework.Internal;
 
-#pragma warning disable 618
-
 namespace Cassandra.IntegrationTests.Mapping.Structures
 {
-    [AllowFiltering]
-    [Table(TableName)]
+    [Table(TableName, CaseSensitive = true, AllowFiltering = true)]
     public class ManyDataTypesPoco
     {
         public const string TableName = "allDataTypes";

@@ -780,6 +780,5 @@ namespace Cassandra.IntegrationTests.Core
                 x++;
             }
         }
-#pragma warning restore 618
     }
 }

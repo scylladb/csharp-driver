@@ -139,6 +139,112 @@ is cached, and the server's response lets the driver learn the tablet for later
 queries. When other tablets of the table are cached but not the one owning the
 partition key, `TokenAwarePolicy` uses its child policy's query plan.
 
+### Removed obsolete APIs
+
+Version 4 removes public APIs that version 3 marked `[Obsolete]`. Each section below
+names the replacement.
+
+#### `Cassandra.Data.Linq` mapping attributes
+
+The mapping attributes in the `Cassandra.Data.Linq` namespace, deprecated since 2.5,
+are removed: `Table`, `Column`, `PartitionKey`, `ClusteringKey`, `SecondaryIndex`,
+`Counter`, `StaticColumn`, `Ignore`, `AllowFiltering` and `CompactStorage`. Use the
+attributes with the same names in `Cassandra.Mapping.Attributes`, or a fluent mapping.
+`AllowFiltering` and `CompactStorage` are properties of the new `Table` attribute.
+
+The two `Table` attributes have different defaults. The removed one used
+case-sensitive (quoted) table and column names unless it set `CaseSensitive = false`;
+the new one uses case-insensitive names unless it sets `CaseSensitive = true`. To keep
+the same names, set `CaseSensitive = true` where the old attribute didn't set it:
+
+```csharp
+// Before
+[Cassandra.Data.Linq.Table("users")]
+[Cassandra.Data.Linq.AllowFiltering]
+public class User { ... }
+
+// After
+[Cassandra.Mapping.Attributes.Table("users", CaseSensitive = true, AllowFiltering = true)]
+public class User { ... }
+```
+
+The new `Table` attribute is also inherited, and the removed one wasn't. A class that
+derives from one with a `Table` attribute, and has none of its own, now uses the base
+class's table and settings, where it used its own class name before. To keep such a
+class on its own table, give it its own `Table` attribute, or map it with a fluent
+mapping:
+
+```csharp
+// Before, this class used the table "AdminUser"; without its own attribute, it would now use "users"
+[Cassandra.Mapping.Attributes.Table("AdminUser", CaseSensitive = true)]
+public class AdminUser : User { ... }
+```
+
+The new attributes are read by both LINQ and the Mapper (`IMapper`), so after
+migrating, both use the names they define. Before, the Mapper used the removed
+attributes only for a class that `GetTable<T>()` or a `Table<T>` constructor had
+already mapped with the same `MappingConfiguration`, whose mappings they share.
+
+`ISession.GetTable<T>()` now reads the `Cassandra.Mapping.Attributes`, which it used to
+ignore, when it creates the mapping of a class in the global `MappingConfiguration`.
+Unlike the `Table<T>` constructors, it still uses case-sensitive names by default:
+unless the class has a `Table` attribute, whose `CaseSensitive` property then applies.
+A class without attributes is mapped exactly as before.
+
+As before, `GetTable<T>()` creates that mapping only when the global configuration
+doesn't have one for the class yet. An existing mapping takes precedence: a fluent
+mapping, or the one created by an earlier `GetTable<T>()` call or `Table<T>`
+constructor using the global configuration.
+
+#### `ISession.WaitForSchemaAgreement`
+
+Both `WaitForSchemaAgreement` overloads are removed from `ISession`. They did nothing:
+the driver waits for schema agreement itself after each schema change, for up to
+`ProtocolOptions.MaxSchemaAgreementWaitSeconds`. Remove the calls.
+
+#### `TableColumn` secondary index properties
+
+`TableColumn.SecondaryIndexName`, `SecondaryIndexType` and `SecondaryIndexOptions` are
+no longer public. Use `TableMetadata.Indexes`, whose `IndexMetadata` describes every
+secondary index of the table on all server versions.
+
+#### `SimpleStatement.Bind` and `BindObjects`
+
+Pass the query values to the `SimpleStatement` constructor instead:
+
+```csharp
+// Before
+var statement = new SimpleStatement("INSERT INTO users (id, name) VALUES (?, ?)").Bind(id, name);
+
+// After
+var statement = new SimpleStatement("INSERT INTO users (id, name) VALUES (?, ?)", id, name);
+```
+
+#### `DowngradingConsistencyRetryPolicy`
+
+The policy is removed, as announced when it was deprecated in 3.6 (see the 3.6 section
+below for the reasons). Choose the consistency level for each use case upfront. An
+application that still needs to retry at a lower consistency level can implement
+`IRetryPolicy` or `IExtendedRetryPolicy` itself.
+
+#### `DCAwareRoundRobinPolicy` remote hosts
+
+The `DCAwareRoundRobinPolicy(string localDc, int usedHostsPerRemoteDc)` constructor and
+the `UsedHostsPerRemoteDc` property are removed, as announced when they were deprecated
+in 3.9 (see the 3.9 section below). Query plans of `DCAwareRoundRobinPolicy` contain only
+nodes of the local datacenter; use `new DCAwareRoundRobinPolicy(localDc)`. Datacenter
+failover is a decision for the application or its operations, not for the driver.
+
+#### `RowSet.Dispose` and the legacy `Row` members
+
+`RowSet` no longer implements `IDisposable`: its `Dispose` method did nothing. Remove
+the `Dispose` calls, and replace `using (var rs = session.Execute(...)) { ... }` with
+`var rs = session.Execute(...);`.
+
+The `Row(int, byte[][], CqlColumn[], Dictionary<string, int>)` constructor and the
+protected `Row.Values` and `Row.ProtocolVersion` properties are removed. To create a
+`Row` in a test, use the parameterless constructor and override `GetValue<T>()`.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.

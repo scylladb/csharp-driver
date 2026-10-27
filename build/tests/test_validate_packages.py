@@ -1,4 +1,5 @@
 import importlib.util
+import itertools
 import json
 import os
 import subprocess
@@ -19,6 +20,46 @@ MODULE_SPEC.loader.exec_module(validate_packages)
 
 
 class ValidatePackagesTests(unittest.TestCase):
+    def test_sdk_validation_uses_the_repository_sdk_policy(self):
+        expected = json.loads(
+            (validate_packages.REPOSITORY_ROOT / "global.json").read_text(encoding="utf-8")
+        )["sdk"]["version"]
+        for version in (expected, "0.0.0"):
+            with self.subTest(version=version), mock.patch.object(
+                validate_packages,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0, stdout=version + "\n"),
+            ):
+                if version == expected:
+                    validate_packages.validate_sdk()
+                else:
+                    with self.assertRaisesRegex(
+                        validate_packages.ValidationError, "Expected .NET SDK"
+                    ):
+                        validate_packages.validate_sdk()
+
+    def test_dependency_contracts_match_shipping_project_references(self):
+        package_ids = {
+            contract.package_id for contract in validate_packages.PACKAGE_CONTRACTS
+        }
+        for contract in validate_packages.PACKAGE_CONTRACTS:
+            with self.subTest(package_id=contract.package_id):
+                project = validate_packages.ElementTree.parse(
+                    validate_packages.REPOSITORY_ROOT / contract.project
+                ).getroot()
+                expected = {
+                    reference.attrib["Include"]: reference.attrib["Version"]
+                    for reference in project.findall(".//PackageReference")
+                }
+                self.assertEqual(
+                    expected,
+                    {
+                        package_id: version
+                        for package_id, version in contract.dependencies.items()
+                        if package_id not in package_ids
+                    },
+                )
+
     def test_run_merges_environment_overrides(self):
         completed = subprocess.CompletedProcess(["command"], 0)
         with mock.patch.dict(os.environ, {"VALIDATOR_PARENT": "preserved"}):
@@ -105,14 +146,16 @@ class ValidatePackagesTests(unittest.TestCase):
             tool_assembly = self._create_tool_assembly(work_directory)
             completed = subprocess.CompletedProcess([], 0, stdout="")
 
-            with mock.patch.object(validate_packages, "DOTNET", "/selected/dotnet"):
+            with self._isolated_repository(work_directory), mock.patch.object(
+                validate_packages, "DOTNET", "/selected/dotnet"
+            ):
                 with mock.patch.object(
                     validate_packages, "run", return_value=completed
                 ) as run:
                     validate_packages.run_api_compat(
                         work_directory,
                         self._assemblies("baseline"),
-                        self._assemblies("candidate"),
+                        self._candidate_assemblies(work_directory),
                         work_directory / "left-references",
                         work_directory / "right-references",
                     )
@@ -129,6 +172,286 @@ class ValidatePackagesTests(unittest.TestCase):
                 )
                 self.assertTrue(call.kwargs["merge_stderr"])
 
+    def test_api_compat_uses_assembly_paths_without_the_work_directory(self):
+        for dry_run, update_suppressions in itertools.product((False, True), repeat=2):
+            with self.subTest(dry_run=dry_run, update_suppressions=update_suppressions):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    work_directory = Path(temporary_directory)
+                    self._create_tool_assembly(work_directory)
+                    completed = subprocess.CompletedProcess([], 0, stdout="")
+
+                    with self._isolated_repository(work_directory), mock.patch.object(
+                        validate_packages, "run", return_value=completed
+                    ) as run:
+                        validate_packages.run_api_compat(
+                            work_directory,
+                            {
+                                package_id: work_directory / "baselines" / path
+                                for package_id, path in self._assemblies("lib").items()
+                            },
+                            self._candidate_assemblies(work_directory, dry_run),
+                            work_directory / "left-references",
+                            work_directory / "right-references",
+                            update_suppressions=update_suppressions,
+                        )
+
+                    # Suppressions record these paths, so a dry run, which extracts
+                    # the packages under their .DRYRUN IDs, must compare the same ones
+                    for contract, call in zip(
+                        validate_packages.PACKAGE_CONTRACTS, run.call_args_list[1:]
+                    ):
+                        command = call.args[0]
+                        left = command[command.index("--left-assembly") + 1]
+                        right = command[command.index("--right-assembly") + 1]
+                        self.assertEqual(
+                            f"baselines/lib/{contract.assembly_name}.dll", left
+                        )
+                        self.assertEqual(
+                            f"candidate-extracted/{contract.package_id}/lib/net10.0/"
+                            f"{contract.assembly_name}.dll",
+                            right,
+                        )
+                        self.assertTrue((work_directory / right).is_file())
+                        self.assertEqual(work_directory, call.kwargs["cwd"])
+
+    def test_api_compat_passes_existing_suppression_files(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            work_directory = Path(temporary_directory)
+            self._create_tool_assembly(work_directory)
+            repository = work_directory / "repository"
+            core = validate_packages.PACKAGE_CONTRACTS[0]
+            suppressions = (
+                repository / core.project
+            ).parent / validate_packages.API_COMPAT_SUPPRESSIONS_FILE
+            suppressions.parent.mkdir(parents=True)
+            suppressions.write_text("<Suppressions />", encoding="utf-8")
+            completed = subprocess.CompletedProcess([], 0, stdout="")
+
+            with mock.patch.object(validate_packages, "REPOSITORY_ROOT", repository):
+                with mock.patch.object(
+                    validate_packages, "run", return_value=completed
+                ) as run:
+                    validate_packages.run_api_compat(
+                        work_directory,
+                        self._assemblies("baseline"),
+                        self._candidate_assemblies(work_directory),
+                        work_directory / "left-references",
+                        work_directory / "right-references",
+                    )
+
+            commands = [call.args[0] for call in run.call_args_list[1:]]
+            self.assertEqual(
+                ["--suppression-file", str(suppressions)], commands[0][-2:]
+            )
+            for command in commands[1:]:
+                self.assertNotIn("--suppression-file", command)
+                self.assertNotIn("--generate-suppression-file", command)
+
+    def test_api_compat_regenerates_suppression_files_when_requested(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            work_directory = Path(temporary_directory)
+            self._create_tool_assembly(work_directory)
+            repository = work_directory / "repository"
+            completed = subprocess.CompletedProcess([], 0, stdout="")
+
+            with mock.patch.object(validate_packages, "REPOSITORY_ROOT", repository):
+                with mock.patch.object(
+                    validate_packages, "run", return_value=completed
+                ) as run:
+                    validate_packages.run_api_compat(
+                        work_directory,
+                        self._assemblies("baseline"),
+                        self._candidate_assemblies(work_directory),
+                        work_directory / "left-references",
+                        work_directory / "right-references",
+                        update_suppressions=True,
+                    )
+
+            for contract, call in zip(
+                validate_packages.PACKAGE_CONTRACTS, run.call_args_list[1:]
+            ):
+                output = Path(call.args[0][-1])
+                self.assertEqual(
+                    [
+                        "--generate-suppression-file",
+                        "--suppression-output-file",
+                    ],
+                    call.args[0][-3:-1],
+                )
+                self.assertEqual(
+                    (repository / contract.project).parent, output.parent.parent
+                )
+                self.assertEqual(
+                    validate_packages.API_COMPAT_SUPPRESSIONS_FILE, output.name
+                )
+                self.assertFalse(output.exists())
+
+    def test_api_compat_removes_stale_suppression_files_after_successful_generation(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            work_directory = Path(temporary_directory)
+            self._create_tool_assembly(work_directory)
+            repository = work_directory / "repository"
+            core = validate_packages.PACKAGE_CONTRACTS[0]
+            suppressions = (
+                repository / core.project
+            ).parent / validate_packages.API_COMPAT_SUPPRESSIONS_FILE
+            suppressions.parent.mkdir(parents=True)
+            suppressions.write_text("<Suppressions />", encoding="utf-8")
+            # Like ApiCompat for a package without differences, write no file
+            completed = subprocess.CompletedProcess([], 0, stdout="")
+
+            with mock.patch.object(validate_packages, "REPOSITORY_ROOT", repository):
+                with mock.patch.object(validate_packages, "run", return_value=completed):
+                    validate_packages.run_api_compat(
+                        work_directory,
+                        self._assemblies("baseline"),
+                        self._candidate_assemblies(work_directory),
+                        work_directory / "left-references",
+                        work_directory / "right-references",
+                        update_suppressions=True,
+                    )
+
+            self.assertFalse(suppressions.exists())
+
+    def test_api_compat_replaces_reviewed_suppressions_after_successful_generation(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            work_directory = Path(temporary_directory)
+            self._create_tool_assembly(work_directory)
+            with self._isolated_repository(work_directory):
+                suppressions = validate_packages.api_compat_suppressions_file(
+                    validate_packages.PACKAGE_CONTRACTS[0]
+                )
+                suppressions.parent.mkdir(parents=True)
+                original = self._suppressions_xml(["T:Cassandra.PreviousBreak"]).encode()
+                replacement = self._suppressions_xml(["T:Cassandra.NewBreak"]).encode()
+                suppressions.write_bytes(original)
+
+                def generate(command, **_):
+                    if "--generate-suppression-file" in command:
+                        output = Path(command[command.index("--suppression-output-file") + 1])
+                        if output.parent.parent == suppressions.parent:
+                            self.assertEqual(original, suppressions.read_bytes())
+                            output.write_bytes(replacement)
+                    return subprocess.CompletedProcess([], 0, stdout="")
+
+                with mock.patch.object(validate_packages, "run", side_effect=generate):
+                    validate_packages.run_api_compat(
+                        work_directory,
+                        self._assemblies("baseline"),
+                        self._candidate_assemblies(work_directory),
+                        work_directory / "left-references",
+                        work_directory / "right-references",
+                        update_suppressions=True,
+                    )
+
+                self.assertEqual(replacement, suppressions.read_bytes())
+                self.assertEqual([suppressions], list(suppressions.parent.iterdir()))
+
+    def test_api_compat_preserves_reviewed_suppressions_when_generation_fails(self):
+        failures = (
+            (1, "", None, "could not record the differences"),
+            (
+                0, "Could not resolve reference 'System.Runtime.dll'.", None,
+                "could not resolve all references",
+            ),
+            (0, "", subprocess.TimeoutExpired("apicompat", 60), "timed out"),
+        )
+        for returncode, stdout, exception, message in failures:
+            for partial_output in (False, True):
+                with self.subTest(message=message, partial_output=partial_output):
+                    with tempfile.TemporaryDirectory() as temporary_directory:
+                        work_directory = Path(temporary_directory)
+                        self._create_tool_assembly(work_directory)
+                        with self._isolated_repository(work_directory):
+                            suppressions = validate_packages.api_compat_suppressions_file(
+                                validate_packages.PACKAGE_CONTRACTS[0]
+                            )
+                            suppressions.parent.mkdir(parents=True)
+                            original = self._suppressions_xml(["T:Cassandra.Reviewed"]).encode()
+                            suppressions.write_bytes(original)
+
+                            def fail_generation(command, **_):
+                                if "--generate-suppression-file" in command:
+                                    if partial_output:
+                                        output = Path(
+                                            command[command.index("--suppression-output-file") + 1]
+                                        )
+                                        output.write_bytes(b"<partial")
+                                    if exception:
+                                        raise exception
+                                    return subprocess.CompletedProcess(
+                                        [], returncode, stdout=stdout
+                                    )
+                                return subprocess.CompletedProcess([], 0, stdout="")
+
+                            with mock.patch.object(
+                                validate_packages, "run", side_effect=fail_generation
+                            ), self.assertRaisesRegex(
+                                type(exception)
+                                if exception else validate_packages.ValidationError,
+                                message,
+                            ):
+                                validate_packages.run_api_compat(
+                                    work_directory,
+                                    self._assemblies("baseline"),
+                                    self._candidate_assemblies(work_directory),
+                                    work_directory / "left-references",
+                                    work_directory / "right-references",
+                                    update_suppressions=True,
+                                )
+
+                            self.assertEqual(original, suppressions.read_bytes())
+                            self.assertEqual(
+                                [suppressions], list(suppressions.parent.iterdir())
+                            )
+
+    def test_suppressions_treat_an_omitted_baseline_marker_as_false(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+
+            def read(marker):
+                path = directory / "suppressions.xml"
+                path.write_text(
+                    "<Suppressions><Suppression><DiagnosticId>CP0001</DiagnosticId>"
+                    "<Target>T:Cassandra.Removed</Target><Left>left.dll</Left>"
+                    f"<Right>right.dll</Right>{marker}</Suppression></Suppressions>",
+                    encoding="utf-8",
+                )
+                return validate_packages.read_api_compat_suppressions(path)
+
+            omitted = read("")
+            self.assertEqual(
+                omitted, read("<IsBaselineSuppression>false</IsBaselineSuppression>")
+            )
+            self.assertEqual(
+                omitted, read("<IsBaselineSuppression> False </IsBaselineSuppression>")
+            )
+            self.assertNotEqual(
+                omitted, read("<IsBaselineSuppression>true</IsBaselineSuppression>")
+            )
+
+    def test_api_compat_rejects_suppressions_that_match_no_current_difference(self):
+        with self.assertRaisesRegex(
+            validate_packages.ValidationError,
+            r"declares API breaks that no longer exist \(T:Cassandra.Removed\)",
+        ):
+            self._run_api_compat_with_suppressions(
+                declared=["T:Cassandra.Removed", "T:Cassandra.StillRemoved"],
+                current=["T:Cassandra.StillRemoved"],
+            )
+
+    def test_api_compat_accepts_suppressions_that_match_the_current_differences(self):
+        commands = self._run_api_compat_with_suppressions(
+            declared=["T:Cassandra.Removed"], current=["T:Cassandra.Removed"]
+        )
+
+        core = commands[0]
+        self.assertIn("--suppression-file", core)
+        self.assertNotIn("--generate-suppression-file", core)
+        self.assertIn("--generate-suppression-file", commands[1])
+        # The other packages have no suppression file, so nothing to compare
+        self.assertEqual(4, len(commands))
+
     def test_api_compat_rejects_unresolved_references_with_zero_exit(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             work_directory = Path(temporary_directory)
@@ -140,7 +463,7 @@ class ValidatePackagesTests(unittest.TestCase):
                 stdout="Could not resolve reference 'System.Runtime.dll'.\n",
             )
 
-            with mock.patch.object(
+            with self._isolated_repository(work_directory), mock.patch.object(
                 validate_packages, "run", side_effect=[installed, unresolved]
             ):
                 with self.assertRaisesRegex(
@@ -150,7 +473,7 @@ class ValidatePackagesTests(unittest.TestCase):
                     validate_packages.run_api_compat(
                         work_directory,
                         self._assemblies("baseline"),
-                        self._assemblies("candidate"),
+                        self._candidate_assemblies(work_directory),
                         work_directory / "left-references",
                         work_directory / "right-references",
                     )
@@ -500,6 +823,78 @@ class ValidatePackagesTests(unittest.TestCase):
                     f'Include="{contract.package_id}"',
                     project.read_text(encoding="utf-8"),
                 )
+
+    @staticmethod
+    def _isolated_repository(work_directory):
+        """Points REPOSITORY_ROOT at an empty directory, so the repository's own suppression files aren't read."""
+        return mock.patch.object(
+            validate_packages, "REPOSITORY_ROOT", work_directory / "repository"
+        )
+
+    @staticmethod
+    def _suppressions_xml(targets):
+        entries = "".join(
+            "<Suppression><DiagnosticId>CP0001</DiagnosticId>"
+            f"<Target>{target}</Target><Left>left.dll</Left><Right>right.dll</Right>"
+            "</Suppression>"
+            for target in targets
+        )
+        return f'<?xml version="1.0" encoding="utf-8"?><Suppressions>{entries}</Suppressions>'
+
+    def _run_api_compat_with_suppressions(self, declared, current):
+        """Runs ApiCompat for a core package that declares some differences, returning the comparison commands.
+
+        The mocked ApiCompat records the current differences when asked to generate a suppression file.
+        """
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            work_directory = Path(temporary_directory)
+            self._create_tool_assembly(work_directory)
+            repository = work_directory / "repository"
+            core = validate_packages.PACKAGE_CONTRACTS[0]
+            suppressions = (
+                repository / core.project
+            ).parent / validate_packages.API_COMPAT_SUPPRESSIONS_FILE
+            suppressions.parent.mkdir(parents=True)
+            suppressions.write_text(self._suppressions_xml(declared), encoding="utf-8")
+            commands = []
+
+            def api_compat(command, **_):
+                commands.append(command)
+                if "--generate-suppression-file" in command:
+                    output = Path(command[command.index("--suppression-output-file") + 1])
+                    output.write_text(self._suppressions_xml(current), encoding="utf-8")
+                return subprocess.CompletedProcess([], 0, stdout="")
+
+            with mock.patch.object(validate_packages, "REPOSITORY_ROOT", repository):
+                with mock.patch.object(validate_packages, "run", side_effect=api_compat):
+                    validate_packages.run_api_compat(
+                        work_directory,
+                        self._assemblies("baseline"),
+                        self._candidate_assemblies(work_directory),
+                        work_directory / "left-references",
+                        work_directory / "right-references",
+                    )
+            # The first call installs the tool
+            return commands[1:]
+
+    @staticmethod
+    def _candidate_assemblies(work_directory, dry_run=False):
+        """Creates the candidate assemblies where package inspection extracts them."""
+        assemblies = {}
+        for canonical, candidate in zip(
+            validate_packages.PACKAGE_CONTRACTS,
+            validate_packages.candidate_contracts(dry_run),
+        ):
+            assembly = (
+                work_directory
+                / validate_packages.CANDIDATE_EXTRACTION_DIRECTORY
+                / candidate.package_id
+                / f"lib/net10.0/{candidate.assembly_name}.dll"
+            )
+            assembly.parent.mkdir(parents=True)
+            assembly.write_bytes(b"assembly")
+            assemblies[canonical.package_id] = assembly
+        return assemblies
 
     @staticmethod
     def _assemblies(directory):

@@ -26,7 +26,6 @@ using Cassandra.Tasks;
 using Cassandra.Tests;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
-#pragma warning disable 618
 
 namespace Cassandra.IntegrationTests.Core
 {
@@ -50,7 +49,6 @@ namespace Cassandra.IntegrationTests.Core
                 .AddContactPoint(_testCluster.InitialContactPoint)
                 .WithSpeculativeExecutionPolicy(speculativeExecutionPolicy)
                 .WithLoadBalancingPolicy(lbp ?? Cassandra.Policies.DefaultLoadBalancingPolicy)
-                .WithRetryPolicy(DowngradingConsistencyRetryPolicy.Instance)
                 .WithSocketOptions(new SocketOptions().SetReadTimeoutMillis(0));
             if (pooling != null)
             {

@@ -222,7 +222,7 @@ var cluster = Cluster
 // Example at statement (simple, bound, batch) level
 var statement = new SimpleStatement(query)
   .SetConsistencyLevel(ConsistencyLevel.Quorum)
-  .SetRetryPolicy(DowngradingConsistencyRetryPolicy.Instance)
+  .SetRetryPolicy(new LoggingRetryPolicy(new DefaultRetryPolicy()))
   .SetPageSize(1000);
 ```
 

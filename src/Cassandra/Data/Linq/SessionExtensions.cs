@@ -15,6 +15,7 @@
 //
 
 using Cassandra.Mapping;
+using Cassandra.Mapping.Attributes;
 
 namespace Cassandra.Data.Linq
 {
@@ -26,7 +27,16 @@ namespace Cassandra.Data.Linq
         /// <para>Fluent configuration or attributes can be used to define mapping information.</para>
         /// </summary>
         /// <remarks>
-        /// In case no mapping information is defined, <strong>case-sensitive</strong> class and method names will be used.
+        /// When <see cref="MappingConfiguration.Global"/> has no mapping for the class yet, this method creates one from the
+        /// attributes in <see cref="Cassandra.Mapping.Attributes"/>, with the table and keyspace names provided. Unlike
+        /// with the <see cref="Table{TEntity}"/> constructors, class and member names are then
+        /// <strong>case-sensitive</strong>, unless the class has a <see cref="Cassandra.Mapping.Attributes.TableAttribute"/>:
+        /// its <see cref="Cassandra.Mapping.Attributes.TableAttribute.CaseSensitive"/> property then applies, which is false
+        /// by default.
+        /// <para>
+        /// An existing mapping of the class takes precedence: a fluent mapping, or the one created by an earlier call to
+        /// this method or to a <see cref="Table{TEntity}"/> constructor using <see cref="MappingConfiguration.Global"/>.
+        /// </para>
         /// </remarks>
         /// <typeparam name="TEntity">The object type</typeparam>
         /// <param name="session">The session to be used to execute the statements</param>
@@ -35,12 +45,11 @@ namespace Cassandra.Data.Linq
         /// <returns></returns>
         public static Table<TEntity> GetTable<TEntity>(this ISession session, string tableName = null, string keyspaceName = null)
         {
-            //Use Linq defaults if no definition has been set for this types
-            //Linq attributes are marked as Obsolete
-#pragma warning disable 612
+            // If no definition has been set for this type, use the Cassandra.Mapping attributes, with case-sensitive names
+            // unless a Table attribute says otherwise, as Linq always used. The table and keyspace names provided are
+            // part of that definition, so they also apply to later uses of the type with the global configuration.
             MappingConfiguration.Global.MapperFactory.PocoDataFactory.AddDefinitionDefault(typeof(TEntity),
-                () => new LinqAttributeBasedTypeDefinition(typeof(TEntity), tableName, keyspaceName));
-#pragma warning restore 612
+                () => new AttributeBasedTypeDefinition(typeof(TEntity), true, tableName, keyspaceName));
             var config = MappingConfiguration.Global;
             return new Table<TEntity>(session, config, tableName, keyspaceName);
         }

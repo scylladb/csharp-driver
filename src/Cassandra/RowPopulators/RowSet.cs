@@ -51,7 +51,7 @@ namespace Cassandra
     /// in memory.
     /// </remarks>
     /// <remarks>Parallel enumerations are supported and thread-safe.</remarks>
-    public class RowSet : IEnumerable<Row>, IDisposable
+    public class RowSet : IEnumerable<Row>
     {
         private static readonly CqlColumn[] EmptyColumns = new CqlColumn[0];
         private volatile Func<byte[], Task<RowSet>> _fetchNextPage;
@@ -312,15 +312,6 @@ namespace Cassandra
         protected virtual void PageNext()
         {
             TaskHelper.WaitToCompleteWithMetrics(_metricsManager, FetchMoreResultsAsync(), _pageSyncAbortTimeout);
-        }
-
-        /// <summary>
-        /// For backward compatibility only
-        /// </summary>
-        [Obsolete("Explicitly releasing the RowSet resources is not required. It will be removed in future versions.", false)]
-        public void Dispose()
-        {
-
         }
     }
 }

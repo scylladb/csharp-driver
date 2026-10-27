@@ -266,11 +266,9 @@ namespace Cassandra
                                     Table = row.GetValue<string>("columnfamily_name"),
                                     TypeCode = dataType.TypeCode,
                                     TypeInfo = dataType.TypeInfo,
-#pragma warning disable 618
                                     SecondaryIndexName = row.GetValue<string>("index_name"),
                                     SecondaryIndexType = row.GetValue<string>("index_type"),
                                     SecondaryIndexOptions = Utils.ParseJsonStringMap(row.GetValue<string>("index_options")),
-#pragma warning restore 618
                                     KeyType =
                                         row.GetValue<string>("index_name") != null
                                             ? KeyType.SecondaryIndex
@@ -412,13 +410,10 @@ namespace Cassandra
         /// </summary>
         private static IDictionary<string, IndexMetadata> GetIndexesFromColumns(IEnumerable<TableColumn> columns)
         {
-            //Use obsolete properties
-#pragma warning disable 618
             return columns
                 .Where(c => c.SecondaryIndexName != null)
                 .Select(IndexMetadata.FromTableColumn)
                 .ToDictionary(ix => ix.Name);
-#pragma warning restore 618
         }
 
         public override Task<UdtColumnInfo> GetUdtDefinitionAsync(string keyspaceName, string typeName)

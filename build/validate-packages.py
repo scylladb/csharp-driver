@@ -23,6 +23,10 @@ NUGET_ORG = "https://api.nuget.org/v3/index.json"
 BASELINE_VERSION = "3.22.0.4"
 CANDIDATE_VERSION = "4.0.0"
 APICOMPAT_VERSION = "10.0.401"
+# Declares the intended public API breaks against BASELINE_VERSION, next to each project
+API_COMPAT_SUPPRESSIONS_FILE = "CompatibilitySuppressions.xml"
+# Where the candidate packages are extracted, in a directory named after each package ID
+CANDIDATE_EXTRACTION_DIRECTORY = "candidate-extracted"
 DOTNET = os.environ.get("DOTNET_HOST_PATH", "dotnet")
 
 
@@ -45,8 +49,8 @@ PACKAGE_CONTRACTS = (
         assembly_name="ScyllaDB",
         dependencies={
             "K4os.Compression.LZ4": "1.3.8",
-            "Microsoft.Extensions.Logging": "10.0.12",
-            "Microsoft.Extensions.Logging.Abstractions": "10.0.12",
+            "Microsoft.Extensions.Logging": "10.0.13",
+            "Microsoft.Extensions.Logging.Abstractions": "10.0.13",
             "Newtonsoft.Json": "13.0.4",
         },
     ),
@@ -66,7 +70,7 @@ PACKAGE_CONTRACTS = (
         assembly_name="Cassandra.OpenTelemetry",
         dependencies={
             "ScyllaDBCSharpDriver": CANDIDATE_VERSION,
-            "OpenTelemetry.Api": "1.19.1",
+            "OpenTelemetry.Api": "1.20.1",
         },
     ),
 )
@@ -146,10 +150,13 @@ def ensure_signing_key() -> None:
 
 
 def validate_sdk() -> None:
+    expected_version = json.loads(
+        (REPOSITORY_ROOT / "global.json").read_text(encoding="utf-8")
+    )["sdk"]["version"]
     result = run([DOTNET, "--version"], capture_output=True)
     require(
-        result.stdout.strip() == APICOMPAT_VERSION,
-        f"Expected .NET SDK {APICOMPAT_VERSION}, got {result.stdout.strip()!r}",
+        result.stdout.strip() == expected_version,
+        f"Expected .NET SDK {expected_version}, got {result.stdout.strip()!r}",
     )
 
 
@@ -595,12 +602,37 @@ def prepare_reference_sets(
     return left_references, right_references
 
 
+def api_compat_suppressions_file(contract: PackageContract) -> Path:
+    return (REPOSITORY_ROOT / contract.project).parent / API_COMPAT_SUPPRESSIONS_FILE
+
+
+def api_compat_candidate(
+    work_directory: Path, contract: PackageContract, assembly: Path
+) -> Path:
+    """Returns the candidate assembly at the path a normal run extracts it to.
+
+    Suppressions record the compared assembly paths, and a dry run extracts the
+    packages under their .DRYRUN IDs, so it compares a copy at the canonical path.
+    """
+    canonical = (
+        work_directory
+        / CANDIDATE_EXTRACTION_DIRECTORY
+        / contract.package_id
+        / f"lib/net10.0/{contract.assembly_name}.dll"
+    )
+    if assembly != canonical:
+        canonical.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(assembly, canonical)
+    return canonical
+
+
 def run_api_compat(
     work_directory: Path,
     baseline_assemblies: dict[str, Path],
     candidate_assemblies: dict[str, Path],
     left_references: Path,
     right_references: Path,
+    update_suppressions: bool = False,
 ) -> None:
     log("\nComparing public APIs with 3.22.0.4")
     tool_directory = work_directory / "tools"
@@ -626,25 +658,14 @@ def run_api_compat(
     )
     tool_assembly = tool_assemblies[0]
 
-    for contract in PACKAGE_CONTRACTS:
+    def relative_to_work_directory(path: Path) -> str:
+        # Suppressions record the assembly paths, so they must not include the temporary directory
+        return Path(os.path.relpath(path, work_directory)).as_posix()
+
+    def compare(contract: PackageContract, command: list[str]) -> subprocess.CompletedProcess[str]:
         result = run(
-            [
-                DOTNET,
-                "exec",
-                str(tool_assembly),
-                "--left-assembly",
-                str(baseline_assemblies[contract.package_id]),
-                "--right-assembly",
-                str(candidate_assemblies[contract.package_id]),
-                "--left-assembly-references",
-                str(left_references),
-                "--right-assembly-references",
-                str(right_references),
-                "--noWarn",
-                "CP0003",
-                "--verbosity",
-                "High",
-            ],
+            command,
+            cwd=work_directory,
             capture_output=True,
             merge_stderr=True,
             check=False,
@@ -656,11 +677,119 @@ def run_api_compat(
             "Could not resolve reference" not in result.stdout,
             f"ApiCompat could not resolve all references for {contract.package_id}",
         )
+        return result
+
+    for contract in PACKAGE_CONTRACTS:
+        command = [
+            DOTNET,
+            "exec",
+            str(tool_assembly),
+            "--left-assembly",
+            relative_to_work_directory(baseline_assemblies[contract.package_id]),
+            "--right-assembly",
+            relative_to_work_directory(
+                api_compat_candidate(
+                    work_directory,
+                    contract,
+                    candidate_assemblies[contract.package_id],
+                )
+            ),
+            "--left-assembly-references",
+            str(left_references),
+            "--right-assembly-references",
+            str(right_references),
+            "--noWarn",
+            "CP0003",
+            "--verbosity",
+            "High",
+        ]
+        suppressions_file = api_compat_suppressions_file(contract)
+        if update_suppressions:
+            # Keep reviewed suppressions until generation succeeds. Stage beside the
+            # target so replacement also works when the work directory is on another filesystem.
+            suppressions_file.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(
+                prefix=".api-compat-", dir=suppressions_file.parent
+            ) as temporary_directory:
+                generated_file = Path(temporary_directory) / suppressions_file.name
+                result = compare(
+                    contract,
+                    command
+                    + [
+                        "--generate-suppression-file",
+                        "--suppression-output-file",
+                        str(generated_file),
+                    ],
+                )
+                require(
+                    result.returncode == 0,
+                    f"ApiCompat could not record the differences of {contract.package_id}",
+                )
+                if generated_file.is_file():
+                    generated_file.replace(suppressions_file)
+                else:
+                    # ApiCompat writes no file when there is no difference.
+                    suppressions_file.unlink(missing_ok=True)
+            continue
+
+        declared = read_api_compat_suppressions(suppressions_file)
+        result = compare(
+            contract,
+            command + ["--suppression-file", str(suppressions_file)]
+            if suppressions_file.is_file()
+            else command,
+        )
         require(
             result.returncode == 0,
             f"ApiCompat found a public API break in {contract.package_id}",
         )
+        if not declared:
+            continue
 
+        # ApiCompat only reports suppressions that match no difference, with a zero
+        # exit code. Record the current differences and compare the entries instead.
+        current_file = work_directory / f"current-{contract.package_id}-{API_COMPAT_SUPPRESSIONS_FILE}"
+        current_file.unlink(missing_ok=True)
+        result = compare(
+            contract,
+            command
+            + [
+                "--generate-suppression-file",
+                "--suppression-output-file",
+                str(current_file),
+            ],
+        )
+        require(
+            result.returncode == 0,
+            f"ApiCompat could not record the differences of {contract.package_id}",
+        )
+        stale = declared - read_api_compat_suppressions(current_file)
+        require(
+            not stale,
+            f"{suppressions_file} declares API breaks that no longer exist "
+            f"({', '.join(sorted(entry[1] for entry in stale))}); "
+            "regenerate it with --update-api-suppressions",
+        )
+
+
+def read_api_compat_suppressions(path: Path) -> set[tuple[str, ...]]:
+    """Returns the entries of an ApiCompat suppression file, or none when it doesn't exist."""
+    if not path.is_file():
+        return set()
+    return {
+        tuple(
+            suppression.findtext(field, default="").strip()
+            for field in ("DiagnosticId", "Target", "Left", "Right")
+        )
+        # ApiCompat omits the default, false, when it writes a file
+        + (
+            str(
+                suppression.findtext("IsBaselineSuppression", default="").strip().lower()
+                == "true"
+            ),
+        )
+        for suppression in ElementTree.parse(path).getroot().findall("Suppression")
+    }
 
 def write_consumer_project(
     project: Path, target_framework: str, contracts: tuple[PackageContract, ...]
@@ -894,6 +1023,14 @@ def parse_arguments(arguments: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--update-api-suppressions",
+        action="store_true",
+        help=(
+            f"record the current public API differences from {BASELINE_VERSION} "
+            f"as intended, in each project's {API_COMPAT_SUPPRESSIONS_FILE}"
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="validate packages published under the ScyllaDBCSharpDriver.DRYRUN IDs",
@@ -931,7 +1068,7 @@ def main(arguments: list[str] | None = None) -> None:
             package_directory = staged_package_directory
         candidate_assemblies = inspect_candidates(
             package_directory,
-            work_directory / "candidate-extracted",
+            work_directory / CANDIDATE_EXTRACTION_DIRECTORY,
             contracts,
         )
         candidate_assemblies_by_canonical_id = {
@@ -950,6 +1087,7 @@ def main(arguments: list[str] | None = None) -> None:
             candidate_assemblies_by_canonical_id,
             left_references,
             right_references,
+            options.update_api_suppressions,
         )
         validate_consumers(work_directory, package_directory, contracts)
 

@@ -76,8 +76,6 @@ namespace Cassandra
         /// </summary>
         internal static IndexMetadata FromTableColumn(TableColumn c)
         {
-            //using obsolete properties
-#pragma warning disable 618
             string target = null;
             if (c.SecondaryIndexOptions.ContainsKey("index_keys"))
             {
@@ -92,7 +90,6 @@ namespace Cassandra
                 target = string.Format("values({0})", c.Name);
             }
             return new IndexMetadata(c.SecondaryIndexName, target, GetKindByName(c.SecondaryIndexType), c.SecondaryIndexOptions);
-#pragma warning restore 618
         }
 
         /// <summary>

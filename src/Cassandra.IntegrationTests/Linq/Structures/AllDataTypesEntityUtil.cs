@@ -22,12 +22,8 @@ using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 using NUnit.Framework.Internal;
 
-#pragma warning disable 618
-
 namespace Cassandra.IntegrationTests.Linq.Structures
 {
-    [AllowFiltering]
-    [Table("allDataTypes")]
     public static class AllDataTypesEntityUtil
     {
         public const int DefaultListLength = 5;
