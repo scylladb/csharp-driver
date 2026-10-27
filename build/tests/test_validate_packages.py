@@ -19,6 +19,46 @@ MODULE_SPEC.loader.exec_module(validate_packages)
 
 
 class ValidatePackagesTests(unittest.TestCase):
+    def test_sdk_validation_uses_the_repository_sdk_policy(self):
+        expected = json.loads(
+            (validate_packages.REPOSITORY_ROOT / "global.json").read_text(encoding="utf-8")
+        )["sdk"]["version"]
+        for version in (expected, "0.0.0"):
+            with self.subTest(version=version), mock.patch.object(
+                validate_packages,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0, stdout=version + "\n"),
+            ):
+                if version == expected:
+                    validate_packages.validate_sdk()
+                else:
+                    with self.assertRaisesRegex(
+                        validate_packages.ValidationError, "Expected .NET SDK"
+                    ):
+                        validate_packages.validate_sdk()
+
+    def test_dependency_contracts_match_shipping_project_references(self):
+        package_ids = {
+            contract.package_id for contract in validate_packages.PACKAGE_CONTRACTS
+        }
+        for contract in validate_packages.PACKAGE_CONTRACTS:
+            with self.subTest(package_id=contract.package_id):
+                project = validate_packages.ElementTree.parse(
+                    validate_packages.REPOSITORY_ROOT / contract.project
+                ).getroot()
+                expected = {
+                    reference.attrib["Include"]: reference.attrib["Version"]
+                    for reference in project.findall(".//PackageReference")
+                }
+                self.assertEqual(
+                    expected,
+                    {
+                        package_id: version
+                        for package_id, version in contract.dependencies.items()
+                        if package_id not in package_ids
+                    },
+                )
+
     def test_run_merges_environment_overrides(self):
         completed = subprocess.CompletedProcess(["command"], 0)
         with mock.patch.dict(os.environ, {"VALIDATOR_PARENT": "preserved"}):

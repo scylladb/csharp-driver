@@ -45,8 +45,8 @@ PACKAGE_CONTRACTS = (
         assembly_name="ScyllaDB",
         dependencies={
             "K4os.Compression.LZ4": "1.3.8",
-            "Microsoft.Extensions.Logging": "10.0.12",
-            "Microsoft.Extensions.Logging.Abstractions": "10.0.12",
+            "Microsoft.Extensions.Logging": "10.0.13",
+            "Microsoft.Extensions.Logging.Abstractions": "10.0.13",
             "Newtonsoft.Json": "13.0.4",
         },
     ),
@@ -66,7 +66,7 @@ PACKAGE_CONTRACTS = (
         assembly_name="Cassandra.OpenTelemetry",
         dependencies={
             "ScyllaDBCSharpDriver": CANDIDATE_VERSION,
-            "OpenTelemetry.Api": "1.19.1",
+            "OpenTelemetry.Api": "1.20.1",
         },
     ),
 )
@@ -146,10 +146,13 @@ def ensure_signing_key() -> None:
 
 
 def validate_sdk() -> None:
+    expected_version = json.loads(
+        (REPOSITORY_ROOT / "global.json").read_text(encoding="utf-8")
+    )["sdk"]["version"]
     result = run([DOTNET, "--version"], capture_output=True)
     require(
-        result.stdout.strip() == APICOMPAT_VERSION,
-        f"Expected .NET SDK {APICOMPAT_VERSION}, got {result.stdout.strip()!r}",
+        result.stdout.strip() == expected_version,
+        f"Expected .NET SDK {expected_version}, got {result.stdout.strip()!r}",
     )
 
 
