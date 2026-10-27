@@ -539,9 +539,7 @@ class ValidatePackagesTests(unittest.TestCase):
             project = root / "Consumer.csproj"
             config = root / "NuGet.Config"
             validate_packages.write_consumer_project(project, "net10.0", contracts)
-            validate_packages.write_consumer_nuget_config(
-                config, packages, contracts
-            )
+            validate_packages.write_consumer_nuget_config(config, packages, contracts)
 
             project_root = validate_packages.ElementTree.parse(project).getroot()
             references = {
@@ -612,9 +610,7 @@ class ValidatePackagesTests(unittest.TestCase):
                     return_value=(Path("left"), Path("right")),
                 ) as prepare,
                 mock.patch.object(validate_packages, "run_api_compat") as api_compat,
-                mock.patch.object(
-                    validate_packages, "validate_consumers"
-                ) as consumers,
+                mock.patch.object(validate_packages, "validate_consumers") as consumers,
             ):
                 validate_packages.main(
                     [

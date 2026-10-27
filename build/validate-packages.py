@@ -78,9 +78,7 @@ PACKAGE_CONTRACTS = (
 DRY_RUN_PACKAGE_IDS = {
     "ScyllaDBCSharpDriver": "ScyllaDBCSharpDriver.DRYRUN",
     "ScyllaDBCSharpDriver.AppMetrics": "ScyllaDBCSharpDriver.DRYRUN.AppMetrics",
-    "ScyllaDBCSharpDriver.OpenTelemetry": (
-        "ScyllaDBCSharpDriver.DRYRUN.OpenTelemetry"
-    ),
+    "ScyllaDBCSharpDriver.OpenTelemetry": ("ScyllaDBCSharpDriver.DRYRUN.OpenTelemetry"),
 }
 
 
@@ -791,6 +789,7 @@ def read_api_compat_suppressions(path: Path) -> set[tuple[str, ...]]:
         for suppression in ElementTree.parse(path).getroot().findall("Suppression")
     }
 
+
 def write_consumer_project(
     project: Path, target_framework: str, contracts: tuple[PackageContract, ...]
 ) -> None:
@@ -947,10 +946,10 @@ def validate_consumers(
         "        assembly.GetCustomAttribute<AssemblyFileVersionAttribute>()?.Version "
         "!= \"4.0.0.0\" ||\n"
         "        assembly.GetCustomAttribute<TargetFrameworkAttribute>()?.FrameworkName "
-        "!= \".NETCoreApp,Version=v10.0\")\n"
+        '!= ".NETCoreApp,Version=v10.0")\n'
         "    {\n"
-        "        throw new InvalidOperationException($\"Unexpected assembly metadata: "
-        "{assembly.FullName}\");\n"
+        '        throw new InvalidOperationException($"Unexpected assembly metadata: '
+        '{assembly.FullName}");\n'
         "    }\n"
         "}\n"
         "\n"
@@ -960,7 +959,7 @@ def validate_consumers(
         "\"Cassandra.OpenTelemetry\");\n"
         "if (LZ4Codec.MaximumOutputSize(1) <= 0)\n"
         "{\n"
-        "    throw new InvalidOperationException(\"K4os LZ4 is unavailable\");\n"
+        '    throw new InvalidOperationException("K4os LZ4 is unavailable");\n'
         "}\n",
         encoding="utf-8",
     )
