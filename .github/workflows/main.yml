@@ -82,6 +82,14 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Setup Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+
+      - name: Test release-note workflow safeguards
+        run: node --test .github/tests/release-notes.test.cjs
+
       - name: Test release tooling
         run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s build/tests -p 'test_*.py' -v
 

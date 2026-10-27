@@ -2,86 +2,79 @@ name: Label support-only release changes
 
 on:
   pull_request_target:
-    types: [closed]
+    types: [opened, synchronize, reopened, edited, closed]
   workflow_dispatch:
     inputs:
       pr_number:
-        description: Merged PR number to classify again
+        description: Pull request number to classify, including merged PRs
         required: true
         type: number
 
-permissions:
-  contents: read
-  pull-requests: write
+permissions: {}
+
+concurrency:
+  group: release-notes-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: false
 
 jobs:
-  label:
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+  classify:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
     steps:
-      - name: Label support-only PRs
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
-        run: |
-          api_with_retry() {
-            local attempt delay output
-            output=$(mktemp "$RUNNER_TEMP/gh-api.XXXXXX")
-            for ((attempt = 1; attempt <= 10; attempt++)); do
-              if gh api "$@" > "$output"; then
-                cat "$output"
-                rm -f "$output"
-                return 0
-              fi
-              if ((attempt == 10)); then
-                rm -f "$output"
-                echo "GitHub API request failed after 10 attempts" >&2
-                return 1
-              fi
-              delay=$((1 << (attempt - 1)))
-              if ((delay > 16)); then delay=16; fi
-              echo "GitHub API request failed (attempt $attempt/10); retrying in ${delay}s" >&2
-              sleep "$delay"
-            done
-          }
-
-          api_with_retry "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" > "$RUNNER_TEMP/pr.json"
-          if [[ $(jq -r .merged_at "$RUNNER_TEMP/pr.json") == null ]]; then
-            echo "PR #$PR_NUMBER has not been merged" >&2
-            exit 1
-          fi
-          changed_files=$(jq -r .changed_files "$RUNNER_TEMP/pr.json")
-          echo "PR #$PR_NUMBER has $changed_files changed files"
-          api_with_retry --paginate --slurp \
-            "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files?per_page=100" \
-            > "$RUNNER_TEMP/pr-files.json"
-          echo "Fetched changed file list for PR #$PR_NUMBER"
-
-          # A mixed driver/support PR stays in the notes. Check both sides of
-          # renames and the API file count so a truncated list cannot qualify.
-          eligible=$(jq -r --argjson expected "$changed_files" '
-            def support_path:
-              test("^docs/|^ci/|^build/|^tools/|^examples/|^\\.github/|^src/Cassandra\\.(Integration)?Tests/|\\.md$|^(\\.editorconfig|\\.gitattributes|\\.gitignore|Makefile|renovate\\.json)$");
-            [.[][]] as $files
-            | ($files | length) == $expected
-              and ($files | length) > 0
-              and all($files[];
-                (.filename | support_path)
-                and ((.previous_filename // .filename) | support_path))
-          ' "$RUNNER_TEMP/pr-files.json")
-
-          if [[ "$eligible" == true ]]; then
-            echo "Adding omit-from-release-notes to PR #$PR_NUMBER"
-            api_with_retry --method POST \
-              "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/labels" \
-              -f 'labels[]=omit-from-release-notes' --silent
-            echo "Excluded PR #$PR_NUMBER from generated release notes"
-          else
-            if jq -e 'any(.labels[]; .name == "omit-from-release-notes")' \
-              "$RUNNER_TEMP/pr.json" > /dev/null; then
-              api_with_retry --method DELETE \
-                "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/labels/omit-from-release-notes" \
-                --silent
-            fi
-            echo "Kept PR #$PR_NUMBER in generated release notes"
-          fi
+      - name: Check pull request files
+        id: target
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          retries: 3
+          retry-exempt-status-codes: 400,401,404,422
+          script: |
+            const raw = process.env.PR_NUMBER;
+            if (!/^[1-9][0-9]*$/.test(raw) || !Number.isSafeInteger(Number(raw))) {
+              throw new Error('Expected a canonical positive safe PR number');
+            }
+            const number = Number(raw);
+            // A trusted PR event allows cleanup even if the API lookup fails.
+            if (context.eventName === 'pull_request_target' &&
+                context.payload?.pull_request?.number === number) {
+              core.setOutput('confirmed', 'true');
+            }
+            const params = {...context.repo, pull_number: number};
+            const {data: pr} = await github.rest.pulls.get(params);
+            if (pr.number !== number) throw new Error('Target is not the requested pull request');
+            core.setOutput('confirmed', 'true');
+            const files = await github.paginate(github.rest.pulls.listFiles, {...params, per_page: 100});
+            if (!Number.isSafeInteger(pr.changed_files) || pr.changed_files <= 0 ||
+                files.length !== pr.changed_files) {
+              throw new Error('Changed-file listing does not match a positive expected count');
+            }
+            // Keep every rename visible rather than duplicating labeler's glob policy.
+            const renamed = files.some(file => file.status === 'renamed' || file.previous_filename);
+            core.setOutput('eligible', String(!renamed));
+            core.info(`PR #${number}: ${files.length} files; contains rename=${renamed}`);
+      - uses: actions/labeler@bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13 # v7.0.0
+        id: labeler
+        if: success() && steps.target.outputs.eligible == 'true'
+        with:
+          configuration-path: .github/labeler.yml
+          sync-labels: true
+          pr-number: ${{ env.PR_NUMBER }}
+      - name: Remove unverified omission label
+        if: always() && steps.target.outputs.confirmed == 'true' && steps.labeler.outcome != 'success'
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          retries: 3
+          retry-exempt-status-codes: 400,401,404,422
+          script: |
+            try {
+              await github.rest.issues.removeLabel({
+                ...context.repo, issue_number: Number(process.env.PR_NUMBER), name: 'omit-from-release-notes'
+              });
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
