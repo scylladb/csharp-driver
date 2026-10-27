@@ -49,8 +49,8 @@ PACKAGE_CONTRACTS = (
         assembly_name="ScyllaDB",
         dependencies={
             "K4os.Compression.LZ4": "1.3.8",
-            "Microsoft.Extensions.Logging": "10.0.13",
-            "Microsoft.Extensions.Logging.Abstractions": "10.0.13",
+            "Microsoft.Extensions.Logging": "10.0.14",
+            "Microsoft.Extensions.Logging.Abstractions": "10.0.14",
             "Newtonsoft.Json": "13.0.4",
         },
     ),
