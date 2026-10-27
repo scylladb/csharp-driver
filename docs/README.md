@@ -4,7 +4,7 @@ This directory contains the documentation for the ScyllaDB C# Driver, built with
 
 ## Prerequisites
 
-- Python 3.10+
+- Python 3.12+
 - [uv](https://docs.astral.sh/uv/) - Python dependency management
 - [.NET SDK 10.0.401](https://dotnet.microsoft.com/download/dotnet/10.0) - For API documentation generation (also pinned by `global.json`)
 - [DocFX 2.77+](https://dotnet.github.io/docfx/) - C# API documentation tool
