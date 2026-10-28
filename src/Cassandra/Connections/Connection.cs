@@ -286,33 +286,6 @@ namespace Cassandra.Connections
         /// <exception cref="AuthenticationException" />
         private async Task<Response> StartAuthenticationFlow(string name)
         {
-            //Determine which authentication flow to use.
-            //Check if its using a C* 1.2 with authentication patched version
-            var protocolVersion = Serializer.ProtocolVersion;
-            var isPatchedVersion = protocolVersion == ProtocolVersion.V1 &&
-                !(Configuration.AuthProvider is NoneAuthProvider) && Configuration.AuthInfoProvider == null;
-            if (protocolVersion == ProtocolVersion.V1 && !isPatchedVersion)
-            {
-                //Use protocol v1 authentication flow
-                if (Configuration.AuthInfoProvider == null)
-                {
-                    throw new AuthenticationException(
-                        $"Host {EndPoint.EndpointFriendlyName} requires authentication, but no credentials provided in Cluster configuration",
-                        EndPoint.GetHostIpEndPointWithFallback());
-                }
-                var credentialsProvider = Configuration.AuthInfoProvider;
-                var credentials = credentialsProvider.GetAuthInfos(EndPoint.GetHostIpEndPointWithFallback());
-                var request = new CredentialsRequest(credentials);
-                var response = await Send(request).ConfigureAwait(false);
-                if (!(response is ReadyResponse))
-                {
-                    //If Cassandra replied with a auth response error
-                    //The task already is faulted and the exception was already thrown.
-                    throw new ProtocolErrorException("Expected SASL response, obtained " + response.GetType().Name);
-                }
-                return response;
-            }
-            //Use protocol v2+ authentication flow
             if (Configuration.AuthProvider is IAuthProviderNamed)
             {
                 //Provide name when required
@@ -702,6 +675,22 @@ namespace Cassandra.Connections
             {
                 // The server replies the first message with the max protocol version supported
                 protocolVersion = FrameHeader.GetProtocolVersion(buffer);
+                if (protocolVersion < ProtocolVersion.MinSupported)
+                {
+                    // Protocol v1 and v2 frames have a different header layout, the frame can not be decoded.
+                    // Fail the pending operations, the OPTIONS request among them, so that opening the
+                    // connection fails with an error that names the reason.
+                    CloseInternal(
+                        new UnsupportedProtocolVersionException(
+                            serializer.ProtocolVersion,
+                            protocolVersion,
+                            $"Host {EndPoint.EndpointFriendlyName} replied with protocol version {protocolVersion:D}, " +
+                            $"but the driver requires protocol version {ProtocolVersion.MinSupported:D} or above " +
+                            "(Apache Cassandra 2.1+ or any ScyllaDB version)"),
+                        null,
+                        false);
+                    return false;
+                }
                 serializer = serializer.CloneWithProtocolVersion(protocolVersion);
                 headerLength = protocolVersion.GetHeaderSize();
 

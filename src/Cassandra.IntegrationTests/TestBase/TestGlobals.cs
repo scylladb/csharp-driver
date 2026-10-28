@@ -41,20 +41,7 @@ namespace Cassandra.IntegrationTests.TestBase
         public ProtocolVersion GetProtocolVersion()
         {
             var cassandraVersion = TestClusterManager.CassandraVersion;
-            var protocolVersion = ProtocolVersion.V1;
-            if (cassandraVersion >= Version.Parse("2.2"))
-            {
-                protocolVersion = ProtocolVersion.V4;
-            }
-            else if (cassandraVersion >= Version.Parse("2.1"))
-            {
-                protocolVersion = ProtocolVersion.V3;
-            }
-            else if (cassandraVersion > Version.Parse("2.0"))
-            {
-                protocolVersion = ProtocolVersion.V2;
-            }
-            return protocolVersion;
+            return cassandraVersion >= Version.Parse("2.2") ? ProtocolVersion.V4 : ProtocolVersion.V3;
         }
 
         internal ISerializer GetSerializer()

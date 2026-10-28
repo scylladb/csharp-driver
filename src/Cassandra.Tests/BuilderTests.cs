@@ -137,9 +137,9 @@ namespace Cassandra.Tests
             Assert.AreEqual(ProtocolVersion.V3, cluster.Configuration.ProtocolOptions.MaxProtocolVersionValue);
             builder = Cluster.Builder()
                 .AddContactPoint("192.168.1.10")
-                .WithMaxProtocolVersion(ProtocolVersion.V2);
+                .WithMaxProtocolVersion(ProtocolVersion.V4);
             cluster = builder.Build();
-            Assert.AreEqual(ProtocolVersion.V2, cluster.Configuration.ProtocolOptions.MaxProtocolVersionValue);
+            Assert.AreEqual(ProtocolVersion.V4, cluster.Configuration.ProtocolOptions.MaxProtocolVersionValue);
         }
 
         [Test]
@@ -153,17 +153,47 @@ namespace Cassandra.Tests
             Assert.Null(new ProtocolOptions().MaxProtocolVersion);
         }
 
-        [Test]
-        public void WithMaxProtocolVersion_Validates_Greater_Than_Zero()
+        [TestCase((byte)0)]
+        [TestCase((byte)1)]
+        [TestCase((byte)2)]
+        public void WithMaxProtocolVersion_Should_Throw_When_Lower_Than_Min_Supported(byte version)
         {
-            Assert.Throws<ArgumentException>(() => Cluster.Builder()
+            var ex = Assert.Throws<ArgumentOutOfRangeException>(() => Cluster.Builder()
                 .AddContactPoint("192.168.1.10")
-                .WithMaxProtocolVersion((byte)0));
+                .WithMaxProtocolVersion(version));
+            Assert.AreEqual("version", ex.ParamName);
+            ex = Assert.Throws<ArgumentOutOfRangeException>(() => Cluster.Builder()
+                .AddContactPoint("192.168.1.10")
+                .WithMaxProtocolVersion((ProtocolVersion)version));
+            Assert.AreEqual("version", ex.ParamName);
+        }
+
+        [TestCase((byte)0)]
+        [TestCase((byte)1)]
+        [TestCase((byte)2)]
+        public void ProtocolOptions_SetMaxProtocolVersion_Should_Throw_When_Lower_Than_Min_Supported(byte version)
+        {
+            var ex = Assert.Throws<ArgumentOutOfRangeException>(() => new ProtocolOptions().SetMaxProtocolVersion(version));
+            Assert.AreEqual("value", ex.ParamName);
+            ex = Assert.Throws<ArgumentOutOfRangeException>(
+                () => new ProtocolOptions().SetMaxProtocolVersion((ProtocolVersion)version));
+            Assert.AreEqual("value", ex.ParamName);
+        }
+
+        [TestCase(-1)]
+        [TestCase(0)]
+        [TestCase(1)]
+        [TestCase(2)]
+        public void Cluster_MaxProtocolVersion_Should_Throw_When_Lower_Than_Min_Supported(int version)
+        {
+            var ex = Assert.Throws<ArgumentOutOfRangeException>(() => Cluster.MaxProtocolVersion = version);
+            Assert.AreEqual("value", ex.ParamName);
+            Assert.AreEqual((int)ProtocolVersion.MaxSupported, Cluster.MaxProtocolVersion);
         }
 
         [Test]
         [TestCase(ProtocolVersion.MaxSupported, 1, 2)]
-        [TestCase(ProtocolVersion.V2, 2, 8)]
+        [TestCase(ProtocolVersion.V3, 1, 2)]
         public void PoolingOptions_Create_Based_On_Protocol_Version(ProtocolVersion protocolVersion,
             int coreConnections, int maxConnections)
         {

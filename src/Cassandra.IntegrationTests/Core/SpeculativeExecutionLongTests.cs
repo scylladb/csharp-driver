@@ -84,42 +84,35 @@ namespace Cassandra.IntegrationTests.Core
         [Test, TestTimeout(120000)]
         public void SpeculativeExecution_Pause_Using_All_Stream_Ids()
         {
-            var maxProtocolVersion = Cluster.MaxProtocolVersion;
             _testCluster = TestClusterManager.GetNonShareableTestCluster(2, 1, true, false);
-            Cluster.MaxProtocolVersion = 2;
-            try
+            // Limit the in-flight requests per connection to the 128 stream ids that protocol versions 1 and 2
+            // had, so that they are all in use when the node is paused.
+            var pooling = PoolingOptions.Create().SetMaxRequestsPerConnection(128);
+            var session = GetSession(new ConstantSpeculativeExecutionPolicy(50L, 1), true, null, pooling);
+            const int pauseThreshold = 140 * 2;
+            var tasks = new List<Task<IPAddress>>();
+            var semaphore = new SemaphoreSlim(150 * 2);
+            for (var i = 0; i < 512; i++)
             {
-                var pooling = PoolingOptions.Create();
-                var session = GetSession(new ConstantSpeculativeExecutionPolicy(50L, 1), true, null, pooling);
-                const int pauseThreshold = 140 * 2;
-                var tasks = new List<Task<IPAddress>>();
-                var semaphore = new SemaphoreSlim(150 * 2);
-                for (var i = 0; i < 512; i++)
+                //Pause after the stream ids are in use for the connections
+                if (i == pauseThreshold)
                 {
-                    //Pause after the stream ids are in use for the connections
-                    if (i == pauseThreshold)
-                    {
-                        _testCluster.PauseNode(1);
-                    }
-                    semaphore.Wait();
-                    tasks.Add(session
-                        .ExecuteAsync(new SimpleStatement(QueryLocal).SetIdempotence(true))
-                        .ContinueSync(rs =>
-                        {
-                            semaphore.Release();
-                            return rs.Info.QueriedHost.Address;
-                        }));
+                    _testCluster.PauseNode(1);
                 }
-                Task.WaitAll(tasks.Select(t => (Task)t).ToArray());
-                _testCluster.ResumeNode(1);
-                //There shouldn't be any query using node1 as coordinator passed the threshold.
-                Assert.AreEqual(0, tasks.Skip(pauseThreshold).Count(t => t.Result.Equals(_addressNode1)));
-                Thread.Sleep(1000);
+                semaphore.Wait();
+                tasks.Add(session
+                    .ExecuteAsync(new SimpleStatement(QueryLocal).SetIdempotence(true))
+                    .ContinueSync(rs =>
+                    {
+                        semaphore.Release();
+                        return rs.Info.QueriedHost.Address;
+                    }));
             }
-            finally
-            {
-                Cluster.MaxProtocolVersion = maxProtocolVersion;
-            }
+            Task.WaitAll(tasks.Select(t => (Task)t).ToArray());
+            _testCluster.ResumeNode(1);
+            //There shouldn't be any query using node1 as coordinator passed the threshold.
+            Assert.AreEqual(0, tasks.Skip(pauseThreshold).Count(t => t.Result.Equals(_addressNode1)));
+            Thread.Sleep(1000);
         }
 
         /// <summary>

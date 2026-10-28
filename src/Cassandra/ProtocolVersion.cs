@@ -26,22 +26,13 @@ namespace Cassandra
     public enum ProtocolVersion : byte
     {
         /// <summary>
-        /// Cassandra protocol v1, supported in Apache Cassandra 1.2-->2.2.
-        /// </summary>
-        V1 = 0x01,
-
-        /// <summary>
-        /// Cassandra protocol v2, supported in Apache Cassandra 2.0-->2.2.
-        /// </summary>
-        V2 = 0x02,
-
-        /// <summary>
-        /// Cassandra protocol v3, supported in Apache Cassandra 2.1-->3.x.
+        /// Cassandra protocol v3, supported in Apache Cassandra 2.1+ and ScyllaDB.
+        /// The lowest protocol version supported by the driver: protocol versions 1 and 2 were removed in 4.0.
         /// </summary>
         V3 = 0x03,
 
         /// <summary>
-        /// Cassandra protocol v4, supported in Apache Cassandra 2.2-->3.x.
+        /// Cassandra protocol v4, supported in Apache Cassandra 2.2+ and ScyllaDB.
         /// </summary>
         V4 = 0x04,
 
@@ -58,7 +49,7 @@ namespace Cassandra
         /// <summary>
         /// The lower protocol version that is supported by this driver.
         /// </summary>
-        MinSupported = V1
+        MinSupported = V3
     }
 
     internal static class ProtocolVersionExtensions
@@ -66,10 +57,8 @@ namespace Cassandra
         private static readonly Logger Logger = new Logger(typeof(ProtocolVersion));
         private static readonly Version Version60 = new Version(6, 0);
         private static readonly Version Version40 = new Version(4, 0);
-        private static readonly Version Version30 = new Version(3, 0);
         private static readonly Version Version22 = new Version(2, 2);
         private static readonly Version Version21 = new Version(2, 1);
-        private static readonly Version Version20 = new Version(2, 0);
 
         /// <summary>
         /// Determines if the protocol version is supported by this driver.
@@ -83,14 +72,31 @@ namespace Cassandra
 
             switch (version)
             {
-                case ProtocolVersion.V1:
-                case ProtocolVersion.V2:
                 case ProtocolVersion.V3:
                 case ProtocolVersion.V4:
                     return true;
                 default:
                     return false;
             }
+        }
+
+        /// <summary>
+        /// Throws when a version chosen as the maximum is lower than <see cref="ProtocolVersion.MinSupported"/>,
+        /// which includes protocol versions 1 and 2, no longer implemented by the driver.
+        /// </summary>
+        /// <exception cref="ArgumentOutOfRangeException" />
+        public static ProtocolVersion EnsureNotBelowMinSupported(this ProtocolVersion version, string paramName)
+        {
+            if (version < ProtocolVersion.MinSupported)
+            {
+                throw new ArgumentOutOfRangeException(
+                    paramName,
+                    version,
+                    $"Protocol version {version:D} is not supported, the driver requires protocol version " +
+                    $"{ProtocolVersion.MinSupported:D} or above (Apache Cassandra 2.1+ or any ScyllaDB version).");
+            }
+
+            return version;
         }
 
         /// <summary>
@@ -107,7 +113,7 @@ namespace Cassandra
                 {
                     lowerVersion = ProtocolVersion.V5;
                 }
-                else if (lowerVersion <= ProtocolVersion.V1)
+                else if (lowerVersion <= ProtocolVersion.MinSupported)
                 {
                     lowerVersion = 0;
                 }
@@ -126,8 +132,6 @@ namespace Cassandra
         public static ProtocolVersion GetHighestCommon(this ProtocolVersion version, Configuration config, IEnumerable<Host> hosts)
         {
             var maxVersion = (byte)version;
-            var v3Requirement = false;
-            var maxVersionWith3OrMore = maxVersion;
 
             foreach (var host in hosts)
             {
@@ -135,49 +139,30 @@ namespace Cassandra
 
                 if (cassandraVersion >= Version40)
                 {
-                    // Anything 4.0.0+ has a max protocol version of V5 and requires at least V3.
-                    v3Requirement = true;
+                    // Anything 4.0.0+ has a max protocol version of V5.
                     maxVersion = config.AllowBetaProtocolVersions
                         ? Math.Min((byte)ProtocolVersion.V5, maxVersion)
                         : Math.Min((byte)ProtocolVersion.V4, maxVersion);
-                    maxVersionWith3OrMore = maxVersion;
-                }
-                else if (cassandraVersion >= Version30)
-                {
-                    // Anything 3.0.0+ has a max protocol version of V4 and requires at least V3.
-                    v3Requirement = true;
-                    maxVersion = Math.Min((byte)ProtocolVersion.V4, maxVersion);
-                    maxVersionWith3OrMore = maxVersion;
                 }
                 else if (cassandraVersion >= Version22)
                 {
-                    // Cassandra 2.2.x has a max protocol version of V4.
+                    // Cassandra 2.2.x and 3.x have a max protocol version of V4.
                     maxVersion = Math.Min((byte)ProtocolVersion.V4, maxVersion);
-                    maxVersionWith3OrMore = maxVersion;
                 }
                 else if (cassandraVersion >= Version21)
                 {
                     // Cassandra 2.1.x has a max protocol version of V3.
                     maxVersion = Math.Min((byte)ProtocolVersion.V3, maxVersion);
-                    maxVersionWith3OrMore = maxVersion;
                 }
-                else if (cassandraVersion >= Version20)
+                else if (cassandraVersion != null)
                 {
-                    // Cassandra 2.0.x has a max protocol version of V2.
-                    maxVersion = Math.Min((byte)ProtocolVersion.V2, maxVersion);
+                    // Anything older only supports protocol versions that the driver no longer implements.
+                    Logger.Error($"Detected host {host.Address} with Cassandra version {cassandraVersion}, which " +
+                                 $"requires a protocol version lower than {ProtocolVersion.MinSupported:D}. " +
+                                 "Will not be able to connect to this host");
                 }
-                else
-                {
-                    // Anything else is < 2.x and requires protocol version V1.
-                    maxVersion = Math.Min((byte)ProtocolVersion.V1, maxVersion);
-                }
-            }
 
-            if (v3Requirement && maxVersion < (byte)ProtocolVersion.V3)
-            {
-                Logger.Error($"Detected hosts with maximum protocol version of {maxVersion} but there are some hosts " +
-                             $"that require at least version 3. Will not be able to connect to these older hosts");
-                maxVersion = maxVersionWith3OrMore;
+                // A host with an unknown Cassandra version doesn't lower the version either
             }
 
             return (ProtocolVersion)maxVersion;
@@ -234,14 +219,6 @@ namespace Cassandra
         public static bool SupportsUnset(this ProtocolVersion version)
         {
             return version >= ProtocolVersion.V4;
-        }
-
-        /// <summary>
-        /// Determines whether the protocol supports BATCH requests.
-        /// </summary>
-        public static bool SupportsBatch(this ProtocolVersion version)
-        {
-            return version >= ProtocolVersion.V2;
         }
 
         /// <summary>

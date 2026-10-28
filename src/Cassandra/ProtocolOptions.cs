@@ -215,9 +215,12 @@ namespace Cassandra
         /// When set, it limits the maximum protocol version used to connect to the nodes.
         /// Useful for using the driver against a cluster that contains nodes with different major/minor versions of Cassandra.
         /// </summary>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// <paramref name="value"/> is lower than <see cref="ProtocolVersion.MinSupported"/>.
+        /// </exception>
         public ProtocolOptions SetMaxProtocolVersion(byte value)
         {
-            _maxProtocolVersion = (ProtocolVersion)value;
+            _maxProtocolVersion = ((ProtocolVersion)value).EnsureNotBelowMinSupported(nameof(value));
             return this;
         }
 
@@ -226,9 +229,12 @@ namespace Cassandra
         /// When set, it limits the maximum protocol version used to connect to the nodes.
         /// Useful for using the driver against a cluster that contains nodes with different major/minor versions of Cassandra.
         /// </summary>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// <paramref name="value"/> is lower than <see cref="ProtocolVersion.MinSupported"/>.
+        /// </exception>
         public ProtocolOptions SetMaxProtocolVersion(ProtocolVersion value)
         {
-            _maxProtocolVersion = value;
+            _maxProtocolVersion = value.EnsureNotBelowMinSupported(nameof(value));
             return this;
         }
 

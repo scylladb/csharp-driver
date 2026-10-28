@@ -36,5 +36,12 @@ namespace Cassandra
             ProtocolVersion = protocolVersion;
             ResponseProtocolVersion = responseProtocolVersion;
         }
+
+        public UnsupportedProtocolVersionException(ProtocolVersion protocolVersion, ProtocolVersion responseProtocolVersion, string message) :
+            base(message)
+        {
+            ProtocolVersion = protocolVersion;
+            ResponseProtocolVersion = responseProtocolVersion;
+        }
     }
 }

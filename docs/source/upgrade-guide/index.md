@@ -302,6 +302,29 @@ rs.Info.IncomingPayload.TryGetValue(TabletInfo.TABLETS_ROUTING_V1_CUSTOM_PAYLOAD
 rs.Info.IncomingPayload.TryGetValue("tablets-routing-v1", out var tablet);
 ```
 
+### Removed native protocol versions 1 and 2
+
+Version 4 supports native protocol version 3 and above, so it requires Apache
+Cassandra 2.1 or later. Every ScyllaDB version supports protocol version 3 and 4.
+Protocol versions 1 and 2 were only needed for Apache Cassandra 1.2 and 2.0.
+
+- `ProtocolVersion.V1` and `ProtocolVersion.V2` are removed.
+- `ProtocolVersion.MinSupported` is now `V3` instead of `V1`. It is a constant, so
+  code compiled against version 3 keeps the old value until it is recompiled.
+- `Builder.WithMaxProtocolVersion`, `ProtocolOptions.SetMaxProtocolVersion` and the
+  setter of the static `Cluster.MaxProtocolVersion` throw `ArgumentOutOfRangeException`
+  for a version lower than 3, including 0, which `Builder.WithMaxProtocolVersion`
+  already rejected with an `ArgumentException`. Passing the number 1 or 2, or casting
+  it to `ProtocolVersion`, used to select the removed versions.
+
+The driver no longer lowers the protocol version for hosts that report a Cassandra
+version older than 2.1. It logs an error for each of them, and connections to those
+hosts fail. A host that replies with protocol version 1 or 2 is reported with an
+error saying which protocol version it used and that the driver requires 3 or above.
+Hosts whose Cassandra version is unknown no longer lower the protocol version
+either. Before, such a host made the driver use protocol version 1, unless a host
+ran Cassandra 3.0 or later.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.

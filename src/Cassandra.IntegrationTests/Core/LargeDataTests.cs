@@ -296,7 +296,7 @@ namespace Cassandra.IntegrationTests.Core
             session.Execute(string.Format("CREATE TABLE {0} (k INT, i {1}, PRIMARY KEY(k,i))", tableName, "BLOB"));
 
             // Build small ByteBuffer sample
-            var bw = new FrameWriter(new MemoryStream(), new SerializerManager(ProtocolVersion.V1).GetCurrentSerializer(), false);
+            var bw = new FrameWriter(new MemoryStream(), new SerializerManager(ProtocolVersion.MaxSupported).GetCurrentSerializer(), false);
             for (int i = 0; i < 56; i++)
                 bw.WriteByte(0);
             bw.WriteUInt16(0xCAFE);

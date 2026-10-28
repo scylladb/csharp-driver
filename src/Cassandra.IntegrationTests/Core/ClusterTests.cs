@@ -91,10 +91,10 @@ namespace Cassandra.IntegrationTests.Core
         /// honored properly by the driver. It first verifies that the default MaxProtocolVersion is the maximum available by
         /// the driver (ProtocolVersion 4 as of driver 3.0.1). It then verifies that a set MaxProtocolVersion is honored when
         /// connecting to a Cassandra cluster. It also verifies that setting an arbitary MaxProtocolVersion is allowed, as the
-        /// ProtocolVersion will be negotiated down upon first connection. Finally, it verifies that a MaxProtocolVersion is
-        /// not valid.
+        /// ProtocolVersion will be negotiated down upon first connection. Finally, it verifies that a MaxProtocolVersion
+        /// lower than the minimum supported by the driver is not valid.
         ///
-        /// @expected_errors ArgumentException When MaxProtocolVersion is set to 0.
+        /// @expected_errors ArgumentOutOfRangeException When MaxProtocolVersion is set to 0, 1 or 2.
         ///
         /// @since 3.0.1
         /// @jira_ticket CSHARP-388
@@ -123,10 +123,7 @@ namespace Cassandra.IntegrationTests.Core
             Assert.AreEqual(3, clusterMax.Configuration.ProtocolOptions.MaxProtocolVersion);
             await TestGlobals.ConnectAndDispose(clusterMax, asyncConnect, session =>
             {
-                if (TestClusterManager.CheckCassandraVersion(false, Version.Parse("2.1"), Comparison.LessThan))
-                    Assert.AreEqual(2, session.BinaryProtocolVersion);
-                else
-                    Assert.AreEqual(3, session.BinaryProtocolVersion);
+                Assert.AreEqual(3, session.BinaryProtocolVersion);
             }).ConfigureAwait(false);
 
             // Arbitrary MaxProtocolVersion set, will negotiate down upon connect
@@ -141,9 +138,12 @@ namespace Cassandra.IntegrationTests.Core
                 Assert.LessOrEqual(4, clusterNegotiate.Configuration.ProtocolOptions.MaxProtocolVersion);
             }).ConfigureAwait(false);
 
-            // ProtocolVersion 0 does not exist
-            Assert.Throws<ArgumentException>(
-                () => ClusterBuilder().AddContactPoint("127.0.0.1").WithMaxProtocolVersion((byte)0));
+            // ProtocolVersion 0 does not exist, and protocol versions 1 and 2 are no longer supported
+            foreach (var version in new byte[] { 0, 1, 2 })
+            {
+                Assert.Throws<ArgumentOutOfRangeException>(
+                    () => ClusterBuilder().AddContactPoint("127.0.0.1").WithMaxProtocolVersion(version));
+            }
         }
 
         /// <summary>

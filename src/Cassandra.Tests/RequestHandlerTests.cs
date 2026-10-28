@@ -169,15 +169,10 @@ namespace Cassandra.Tests
             Assert.AreSame(ps.ResultMetadata, request.ResultMetadata);
         }
 
-        /// <remarks>
-        /// v1 is excluded because it has no query flags at all - it writes the consistency level last and
-        /// stops, so there is no skip_metadata bit to assert on.
-        /// </remarks>
         [Test]
         [TestCase(ProtocolVersion.V5)]
         [TestCase(ProtocolVersion.V4)]
         [TestCase(ProtocolVersion.V3)]
-        [TestCase(ProtocolVersion.V2)]
         public void Should_SkipMetadata_When_NotBoundStatement(ProtocolVersion version)
         {
             var serializerManager = new SerializerManager(version);
@@ -502,27 +497,6 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public void GetRequest_Batch_With_SerialConsistency_On_Older_Protocol_Versions_Should_Ignore()
-        {
-            const string query = "QUERY";
-            var batch = new BatchStatement();
-            batch.Add(new SimpleStatement(query))
-                 .SetSerialConsistencyLevel(ConsistencyLevel.LocalSerial);
-            var serializer = new SerializerManager(ProtocolVersion.V2).GetCurrentSerializer();
-
-            var request = RequestHandler.GetRequest(batch, serializer, new Configuration().DefaultRequestOptions);
-            var bodyBuffer = GetBodyBuffer(request, serializer);
-
-            // The batch request on protocol 2 is composed by:
-            // <type><n><query_1>...<query_n><consistency>
-            const int queryOffSet = 1 + 2 + 1;
-            var queryLength = BeConverter.ToInt32(bodyBuffer, queryOffSet);
-            Assert.AreEqual(query.Length, queryLength);
-            // query, n_params and consistency
-            Assert.AreEqual(4 + 4 + queryLength + 2 + 2, bodyBuffer.Length);
-        }
-
-        [Test]
         public void GetRequest_Batch_Should_Use_Serial_Consistency_From_QueryOptions()
         {
             const string query = "QUERY";
@@ -706,7 +680,7 @@ namespace Cassandra.Tests
         public void Prepare_With_Keyspace_On_Lower_Protocol_Version_Should_Ignore_Keyspace()
         {
             const string query = "SELECT col1, col2 FROM table1";
-            var serializer = new SerializerManager(ProtocolVersion.V2).GetCurrentSerializer();
+            var serializer = new SerializerManager(ProtocolVersion.V4).GetCurrentSerializer();
             var request = new InternalPrepareRequest(serializer, query, "my_keyspace", null);
 
             // The request only contains the query

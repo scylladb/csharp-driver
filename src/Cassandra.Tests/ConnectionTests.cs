@@ -39,7 +39,7 @@ namespace Cassandra.Tests
     public class ConnectionTests
     {
         private static readonly IPEndPoint Address = new IPEndPoint(IPAddress.Parse("127.0.0.1"), 1000);
-        private const int TestFrameLength = 12;
+        private const int TestFrameLength = 13;
 
         private static Mock<Connection> GetConnectionMock(Configuration config = null, ISerializerManager serializer = null)
         {
@@ -474,13 +474,40 @@ namespace Cassandra.Tests
             var connection = connectionMock.Object;
             var buffer = GetResultBuffer(128, ProtocolVersion.V4);
             connection.ReadParse(buffer, buffer.Length);
-            buffer = ConnectionTests.GetResultBuffer(100, ProtocolVersion.V2);
+            buffer = ConnectionTests.GetResultBuffer(100, ProtocolVersion.V3);
             connectionMock2.Object.ReadParse(buffer, buffer.Length);
             buffer = GetResultBuffer(129, ProtocolVersion.V4);
             connection.ReadParse(buffer, buffer.Length);
             CollectionAssert.AreEqual(new short[] { 128, 100, 129 }, streamIds);
             TestHelper.WaitUntil(() => responses.Count == 3);
             Assert.AreEqual(3, responses.Count);
+        }
+
+        [TestCase((byte)1)]
+        [TestCase((byte)2)]
+        public void ReadParse_Should_Fail_Pending_Operations_When_First_Response_Uses_Removed_Protocol_Version(
+            byte responseVersion)
+        {
+            var connection = GetConnectionMock(null, new SerializerManager(ProtocolVersion.V4)).Object;
+            Exception error = null;
+            var pendingOperations = (ConcurrentDictionary<short, OperationState>)typeof(Connection)
+                .GetField("_pendingOperations", BindingFlags.Instance | BindingFlags.NonPublic)
+                .GetValue(connection);
+            pendingOperations.TryAdd(1, OperationStateExtensions.CreateMock((ex, _) => error = ex));
+
+            // A protocol v1/v2 ERROR frame has an 8 byte header with a single byte stream id
+            var buffer = new byte[] { (byte)(0x80 | responseVersion), 0, 1, 0, 0, 0, 0, 0 };
+
+            Assert.False(connection.ReadParse(buffer, buffer.Length));
+
+            TestHelper.WaitUntil(() => error != null);
+            Assert.IsInstanceOf<UnsupportedProtocolVersionException>(error);
+            var unsupported = (UnsupportedProtocolVersionException)error;
+            Assert.AreEqual(ProtocolVersion.V4, unsupported.ProtocolVersion);
+            Assert.AreEqual((ProtocolVersion)responseVersion, unsupported.ResponseProtocolVersion);
+            NUnit.Framework.Assert.That(unsupported.Message, Does.Contain($"replied with protocol version {responseVersion}"));
+            NUnit.Framework.Assert.That(unsupported.Message, Does.Contain("Apache Cassandra 2.1+"));
+            Assert.True(connection.IsClosed);
         }
 
         [Test]
@@ -506,28 +533,17 @@ namespace Cassandra.Tests
         }
 
         /// <summary>
-        /// Gets a buffer containing 8 bytes for header and 4 bytes for the body.
-        /// For result + void response message  (protocol v2)
+        /// Gets a buffer containing 9 bytes for header and 4 bytes for the body.
+        /// For result + void response message
         /// </summary>
-        private static byte[] GetResultBuffer(short streamId, ProtocolVersion version = ProtocolVersion.V2)
+        private static byte[] GetResultBuffer(short streamId, ProtocolVersion version = ProtocolVersion.V4)
         {
             var header = (byte)((int)version | 0x80);
-            if (version.Uses2BytesStreamIds())
-            {
-                var bytes = BeConverter.GetBytes(streamId);
-                return new byte[]
-                {
-                    //header
-                    header, 0, bytes[0], bytes[1], ResultResponse.OpCode, 0, 0, 0, 4,
-                    //body
-                    0, 0, 0, 1
-                };
-            }
-
+            var bytes = BeConverter.GetBytes(streamId);
             return new byte[]
             {
                 //header
-                header, 0, (byte)streamId, ResultResponse.OpCode, 0, 0, 0, 4,
+                header, 0, bytes[0], bytes[1], ResultResponse.OpCode, 0, 0, 0, 4,
                 //body
                 0, 0, 0, 1
             };

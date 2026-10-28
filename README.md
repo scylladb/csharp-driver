@@ -245,7 +245,7 @@ ICluster cluster = Cluster.Builder()
 
 ## Compatibility
 
-- Apache Cassandra versions 2.0 and above.
+- Apache Cassandra versions 2.1 and above.
 - ScyllaDB 5.x and above.
 - ScyllaDB Enterprise 2021.x and above.
 - Version 4 of the driver and its extension packages target .NET 10 (`net10.0`).

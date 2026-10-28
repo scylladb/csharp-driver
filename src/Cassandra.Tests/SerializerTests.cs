@@ -36,7 +36,7 @@ namespace Cassandra.Tests
     {
         private readonly ProtocolVersion[] _protocolVersions =
         {
-            ProtocolVersion.V1, ProtocolVersion.V2, ProtocolVersion.V3, ProtocolVersion.V4
+            ProtocolVersion.V3, ProtocolVersion.V4
         };
 
         private static readonly MapColumnInfo MapColumnInfoStringString = new MapColumnInfo() { KeyTypeCode = ColumnTypeCode.Text, ValueTypeCode = ColumnTypeCode.Text };

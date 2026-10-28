@@ -40,39 +40,25 @@ namespace Cassandra.IntegrationTests.Core
         [TestCase(ProtocolVersion.V3, "3.0.13", "2.1.17")]
         [TestCase(ProtocolVersion.V3, "3.0.13", "2.1.17")]
         [TestCase(ProtocolVersion.V3, "2.2.11", "2.1.17")]
-        [TestCase(ProtocolVersion.V2, "2.2.11", "2.0.17")]
-        [TestCase(ProtocolVersion.V2, "2.1.17", "2.0.17")]
-        [TestCase(ProtocolVersion.V1, "2.2.11", "1.2.19")]
-        [TestCase(ProtocolVersion.V1, "2.1.17", "1.2.19")]
-        [TestCase(ProtocolVersion.V1, "2.0.17", "1.2.19")]
+        // Hosts older than C* 2.1 only support the removed protocol versions 1 and 2, they don't lower the version
+        [TestCase(ProtocolVersion.V3, "2.1.17", "2.0.17")]
         public void Should_Downgrade_To_Protocol_VX_With_Versions(ProtocolVersion version,
                                                                   params string[] cassandraVersions)
         {
             using (var testCluster = SimulacronCluster.CreateNewWithPostBody(GetSimulatorBody(cassandraVersions)))
             using (var cluster = ClusterBuilder().AddContactPoint(testCluster.InitialContactPoint).Build())
             {
-                if (version > ProtocolVersion.V2)
-                {
-                    var session = cluster.Connect();
-                    Parallel.For(0, 10, _ => session.Execute("SELECT * FROM system.local WHERE key='local'"));
-                    Assert.AreEqual(version, cluster.InternalRef.GetControlConnection().ProtocolVersion);
-                }
-                else
-                {
-                    // Protocol v2 and v1 not supported by simulacron but driver protocol downgrading worked
-                    var ex = Assert.Throws<NoHostAvailableException>(() => cluster.Connect());
-                    Assert.That(ex.Errors.Count, Is.EqualTo(2));
-                    foreach (var err in ex.Errors.Values)
-                    {
-                        Assert.IsInstanceOf<UnsupportedProtocolVersionException>(err);
-                    }
-                }
+                var session = cluster.Connect();
+                Parallel.For(0, 10, _ => session.Execute("SELECT * FROM system.local WHERE key='local'"));
+                Assert.AreEqual(version, cluster.InternalRef.GetControlConnection().ProtocolVersion);
             }
         }
 
         [TestCase(ProtocolVersion.V4, "3.11.6", "3.0.11", "2.2.9")]
         [TestCase(ProtocolVersion.V4, "3.0.13", "3.0.11", "2.2.9")]
-        // Can't downgrade C* 3.0+ nodes to v1 or v2
+        // Hosts older than C* 2.1 only support the removed protocol versions 1 and 2, they don't lower the version
+        [TestCase(ProtocolVersion.V4, "2.2.11", "2.0.17")]
+        [TestCase(ProtocolVersion.V4, "2.2.11", "1.2.19")]
         [TestCase(ProtocolVersion.V4, "4.0.0", "3.0.13", "2.0.17")]
         [TestCase(ProtocolVersion.V4, "3.0.13", "1.2.19")]
         public void Should_Not_Downgrade_Protocol_Version(ProtocolVersion version, params string[] cassandraVersions)

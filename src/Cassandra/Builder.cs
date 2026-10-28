@@ -804,13 +804,16 @@ namespace Cassandra
         /// <param name="version">
         /// <para>The native protocol version.</para>
         /// <para>Different Cassandra versions support a range of protocol versions, for example: </para>
-        /// <para>- Cassandra 2.0 (DSE 4.0 - 4.6): Supports protocol versions 1 and 2.</para>
-        /// <para>- Cassandra 2.1 (DSE 4.7 - 4.8): Supports protocol versions 1, 2 and 3.</para>
-        /// <para>- Cassandra 2.2: Supports protocol versions 1, 2, 3 and 4.</para>
-        /// <para>- Cassandra 3.0: Supports protocol versions 3 and 4.</para>
+        /// <para>- Cassandra 2.1: Supports protocol version 3.</para>
+        /// <para>- Cassandra 2.2 and 3.x: Support protocol versions 3 and 4.</para>
+        /// <para>- ScyllaDB: Supports protocol versions 3 and 4.</para>
+        /// <para>The driver supports protocol versions 3 and above.</para>
         /// </param>
         /// <remarks>Some Cassandra features are only available with a specific protocol version.</remarks>
         /// <returns>this instance</returns>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// <paramref name="version"/> is lower than <see cref="ProtocolVersion.MinSupported"/>.
+        /// </exception>
         public Builder WithMaxProtocolVersion(byte version)
         {
             return WithMaxProtocolVersion((ProtocolVersion)version);
@@ -829,13 +832,12 @@ namespace Cassandra
         /// </summary>
         /// <remarks>Some Cassandra features are only available with a specific protocol version.</remarks>
         /// <returns>this instance</returns>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// <paramref name="version"/> is lower than <see cref="ProtocolVersion.MinSupported"/>.
+        /// </exception>
         public Builder WithMaxProtocolVersion(ProtocolVersion version)
         {
-            if (version == 0)
-            {
-                throw new ArgumentException("Protocol version 0 does not exist.");
-            }
-            _maxProtocolVersion = version;
+            _maxProtocolVersion = version.EnsureNotBelowMinSupported(nameof(version));
             return this;
         }
 

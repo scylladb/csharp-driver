@@ -10,6 +10,9 @@ codebase](https://git-wip-us.apache.org/repos/asf?p=cassandra.git;a=tree;f=doc;h
 By default, the driver uses the highest protocol version supported by the driver and the Cassandra cluster. If you want
 to limit the protocol version to use, you do so in the protocol options.
 
+The driver supports native protocol version 3 and above, which requires Apache Cassandra 2.1+ or any ScyllaDB version.
+Protocol versions 1 and 2 were removed in version 4 of the driver.
+
 ```csharp
 var cluster = Cluster.Builder()
                      .AddContactPoint("host1")
@@ -23,11 +26,14 @@ The protocol version used between the client and the Cassandra cluster is negoti
 connection. For clusters with nodes running mixed versions of Cassandra and during rolling upgrades this could represent
 an issue that could lead to limited availability.
 
-To exemplify the above, consider a mixed cluster having nodes running either Cassandra 2.1 or 2.0.
+When it negotiates the version, the driver takes into account the Cassandra version of every host it knows about, and
+uses the highest protocol version that all of them support. A host it learns about later can still require a lower
+version. To exemplify the above, consider a cluster where every node runs Cassandra 2.2, and a node running Cassandra 2.1
+is added after the driver has connected.
 
-- The first contact point is a 2.1 host, so the driver negotiates native protocol version 3
-- While connecting to the rest of the cluster, the driver contacts a 2.0 host using native protocol version 3, which
-fails; an error is logged and this host will be permanently ignored.
+- All the hosts the driver knows about at startup run 2.2, so the driver negotiates native protocol version 4
+- When the driver connects to the new 2.1 host using native protocol version 4, it fails; an error is logged, and the
+host is marked down until a reconnection attempt succeeds, which doesn't happen while the driver uses version 4.
 
 For these scenarios, mixed version clusters and rolling upgrades, it is strongly recommended to set the maximum protocol
 version when initializing the client:
@@ -35,7 +41,7 @@ version when initializing the client:
 ```csharp
 var cluster = Cluster.Builder()
                      .AddContactPoint("host1")
-                     .WithMaxProtocolVersion(ProtocolVersion.V2)
+                     .WithMaxProtocolVersion(ProtocolVersion.V3)
                      .Build();
 ```
 

@@ -30,16 +30,12 @@ namespace Cassandra.Tests.Mapping.Linq
     public class LinqExecutionProfileTests : MappingTestBase
     {
         [Test]
-        [TestCase(true, true)]
-        [TestCase(false, true)]
-        [TestCase(true, false)]
-        [TestCase(false, false)]
-        public async Task Should_ExecuteBatchCorrectlyWithExecutionProfile_When_ExecutionProfileIsProvided(bool batchV1, bool async)
+        [TestCase(true)]
+        [TestCase(false)]
+        public async Task Should_ExecuteBatchCorrectlyWithExecutionProfile_When_ExecutionProfileIsProvided(bool async)
         {
             IStatement statement = null;
-            var session = batchV1
-                ? GetSession<SimpleStatement>(new RowSet(), stmt => statement = stmt, ProtocolVersion.V1)
-                : GetSession<BatchStatement>(new RowSet(), stmt => statement = stmt, ProtocolVersion.V2);
+            var session = GetSession<BatchStatement>(new RowSet(), stmt => statement = stmt, ProtocolVersion.V3);
 
             var map = new Map<AllTypesEntity>()
                 .ExplicitColumns()
@@ -49,7 +45,7 @@ namespace Cassandra.Tests.Mapping.Linq
                 .TableName("tbl1");
 
             var batch = session.CreateBatch();
-            Assert.IsTrue(batchV1 ? batch.GetType() == typeof(BatchV1) : batch.GetType() == typeof(BatchV2));
+            Assert.IsTrue(batch.GetType() == typeof(BatchV2));
 
             const int updateCount = 3;
             var table = GetTable<AllTypesEntity>(session, map);
@@ -75,18 +71,15 @@ namespace Cassandra.Tests.Mapping.Linq
             Mock.Get(session).Verify(s => s.Execute(It.IsAny<IStatement>(), "testProfile"), Times.Never);
             Mock.Get(session).Verify(s => s.Execute(It.IsAny<IStatement>()), Times.Never);
 
-            if (!batchV1)
+            var batchStatement = (BatchStatement)statement;
+            foreach (var updateGuid in updateGuids)
             {
-                var batchStatement = (BatchStatement)statement;
-                foreach (var updateGuid in updateGuids)
-                {
-                    var updateStatement = batchStatement.Queries.First(_ => _.QueryValues.Length == 2 && _.QueryValues[1] as Guid? == updateGuid) as SimpleStatement;
-                    Assert.IsNotNull(updateStatement);
-                    Assert.IsNotNull(updateStatement.QueryValues);
-                    Assert.AreEqual(2, updateStatement.QueryValues.Length);
-                    Assert.AreEqual("newStringFor" + updateGuid, updateStatement.QueryValues[0]);
-                    Assert.AreEqual("UPDATE tbl1 SET val = ? WHERE id = ?", updateStatement.QueryString);
-                }
+                var updateStatement = batchStatement.Queries.First(_ => _.QueryValues.Length == 2 && _.QueryValues[1] as Guid? == updateGuid) as SimpleStatement;
+                Assert.IsNotNull(updateStatement);
+                Assert.IsNotNull(updateStatement.QueryValues);
+                Assert.AreEqual(2, updateStatement.QueryValues.Length);
+                Assert.AreEqual("newStringFor" + updateGuid, updateStatement.QueryValues[0]);
+                Assert.AreEqual("UPDATE tbl1 SET val = ? WHERE id = ?", updateStatement.QueryString);
             }
         }
 

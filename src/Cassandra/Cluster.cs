@@ -146,6 +146,9 @@ namespace Cassandra
         /// Protocol version used can not be higher than <see cref="ProtocolVersion.MaxSupported"/>.
         /// </para>
         /// </summary>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// When the value is lower than <see cref="ProtocolVersion.MinSupported"/>.
+        /// </exception>
         public static int MaxProtocolVersion
         {
             get { return (int)_maxProtocolVersion; }
@@ -155,6 +158,14 @@ namespace Cassandra
                 {
                     // Ignore
                     return;
+                }
+                if (value < (int)ProtocolVersion.MinSupported)
+                {
+                    throw new ArgumentOutOfRangeException(
+                        nameof(value),
+                        value,
+                        $"Protocol version {value} is not supported, the driver requires protocol version " +
+                        $"{ProtocolVersion.MinSupported:D} or above (Apache Cassandra 2.1+ or any ScyllaDB version).");
                 }
                 _maxProtocolVersion = (ProtocolVersion)value;
             }

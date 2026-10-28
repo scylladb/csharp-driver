@@ -49,11 +49,6 @@ namespace Cassandra.Requests
             ConsistencyLevel consistency,
             IRequestOptions requestOptions) : base(serializer, statement.IsTracing, payload)
         {
-            if (!serializer.ProtocolVersion.SupportsBatch())
-            {
-                throw new NotSupportedException("Batch request is supported in C* >= 2.0.x");
-            }
-
             if (statement.Timestamp != null && !serializer.ProtocolVersion.SupportsTimestamp())
             {
                 throw new NotSupportedException(
