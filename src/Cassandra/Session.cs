@@ -118,24 +118,6 @@ namespace Cassandra
         }
 
         /// <inheritdoc />
-        public IAsyncResult BeginExecute(IStatement statement, AsyncCallback callback, object state)
-        {
-            return ExecuteAsync(statement).ToApm(callback, state);
-        }
-
-        /// <inheritdoc />
-        public IAsyncResult BeginExecute(string cqlQuery, ConsistencyLevel consistency, AsyncCallback callback, object state)
-        {
-            return BeginExecute(new SimpleStatement(cqlQuery).SetConsistencyLevel(consistency), callback, state);
-        }
-
-        /// <inheritdoc />
-        public IAsyncResult BeginPrepare(string cqlQuery, AsyncCallback callback, object state)
-        {
-            return PrepareAsync(cqlQuery).ToApm(callback, state);
-        }
-
-        /// <inheritdoc />
         public void ChangeKeyspace(string keyspace)
         {
             if (Keyspace != keyspace)
@@ -276,22 +258,6 @@ namespace Cassandra
                 // Log and continue as the ControlConnection is connected
                 Session.Logger.Error($"Connection pools for {hosts.Length} host(s) failed to be warmed up");
             }
-        }
-
-        /// <inheritdoc />
-        public RowSet EndExecute(IAsyncResult ar)
-        {
-            var task = (Task<RowSet>)ar;
-            TaskHelper.WaitToCompleteWithMetrics(_metricsManager, task, Configuration.DefaultRequestOptions.QueryAbortTimeout);
-            return task.Result;
-        }
-
-        /// <inheritdoc />
-        public PreparedStatement EndPrepare(IAsyncResult ar)
-        {
-            var task = (Task<PreparedStatement>)ar;
-            TaskHelper.WaitToCompleteWithMetrics(_metricsManager, task, Configuration.DefaultRequestOptions.QueryAbortTimeout);
-            return task.Result;
         }
 
         /// <inheritdoc />

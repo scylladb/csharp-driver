@@ -245,6 +245,30 @@ The `Row(int, byte[][], CqlColumn[], Dictionary<string, int>)` constructor and t
 protected `Row.Values` and `Row.ProtocolVersion` properties are removed. To create a
 `Row` in a test, use the parameterless constructor and override `GetValue<T>()`.
 
+### Removed `Begin`/`End` asynchronous methods
+
+The methods of the `IAsyncResult` pattern are removed. Use the `Task`-based methods
+instead, which they wrapped:
+
+| Removed | Replacement |
+|---|---|
+| `ISession.BeginExecute(IStatement, ...)` / `EndExecute` | `ISession.ExecuteAsync(statement)` |
+| `ISession.BeginExecute(string, ConsistencyLevel, ...)` / `EndExecute` | `ISession.ExecuteAsync(new SimpleStatement(cql).SetConsistencyLevel(consistency))` |
+| `ISession.BeginPrepare` / `EndPrepare` | `ISession.PrepareAsync` |
+| `BeginExecute` / `EndExecute` of `CqlQueryBase<T>` (including `CqlQuery<T>` and `Table<T>`), `CqlCommand`, `CqlScalar<T>`, `CqlQuerySingleElement<T>` and `Batch` (`Cassandra.Data.Linq`) | their `ExecuteAsync` |
+
+The returned `Task` implements `IAsyncResult`, but it does not invoke a callback, and its
+`AsyncState` is not the state that the removed `Begin` method took. Use `await` or a
+continuation to act on completion, and capture the state in it. Code that still needs
+the `IAsyncResult` pattern can wrap the task with `System.Threading.Tasks.TaskToAsyncResult`,
+which invokes the callback and keeps the state:
+
+```csharp
+IAsyncResult ar = TaskToAsyncResult.Begin(session.ExecuteAsync(statement), callback, state);
+// In the callback, or to wait for the result:
+RowSet rs = TaskToAsyncResult.End<RowSet>(ar);
+```
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.

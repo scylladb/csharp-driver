@@ -84,16 +84,5 @@ namespace Cassandra.Data.Linq
 
             return result;
         }
-
-        public new IAsyncResult BeginExecute(AsyncCallback callback, object state)
-        {
-            return ExecuteAsync().ToApm(callback, state);
-        }
-
-        public new TEntity EndExecute(IAsyncResult ar)
-        {
-            var task = (Task<TEntity>)ar;
-            return task.Result;
-        }
     }
 }
