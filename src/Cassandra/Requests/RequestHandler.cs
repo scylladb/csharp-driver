@@ -186,7 +186,7 @@ namespace Cassandra.Requests
             if (statement is RegularStatement s1)
             {
                 s1.Serializer = serializer;
-                var options = QueryProtocolOptions.CreateFromQuery(serializer.ProtocolVersion, s1, requestOptions, null, null);
+                var options = QueryProtocolOptions.CreateFromQuery(s1, requestOptions, null, null);
                 options.ValueNames = s1.QueryValueNames;
                 request = new QueryRequest(serializer, s1.QueryString, options, s1.IsTracing, s1.OutgoingPayload);
             }
@@ -198,7 +198,7 @@ namespace Cassandra.Requests
                 // during a rolling upgrade they will not all exchange result metadata ids. The decision is
                 // therefore deferred to ExecuteRequest.WriteBody, and only the statement-level intent is
                 // carried here.
-                var options = QueryProtocolOptions.CreateFromQuery(serializer.ProtocolVersion, s2, requestOptions, null, s2.PreparedStatement.Variables);
+                var options = QueryProtocolOptions.CreateFromQuery(s2, requestOptions, null, s2.PreparedStatement.Variables);
                 request = new ExecuteRequest(
                     serializer,
                     s2.PreparedStatement.Id,

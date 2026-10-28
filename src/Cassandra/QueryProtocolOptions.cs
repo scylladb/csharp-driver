@@ -107,7 +107,7 @@ namespace Cassandra
         }
 
         internal static QueryProtocolOptions CreateFromQuery(
-            ProtocolVersion protocolVersion, Statement query, IRequestOptions requestOptions, bool? forceSkipMetadata, RowSetMetadata variablesMetadata)
+            Statement query, IRequestOptions requestOptions, bool? forceSkipMetadata, RowSetMetadata variablesMetadata)
         {
             if (query == null)
             {
@@ -120,7 +120,7 @@ namespace Cassandra
             {
                 timestamp = TypeSerializer.SinceUnixEpoch(query.Timestamp.Value).Ticks / 10;
             }
-            else if (protocolVersion.SupportsTimestamp())
+            else
             {
                 timestamp = requestOptions.TimestampGenerator.Next();
                 if (timestamp == long.MinValue)
@@ -173,11 +173,11 @@ namespace Cassandra
             {
                 flags |= QueryFlags.WithSerialConsistency;
             }
-            if (protocolVersion.SupportsTimestamp() && RawTimestamp != null)
+            if (RawTimestamp != null)
             {
                 flags |= QueryFlags.WithDefaultTimestamp;
             }
-            if (protocolVersion.SupportsNamedValuesInQueries() && ValueNames != null && ValueNames.Count > 0)
+            if (ValueNames != null && ValueNames.Count > 0)
             {
                 flags |= QueryFlags.WithNameForValues;
             }

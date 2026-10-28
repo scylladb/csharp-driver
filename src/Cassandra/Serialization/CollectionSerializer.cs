@@ -52,13 +52,13 @@ namespace Cassandra.Serialization
                 throw new DriverInternalError(string.Format("CollectionSerializer can not deserialize CQL values of type {0}",
                     typeInfo == null ? "null" : typeInfo.GetType().FullName));
             }
-            var count = DecodeCollectionLength((ProtocolVersion)protocolVersion, buffer, ref offset);
+            var count = DecodeCollectionLength(buffer, ref offset);
             var childType = GetClrType(childTypeCode.Value, childTypeInfo);
             var result = Array.CreateInstance(childType, count);
             bool? isNullable = null;
             for (var i = 0; i < count; i++)
             {
-                var itemLength = DecodeCollectionLength((ProtocolVersion)protocolVersion, buffer, ref offset);
+                var itemLength = DecodeCollectionLength(buffer, ref offset);
                 if (itemLength < 0)
                 {
                     if (isNullable == null)
@@ -132,13 +132,13 @@ namespace Cassandra.Serialization
                     throw new ArgumentNullException(null, "Null values are not supported inside collections");
                 }
                 var itemBuffer = SerializeChild(protocolVersion, item);
-                var lengthBuffer = EncodeCollectionLength(protocolVersion, itemBuffer.Length);
+                var lengthBuffer = EncodeCollectionLength(itemBuffer.Length);
                 bufferList.AddLast(lengthBuffer);
                 bufferList.AddLast(itemBuffer);
                 totalLength += lengthBuffer.Length + itemBuffer.Length;
                 itemCount++;
             }
-            var totalLengthBuffer = EncodeCollectionLength(protocolVersion, itemCount);
+            var totalLengthBuffer = EncodeCollectionLength(itemCount);
             bufferList.AddFirst(totalLengthBuffer);
             totalLength += totalLengthBuffer.Length;
             return Utils.JoinBuffers(bufferList, totalLength);

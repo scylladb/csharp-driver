@@ -179,39 +179,6 @@ namespace Cassandra
         }
 
         /// <summary>
-        /// Determines whether the protocol supports up to 4 strings (ie: change_type, target, keyspace and table) in
-        /// the schema change responses.
-        /// </summary>
-        public static bool SupportsSchemaChangeFullMetadata(this ProtocolVersion version)
-        {
-            return version >= ProtocolVersion.V3;
-        }
-
-        /// <summary>
-        /// Determines whether the protocol supports timestamps parameters in BATCH, QUERY and EXECUTE requests.
-        /// </summary>
-        public static bool SupportsTimestamp(this ProtocolVersion version)
-        {
-            return version >= ProtocolVersion.V3;
-        }
-
-        /// <summary>
-        /// Determines whether the protocol supports flags in BATCH requests.
-        /// </summary>
-        public static bool SupportsBatchFlags(this ProtocolVersion version)
-        {
-            return version >= ProtocolVersion.V3;
-        }
-
-        /// <summary>
-        /// Determines whether the protocol supports named values in QUERY and EXECUTE requests.
-        /// </summary>
-        public static bool SupportsNamedValuesInQueries(this ProtocolVersion version)
-        {
-            return version >= ProtocolVersion.V3;
-        }
-
-        /// <summary>
         /// Determines whether the protocol supports unset parameters.
         /// </summary>
         /// <param name="version"></param>
@@ -257,14 +224,6 @@ namespace Cassandra
         public static bool SupportsFailureReasons(this ProtocolVersion version)
         {
             return version >= ProtocolVersion.V5;
-        }
-
-        /// <summary>
-        /// Determines whether the collection length is encoded using 32 bits.
-        /// </summary>
-        public static bool Uses4BytesCollectionLength(this ProtocolVersion version)
-        {
-            return version >= ProtocolVersion.V3;
         }
 
         /// <summary>

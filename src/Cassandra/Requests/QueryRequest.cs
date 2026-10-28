@@ -74,19 +74,6 @@ namespace Cassandra.Requests
             {
                 throw new RequestInvalidException("Non-serial consistency specified as a serial one.");
             }
-
-            if (!serializer.ProtocolVersion.SupportsTimestamp())
-            {
-                //Features supported in protocol v3 and above
-                if (queryOptions.RawTimestamp != null)
-                {
-                    throw new NotSupportedException("Timestamp for query is supported in Cassandra 2.1 and above.");
-                }
-                if (queryOptions.ValueNames != null && queryOptions.ValueNames.Count > 0)
-                {
-                    throw new NotSupportedException("Query parameter names feature is supported in Cassandra 2.1 and above.");
-                }
-            }
         }
 
         protected override byte OpCode => QueryRequest.QueryOpCode;

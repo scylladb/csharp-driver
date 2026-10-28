@@ -55,7 +55,7 @@ namespace Cassandra.Responses
             }
             if (eventTypeString == "SCHEMA_CHANGE")
             {
-                CassandraEventArgs = EventResponse.ParseSchemaChangeBody(frame.Header.Version, Reader);
+                CassandraEventArgs = EventResponse.ParseSchemaChangeBody(Reader);
                 return;
             }
             if (eventTypeString == "CLIENT_ROUTES_CHANGE")
@@ -113,7 +113,7 @@ namespace Cassandra.Responses
             }
         }
 
-        public static SchemaChangeEventArgs ParseSchemaChangeBody(ProtocolVersion protocolVersion, FrameReader reader)
+        public static SchemaChangeEventArgs ParseSchemaChangeBody(FrameReader reader)
         {
             var ce = new SchemaChangeEventArgs();
             var changeTypeText = reader.ReadString();
@@ -133,14 +133,7 @@ namespace Cassandra.Responses
                     break;
             }
             ce.What = changeType;
-            if (!protocolVersion.SupportsSchemaChangeFullMetadata())
-            {
-                //protocol v1 and v2: <change_type><keyspace><table>
-                ce.Keyspace = reader.ReadString();
-                ce.Table = reader.ReadString();
-                return ce;
-            }
-            //protocol v3+: <change_type><target><options>
+            //<change_type><target><options>
             var target = reader.ReadString();
             ce.Keyspace = reader.ReadString();
             switch (target)

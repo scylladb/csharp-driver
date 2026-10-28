@@ -25,10 +25,10 @@ namespace Cassandra
 
         public Guid? TraceId { get; }
 
-        internal OutputSchemaChange(ProtocolVersion protocolVersion, FrameReader reader, Guid? traceId)
+        internal OutputSchemaChange(FrameReader reader, Guid? traceId)
         {
             TraceId = traceId;
-            SchemaChangeEventArgs = EventResponse.ParseSchemaChangeBody(protocolVersion, reader);
+            SchemaChangeEventArgs = EventResponse.ParseSchemaChangeBody(reader);
         }
 
         public void Dispose()
