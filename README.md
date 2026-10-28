@@ -24,6 +24,7 @@ PM> Install-Package ScyllaDBCSharpDriver
 ```
 
 [![Latest stable](https://img.shields.io/nuget/v/ScyllaDBCSharpDriver.svg)](https://www.nuget.org/packages/ScyllaDBCSharpDriver)
+[![Code coverage](https://codecov.io/gh/scylladb/csharp-driver/branch/master/graph/badge.svg)](https://codecov.io/gh/scylladb/csharp-driver)
 
 ## Features
 

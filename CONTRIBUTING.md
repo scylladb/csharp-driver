@@ -272,6 +272,13 @@ as the `coverage-reports` workflow artifact. Before it measures anything it runs
 [build/test-coverage.sh](./build/test-coverage.sh), which tests the script's control flow with every tool
 it calls replaced by a stub.
 
+It also uploads both reports from every passing run to
+[Codecov](https://codecov.io/gh/scylladb/csharp-driver), which comments the coverage delta on the pull
+request; the components in [codecov.yml](./codecov.yml) split the figure by shipped assembly. Those
+statuses are informational, so a drop never blocks a merge. Only a run in which every step passed
+uploads, so a lane that failed halfway leaves no partial report behind to be taken for a complete one; a
+commit with no upload of its own is compared against the nearest ancestor that has one.
+
 ## Benchmarks
 
 [src/Cassandra.Benchmarks](./src/Cassandra.Benchmarks) contains [BenchmarkDotNet][benchmarkdotnet] micro-benchmarks for the driver's hot paths: big-endian conversions, value serialization, partition-key hashing and RESULT/Rows decoding. They need no cluster. CI only checks that they compile and are formatted (`make check-benchmarks`; `make check` leaves them out).

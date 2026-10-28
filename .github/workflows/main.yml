@@ -13,6 +13,7 @@ on:
       - .github/workflows/docs-pr.yaml
       - .github/workflows/package-validator-tests.yml
       - .github/workflows/coverage.yml
+      - codecov.yml
       - build/validate-packages.py
       - build/tests/test_validate_packages.py
       - build/coverage.sh
@@ -35,6 +36,7 @@ on:
       - .github/workflows/docs-pr.yaml
       - .github/workflows/package-validator-tests.yml
       - .github/workflows/coverage.yml
+      - codecov.yml
       - build/validate-packages.py
       - build/tests/test_validate_packages.py
       - build/coverage.sh

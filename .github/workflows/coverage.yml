@@ -151,3 +151,32 @@ jobs:
         with:
           name: coverage-reports
           path: coverage/
+
+      # No `if: always()` here: only a run in which every step above passed
+      # uploads. build/coverage.sh writes both reports even when a suite fails
+      # and exits non-zero only afterwards, and on master such a partial report
+      # would become the baseline the pull requests built on that commit are
+      # compared against, so every one of them would show a phantom improvement
+      # and a real regression could hide in the gap. Uploading nothing is the
+      # better failure: Codecov then compares against the nearest ancestor that
+      # does have a report.
+      # Pull requests from forks get no secrets and upload without a token,
+      # Dependabot's runs get no CODECOV_TOKEN either, and nor does a run in a
+      # fork of the repository; none of them fails the job if Codecov refuses
+      # the upload.
+      # The action downloads the Codecov CLI, by default its latest release. Its
+      # version is pinned, as the actions themselves are (see "Code coverage" in
+      # MAINTENANCE.md), so a new CLI release cannot break the uploads, which do
+      # fail the job on master.
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          version: v11.3.1
+          files: coverage/unit.cobertura.xml,coverage/integration.cobertura.xml
+          disable_search: true
+          # disable_search leaves the CLI's xcode, gcov and pycoverage plugins
+          # running, each looking for reports of its own kind; noop turns them
+          # off.
+          plugins: noop
+          fail_ci_if_error: ${{ github.repository == 'scylladb/csharp-driver' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) }}
