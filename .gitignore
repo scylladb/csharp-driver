@@ -85,3 +85,6 @@ CLAUDE.md
 
 # BenchmarkDotNet output (make benchmark)
 BenchmarkDotNet.Artifacts/
+
+# Code coverage reports (make coverage)
+/coverage/
