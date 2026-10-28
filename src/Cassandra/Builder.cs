@@ -43,7 +43,6 @@ namespace Cassandra
         private const int DefaultQueryAbortTimeout = 20000;
         private PoolingOptions _poolingOptions;
         private SocketOptions _socketOptions = new SocketOptions();
-        private IAuthInfoProvider _authInfoProvider;
         private IAuthProvider _authProvider = NoneAuthProvider.Instance;
         private CompressionType _compression = CompressionType.NoCompression;
         private IFrameCompressor _customCompressor;
@@ -171,7 +170,6 @@ namespace Cassandra
                 _socketOptions,
                 clientOptions,
                 _authProvider,
-                _authInfoProvider,
                 _queryOptions,
                 _addressTranslator,
                 _profiles,
@@ -662,7 +660,6 @@ namespace Cassandra
         /// <returns>this Builder</returns>
         public Builder WithCredentials(String username, String password)
         {
-            _authInfoProvider = new SimpleAuthInfoProvider().Add("username", username).Add("password", password);
             _authProvider = new PlainTextAuthProvider(username, password);
             return this;
         }

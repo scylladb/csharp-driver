@@ -92,12 +92,6 @@ namespace Cassandra
         internal IAuthProvider AuthProvider { get; private set; } // Not exposed yet on purpose
 
         /// <summary>
-        ///  The authentication provider used to connect to the Cassandra cluster.
-        /// </summary>
-        /// <returns>the authentication provider in use.</returns>
-        internal IAuthInfoProvider AuthInfoProvider { get; private set; } // Not exposed yet on purpose
-
-        /// <summary>
         ///  The address translator used to translate Cassandra node address.
         /// </summary>
         /// <returns>the address translator in use.</returns>
@@ -247,7 +241,6 @@ namespace Cassandra
                  new SocketOptions(),
                  new ClientOptions(),
                  NoneAuthProvider.Instance,
-                 null,
                  new QueryOptions(),
                  new DefaultAddressTranslator(),
                  new Dictionary<string, IExecutionProfile>(),
@@ -278,7 +271,6 @@ namespace Cassandra
                                SocketOptions socketOptions,
                                ClientOptions clientOptions,
                                IAuthProvider authProvider,
-                               IAuthInfoProvider authInfoProvider,
                                QueryOptions queryOptions,
                                IAddressTranslator addressTranslator,
                                IReadOnlyDictionary<string, IExecutionProfile> executionProfiles,
@@ -330,7 +322,6 @@ namespace Cassandra
             SocketOptions = socketOptions;
             ClientOptions = clientOptions;
             AuthProvider = authProvider;
-            AuthInfoProvider = authInfoProvider;
             DriverConfigReportingEnabled = driverConfigReportingEnabled ?? Configuration.DefaultDriverConfigReportingEnabled;
             StartupOptionsFactory = startupOptionsFactory ?? new StartupOptionsFactory(
                 ClusterId,

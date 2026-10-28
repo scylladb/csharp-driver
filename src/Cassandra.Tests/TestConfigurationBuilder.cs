@@ -45,8 +45,6 @@ namespace Cassandra.Tests
 
         public IAuthProvider AuthProvider { get; set; } = new NoneAuthProvider();
 
-        public IAuthInfoProvider AuthInfoProvider { get; set; } = new SimpleAuthInfoProvider();
-
         public QueryOptions QueryOptions { get; set; } = new QueryOptions();
 
         public IAddressTranslator AddressTranslator { get; set; } = new DefaultAddressTranslator();
@@ -126,7 +124,6 @@ namespace Cassandra.Tests
                 SocketOptions,
                 ClientOptions,
                 AuthProvider,
-                AuthInfoProvider,
                 QueryOptions,
                 AddressTranslator,
                 ExecutionProfiles,

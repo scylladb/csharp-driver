@@ -35,18 +35,15 @@ namespace Cassandra.Tests
             var builder = Cluster.Builder().WithConnectionString(string.Format("Contact Points={0}", contactPoints));
             var config = builder.GetConfiguration();
             Assert.IsInstanceOf<NoneAuthProvider>(config.AuthProvider);
-            Assert.IsNull(config.AuthInfoProvider);
 
             builder = Cluster.Builder().WithConnectionString(string.Format("Contact Points={0};Username=user1", contactPoints));
             config = builder.GetConfiguration();
             //As there is no password, auth provider should be empty
             Assert.IsInstanceOf<NoneAuthProvider>(config.AuthProvider);
-            Assert.IsNull(config.AuthInfoProvider);
 
             builder = Cluster.Builder().WithConnectionString(string.Format("Contact Points={0};Username=user1;Password=P@ssword!", contactPoints));
             config = builder.GetConfiguration();
             Assert.IsInstanceOf<PlainTextAuthProvider>(config.AuthProvider);
-            Assert.IsInstanceOf<SimpleAuthInfoProvider>(config.AuthInfoProvider);
         }
 
         [Test]
@@ -82,12 +79,10 @@ namespace Cassandra.Tests
             var builder = Cluster.Builder().AddContactPoints(contactPoints);
             var config = builder.GetConfiguration();
             Assert.IsInstanceOf<NoneAuthProvider>(config.AuthProvider);
-            Assert.IsNull(config.AuthInfoProvider);
 
             builder = Cluster.Builder().AddContactPoints(contactPoints).WithCredentials("user1", "password");
             config = builder.GetConfiguration();
             Assert.IsInstanceOf<PlainTextAuthProvider>(config.AuthProvider);
-            Assert.IsInstanceOf<SimpleAuthInfoProvider>(config.AuthInfoProvider);
 
             Exception ex = Assert.Throws<ArgumentNullException>(() =>
                 Cluster.Builder().AddContactPoints(contactPoints).WithCredentials("user1", null));
