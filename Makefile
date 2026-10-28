@@ -25,6 +25,10 @@ ifeq (${CCM_CONFIG_DIR},)
 endif
 CCM_CONFIG_DIR := $(shell readlink --canonicalize ${CCM_CONFIG_DIR})
 
+# Extra `dotnet test` options for the measured runs in build/coverage.sh; empty
+# for a regular run, so that the coverage lane and CI run the same suites.
+TEST_COVERAGE_OPTIONS ?=
+
 TEST_TARGET_OPTIONS ?=
 ifeq (${TEST_TARGET_OPTIONS},)
 	ifeq (${TARGET_FRAMEWORK},)
@@ -81,7 +85,7 @@ benchmark: build-benchmarks
 .PHONY: test-unit
 test-unit: .use-development-snk
 	dotnet build-server shutdown
-	dotnet test --configuration Release --maxcpucount:1 $(TEST_TARGET_OPTIONS) src/Cassandra.Tests/Cassandra.Tests.csproj
+	dotnet test --configuration Release --maxcpucount:1 $(TEST_TARGET_OPTIONS) $(TEST_COVERAGE_OPTIONS) src/Cassandra.Tests/Cassandra.Tests.csproj
 
 TEST_INTEGRATION_SCYLLA_FILTER ?= (FullyQualifiedName!~ClientWarningsTests & FullyQualifiedName!~CustomPayloadTests & FullyQualifiedName!~Connect_With_Ssl_Test & FullyQualifiedName!~Should_UpdateHosts_When_HostIpChanges & FullyQualifiedName!~Should_UseNewHostInQueryPlans_When_HostIsDecommissionedAndJoinsAgain & FullyQualifiedName!~Should_RemoveNodeMetricsAndDisposeMetricsContext_When_HostIsRemoved & FullyQualifiedName!~Virtual_Keyspaces_Are_Included & FullyQualifiedName!~Virtual_Table_Metadata_Test & FullyQualifiedName!~SessionAuthenticationTests & FullyQualifiedName!~Custom_MetadataTest & FullyQualifiedName!~Should_Use_Custom_TypeSerializers & FullyQualifiedName!~LinqWhere_WithVectors & FullyQualifiedName!~SimpleStatement_With_No_Compact_Enabled_Should_Reveal_Non_Schema_Columns & FullyQualifiedName!~SimpleStatement_With_No_Compact_Disabled_Should_Not_Reveal_Non_Schema_Columns & FullyQualifiedName!~ColumnClusteringOrderReversedTest & FullyQualifiedName!~GetMaterializedView_Should_Refresh_View_Metadata_Via_Events & FullyQualifiedName!~MaterializedView_Base_Table_Column_Addition & FullyQualifiedName!~MultipleSecondaryIndexTest & FullyQualifiedName!~RaiseErrorOnInvalidMultipleSecondaryIndexTest & FullyQualifiedName!~TableMetadataAllTypesTest & FullyQualifiedName!~TableMetadataClusteringOrderTest & FullyQualifiedName!~TableMetadataCollectionsSecondaryIndexTest & FullyQualifiedName!~TableMetadataCompositePartitionKeyTest & FullyQualifiedName!~TupleMetadataTest & FullyQualifiedName!~Udt_Case_Sensitive_Metadata_Test & FullyQualifiedName!~UdtMetadataTest & FullyQualifiedName!~Should_Retrieve_Table_Metadata & FullyQualifiedName!~CreateTable_With_Frozen_Key & FullyQualifiedName!~CreateTable_With_Frozen_Udt & FullyQualifiedName!~CreateTable_With_Frozen_Value & FullyQualifiedName!~Should_AllMetricsHaveValidValues_When_AllNodesAreUp & FullyQualifiedName!~SimpleStatement_Dictionary_Parameters_CaseInsensitivity_ExcessOfParams & FullyQualifiedName!~SimpleStatement_Dictionary_Parameters_CaseInsensitivity_NoOverload & FullyQualifiedName!~TokenAware_TransientReplication_NoHopsAndOnlyFullReplicas & FullyQualifiedName!~GetFunction_Should_Return_Most_Up_To_Date_Metadata_Via_Events & FullyQualifiedName!~LargeDataTests & FullyQualifiedName!~MetadataTests & FullyQualifiedName!~MultiThreadingTests & FullyQualifiedName!~PoolTests & FullyQualifiedName!~PrepareLongTests & FullyQualifiedName!~SpeculativeExecutionLongTests & FullyQualifiedName!~StressTests & FullyQualifiedName!~TransitionalAuthenticationTests & FullyQualifiedName!~ProxyAuthenticationTests & FullyQualifiedName!~CloudIntegrationTests & FullyQualifiedName!~CoreGraphTests & FullyQualifiedName!~GraphTests & FullyQualifiedName!~InsightsIntegrationTests & FullyQualifiedName!~DateRangeTests & FullyQualifiedName!~FoundBugTests & FullyQualifiedName!~GeometryTests & FullyQualifiedName!~LoadBalancingPolicyTests & FullyQualifiedName!~ConsistencyTests & FullyQualifiedName!~LoadBalancingPolicyTests & FullyQualifiedName!~ReconnectionPolicyTests & FullyQualifiedName!~RetryPolicyTests)
 TEST_INTEGRATION_OPTIONS ?= -l "console;verbosity=detailed"
@@ -92,13 +96,25 @@ TEST_WORKERS ?= 4
 .PHONY: test-integration-scylla
 test-integration-scylla: .use-development-snk .prepare-scylla-ccm
 	dotnet build-server shutdown
-	CCM_DISTRIBUTION=scylla dotnet test --configuration Release --maxcpucount:1 $(TEST_TARGET_OPTIONS) $(TEST_INTEGRATION_CSPROJ) $(TEST_INTEGRATION_OPTIONS) --filter "$(TEST_INTEGRATION_SCYLLA_FILTER)" -- NUnit.NumberOfTestWorkers=$(TEST_WORKERS)
+	CCM_DISTRIBUTION=scylla dotnet test --configuration Release --maxcpucount:1 $(TEST_TARGET_OPTIONS) $(TEST_COVERAGE_OPTIONS) $(TEST_INTEGRATION_CSPROJ) $(TEST_INTEGRATION_OPTIONS) --filter "$(TEST_INTEGRATION_SCYLLA_FILTER)" -- NUnit.NumberOfTestWorkers=$(TEST_WORKERS)
 
 .PHONY: test-integration-cassandra
 test-integration-cassandra: .use-development-snk .prepare-cassandra-ccm
 	# Stop the parallel Simulacron JVMs before the CCM tests start.
 	env -u SCYLLA_VERSION CCM_DISTRIBUTION=cassandra dotnet test --configuration Release --maxcpucount:1 $(TEST_TARGET_OPTIONS) $(TEST_INTEGRATION_CSPROJ) $(TEST_INTEGRATION_OPTIONS) --filter "TestCategory=simulacron" -- NUnit.NumberOfTestWorkers=$(TEST_WORKERS)
 	env -u SCYLLA_VERSION CCM_DISTRIBUTION=cassandra dotnet test --configuration Release --maxcpucount:1 $(TEST_TARGET_OPTIONS) $(TEST_INTEGRATION_CSPROJ) $(TEST_INTEGRATION_OPTIONS) --filter "TestCategory!=simulacron" -- NUnit.NumberOfTestWorkers=$(TEST_WORKERS)
+
+# Measures the shipped assemblies while running the unit and ScyllaDB integration
+# suites, and writes one Cobertura report per suite into coverage/. See the
+# header of build/coverage.sh and "Code coverage" in CONTRIBUTING.md.
+.PHONY: coverage
+coverage:
+	build/coverage.sh
+
+# The unit suite alone, for a machine without CCM or a JDK.
+.PHONY: coverage-unit
+coverage-unit:
+	build/coverage.sh --unit-only
 
 .prepare-cassandra-ccm:
 	@ccm --help 2>/dev/null 1>&2; if [[ $$? -lt 127 ]] && grep CASSANDRA ${CCM_CONFIG_DIR}/ccm-type 2>/dev/null 1>&2 && grep ${CCM_CASSANDRA_VERSION} ${CCM_CONFIG_DIR}/ccm-version 2>/dev//null  1>&2; then \

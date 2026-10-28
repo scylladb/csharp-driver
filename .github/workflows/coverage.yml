@@ -1,0 +1,153 @@
+# Measures the code coverage of the code the driver ships -- the three packaged
+# assemblies, ScyllaDB (src/Cassandra), Cassandra.AppMetrics and
+# Cassandra.OpenTelemetry -- as exercised by the test suites. See
+# build/coverage.sh for how, and "Code coverage" in CONTRIBUTING.md for what is
+# measured, what is left out and why.
+#
+# One job on one host: ubuntu-latest and net10.0, the only target the driver
+# has, so there is no second host or framework to measure. It runs the two
+# Makefile targets the CI workflow's unit-tests and integration-tests jobs run,
+# against the ScyllaDB version the Makefile pins. The CI workflow's other three
+# ScyllaDB versions exercise the same driver code, and its Apache Cassandra job
+# is left out: this lane measures against the one server the driver is built
+# for, so code only a Cassandra server reaches counts as uncovered, alike on
+# every run.
+#
+# Unlike the CI workflow, this one has no paths-ignore: every commit on master
+# is measured, so the figure is there for the commits that pull requests are
+# built on.
+name: Code coverage
+
+on:
+  push:
+    branches:
+      - master
+      - "branch-**"
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+# A new push to a pull request supersedes its running measurement, as in the CI
+# workflow. A push to master or a release branch must not supersede anything:
+# the report of each of those commits is what the pull requests built on it are
+# compared against. cancel-in-progress: false alone would not do, as GitHub
+# keeps one waiting run per group and a newer run replaces it, so those runs get
+# a group of their own, by commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  coverage:
+    name: Measure code coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      TARGET_FRAMEWORK: net10.0
+      # As in the CI workflow's integration jobs: pip installs CCM into ~/.local,
+      # which the "Cache CCM install" entry below restores. ~/.local/bin goes on
+      # PATH right after setup-python.
+      PIP_USER: "1"
+
+    steps:
+      # On a pull request this checks out its head commit rather than the merge
+      # commit GitHub checks out by default: Codecov files the report under the
+      # head commit, so lines measured on the merge would be laid over the
+      # head's version of each file, out of place in any file the base changed.
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      # Takes seconds, as every tool build/coverage.sh runs is stubbed out. A
+      # change that makes the script stop at a failing suite, or accept a report
+      # that measures nothing, fails here rather than going unnoticed until it
+      # matters.
+      - name: Test the coverage script
+        run: bash build/test-coverage.sh
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+
+      - name: Set up JDK 8
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
+        with:
+          java-version: 8
+          distribution: 'temurin'
+
+      - name: Setup Python 3
+        id: python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.11'
+
+      - name: Put user-installed Python scripts on PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # The same keys as the CI workflow's ScyllaDB integration jobs, so this
+      # lane reuses their entries rather than filling the cache with its own.
+      - name: Cache pip
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('Makefile') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+
+      - name: Cache CCM install
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.local
+            ~/.ccm/ccm-type
+            ~/.ccm/ccm-version
+          key: ccm-install-scylla-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('Makefile') }}
+          restore-keys: |
+            ccm-install-scylla-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-
+
+      - name: Cache NuGet packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      # CCM downloads the relocatable ScyllaDB package into
+      # ~/.ccm/scylla-repository, keyed by version. This lane takes the version
+      # the Makefile pins rather than resolving a moving tag at run time: a
+      # resolve step that comes back empty is how a coverage lane ends up green
+      # with its integration suite skipped. Hashing the Makefile is therefore
+      # enough to miss this cache when the pinned version changes.
+      - name: Cache the ScyllaDB package
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.ccm/scylla-repository
+          key: ccm-scylla-coverage-${{ runner.os }}-${{ hashFiles('Makefile') }}
+
+      - name: Measure coverage
+        run: make coverage
+
+      - name: Publish the coverage summary
+        if: always()
+        run: |
+          {
+            echo '## Code coverage'
+            echo '```'
+            cat coverage/summary.txt 2>/dev/null || echo 'no report: the run stopped before one was written'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # One path entry, so the artifact's root is coverage/ and holds both
+      # reports and the summary at its top level.
+      - name: Upload the coverage reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-reports
+          path: coverage/

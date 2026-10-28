@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Settings for the measured test runs in build/coverage.sh, passed with
+     TEST_COVERAGE_OPTIONS; a regular `make test-unit` or
+     `make test-integration-scylla` does not use this file.
+
+     Listing the coverlet collector here is what turns coverage collection on,
+     so the collector needs no command-line argument of its own. -->
+<RunSettings>
+  <RunConfiguration>
+    <!-- A `dotnet test` whose filter matches no test at all exits 0 by default,
+         so a filter that stopped matching would leave a suite measuring nothing
+         and the lane green. -->
+    <TreatNoTestsAsError>true</TreatNoTestsAsError>
+  </RunConfiguration>
+  <DataCollectionRunSettings>
+    <DataCollectors>
+      <DataCollector friendlyName="XPlat code coverage">
+        <Configuration>
+          <!-- Cobertura is what Codecov reads. -->
+          <Format>cobertura</Format>
+          <!-- Only the assemblies the NuGet packages ship: ScyllaDB is
+               src/Cassandra. The test, benchmark and example projects are not
+               listed, so none of them is measured. -->
+          <Include>[ScyllaDB]*,[Cassandra.AppMetrics]*,[Cassandra.OpenTelemetry]*</Include>
+          <!-- Source generators write their output under obj/. Those files are
+               not in the repository, so Codecov would drop them anyway, and
+               build/coverage.sh fails a report that names an untracked file. -->
+          <ExcludeByFile>**/obj/**</ExcludeByFile>
+        </Configuration>
+      </DataCollector>
+    </DataCollectors>
+  </DataCollectionRunSettings>
+</RunSettings>

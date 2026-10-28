@@ -203,6 +203,75 @@ dotnet test src/Cassandra.IntegrationTests/Cassandra.IntegrationTests.csproj -c 
 
 This currently takes less than 45 minutes for Apache Cassandra 3.11.x.
 
+## Code coverage
+
+`make coverage` measures the code the driver ships -- the three packaged assemblies, `ScyllaDB`
+(`src/Cassandra`), `Cassandra.AppMetrics` and `Cassandra.OpenTelemetry` -- while running the unit suite
+and the ScyllaDB integration suite, and writes one Cobertura report per suite:
+
+- `coverage/unit.cobertura.xml`, from `make test-unit`;
+- `coverage/integration.cobertura.xml`, from `make test-integration-scylla`, which runs the Simulacron
+  fixtures as well as the CCM ones.
+
+It needs no tool the suites do not need already: the .NET SDK for the unit suite, and a JDK with CCM for
+the integration suite (see [Required tools](#required-tools)). On a machine without those,
+`make coverage-unit` runs the unit suite alone. The collector is [coverlet][coverlet], which the two test
+projects reference; its settings are in [build/coverage.runsettings](./build/coverage.runsettings), and
+the script that drives the run is [build/coverage.sh](./build/coverage.sh).
+
+Both suites run through the Makefile targets CI runs, so the tests measured are the tests CI runs, under
+the same `TEST_INTEGRATION_SCYLLA_FILTER`, against the ScyllaDB version the `Makefile` pins
+(`SCYLLA_VERSION`) rather than the versions the CI matrix resolves at run time. A suite that fails does
+not stop the ones after it; the reports are still written and the run fails at the end. A suite that ran
+no test, wrote no report, or wrote one that measures nothing fails the run as well, so a partial
+measurement cannot pass for a complete one.
+
+### What is measured
+
+Only the three shipped assemblies: `build/coverage.runsettings` names them, so the test, benchmark and
+example projects are not measured, and neither is the code source generators write under `obj/`.
+
+Left out of the measurement:
+
+- the Apache Cassandra lane (`make test-integration-cassandra`): the measurement runs against the one
+  server the driver is built for, so code that only a Cassandra server reaches counts as uncovered, alike
+  on every run;
+- the CI matrix's other three ScyllaDB versions: they exercise the same driver code, so measuring them
+  would only repeat this figure;
+- the fixtures `TEST_INTEGRATION_SCYLLA_FILTER` excludes -- DataStax Enterprise features, cloud,
+  authentication, long-running and stress tests, and tests whose expectations do not hold against
+  ScyllaDB -- which the CI lane does not run either.
+
+No host or target framework is left out: the driver targets `net10.0` only, and CI runs on Linux only.
+
+### How to read the figures
+
+coverlet counts the lines the compiler emitted code for, so blank lines, comments and declarations are not
+counted, and a change to comments alone cannot move the figure. Lines it never sees it cannot report: a
+source file with no executable code of its own -- an interface, an enum, a delegate -- does not appear in
+the report at all, and Codecov shows such a file as having no coverage data rather than as 0%. A line the
+compiler split into several branches is counted once as a line and again in the branch figures, which the
+summary reports separately.
+
+### What a run leaves behind
+
+A coverage run builds the same `Release` configuration into the same `bin/` and `obj/` directories as a
+regular `make test-unit` or `make test-integration-scylla`, so it leaves no build output a regular run
+would not. (Referencing coverlet does add one file to each test project's output directory,
+`CoverletSourceRootsMapping_<project>`, but its build targets write that on every build, coverage run or
+not.) For the length of the run, coverlet instruments the copies of the driver assemblies in those output
+directories, and restores them when it ends, so the only thing a run leaves behind is `coverage/`, which
+the next run deletes and rewrites. A run killed before it ends can leave instrumented assemblies in a
+test project's `bin/`; building again, or `make clean`, replaces them.
+
+### CI
+
+[.github/workflows/coverage.yml](./.github/workflows/coverage.yml) runs the same `make coverage` on
+`ubuntu-latest`, for every pull request and every push to `master`, and keeps both reports and the summary
+as the `coverage-reports` workflow artifact. Before it measures anything it runs
+[build/test-coverage.sh](./build/test-coverage.sh), which tests the script's control flow with every tool
+it calls replaced by a stub.
+
 ## Benchmarks
 
 [src/Cassandra.Benchmarks](./src/Cassandra.Benchmarks) contains [BenchmarkDotNet][benchmarkdotnet] micro-benchmarks for the driver's hot paths: big-endian conversions, value serialization, partition-key hashing and RESULT/Rows decoding. They need no cluster. CI only checks that they compile and are formatted (`make check-benchmarks`; `make check` leaves them out).
@@ -264,3 +333,4 @@ If you need new stuff from the base branch, it's fine to rebase and force-push, 
 [dotnetcoresdk]: https://www.microsoft.com/net/download/core
 [scylla-slack]: https://scylladb-users.slack.com
 [benchmarkdotnet]: https://benchmarkdotnet.org/
+[coverlet]: https://github.com/coverlet-coverage/coverlet
