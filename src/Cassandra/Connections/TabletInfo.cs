@@ -2,7 +2,7 @@ using System.Collections.Generic;
 
 namespace Cassandra.Connections
 {
-    public class TabletInfo
+    internal sealed class TabletInfo
     {
         private const string SCYLLA_TABLETS_STARTUP_OPTION_KEY = "TABLETS_ROUTING_V1";
         private const string SCYLLA_TABLETS_STARTUP_OPTION_VALUE = "";
