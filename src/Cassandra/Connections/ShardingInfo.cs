@@ -4,7 +4,7 @@ namespace Cassandra.Connections
     /// Represents Scylla connection options as sent in SUPPORTED
     /// frame.
     /// </summary>
-    public class ShardingInfo
+    internal sealed class ShardingInfo
     {
         public int ScyllaShard { get; }
         public int ScyllaNrShards { get; }

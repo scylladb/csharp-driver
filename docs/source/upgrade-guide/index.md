@@ -281,6 +281,27 @@ An exception class that derives from a driver exception and declares a serializa
 constructor calling one of them no longer compiles: remove that constructor, as for
 the `SYSLIB0051` warning on `Exception`.
 
+### Internal connection metadata types
+
+The `ShardingInfo`, `LwtInfo` and `TabletInfo` classes in the `Cassandra.Connections`
+namespace are no longer public. They hold the ScyllaDB extensions that a node reports
+in its `SUPPORTED` frame, and the driver uses them for shard-aware connections, LWT
+routing and tablet routing. No public API returned or accepted them, so an application
+could only create them itself, and the instances it created were never connected to
+the driver. Remove code that creates them.
+
+Code that reads the tablet routing entry of a response's custom payload, for example
+from `ExecutionInfo.IncomingPayload`, with the `TabletInfo.TABLETS_ROUTING_V1_CUSTOM_PAYLOAD_KEY`
+constant can keep doing so with the literal key `"tablets-routing-v1"`:
+
+```csharp
+// Before
+rs.Info.IncomingPayload.TryGetValue(TabletInfo.TABLETS_ROUTING_V1_CUSTOM_PAYLOAD_KEY, out var tablet);
+
+// After
+rs.Info.IncomingPayload.TryGetValue("tablets-routing-v1", out var tablet);
+```
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.

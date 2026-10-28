@@ -3,7 +3,7 @@ using System.Collections.Generic;
 
 namespace Cassandra.Connections
 {
-    public class LwtInfo
+    internal sealed class LwtInfo
     {
         private const string SCYLLA_LWT_ADD_METADATA_MARK_KEY = "SCYLLA_LWT_ADD_METADATA_MARK";
         private const string LWT_OPTIMIZATION_META_BIT_MASK_KEY = "LWT_OPTIMIZATION_META_BIT_MASK";
