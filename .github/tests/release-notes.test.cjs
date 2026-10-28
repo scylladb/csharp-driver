@@ -20,7 +20,7 @@ async function classify(options = {}) {
   const labels = new Set(options.labels ?? [label, 'unrelated']);
   const calls = [];
   const errors = [];
-  const steps = {target: {outputs: {}}, labeler: {outcome: 'skipped'}};
+  const steps = {target: {outputs: {}}, labeler: {outcome: 'skipped', outputs: {}}};
   const github = {rest: {pulls: {
     get: async params => {
       assert.deepEqual(params, {...repo, pull_number: 20});
@@ -44,11 +44,20 @@ async function classify(options = {}) {
     return files;
   }};
   const context = {repo, eventName: 'workflow_dispatch', ...options.context};
-  const core = {setOutput: (key, value) => {steps.target.outputs[key] = value;}, info: () => {}};
+  const core = {
+    setOutput: (key, value) => {steps.target.outputs[key] = value;},
+    setFailed: message => {errors.push(new Error(message));},
+    info: () => {}
+  };
   const execute = async script => {
     try {
       await new AsyncFunction('github', 'context', 'core', 'process', script)(
-        github, context, core, {env: {PR_NUMBER: options.number ?? '20'}});
+        github, context, core, {env: {
+          PR_NUMBER: options.number ?? '20',
+          LABELER_OUTCOME: steps.labeler.outcome,
+          LABELER_ELIGIBLE: steps.target.outputs.eligible,
+          LABELER_OUTPUTS: JSON.stringify(steps.labeler.outputs)
+        }});
     } catch (error) {errors.push(error);}
   };
   const enabled = condition => new Function('steps', 'success', 'always', `return ${condition}`)(
@@ -57,6 +66,7 @@ async function classify(options = {}) {
   if (enabled(conditions[0])) {
     calls.push('labeler');
     steps.labeler.outcome = options.labelerOutcome ?? 'success';
+    steps.labeler.outputs = options.labelerOutputs ?? {'all-labels': [...labels].join(',')};
     if (steps.labeler.outcome === 'failure') errors.push(new Error('Labeler failed'));
   }
   if (enabled(conditions[1])) await execute(scripts[1]);
@@ -76,6 +86,23 @@ test('complete listings reach labeler without a second classifier or label looku
   }
 });
 
+test('successful classification with an empty label output stays successful without cleanup', async () => {
+  const result = await classify({files: [{filename: 'src/Cassandra/Cluster.cs', status: 'modified'}],
+    labels: [], labelerOutputs: {'all-labels': ''}});
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(result.calls, ['get', 'files', 'labeler']);
+  assert.deepEqual(result.labels, []);
+});
+
+test('labeler internal skips fail visibly and remove stale omissions', async () => {
+  // Both a caught PR lookup failure and an empty file list skip the action's PR loop.
+  const result = await classify({labelerOutputs: {}});
+  assert.equal(result.errors.length, 1);
+  assert.match(result.errors[0].message, /did not report completed classification/);
+  assert.deepEqual(result.calls, ['get', 'files', 'labeler', 'remove']);
+  assert.deepEqual(result.labels, ['unrelated']);
+});
+
 test('all renames stay visible, including support-only renames and mixed changes', async () => {
   for (const previous of ['docs/old.md', 'src/Cassandra/Cluster.cs']) {
     const result = await classify({files: [
@@ -87,6 +114,7 @@ test('all renames stay visible, including support-only renames and mixed changes
     assert.deepEqual(result.labels, ['unrelated']);
   }
   const missingOrigin = await classify({files: [{filename: 'docs/new.md', status: 'renamed'}]});
+  assert.deepEqual(missingOrigin.errors, []);
   assert.equal(missingOrigin.outputs.eligible, 'false');
   assert.deepEqual(missingOrigin.labels, ['unrelated']);
 });
@@ -151,6 +179,11 @@ test('cleanup tolerates absent labels and exposes API failures alongside the ori
   const failed = await classify({labelerOutcome: 'failure', cleanupError});
   assert.match(failed.errors[0].message, /Labeler failed/);
   assert.equal(failed.errors[1], cleanupError);
+  const incomplete = await classify({labelerOutputs: {}, cleanupError});
+  assert.equal(incomplete.errors.length, 2);
+  assert.match(incomplete.errors[0].message, /did not report completed classification/);
+  assert.equal(incomplete.errors[1], cleanupError);
+  assert.deepEqual(incomplete.calls, ['get', 'files', 'labeler', 'remove']);
 });
 
 test('Jira caller excludes only whole-marker add/remove events', () => {

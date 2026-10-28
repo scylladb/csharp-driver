@@ -65,12 +65,21 @@ jobs:
           sync-labels: true
           pr-number: ${{ env.PR_NUMBER }}
       - name: Remove unverified omission label
-        if: always() && steps.target.outputs.confirmed == 'true' && steps.labeler.outcome != 'success'
+        if: always() && steps.target.outputs.confirmed == 'true'
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          LABELER_OUTCOME: ${{ steps.labeler.outcome }}
+          LABELER_ELIGIBLE: ${{ steps.target.outputs.eligible }}
+          LABELER_OUTPUTS: ${{ toJSON(steps.labeler.outputs) }}
         with:
           retries: 3
           retry-exempt-status-codes: 400,401,404,422
           script: |
+            if (process.env.LABELER_OUTCOME === 'success' && process.env.LABELER_ELIGIBLE === 'true') {
+              // Completion emits this key even when the resulting label list is empty.
+              if (Object.hasOwn(JSON.parse(process.env.LABELER_OUTPUTS), 'all-labels')) return;
+              core.setFailed('Labeler did not report completed classification');
+            }
             try {
               await github.rest.issues.removeLabel({
                 ...context.repo, issue_number: Number(process.env.PR_NUMBER), name: 'omit-from-release-notes'
