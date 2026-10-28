@@ -61,11 +61,7 @@ namespace Cassandra.Data.Linq
 
         public static Batch CreateBatch(this ISession session, BatchType batchType)
         {
-            if (session == null || session.BinaryProtocolVersion > 1)
-            {
-                return new BatchV2(session, batchType);
-            }
-            return new BatchV1(session, batchType);
+            return new BatchV2(session, batchType);
         }
     }
 }
