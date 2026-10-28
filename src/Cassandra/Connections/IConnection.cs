@@ -99,9 +99,9 @@ namespace Cassandra.Connections
         string Keyspace { get; }
 
         /// <summary>
-        /// Gets the amount of concurrent requests depending on the protocol version
+        /// Gets the amount of concurrent requests
         /// </summary>
-        int GetMaxConcurrentRequests(ISerializer serializer);
+        int GetMaxConcurrentRequests();
 
         ProtocolOptions Options { get; }
 

@@ -401,7 +401,8 @@ namespace Cassandra
         }
 
         /// <summary>
-        /// Gets the pooling options. If not specified, creates a new instance with the default by protocol version.
+        /// Gets the pooling options. If not specified, creates a new instance with the defaults of
+        /// <see cref="PoolingOptions.Create(ProtocolVersion)"/>.
         /// This instance is not stored.
         /// </summary>
         internal PoolingOptions GetOrCreatePoolingOptions(ProtocolVersion protocolVersion)

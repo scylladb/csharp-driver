@@ -8,17 +8,10 @@ The driver uses connections in an asynchronous manner and multiple requests can 
 
 Each of these parameters can be separately set for `Local` and `Remote` hosts. For `Ignored` hosts, the default for all those settings is `0` and cannot be changed.
 
-The default amount of connections depends on the Cassandra version of your cluster, because newer versions of Cassandra (2.1 and above) support a higher number of in-flight requests.
-
-For Cassandra 2.1 and above, the default amount of connections per host is:
+The default amount of connections per host is:
 
 - Local datacenter: one core connection per host, with two connections as maximum if the simultaneous requests threshold is reached.
 - Remote datacenter: one core connection per host (being one also max).
-
-For older Cassandra versions (1.2 and 2.0), the default amount of connections per host are:
-
-- Local datacenter: two core connection per host, with eight connections as maximum if the simultaneous requests threshold is reached.
-- Remote datacenter: one core connection per host (being two the maximum).
 
 ## Simultaneous requests per connection
 

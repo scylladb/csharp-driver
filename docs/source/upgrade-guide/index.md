@@ -316,6 +316,9 @@ Protocol versions 1 and 2 were only needed for Apache Cassandra 1.2 and 2.0.
   for a version lower than 3, including 0, which `Builder.WithMaxProtocolVersion`
   already rejected with an `ArgumentException`. Passing the number 1 or 2, or casting
   it to `ProtocolVersion`, used to select the removed versions.
+- `PoolingOptions.Create(ProtocolVersion)` returns the same defaults for every
+  version: 1 core and 2 max connections for local hosts. Before, it used
+  8 max connections and a request threshold of 128 for protocol versions 1 and 2.
 
 The driver no longer lowers the protocol version for hosts that report a Cassandra
 version older than 2.1. It logs an error for each of them, and connections to those

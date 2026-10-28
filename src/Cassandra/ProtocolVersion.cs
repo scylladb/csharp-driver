@@ -260,14 +260,6 @@ namespace Cassandra
         }
 
         /// <summary>
-        /// Determines if streamIds are serialized used 2 bytes
-        /// </summary>
-        public static bool Uses2BytesStreamIds(this ProtocolVersion version)
-        {
-            return version >= ProtocolVersion.V3;
-        }
-
-        /// <summary>
         /// Determines whether the collection length is encoded using 32 bits.
         /// </summary>
         public static bool Uses4BytesCollectionLength(this ProtocolVersion version)
@@ -290,16 +282,6 @@ namespace Cassandra
         public static bool CanStartupResponseErrorBeWrapped(this ProtocolVersion version)
         {
             return version >= ProtocolVersion.V4;
-        }
-
-        public static int GetHeaderSize(this ProtocolVersion version)
-        {
-            if (version.Uses2BytesStreamIds())
-            {
-                return 9;
-            }
-
-            return 8;
         }
 
         public static bool IsBeta(this ProtocolVersion version)

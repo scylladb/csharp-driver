@@ -85,10 +85,8 @@ namespace Cassandra.Tests.Connections.Control
 
             var bytes = body.ToArray();
 
-            // <version><flags><stream:2><opcode><length:4>. Only v3 and up are exercised here, so the
-            // stream id is always two bytes; v1 and v2 would need the shorter eight-byte header.
+            // <version><flags><stream:2><opcode><length:4>
             var header = FrameHeader.ParseResponseHeader(
-                version,
                 new byte[] { (byte)(0x80 | (int)version), 0, 0, 0, SupportedResponse.OpCode }
                     .Concat(BeConverter.GetBytes(bytes.Length)).ToArray(),
                 0);

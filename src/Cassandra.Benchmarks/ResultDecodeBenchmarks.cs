@@ -57,7 +57,7 @@ namespace Cassandra.Benchmarks
             var headerBytes = new byte[] { 0x80 | (int)ResultDecodeBenchmarks.Version, 0, 0, 0, ResultResponse.OpCode }
                 .Concat(BeConverter.GetBytes(_body.Length))
                 .ToArray();
-            _header = FrameHeader.ParseResponseHeader(ResultDecodeBenchmarks.Version, headerBytes, 0);
+            _header = FrameHeader.ParseResponseHeader(headerBytes, 0);
         }
 
         [Benchmark]

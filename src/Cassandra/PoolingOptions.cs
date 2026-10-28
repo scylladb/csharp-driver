@@ -41,17 +41,16 @@ namespace Cassandra
     /// <see cref="HostDistance.Remote"/> hosts. For <see cref="HostDistance.Ignored"/> hosts,
     /// the default for all those settings is 0 and cannot be changed.
     /// </para>
-    /// <para>
-    /// The default amount of connections depend on the Cassandra version of the Cluster, as newer
-    /// versions of Cassandra (2.1 and above) support a higher number of in-flight requests.
-    /// </para>
-    /// <para>For Cassandra 2.1 and above, the default amount of connections per host are:</para>
+    /// <para>The default amount of connections per host are:</para>
     /// <list type="bullet">
     /// <item>Local datacenter: 1 core connection per host, with 2 connections as maximum when the simultaneous
     /// requests threshold is reached.</item>
     /// <item>Remote datacenter: 1 core connection per host (being 1 also max).</item>
     /// </list>
-    /// <para>For older Cassandra versions (1.2 and 2.0), the default amount of connections per host are:</para>
+    /// <para>
+    /// The parameterless constructor keeps the defaults of the removed protocol versions 1 and 2 for
+    /// compatibility reasons:
+    /// </para>
     /// <list type="bullet">
     /// <item>Local datacenter: 2 core connection per host, with 8 connections as maximum when the simultaneous
     /// requests threshold is reached.</item>
@@ -60,7 +59,8 @@ namespace Cassandra
     /// </summary>
     public class PoolingOptions
     {
-        //the defaults target small number concurrent requests (protocol 1 and 2) and multiple connections to a host
+        //the defaults of the parameterless constructor target small number concurrent requests (the removed
+        //protocol versions 1 and 2) and multiple connections to a host
         private const int DefaultMinRequests = 25;
         private const int DefaultMaxRequestsThreshold = 128;
         private const int DefaultCorePoolLocal = 2;
@@ -98,8 +98,8 @@ namespace Cassandra
         /// DEPRECATED: It will be removed in future versions. Use <see cref="PoolingOptions.Create"/> instead.
         /// <para>
         /// Creates a new instance of <see cref="PoolingOptions"/> using defaults suitable for old server versions
-        /// (Apache Cassandra 2.0 and below) for compatibility reasons. It's recommended that you
-        /// use <see cref="PoolingOptions.Create"/> providing the server protocol version.
+        /// (Apache Cassandra 2.0 and below, no longer supported) for compatibility reasons. It's recommended that you
+        /// use <see cref="PoolingOptions.Create"/>.
         /// </para>
         /// </summary>
         public PoolingOptions()
@@ -401,21 +401,18 @@ namespace Cassandra
 
         /// <summary>
         /// Creates a new instance of <see cref="PoolingOptions"/> using the default amount of connections
-        /// and settings based on the protocol version.
+        /// and settings for the supported protocol versions.
         /// <para>
-        /// For modern server versions (Apache Cassandra 2.1+) the amount of core connections are set to 1,
-        /// setting 2 for max local connections.
+        /// The amount of core connections are set to 1, setting 2 for max local connections.
         /// </para>
         /// </summary>
+        /// <param name="protocolVersion">
+        /// Not used: every protocol version supported by the driver uses the same defaults.
+        /// </param>
         /// <returns>A new instance of <see cref="PoolingOptions"/></returns>
         /// <seealso cref="ProtocolVersion"/>
         public static PoolingOptions Create(ProtocolVersion protocolVersion = ProtocolVersion.MaxSupported)
         {
-            if (!protocolVersion.Uses2BytesStreamIds())
-            {
-                //New instance of pooling options with default values
-                return new PoolingOptions();
-            }
             //New instance of pooling options with default values for high number of concurrent requests
             return new PoolingOptions()
                 .SetCoreConnectionsPerHost(HostDistance.Local, 1)

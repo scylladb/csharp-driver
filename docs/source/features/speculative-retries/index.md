@@ -164,9 +164,8 @@ still receive a response from the server later. If this happens often, the numbe
 over time, and when it goes below a given threshold we close the connection and create a new one. If requests are often
 cancelled, so will see connections being recycled at a high rate.
 
-This problem is more likely to happen with Cassandra version 2.0 or below (version 1 or 2 of the native protocol),
-because each TCP connection only has 128 stream ids. With following versions of Cassandra, there are 32K stream ids per
-connection, so higher cancellation rates can be sustained.
+Each TCP connection has 32K stream ids, of which the driver uses up to 2048, so high cancellation rates can be
+sustained.
 
 Another issue that might arise is that you get unintuitive results because of request ordering. Suppose you run the
 following query with speculative executions enabled:

@@ -237,7 +237,7 @@ namespace Cassandra.Tests
                 }
                 .Concat(BeConverter.GetBytes(body.Length))
                 .ToArray();
-            var header = FrameHeader.ParseResponseHeader(EventResponseTests.Version, headerBytes, 0);
+            var header = FrameHeader.ParseResponseHeader(headerBytes, 0);
             return EventResponse.Create(new Frame(
                 header,
                 new MemoryStream(body),

@@ -1059,7 +1059,7 @@ namespace Cassandra.Tests.Requests
             var stream = new MemoryStream();
             request.WriteFrame(1, stream, ResultMetadataIdTests.Serializer, useMetadataId);
 
-            var headerSize = ResultMetadataIdTests.Version.GetHeaderSize();
+            var headerSize = FrameHeader.Size;
             var body = new byte[stream.Length - headerSize];
             stream.Position = headerSize;
             stream.Read(body, 0, body.Length);
@@ -1090,7 +1090,7 @@ namespace Cassandra.Tests.Requests
             var stream = new MemoryStream();
             request.WriteFrame(1, stream, ResultMetadataIdTests.Serializer, useMetadataId);
 
-            var headerSize = ResultMetadataIdTests.Version.GetHeaderSize();
+            var headerSize = FrameHeader.Size;
             var body = new byte[stream.Length - headerSize];
             stream.Position = headerSize;
             stream.Read(body, 0, body.Length);
@@ -1100,7 +1100,6 @@ namespace Cassandra.Tests.Requests
         private static ResultResponse Parse(byte[] body, bool useMetadataId, ResultMetadata cached)
         {
             var header = FrameHeader.ParseResponseHeader(
-                ResultMetadataIdTests.Version,
                 new byte[] { 0x80 | (int)ResultMetadataIdTests.Version, 0, 0, 0, ResultResponse.OpCode }
                     .Concat(BeConverter.GetBytes(body.Length)).ToArray(),
                 0);
@@ -1112,7 +1111,6 @@ namespace Cassandra.Tests.Requests
         private static ResultResponse Parse(byte[] body, bool useMetadataId)
         {
             var header = FrameHeader.ParseResponseHeader(
-                ResultMetadataIdTests.Version,
                 new byte[] { 0x80 | (int)ResultMetadataIdTests.Version, 0, 0, 0, ResultResponse.OpCode }
                     .Concat(BeConverter.GetBytes(body.Length)).ToArray(),
                 0);

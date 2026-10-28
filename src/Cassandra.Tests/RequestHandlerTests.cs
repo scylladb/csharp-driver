@@ -700,7 +700,7 @@ namespace Cassandra.Tests
 
             var stream = new MemoryStream();
             request.WriteFrame(1, stream, serializer, RequestHandlerTests.UseMetadataId);
-            var headerSize = serializer.ProtocolVersion.GetHeaderSize();
+            var headerSize = FrameHeader.Size;
             var bodyBuffer = new byte[stream.Length - headerSize];
             stream.Position = headerSize;
             stream.Read(bodyBuffer, 0, bodyBuffer.Length);

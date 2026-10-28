@@ -74,7 +74,7 @@ namespace Cassandra.Tests.Requests
         {
             var stream = new MemoryStream();
             request.WriteFrame(1, stream, RegisterForEventRequestTests.Serializer, false);
-            stream.Position = RegisterForEventRequestTests.Serializer.ProtocolVersion.GetHeaderSize();
+            stream.Position = FrameHeader.Size;
             return new FrameReader(stream, RegisterForEventRequestTests.Serializer, false).ReadStringList();
         }
     }
