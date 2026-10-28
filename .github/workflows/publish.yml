@@ -384,6 +384,8 @@ jobs:
             --version "$RELEASE_VERSION"
 
       - name: Run target-specific package validation
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
           if [[ ! -f source/build/validate-packages.py ]]; then
             echo "Target branch has no package validator; complete its artifact-validation blocker first"

@@ -19,6 +19,25 @@ sys.modules[MODULE_SPEC.name] = validate_packages
 MODULE_SPEC.loader.exec_module(validate_packages)
 
 
+TEST_CONTRACTS = tuple(
+    validate_packages.PackageContract(
+        project=project.project,
+        package_id=project.package_id,
+        assembly_name=project.assembly_name,
+        consumer_marker=project.consumer_marker,
+        version="4.7.2",
+        assembly_version="4.99.0.0",
+        file_version="4.7.2.0",
+        dependencies=(
+            {"Example.Dependency": "8.6.4"}
+            if index == 0
+            else {"ScyllaDBCSharpDriver": "4.7.2"}
+        ),
+    )
+    for index, project in enumerate(validate_packages.PACKAGE_PROJECTS)
+)
+
+
 class ValidatePackagesTests(unittest.TestCase):
     def test_sdk_validation_uses_the_repository_sdk_policy(self):
         expected = json.loads(
@@ -38,27 +57,136 @@ class ValidatePackagesTests(unittest.TestCase):
                     ):
                         validate_packages.validate_sdk()
 
-    def test_dependency_contracts_match_shipping_project_references(self):
-        package_ids = {
-            contract.package_id for contract in validate_packages.PACKAGE_CONTRACTS
-        }
-        for contract in validate_packages.PACKAGE_CONTRACTS:
-            with self.subTest(package_id=contract.package_id):
-                project = validate_packages.ElementTree.parse(
-                    validate_packages.REPOSITORY_ROOT / contract.project
-                ).getroot()
-                expected = {
-                    reference.attrib["Include"]: reference.attrib["Version"]
-                    for reference in project.findall(".//PackageReference")
-                }
-                self.assertEqual(
-                    expected,
+    @staticmethod
+    def _evaluated_projects(version="4.7.2.0", dependency_version="8.6.4"):
+        return [
+            subprocess.CompletedProcess(
+                [],
+                0,
+                stdout=json.dumps(
                     {
-                        package_id: version
-                        for package_id, version in contract.dependencies.items()
-                        if package_id not in package_ids
-                    },
+                        "Properties": {
+                            "PackageId": contract.package_id,
+                            "PackageVersion": version,
+                            "AssemblyVersion": contract.assembly_version,
+                            "FileVersion": version,
+                        },
+                        "Items": {
+                            "PackageReference": [
+                                {
+                                    "Identity": "Example.Dependency",
+                                    "Version": dependency_version,
+                                },
+                                {
+                                    "Identity": "Private.Analyzer",
+                                    "Version": "1.0.0",
+                                    "PrivateAssets": "all",
+                                },
+                            ]
+                            if index == 0
+                            else [],
+                            "ProjectReference": [
+                                {
+                                    "Identity": "../../Cassandra/Cassandra.csproj",
+                                    "FullPath": str(
+                                        validate_packages.REPOSITORY_ROOT
+                                        / TEST_CONTRACTS[0].project
+                                    ),
+                                }
+                            ]
+                            if index
+                            else [],
+                        },
+                    }
+                ),
+            )
+            for index, contract in enumerate(TEST_CONTRACTS)
+        ]
+
+    def test_contracts_follow_evaluated_dependency_and_release_versions(self):
+        for version, dependency in (("4.7.2.0", "8.6.4"), ("4.8.3.2", "9.2.1")):
+            with (
+                self.subTest(version=version),
+                mock.patch.object(
+                    validate_packages,
+                    "run",
+                    side_effect=self._evaluated_projects(version, dependency),
+                ) as run,
+            ):
+                contracts = validate_packages.load_package_contracts(version)
+            expected = validate_packages.normalized_version(version)
+            self.assertEqual(
+                {"Example.Dependency": dependency}, contracts[0].dependencies
+            )
+            for contract in contracts:
+                self.assertEqual(expected, contract.version)
+                self.assertEqual(version, contract.file_version)
+            for contract in contracts[1:]:
+                self.assertEqual(
+                    {"ScyllaDBCSharpDriver": expected}, contract.dependencies
                 )
+            for call in run.call_args_list:
+                self.assertIn("-p:Configuration=Release", call.args[0])
+
+    def test_contracts_default_to_the_project_release_version(self):
+        with mock.patch.object(
+            validate_packages, "run", side_effect=self._evaluated_projects()
+        ):
+            self.assertEqual(TEST_CONTRACTS, validate_packages.load_package_contracts())
+
+    def test_contracts_reject_a_different_requested_or_project_version(self):
+        responses = self._evaluated_projects()
+        changed = json.loads(responses[-1].stdout)
+        changed["Properties"]["PackageVersion"] = "4.8.0.0"
+        for expected_version, evaluated in (
+            ("4.8.0.0", self._evaluated_projects()),
+            (
+                None,
+                responses[:-1]
+                + [subprocess.CompletedProcess([], 0, stdout=json.dumps(changed))],
+            ),
+        ):
+            with (
+                self.subTest(expected=expected_version),
+                mock.patch.object(validate_packages, "run", side_effect=evaluated),
+                self.assertRaisesRegex(
+                    validate_packages.ValidationError, "must use release version"
+                ),
+            ):
+                validate_packages.load_package_contracts(expected_version)
+
+    def test_contracts_accept_dry_run_project_ids(self):
+        responses = self._evaluated_projects()
+        for response in responses:
+            metadata = json.loads(response.stdout)
+            metadata["Properties"]["PackageId"] = validate_packages.DRY_RUN_PACKAGE_IDS[
+                metadata["Properties"]["PackageId"]
+            ]
+            response.stdout = json.dumps(metadata)
+        with mock.patch.object(validate_packages, "run", side_effect=responses):
+            contracts = validate_packages.candidate_contracts(
+                validate_packages.load_package_contracts(), dry_run=True
+            )
+        self.assertEqual("4.7.2", contracts[0].version)
+        self.assertEqual(
+            {"ScyllaDBCSharpDriver.DRYRUN": "4.7.2"}, contracts[1].dependencies
+        )
+
+    def test_normalized_versions_keep_nonzero_revisions(self):
+        for version, expected in (
+            ("4.7.2.0", "4.7.2"),
+            ("4.7.2.5", "4.7.2.5"),
+            ("4.7.2-beta.1+build", "4.7.2-beta.1"),
+        ):
+            self.assertEqual(expected, validate_packages.normalized_version(version))
+
+    def test_release_version_input_uses_workflow_environment_or_explicit_argument(self):
+        with mock.patch.dict(os.environ, {"RELEASE_VERSION": "4.8.3.2"}):
+            self.assertEqual("4.8.3.2", validate_packages.parse_arguments([]).version)
+            self.assertEqual(
+                "4.9.0.0",
+                validate_packages.parse_arguments(["--version", "4.9.0.0"]).version,
+            )
 
     def test_run_merges_environment_overrides(self):
         completed = subprocess.CompletedProcess(["command"], 0)
@@ -198,7 +326,7 @@ class ValidatePackagesTests(unittest.TestCase):
                     # Suppressions record these paths, so a dry run, which extracts
                     # the packages under their .DRYRUN IDs, must compare the same ones
                     for contract, call in zip(
-                        validate_packages.PACKAGE_CONTRACTS, run.call_args_list[1:]
+                        TEST_CONTRACTS, run.call_args_list[1:]
                     ):
                         command = call.args[0]
                         left = command[command.index("--left-assembly") + 1]
@@ -219,7 +347,7 @@ class ValidatePackagesTests(unittest.TestCase):
             work_directory = Path(temporary_directory)
             self._create_tool_assembly(work_directory)
             repository = work_directory / "repository"
-            core = validate_packages.PACKAGE_CONTRACTS[0]
+            core = TEST_CONTRACTS[0]
             suppressions = (
                 repository / core.project
             ).parent / validate_packages.API_COMPAT_SUPPRESSIONS_FILE
@@ -268,7 +396,7 @@ class ValidatePackagesTests(unittest.TestCase):
                     )
 
             for contract, call in zip(
-                validate_packages.PACKAGE_CONTRACTS, run.call_args_list[1:]
+                TEST_CONTRACTS, run.call_args_list[1:]
             ):
                 output = Path(call.args[0][-1])
                 self.assertEqual(
@@ -291,7 +419,7 @@ class ValidatePackagesTests(unittest.TestCase):
             work_directory = Path(temporary_directory)
             self._create_tool_assembly(work_directory)
             repository = work_directory / "repository"
-            core = validate_packages.PACKAGE_CONTRACTS[0]
+            core = TEST_CONTRACTS[0]
             suppressions = (
                 repository / core.project
             ).parent / validate_packages.API_COMPAT_SUPPRESSIONS_FILE
@@ -319,7 +447,7 @@ class ValidatePackagesTests(unittest.TestCase):
             self._create_tool_assembly(work_directory)
             with self._isolated_repository(work_directory):
                 suppressions = validate_packages.api_compat_suppressions_file(
-                    validate_packages.PACKAGE_CONTRACTS[0]
+                    TEST_CONTRACTS[0]
                 )
                 suppressions.parent.mkdir(parents=True)
                 original = self._suppressions_xml(["T:Cassandra.PreviousBreak"]).encode()
@@ -364,7 +492,7 @@ class ValidatePackagesTests(unittest.TestCase):
                         self._create_tool_assembly(work_directory)
                         with self._isolated_repository(work_directory):
                             suppressions = validate_packages.api_compat_suppressions_file(
-                                validate_packages.PACKAGE_CONTRACTS[0]
+                                TEST_CONTRACTS[0]
                             )
                             suppressions.parent.mkdir(parents=True)
                             original = self._suppressions_xml(["T:Cassandra.Reviewed"]).encode()
@@ -485,19 +613,164 @@ class ValidatePackagesTests(unittest.TestCase):
             self._create_candidate_packages(packages)
 
             assemblies = validate_packages.inspect_candidates(
-                packages, root / "extracted"
+                packages, root / "extracted", TEST_CONTRACTS
             )
 
             self.assertEqual(
                 {
                     contract.package_id
-                    for contract in validate_packages.PACKAGE_CONTRACTS
+                    for contract in TEST_CONTRACTS
                 },
                 set(assemblies),
             )
 
+    def test_package_inspection_rejects_a_different_release_version(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            contracts = tuple(
+                validate_packages.replace(contract, version="4.8.0")
+                for contract in TEST_CONTRACTS
+            )
+            self._create_candidate_packages(root / "packages", contracts=contracts)
+            with self.assertRaisesRegex(
+                validate_packages.ValidationError, "must pack normalized version 4.7.2"
+            ):
+                validate_packages.inspect_candidates(
+                    root / "packages", root / "extracted", TEST_CONTRACTS
+                )
+
+    def test_package_inspection_rejects_a_different_dependency_version(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+
+            def mutate(contract, dependencies):
+                dependencies[0]["version"] = "99.0.0"
+
+            self._create_candidate_packages(
+                root / "packages", mutate_dependencies=mutate
+            )
+            with self.assertRaisesRegex(
+                validate_packages.ValidationError, "Unexpected dependencies"
+            ):
+                validate_packages.inspect_candidates(
+                    root / "packages", root / "extracted", TEST_CONTRACTS
+                )
+
+    def test_evaluated_dependency_versions_match_nuget_nuspec_normalization(self):
+        for evaluated, packed in (
+            ("8.6.4.0", "8.6.4"),
+            ("4.3", "4.3.0"),
+            ("[4.3]", "[4.3.0]"),
+            ("[4.3, 5.0.0.0)", "[4.3.0, 5.0.0)"),
+            ("[4.3,)", "4.3.0"),
+            ("[4.3,4.3]", "[4.3.0]"),
+            ("(,4.3]", "(, 4.3.0]"),
+            ("(4.3,)", "(4.3.0, )"),
+            ("[4.3+build, 5.0)", "[4.3.0, 5.0.0)"),
+            ("4.*", "4.0.0"),
+            ("4.3.0-*", "4.3.0-0"),
+            ("4.3.0-alpha.*", "4.3.0-alpha.0"),
+            ("4.3.0-alpha*", "4.3.0-alpha"),
+            ("4.3.0-alpha-*", "4.3.0-alpha-"),
+        ):
+            with (
+                self.subTest(evaluated=evaluated),
+                tempfile.TemporaryDirectory() as temporary_directory,
+                mock.patch.object(
+                    validate_packages,
+                    "run",
+                    side_effect=self._evaluated_projects(dependency_version=evaluated),
+                ),
+            ):
+                contracts = validate_packages.load_package_contracts()
+                self.assertEqual(
+                    {"Example.Dependency": packed}, contracts[0].dependencies
+                )
+                root = Path(temporary_directory)
+
+                def mutate(contract, dependencies):
+                    for dependency in dependencies:
+                        if dependency["id"] == "Example.Dependency":
+                            dependency["version"] = packed
+
+                self._create_candidate_packages(
+                    root / "packages", contracts=contracts, mutate_dependencies=mutate
+                )
+                validate_packages.inspect_candidates(
+                    root / "packages", root / "extracted", contracts
+                )
+
+    def test_package_inspection_rejects_changed_dependency_range_bounds(self):
+        for changed in ("(4.3.0, 5.0.0)", "[4.3.0, 5.0.0]", "[4.3.0, 6.0.0)"):
+            with (
+                self.subTest(changed=changed),
+                tempfile.TemporaryDirectory() as temporary_directory,
+                mock.patch.object(
+                    validate_packages,
+                    "run",
+                    side_effect=self._evaluated_projects(
+                        dependency_version="[4.3, 5.0.0.0)"
+                    ),
+                ),
+            ):
+                contracts = validate_packages.load_package_contracts()
+                root = Path(temporary_directory)
+
+                def mutate(contract, dependencies):
+                    for dependency in dependencies:
+                        if dependency["id"] == "Example.Dependency":
+                            dependency["version"] = changed
+
+                self._create_candidate_packages(
+                    root / "packages", contracts=contracts, mutate_dependencies=mutate
+                )
+                with self.assertRaisesRegex(
+                    validate_packages.ValidationError, "Unexpected dependencies"
+                ):
+                    validate_packages.inspect_candidates(
+                        root / "packages", root / "extracted", contracts
+                    )
+
+    def test_consumer_checks_evaluated_assembly_versions(self):
+        contracts = tuple(
+            validate_packages.replace(
+                contract,
+                assembly_version=f"4.{index}.0.0",
+                file_version=f"4.7.2.{index}",
+            )
+            for index, contract in enumerate(TEST_CONTRACTS)
+        )
+        markers = {
+            "ScyllaDB": "Cluster",
+            "Cassandra.AppMetrics": "DriverAppMetricsOptions",
+            "Cassandra.OpenTelemetry": "CassandraInstrumentationOptions",
+        }
+        for dry_run in (False, True):
+            reordered = tuple(
+                reversed(validate_packages.candidate_contracts(contracts, dry_run))
+            )
+            with (
+                self.subTest(dry_run=dry_run),
+                tempfile.TemporaryDirectory() as temporary_directory,
+                mock.patch.object(validate_packages, "run"),
+                mock.patch.object(
+                    validate_packages, "assert_local_packages_were_restored"
+                ),
+                mock.patch.object(validate_packages, "validate_incompatible_consumers"),
+            ):
+                root = Path(temporary_directory)
+                validate_packages.validate_consumers(root, root / "packages", reordered)
+                program = (root / "consumer-net10/Program.cs").read_text(encoding="utf-8")
+                for contract in reordered:
+                    self.assertIn(
+                        f'AssertAssembly(typeof({markers[contract.assembly_name]}), '
+                        f'"{contract.assembly_name}", "{contract.assembly_version}", '
+                        f'"{contract.file_version}");',
+                        program,
+                    )
+
     def test_dry_run_contracts_replace_package_and_internal_dependency_ids(self):
-        contracts = validate_packages.candidate_contracts(dry_run=True)
+        contracts = validate_packages.candidate_contracts(TEST_CONTRACTS, dry_run=True)
 
         self.assertEqual(
             [
@@ -509,7 +782,7 @@ class ValidatePackagesTests(unittest.TestCase):
         )
         for contract in contracts[1:]:
             self.assertEqual(
-                validate_packages.CANDIDATE_VERSION,
+                TEST_CONTRACTS[0].version,
                 contract.dependencies["ScyllaDBCSharpDriver.DRYRUN"],
             )
             self.assertNotIn("ScyllaDBCSharpDriver", contract.dependencies)
@@ -518,7 +791,7 @@ class ValidatePackagesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             packages = root / "packages"
-            contracts = validate_packages.candidate_contracts(dry_run=True)
+            contracts = validate_packages.candidate_contracts(TEST_CONTRACTS, dry_run=True)
             self._create_candidate_packages(packages, contracts=contracts)
 
             assemblies = validate_packages.inspect_candidates(
@@ -533,19 +806,19 @@ class ValidatePackagesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             packages = root / "packages"
-            contracts = validate_packages.candidate_contracts(dry_run=True)
+            contracts = validate_packages.candidate_contracts(
+                TEST_CONTRACTS, dry_run=True
+            )
             self._create_candidate_packages(packages, contracts=contracts)
 
             project = root / "Consumer.csproj"
             config = root / "NuGet.Config"
             validate_packages.write_consumer_project(project, "net10.0", contracts)
-            validate_packages.write_consumer_nuget_config(
-                config, packages, contracts
-            )
+            validate_packages.write_consumer_nuget_config(config, packages, contracts)
 
             project_root = validate_packages.ElementTree.parse(project).getroot()
             references = {
-                reference.attrib["Include"]
+                reference.attrib["Include"]: reference.attrib["Version"]
                 for reference in project_root.findall(".//PackageReference")
             }
             config_root = validate_packages.ElementTree.parse(config).getroot()
@@ -556,23 +829,23 @@ class ValidatePackagesTests(unittest.TestCase):
                 )
             }
             expected_ids = {contract.package_id for contract in contracts}
-            self.assertEqual(expected_ids, references)
+            self.assertEqual(
+                {contract.package_id: contract.version for contract in contracts},
+                references,
+            )
             self.assertEqual(expected_ids, patterns)
 
             libraries = {}
             for contract in contracts:
                 package = next(
-                    packages.glob(
-                        f"{contract.package_id}."
-                        f"{validate_packages.CANDIDATE_VERSION}.nupkg"
-                    )
+                    packages.glob(f"{contract.package_id}.{contract.version}.nupkg")
                 )
                 package_hash = validate_packages.base64.b64encode(
                     validate_packages.hashlib.sha512(package.read_bytes()).digest()
                 ).decode("ascii")
-                libraries[
-                    f"{contract.package_id}/{validate_packages.CANDIDATE_VERSION}"
-                ] = {"sha512": package_hash}
+                libraries[f"{contract.package_id}/{contract.version}"] = {
+                    "sha512": package_hash
+                }
             assets = root / "project.assets.json"
             assets.write_text(json.dumps({"libraries": libraries}), encoding="utf-8")
 
@@ -584,7 +857,9 @@ class ValidatePackagesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             package_directory = Path(temporary_directory) / "staged-packages"
             package_directory.mkdir()
-            contracts = validate_packages.candidate_contracts(dry_run=True)
+            contracts = validate_packages.candidate_contracts(
+                TEST_CONTRACTS, dry_run=True
+            )
             candidate_assemblies = {
                 contract.package_id: Path(f"candidate/{contract.assembly_name}.dll")
                 for contract in contracts
@@ -594,6 +869,11 @@ class ValidatePackagesTests(unittest.TestCase):
             with (
                 mock.patch.object(validate_packages, "validate_sdk"),
                 mock.patch.object(validate_packages, "restore_and_audit"),
+                mock.patch.object(
+                    validate_packages,
+                    "load_package_contracts",
+                    return_value=TEST_CONTRACTS,
+                ) as load,
                 mock.patch.object(validate_packages, "ensure_signing_key") as signing,
                 mock.patch.object(validate_packages, "pack_candidates") as pack,
                 mock.patch.object(
@@ -612,30 +892,29 @@ class ValidatePackagesTests(unittest.TestCase):
                     return_value=(Path("left"), Path("right")),
                 ) as prepare,
                 mock.patch.object(validate_packages, "run_api_compat") as api_compat,
-                mock.patch.object(
-                    validate_packages, "validate_consumers"
-                ) as consumers,
+                mock.patch.object(validate_packages, "validate_consumers") as consumers,
             ):
                 validate_packages.main(
                     [
                         "--package-directory",
                         str(package_directory),
                         "--dry-run",
+                        "--version",
+                        "4.7.2.0",
                     ]
                 )
 
             signing.assert_not_called()
             pack.assert_not_called()
+            load.assert_called_once_with("4.7.2.0")
             self.assertEqual(package_directory.resolve(), inspect.call_args.args[0])
             self.assertEqual(contracts, inspect.call_args.args[2])
             canonical_candidates = prepare.call_args.args[2]
             self.assertEqual(
-                {contract.package_id for contract in validate_packages.PACKAGE_CONTRACTS},
+                {contract.package_id for contract in TEST_CONTRACTS},
                 set(canonical_candidates),
             )
-            for canonical, candidate in zip(
-                validate_packages.PACKAGE_CONTRACTS, contracts
-            ):
+            for canonical, candidate in zip(TEST_CONTRACTS, contracts):
                 self.assertEqual(
                     candidate_assemblies[candidate.package_id],
                     canonical_candidates[canonical.package_id],
@@ -667,7 +946,7 @@ class ValidatePackagesTests(unittest.TestCase):
                         validate_packages.ValidationError, "Unexpected dependencies"
                     ):
                         validate_packages.inspect_candidates(
-                            packages, root / "extracted"
+                            packages, root / "extracted", TEST_CONTRACTS
                         )
 
     def test_package_inspection_rejects_duplicate_dependencies(self):
@@ -684,7 +963,7 @@ class ValidatePackagesTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 validate_packages.ValidationError, "Unexpected dependencies"
             ):
-                validate_packages.inspect_candidates(packages, root / "extracted")
+                validate_packages.inspect_candidates(packages, root / "extracted", TEST_CONTRACTS)
 
     def test_package_inspection_rejects_ungrouped_dependencies(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -696,7 +975,7 @@ class ValidatePackagesTests(unittest.TestCase):
                 validate_packages.ValidationError,
                 "exactly one grouped dependency set",
             ):
-                validate_packages.inspect_candidates(packages, root / "extracted")
+                validate_packages.inspect_candidates(packages, root / "extracted", TEST_CONTRACTS)
 
     def test_package_inspection_rejects_undeclared_files(self):
         additions = (
@@ -720,7 +999,7 @@ class ValidatePackagesTests(unittest.TestCase):
                         "Unexpected package contents",
                     ):
                         validate_packages.inspect_candidates(
-                            packages, root / "extracted"
+                            packages, root / "extracted", TEST_CONTRACTS
                         )
 
     def test_package_inspection_rejects_duplicate_archive_entries(self):
@@ -737,7 +1016,7 @@ class ValidatePackagesTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 validate_packages.ValidationError, "Duplicate package entries"
             ):
-                validate_packages.inspect_candidates(packages, root / "extracted")
+                validate_packages.inspect_candidates(packages, root / "extracted", TEST_CONTRACTS)
 
     def test_incompatible_consumers_cover_every_package_individually(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -748,7 +1027,7 @@ class ValidatePackagesTests(unittest.TestCase):
                 project_text = project.read_text(encoding="utf-8")
                 contract = next(
                     contract
-                    for contract in validate_packages.PACKAGE_CONTRACTS
+                    for contract in TEST_CONTRACTS
                     if f'Include="{contract.package_id}"' in project_text
                 )
                 return subprocess.CompletedProcess(
@@ -765,13 +1044,13 @@ class ValidatePackagesTests(unittest.TestCase):
                 validate_packages, "run", side_effect=fail_restore
             ) as run:
                 validate_packages.validate_incompatible_consumers(
-                    root, root / "NuGet.Config"
+                    root, root / "NuGet.Config", TEST_CONTRACTS
                 )
 
-            self.assertEqual(len(validate_packages.PACKAGE_CONTRACTS), run.call_count)
+            self.assertEqual(len(TEST_CONTRACTS), run.call_count)
             for call in run.call_args_list:
                 self.assertTrue(call.kwargs["merge_stderr"])
-            for contract in validate_packages.PACKAGE_CONTRACTS:
+            for contract in TEST_CONTRACTS:
                 project = (
                     root
                     / f"consumer-net9-{contract.package_id}"
@@ -779,7 +1058,7 @@ class ValidatePackagesTests(unittest.TestCase):
                 )
                 project_text = project.read_text(encoding="utf-8")
                 self.assertIn(f'Include="{contract.package_id}"', project_text)
-                for other_contract in validate_packages.PACKAGE_CONTRACTS:
+                for other_contract in TEST_CONTRACTS:
                     if other_contract != contract:
                         self.assertNotIn(
                             f'Include="{other_contract.package_id}"', project_text
@@ -788,7 +1067,7 @@ class ValidatePackagesTests(unittest.TestCase):
     def test_incompatible_consumers_use_dry_run_package_ids(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            contracts = validate_packages.candidate_contracts(dry_run=True)
+            contracts = validate_packages.candidate_contracts(TEST_CONTRACTS, dry_run=True)
 
             def fail_restore(arguments, **kwargs):
                 project_text = Path(arguments[2]).read_text(encoding="utf-8")
@@ -850,7 +1129,7 @@ class ValidatePackagesTests(unittest.TestCase):
             work_directory = Path(temporary_directory)
             self._create_tool_assembly(work_directory)
             repository = work_directory / "repository"
-            core = validate_packages.PACKAGE_CONTRACTS[0]
+            core = TEST_CONTRACTS[0]
             suppressions = (
                 repository / core.project
             ).parent / validate_packages.API_COMPAT_SUPPRESSIONS_FILE
@@ -882,8 +1161,8 @@ class ValidatePackagesTests(unittest.TestCase):
         """Creates the candidate assemblies where package inspection extracts them."""
         assemblies = {}
         for canonical, candidate in zip(
-            validate_packages.PACKAGE_CONTRACTS,
-            validate_packages.candidate_contracts(dry_run),
+            TEST_CONTRACTS,
+            validate_packages.candidate_contracts(TEST_CONTRACTS, dry_run),
         ):
             assembly = (
                 work_directory
@@ -900,7 +1179,7 @@ class ValidatePackagesTests(unittest.TestCase):
     def _assemblies(directory):
         return {
             contract.package_id: Path(directory) / f"{contract.assembly_name}.dll"
-            for contract in validate_packages.PACKAGE_CONTRACTS
+            for contract in TEST_CONTRACTS
         }
 
     @staticmethod
@@ -927,7 +1206,7 @@ class ValidatePackagesTests(unittest.TestCase):
     ):
         package_directory.mkdir(parents=True)
         extra_files = extra_files or {}
-        contracts = contracts or validate_packages.PACKAGE_CONTRACTS
+        contracts = contracts or TEST_CONTRACTS
 
         for contract in contracts:
             dependencies = [
@@ -947,7 +1226,7 @@ class ValidatePackagesTests(unittest.TestCase):
                 contract.package_id
             )
             validate_packages.ElementTree.SubElement(metadata, "version").text = (
-                validate_packages.CANDIDATE_VERSION
+                contract.version
             )
             dependency_groups = validate_packages.ElementTree.SubElement(
                 metadata, "dependencies"
@@ -989,7 +1268,7 @@ class ValidatePackagesTests(unittest.TestCase):
 
             archive_path = (
                 package_directory
-                / f"{contract.package_id}.{validate_packages.CANDIDATE_VERSION}.nupkg"
+                / f"{contract.package_id}.{contract.version}.nupkg"
             )
             with zipfile.ZipFile(archive_path, "w") as archive:
                 for path, contents in files.items():
