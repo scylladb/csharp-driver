@@ -189,6 +189,23 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public void SimpleStatement_RoutingKey_Should_Encode_Collections_With_Int_Lengths_When_No_Serializer_Is_Set()
+        {
+            var stmt = new SimpleStatement(Query);
+            stmt.SetRoutingValues(new List<int> { 1, 2 });
+
+            // The routing key of a frozen collection partition key is computed by the server with protocol v3+
+            // encoding: an int element count, then an int length before each element.
+            var expectedRoutingKey = new byte[]
+            {
+                0, 0, 0, 2,
+                0, 0, 0, 4, 0, 0, 0, 1,
+                0, 0, 0, 4, 0, 0, 0, 2
+            };
+            CollectionAssert.AreEqual(expectedRoutingKey, stmt.RoutingKey.RawRoutingKey);
+        }
+
+        [Test]
         public void SimpleStatement_Bind_SetsRoutingValues_Multiple()
         {
             var stmt = new SimpleStatement(Query, "id1", "id2", "val1");
