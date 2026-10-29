@@ -190,11 +190,10 @@ test('Jira caller excludes only whole-marker add/remove events', () => {
   const jira = readFileSync(join(__dirname, '../workflows/call_jira_sync.yml'), 'utf8');
   const expression = jira.match(/^    if: \$\{\{ (.+) \}\}$/m)[1];
   const allowed = new Function('github', `return ${expression}`);
+  // Case variants rely on GitHub's case-insensitive string comparison;
+  // this JavaScript evaluator checks event routing with the canonical marker.
   for (const action of ['labeled', 'unlabeled']) {
-    for (const name of [label, 'Omit-from-release-notes', 'OMIT-FROM-RELEASE-NOTES']) {
-      // GitHub expression string equality is case-insensitive.
-      assert.equal(allowed({event: {action, label: {name: name.toLowerCase()}}}), false);
-    }
+    assert.equal(allowed({event: {action, label: {name: label}}}), false);
     for (const name of ['unrelated', `${label}-extra`, `prefix-${label}`, '']) {
       assert.equal(allowed({event: {action, label: {name}}}), true);
     }

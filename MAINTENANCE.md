@@ -80,7 +80,9 @@ containing a rename stays visible, including documentation-only renames, so
 the workflow does not duplicate the filename policy to check rename origins.
 Failed or skipped labeling attempts removal of the omission label for a
 confirmed PR. A failed precheck or labeler run remains failed even if cleanup
-succeeds; an intentional rename skip succeeds if cleanup succeeds. Ordinary
+succeeds; an intentional rename skip succeeds if cleanup succeeds. A successful
+labeler step without the `all-labels` output also fails classification and
+attempts cleanup; an empty but present output is valid. Ordinary
 issue numbers and unconfirmed manual targets receive no label writes. The
 workflow needs no checkout or installed dependencies. Cleanup remains best
 effort during API outages. File and label reads are not atomic: the precheck
@@ -108,8 +110,9 @@ or unwanted support entries. This procedure does not rewrite existing published
 notes.
 
 The local Jira caller ignores only add/remove events for the logical whole
-`omit-from-release-notes` marker, including case variants. Other Jira events
-retain their behavior. Existing Jira copies are not cleaned, and other sync
+`omit-from-release-notes` marker, including case variants through
+[GitHub's case-insensitive string comparison](https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#operators).
+Other Jira events retain their behavior. Existing Jira copies are not cleaned, and other sync
 paths may restore copied metadata. Automatic labels written with the default
 `GITHUB_TOKEN` do not trigger these label-event workflows.
 
