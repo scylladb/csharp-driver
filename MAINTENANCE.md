@@ -57,15 +57,64 @@ kept the `stable` pointer on the highest released version. A failed docs
 deployment can be retried with
 **Docs / Publish** after the release succeeds.
 
-GitHub generates the Release notes from merged pull requests. A merge-time
-workflow adds `omit-from-release-notes` when every changed file is in docs,
-examples, tests, CI, build tooling, or repository metadata; PRs that also
-change driver or extension code remain in the notes.
+GitHub generates the Release notes from merged pull requests and excludes
+PRs carrying `omit-from-release-notes`, as configured in `.github/release.yml`.
+The pinned `actions/labeler` workflow checks reported changed filenames against
+`.github/labeler.yml` when PRs are opened, synchronized, reopened, edited, or
+closed. Every filename must match the single union of support paths; mixed
+documentation, test and CI changes can qualify together. The action uses
+`sync-labels: true` to remove the label when the filename rule stops matching.
+Runs serialize by PR number, including manual backfills, without checking out
+or executing PR contents.
 
-Maintainers can rerun the classifier for a merged PR with **Actions → Label
-support-only release changes → Run workflow** and its PR number before
-publishing a release. The run reapplies the path rule. To override its
-decision, edit the PR label directly after the last classifier run.
+Only documentation, proposals, tests, known CI workflows, and explicitly listed
+repository housekeeping paths qualify automatically. This includes the listed
+README files and the root `.nav` and `doxyfile` documentation configuration.
+Driver or extension code, SDK/runtime manifests, packaging/signing scripts, the
+NuGet publishing workflow, and unknown paths remain visible.
+`build/`, `tools/`, examples, Makefiles, and Markdown files have no blanket
+exemption; only listed tests, report transforms and documentation qualify there.
+Labeler is the sole filename classifier. A precheck confirms the target is a
+pull request and requires a complete, nonempty changed-file listing. Every PR
+containing a rename stays visible, including documentation-only renames, so
+the workflow does not duplicate the filename policy to check rename origins.
+Failed or skipped labeling attempts removal of the omission label for a
+confirmed PR. A failed precheck or labeler run remains failed even if cleanup
+succeeds; an intentional rename skip succeeds if cleanup succeeds. A successful
+labeler step without the `all-labels` output also fails classification and
+attempts cleanup; an empty but present output is valid. Ordinary
+issue numbers and unconfirmed manual targets receive no label writes. The
+workflow needs no checkout or installed dependencies. Cleanup remains best
+effort during API outages. File and label reads are not atomic: the precheck
+and labeler can observe different revisions, and the workflow does not verify
+revisions or labels after classification.
+
+Maintainers can label an already merged PR with **Actions → Label support-only
+release changes → Run workflow**, using its PR number in `pr_number`, before
+publishing a release. The run reapplies the filename rule. To override its
+decision, edit the PR label directly after the last labeler run. Later PR edits
+or classifier reruns can replace manual overrides. Recheck labels and reapply
+overrides after such a run before publication. Authors, titles, `chore`, and
+`dependencies` labels do not suppress release notes.
+
+Before creating a GitHub Release, identify the merged PRs in its release range.
+Run the classifier for each, wait for successful runs, and inspect every
+`omit-from-release-notes` label against the current changed files. Confirm that
+PRs containing renames have no omission label. Fix failed runs or unexpected
+skips before publication and apply manual label overrides only after the final
+successful run. Keep the PRs and release range stable or repeat this verification
+when either changes.
+Release publication remains asynchronous and has no automated classification
+barrier. If manual verification is missed, published notes may retain omissions
+or unwanted support entries. This procedure does not rewrite existing published
+notes.
+
+The local Jira caller ignores only add/remove events for the logical whole
+`omit-from-release-notes` marker, including case variants through
+[GitHub's case-insensitive string comparison](https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#operators).
+Other Jira events retain their behavior. Existing Jira copies are not cleaned, and other sync
+paths may restore copied metadata. Automatic labels written with the default
+`GITHUB_TOKEN` do not trigger these label-event workflows.
 
 ### Intended public API breaks
 
