@@ -1253,12 +1253,9 @@ namespace Cassandra.Connections
             catch (ConnectionFailure failure)
                 when (failure.PreferredError is UnsupportedProtocolVersionException)
             {
-                var ex = (UnsupportedProtocolVersionException)failure.PreferredError;
                 // Preserve the supplemental candidate failures for NoHostAvailableException while
                 // retaining the existing unsupported-protocol host handling.
-                HostConnectionPool.Logger.Error("Host {0} does not support protocol version {1}. You should use a fixed protocol " +
-                             "version during rolling upgrades of the cluster. Setting the host as DOWN to " +
-                             "avoid hitting this node as part of the query plan for a while", _host.Address, ex.ProtocolVersion);
+                LogUnsupportedProtocolVersion((UnsupportedProtocolVersionException)failure.PreferredError);
                 triedHosts[_host.Address] = failure;
                 MarkAsDownAndScheduleReconnection();
             }
@@ -1266,9 +1263,7 @@ namespace Cassandra.Connections
             {
                 // The version of the protocol is not supported on this host
                 // Most likely, we are using a higher protocol version than the host supports
-                HostConnectionPool.Logger.Error("Host {0} does not support protocol version {1}. You should use a fixed protocol " +
-                             "version during rolling upgrades of the cluster. Setting the host as DOWN to " +
-                             "avoid hitting this node as part of the query plan for a while", _host.Address, ex.ProtocolVersion);
+                LogUnsupportedProtocolVersion(ex);
                 triedHosts[_host.Address] = ex;
                 MarkAsDownAndScheduleReconnection();
             }
@@ -1312,6 +1307,23 @@ namespace Cassandra.Connections
             }
 
             return c;
+        }
+
+        private void LogUnsupportedProtocolVersion(UnsupportedProtocolVersionException ex)
+        {
+            if (ex.ResponseProtocolVersion < ProtocolVersion.MinSupported)
+            {
+                // A fixed protocol version doesn't help: the host only supports versions the driver no longer implements
+                HostConnectionPool.Logger.Error("Host {0} replied with protocol version {1}, but the driver requires " +
+                             "protocol version {2} or above (Apache Cassandra 2.1+ or any ScyllaDB version). Setting the " +
+                             "host as DOWN to avoid hitting this node as part of the query plan for a while",
+                             _host.Address, (byte)ex.ResponseProtocolVersion, (byte)ProtocolVersion.MinSupported);
+                return;
+            }
+
+            HostConnectionPool.Logger.Error("Host {0} does not support protocol version {1}. You should use a fixed protocol " +
+                         "version during rolling upgrades of the cluster. Setting the host as DOWN to " +
+                         "avoid hitting this node as part of the query plan for a while", _host.Address, ex.ProtocolVersion);
         }
 
         private void UpdateShardingInfo(IConnection c)

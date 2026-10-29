@@ -255,7 +255,7 @@ namespace Cassandra.IntegrationTests.Core
 
         [Test]
         [TestCase(ProtocolVersion.MaxSupported, 1)]
-        [TestCase(ProtocolVersion.V2, 2)]
+        [TestCase(ProtocolVersion.V3, 1)]
         public async Task PoolingOptions_Create_Based_On_Protocol(ProtocolVersion protocolVersion, int coreConnectionLength)
         {
             var options1 = PoolingOptions.Create(protocolVersion);

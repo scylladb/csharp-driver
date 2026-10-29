@@ -193,29 +193,9 @@ namespace Cassandra
         /// </summary>
         public void WriteFrameHeader(byte flags, short streamId, byte opCode)
         {
-            byte[] header;
-            if (!_version.Uses2BytesStreamIds())
-            {
-                //8 bytes for the header, dedicating 1 for the streamId
-                if (streamId > 127)
-                {
-                    throw new ArgumentException("StreamId must be smaller than 128 under protocol version " + _version);
-                }
-                header = new byte[]
-                {
-                    (byte) _version,
-                    flags,
-                    (byte) streamId,
-                    opCode,
-                    //Reserved for the body length
-                    0, 0, 0, 0
-                };
-                Write(header);
-                return;
-            }
             //9 bytes for the header, dedicating 2 for the streamId
             var streamIdBytes = BeConverter.GetBytes(streamId);
-            header = new byte[]
+            var header = new byte[]
             {
                 (byte) _version,
                 flags,
@@ -244,15 +224,10 @@ namespace Cassandra
             //Set the length in the header
             //MemoryStream implementation length and offset are ints, so cast is safe
             var frameLength = Convert.ToInt32(_stream.Length - _offset);
-            var lengthBytes = BeConverter.GetBytes(frameLength - _version.GetHeaderSize());
-            //The length could start at the 4th or 5th position
-            long lengthOffset = 4;
-            if (_version.Uses2BytesStreamIds())
-            {
-                lengthOffset = 5;
-            }
-            //Set the position of the stream where the frame body length should be written
-            _stream.Position = _offset + lengthOffset;
+            var lengthBytes = BeConverter.GetBytes(frameLength - FrameHeader.Size);
+            //Set the position of the stream where the frame body length should be written, after the
+            //version, flags, stream id and opcode
+            _stream.Position = _offset + 5;
             _stream.Write(lengthBytes, 0, lengthBytes.Length);
             _stream.Position = _stream.Length;
             return frameLength;

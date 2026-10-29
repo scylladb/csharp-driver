@@ -60,8 +60,7 @@ namespace Cassandra.Requests
     /// That field reports whichever of two per-connection limits binds first: the configured threshold above
     /// which <see cref="Connections.HostConnectionPool"/> rejects a borrow with a
     /// <see cref="BusyPoolException"/>, and the size of the connection's stream identifier pool, which
-    /// <c>Connection.GetMaxConcurrentRequests</c> fixes at 2048 — or 128 for single-byte stream ids —
-    /// independently of how the pool is configured. They coincide at the default and the configured value binds
+    /// <c>Connection.MaxConcurrentRequests</c> fixes at 2048 independently of how the pool is configured. They coincide at the default and the configured value binds
     /// below it; above it the stream identifiers do, since further requests wait for one rather than travelling
     /// concurrently.
     /// </para>
@@ -218,8 +217,8 @@ namespace Cassandra.Requests
 
             // Resolved once and shared by the two groups that need it: PoolingOptions is null until a protocol
             // version is negotiated, which happens after this report is built, and GetOrCreatePoolingOptions
-            // builds a fresh instance of the defaults on every call rather than storing one. ScyllaDB always
-            // negotiates a version that uses those defaults, and a configured value takes precedence regardless.
+            // builds a fresh instance of the defaults on every call rather than storing one. The defaults are the
+            // same for every protocol version, and a configured value takes precedence regardless.
             var pooling = _configuration.GetOrCreatePoolingOptions(ProtocolVersion.MaxSupported);
 
             connection["requests"] = Requests(pooling);
@@ -293,17 +292,11 @@ namespace Cassandra.Requests
             // Reporting the configured value alone would overstate the ceiling whenever it is set above the
             // stream-id pool.
             //
-            // The stream-id pool depends on the negotiated protocol version, which is not available here, so the
-            // highest supported version stands in — the same assumption the pooling defaults above already make,
-            // and the one ScyllaDB always negotiates. Forcing an older protocol would make the real pool 128 and
-            // this an overstatement again, which is the residual inaccuracy of not threading the negotiated
-            // version into the report.
-            //
             // Both inputs are positive — SetMaxRequestsPerConnection rejects anything else — so the result always
             // satisfies the schema's positive-integer requirement.
             var maxRequests = Math.Min(
                 pooling.GetMaxRequestsPerConnection(),
-                Connections.Connection.GetMaxConcurrentRequests(ProtocolVersion.MaxSupported));
+                Connections.Connection.MaxConcurrentRequests);
 
             var inFlight = new JObject { ["max"] = maxRequests };
 

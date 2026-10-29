@@ -65,10 +65,6 @@ namespace Cassandra
                                             "You can specify it while creating the UdtMap, while creating the Session and" +
                                             " while creating the Cluster (default keyspace config setting).");
             }
-            if (_session.BinaryProtocolVersion < 3)
-            {
-                throw new NotSupportedException("User defined type mapping is supported with C* 2.1+ and protocol version 3+");
-            }
             // Add types to both indexes
             foreach (var map in udtMaps)
             {

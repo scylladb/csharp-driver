@@ -2,7 +2,7 @@
 
 ## Which versions of Apache Cassandra does the driver support?
 
-The driver should wotk with any Apache Cassandra version from 2.0+, but we do not maintain support for it.
+The driver should wotk with any Apache Cassandra version from 2.1+, but we do not maintain support for it.
 
 ## Which versions of ScyllaDB does the driver support?
 

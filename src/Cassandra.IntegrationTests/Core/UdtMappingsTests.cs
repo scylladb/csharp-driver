@@ -586,19 +586,6 @@ namespace Cassandra.IntegrationTests.Core
             Assert.Throws<ArgumentNullException>(() => localSession.Execute(insert));
         }
 
-        [Test, TestCassandraVersion(3, 0, Comparison.LessThan)]
-        public void MappingOnLowerProtocolVersionTest()
-        {
-            using (var cluster = ClusterBuilder()
-                .AddContactPoint(TestCluster.InitialContactPoint)
-                .WithMaxProtocolVersion(ProtocolVersion.V2)
-                .Build())
-            {
-                var localSession = cluster.Connect(KeyspaceName);
-                Assert.Throws<NotSupportedException>(() => localSession.UserDefinedTypes.Define(UdtMap.For<Phone>()));
-            }
-        }
-
         private class DummyClass
         {
 

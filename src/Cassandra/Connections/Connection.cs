@@ -74,7 +74,7 @@ namespace Cassandra.Connections
         private long _nextKeyspaceOperationId;
 
         /// <summary>
-        /// Small buffer (less than 8 bytes) that is used when the next received message is smaller than 8 bytes,
+        /// Small buffer (less than 9 bytes) that is used when the next received message is smaller than 9 bytes,
         /// and it is not possible to read the header.
         /// </summary>
         private byte[] _minHeaderBuffer;
@@ -225,7 +225,7 @@ namespace Cassandra.Connections
             _timerEnabled = configuration.MetricsEnabled
                             && configuration.MetricsOptions.EnabledNodeMetrics.Contains(NodeMetric.Timers.CqlMessages);
 
-            _freeOperations = new ConcurrentStack<short>(Enumerable.Range(0, GetMaxConcurrentRequests(Serializer)).Select(s => (short)s).Reverse());
+            _freeOperations = new ConcurrentStack<short>(Enumerable.Range(0, GetMaxConcurrentRequests()).Select(s => (short)s).Reverse());
             _pendingOperations = new ConcurrentDictionary<short, OperationState>();
             _writeQueue = new ConcurrentQueue<OperationState>();
             _supportedOptionsInitializer = configuration.SupportedOptionsInitializerFactory.Create(null);
@@ -255,28 +255,23 @@ namespace Cassandra.Connections
         }
 
         /// <summary>
-        /// Gets the amount of concurrent requests depending on the protocol version
+        /// The size of a connection's stream identifier pool, and so the number of requests it can have in flight
+        /// before further ones have to wait for an identifier to come free. Never depends on how the pool is
+        /// configured.
         /// </summary>
-        public int GetMaxConcurrentRequests(ISerializer serializer)
-        {
-            return Connection.GetMaxConcurrentRequests(serializer.ProtocolVersion);
-        }
+        /// <remarks>
+        /// Protocol v3 and above support up to 32K concurrent requests without waiting for a response.
+        /// Allowing larger amounts of concurrent requests would cause large memory consumption, so it is
+        /// limited to 2K per connection.
+        /// </remarks>
+        internal const int MaxConcurrentRequests = 2048;
 
         /// <summary>
-        /// The size of a connection's stream identifier pool, and so the number of requests it can have in flight
-        /// before further ones have to wait for an identifier to come free. Depends only on the protocol version,
-        /// never on how the pool is configured.
+        /// Gets the amount of concurrent requests
         /// </summary>
-        internal static int GetMaxConcurrentRequests(ProtocolVersion protocolVersion)
+        public int GetMaxConcurrentRequests()
         {
-            if (!protocolVersion.Uses2BytesStreamIds())
-            {
-                return 128;
-            }
-            //Protocol 3 supports up to 32K concurrent request without waiting a response
-            //Allowing larger amounts of concurrent requests will cause large memory consumption
-            //Limit to 2K per connection sounds reasonable.
-            return 2048;
+            return Connection.MaxConcurrentRequests;
         }
 
         /// <summary>
@@ -286,33 +281,6 @@ namespace Cassandra.Connections
         /// <exception cref="AuthenticationException" />
         private async Task<Response> StartAuthenticationFlow(string name)
         {
-            //Determine which authentication flow to use.
-            //Check if its using a C* 1.2 with authentication patched version
-            var protocolVersion = Serializer.ProtocolVersion;
-            var isPatchedVersion = protocolVersion == ProtocolVersion.V1 &&
-                !(Configuration.AuthProvider is NoneAuthProvider) && Configuration.AuthInfoProvider == null;
-            if (protocolVersion == ProtocolVersion.V1 && !isPatchedVersion)
-            {
-                //Use protocol v1 authentication flow
-                if (Configuration.AuthInfoProvider == null)
-                {
-                    throw new AuthenticationException(
-                        $"Host {EndPoint.EndpointFriendlyName} requires authentication, but no credentials provided in Cluster configuration",
-                        EndPoint.GetHostIpEndPointWithFallback());
-                }
-                var credentialsProvider = Configuration.AuthInfoProvider;
-                var credentials = credentialsProvider.GetAuthInfos(EndPoint.GetHostIpEndPointWithFallback());
-                var request = new CredentialsRequest(credentials);
-                var response = await Send(request).ConfigureAwait(false);
-                if (!(response is ReadyResponse))
-                {
-                    //If Cassandra replied with a auth response error
-                    //The task already is faulted and the exception was already thrown.
-                    throw new ProtocolErrorException("Expected SASL response, obtained " + response.GetType().Name);
-                }
-                return response;
-            }
-            //Use protocol v2+ authentication flow
             if (Configuration.AuthProvider is IAuthProviderNamed)
             {
                 //Provide name when required
@@ -695,23 +663,34 @@ namespace Cassandra.Connections
             }
 
             // Check if protocol version has already been determined (first message)
-            ProtocolVersion protocolVersion;
             var headerLength = Volatile.Read(ref _frameHeaderSize);
             var serializer = Volatile.Read(ref _serializer);
             if (headerLength == 0)
             {
                 // The server replies the first message with the max protocol version supported
-                protocolVersion = FrameHeader.GetProtocolVersion(buffer);
+                var protocolVersion = FrameHeader.GetProtocolVersion(buffer);
+                if (protocolVersion < ProtocolVersion.MinSupported)
+                {
+                    // Protocol v1 and v2 frames have a different header layout, the frame can not be decoded.
+                    // Fail the pending operations, the OPTIONS request among them, so that opening the
+                    // connection fails with an error that names the reason.
+                    CloseInternal(
+                        new UnsupportedProtocolVersionException(
+                            serializer.ProtocolVersion,
+                            protocolVersion,
+                            $"Host {EndPoint.EndpointFriendlyName} replied with protocol version {protocolVersion:D}, " +
+                            $"but the driver requires protocol version {ProtocolVersion.MinSupported:D} or above " +
+                            "(Apache Cassandra 2.1+ or any ScyllaDB version)"),
+                        null,
+                        false);
+                    return false;
+                }
                 serializer = serializer.CloneWithProtocolVersion(protocolVersion);
-                headerLength = protocolVersion.GetHeaderSize();
+                headerLength = FrameHeader.Size;
 
                 Volatile.Write(ref _serializer, serializer);
                 Volatile.Write(ref _frameHeaderSize, headerLength);
                 _frameHeaderSize = headerLength;
-            }
-            else
-            {
-                protocolVersion = serializer.ProtocolVersion;
             }
 
             // Use _readStream to buffer between messages, when the body is not contained in a single read call
@@ -733,7 +712,7 @@ namespace Cassandra.Connections
                 // check if header has not been read yet
                 if (previousHeader == null)
                 {
-                    header = ReadHeader(buffer, ref offset, length, headerLength, protocolVersion);
+                    header = ReadHeader(buffer, ref offset, length, headerLength);
                     if (header == null)
                     {
                         // There aren't enough bytes to read the header
@@ -800,8 +779,7 @@ namespace Cassandra.Connections
         /// <summary>
         /// Reads the header from the buffer, using previous
         /// </summary>
-        private FrameHeader ReadHeader(byte[] buffer, ref int offset, int length, int headerLength,
-                                       ProtocolVersion version)
+        private FrameHeader ReadHeader(byte[] buffer, ref int offset, int length, int headerLength)
         {
             if (offset == 0)
             {
@@ -818,7 +796,7 @@ namespace Cassandra.Connections
                     }
                     offset += headerLength - previousHeaderBuffer.Length;
                     // Use the previous and the current buffer to build the header
-                    return FrameHeader.ParseResponseHeader(version, previousHeaderBuffer, buffer);
+                    return FrameHeader.ParseResponseHeader(previousHeaderBuffer, buffer);
                 }
             }
             if (length - offset < headerLength)
@@ -828,7 +806,7 @@ namespace Cassandra.Connections
                 return null;
             }
             // The header is contained in the current buffer
-            var header = FrameHeader.ParseResponseHeader(version, buffer, offset);
+            var header = FrameHeader.ParseResponseHeader(buffer, offset);
             offset += headerLength;
             return header;
         }

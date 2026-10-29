@@ -44,12 +44,6 @@ namespace Cassandra
     /// enumerations will be empty, as all rows have been dequeued.
     /// </para>
     /// </summary>
-    /// <remarks>
-    /// RowSet paging is not available with the version 1 of the native protocol.
-    /// If the protocol version 1 is in use, a RowSet is always fetched in it's entirely and
-    /// it's up to the client to make sure that no query can yield ResultSet that won't hold
-    /// in memory.
-    /// </remarks>
     /// <remarks>Parallel enumerations are supported and thread-safe.</remarks>
     public class RowSet : IEnumerable<Row>
     {

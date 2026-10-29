@@ -107,7 +107,7 @@ namespace Cassandra
         }
 
         internal static QueryProtocolOptions CreateFromQuery(
-            ProtocolVersion protocolVersion, Statement query, IRequestOptions requestOptions, bool? forceSkipMetadata, RowSetMetadata variablesMetadata)
+            Statement query, IRequestOptions requestOptions, bool? forceSkipMetadata, RowSetMetadata variablesMetadata)
         {
             if (query == null)
             {
@@ -120,7 +120,7 @@ namespace Cassandra
             {
                 timestamp = TypeSerializer.SinceUnixEpoch(query.Timestamp.Value).Ticks / 10;
             }
-            else if (protocolVersion.SupportsTimestamp())
+            else
             {
                 timestamp = requestOptions.TimestampGenerator.Next();
                 if (timestamp == long.MinValue)
@@ -173,11 +173,11 @@ namespace Cassandra
             {
                 flags |= QueryFlags.WithSerialConsistency;
             }
-            if (protocolVersion.SupportsTimestamp() && RawTimestamp != null)
+            if (RawTimestamp != null)
             {
                 flags |= QueryFlags.WithDefaultTimestamp;
             }
-            if (protocolVersion.SupportsNamedValuesInQueries() && ValueNames != null && ValueNames.Count > 0)
+            if (ValueNames != null && ValueNames.Count > 0)
             {
                 flags |= QueryFlags.WithNameForValues;
             }
@@ -200,23 +200,18 @@ namespace Cassandra
         /// </remarks>
         internal void Write(FrameWriter wb, bool isPrepared, bool? skipMetadataOverride = null)
         {
-            //protocol v1: <query><n><value_1>....<value_n><consistency>
-            //protocol v2: <query><consistency><flags>[<n><value_1>...<value_n>][<result_page_size>][<paging_state>][<serial_consistency>]
             //protocol v3: <query><consistency><flags>[<n>[name_1]<value_1>...[name_n]<value_n>][<result_page_size>][<paging_state>][<serial_consistency>][<timestamp>]
             var protocolVersion = wb.Serializer.ProtocolVersion;
             var flags = GetFlags(protocolVersion, isPrepared, skipMetadataOverride);
 
-            if (protocolVersion != ProtocolVersion.V1)
+            wb.WriteUInt16((ushort)Consistency);
+            if (protocolVersion.Uses4BytesQueryFlags())
             {
-                wb.WriteUInt16((ushort)Consistency);
-                if (protocolVersion.Uses4BytesQueryFlags())
-                {
-                    wb.WriteInt32((int)flags);
-                }
-                else
-                {
-                    wb.WriteByte((byte)flags);
-                }
+                wb.WriteInt32((int)flags);
+            }
+            else
+            {
+                wb.WriteByte((byte)flags);
             }
 
             if (flags.HasFlag(QueryFlags.Values))
@@ -238,19 +233,7 @@ namespace Cassandra
                         i);
                 }
             }
-            else if (protocolVersion == ProtocolVersion.V1 && isPrepared)
-            {
-                //n values is not optional on protocol v1
-                //Write 0 values
-                wb.WriteUInt16(0);
-            }
 
-            if (protocolVersion == ProtocolVersion.V1)
-            {
-                //Protocol v1 ends here
-                wb.WriteUInt16((ushort)Consistency);
-                return;
-            }
             if ((flags & QueryFlags.PageSize) == QueryFlags.PageSize)
             {
                 wb.WriteInt32(PageSize);

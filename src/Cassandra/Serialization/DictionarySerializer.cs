@@ -32,16 +32,16 @@ namespace Cassandra.Serialization
             var mapInfo = (MapColumnInfo)typeInfo;
             var keyType = GetClrType(mapInfo.KeyTypeCode, mapInfo.KeyTypeInfo);
             var valueType = GetClrType(mapInfo.ValueTypeCode, mapInfo.ValueTypeInfo);
-            var count = DecodeCollectionLength((ProtocolVersion)protocolVersion, buffer, ref offset);
+            var count = DecodeCollectionLength(buffer, ref offset);
             var dicType = typeof(SortedDictionary<,>).MakeGenericType(keyType, valueType);
             var result = (IDictionary)Activator.CreateInstance(dicType);
             for (var i = 0; i < count; i++)
             {
-                var keyLength = DecodeCollectionLength((ProtocolVersion)protocolVersion, buffer, ref offset);
+                var keyLength = DecodeCollectionLength(buffer, ref offset);
                 var key = DeserializeChild(protocolVersion, buffer, offset, keyLength, mapInfo.KeyTypeCode, mapInfo.KeyTypeInfo);
                 offset += keyLength;
 
-                var valueLength = DecodeCollectionLength((ProtocolVersion)protocolVersion, buffer, ref offset);
+                var valueLength = DecodeCollectionLength(buffer, ref offset);
                 var value = DeserializeChild(protocolVersion, buffer, offset, valueLength, mapInfo.ValueTypeCode, mapInfo.ValueTypeInfo);
                 offset += valueLength;
 
@@ -72,7 +72,7 @@ namespace Cassandra.Serialization
         {
             var bufferList = new LinkedList<byte[]>();
             var totalLength = 0;
-            var totalLengthBuffer = EncodeCollectionLength(protocolVersion, value.Count);
+            var totalLengthBuffer = EncodeCollectionLength(value.Count);
             bufferList.AddLast(totalLengthBuffer);
             totalLength += totalLengthBuffer.Length;
             //We are using IEnumerable, we don't know the length of the underlying collection.
@@ -91,7 +91,7 @@ namespace Cassandra.Serialization
         public int AddItem(LinkedList<byte[]> bufferList, ushort protocolVersion, object item)
         {
             var keyBuffer = SerializeChild(protocolVersion, item);
-            var keyLengthBuffer = EncodeCollectionLength(protocolVersion, keyBuffer.Length);
+            var keyLengthBuffer = EncodeCollectionLength(keyBuffer.Length);
             bufferList.AddLast(keyLengthBuffer);
             bufferList.AddLast(keyBuffer);
             return keyLengthBuffer.Length + keyBuffer.Length;
