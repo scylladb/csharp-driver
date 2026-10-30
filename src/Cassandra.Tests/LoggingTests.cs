@@ -124,6 +124,20 @@ namespace Cassandra.Tests
             }
         }
 
+        [Test]
+        public void Logger_Should_Keep_The_Members_Called_By_AppMetrics()
+        {
+            // The separately installed AppMetrics package binds to these members by name and signature, and the public
+            // API compatibility check doesn't cover them now that Logger is internal, so the names are literals here
+            Assert.AreEqual("Cassandra.Logger", typeof(Logger).FullName);
+            var constructor = typeof(Logger).GetConstructor(new[] { typeof(Type) });
+            Assert.IsNotNull(constructor);
+            var warning = typeof(Logger).GetMethod("Warning", new[] { typeof(string), typeof(object[]) });
+            Assert.IsNotNull(warning);
+            Assert.IsFalse(warning.IsStatic);
+            Assert.AreEqual(typeof(void), warning.ReturnType);
+        }
+
         private void UseAllMethods(Logger.ILoggerHandler loggerHandler)
         {
             loggerHandler.Error(new Exception("Test exception 1"));
