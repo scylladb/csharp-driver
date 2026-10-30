@@ -24,12 +24,15 @@ namespace Cassandra
 {
     /// <summary>
     /// Represents a driver Logger
+    /// <para>
+    /// The ScyllaDBCSharpDriver.AppMetrics package calls <see cref="Logger(Type)"/> and
+    /// <see cref="Warning"/> through InternalsVisibleTo, and ships separately with a minimum driver version only.
+    /// Keep both compatible, or that package fails at runtime with a newer driver.
+    /// </para>
     /// </summary>
-    public class Logger
+    internal class Logger
     {
-        // Implementation information: the Logger API has been leaked into the public API.
-        // To avoid introducing a breaking change, we will keep the Logger as a wrapper and factory of the
-        // actual logger
+        // A wrapper and factory of the actual logger, which depends on Diagnostics.UseLoggerFactory
         private readonly ILoggerHandler _loggerHandler;
 
         public Logger(Type type)

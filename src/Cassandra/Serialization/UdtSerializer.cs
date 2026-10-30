@@ -104,9 +104,15 @@ namespace Cassandra.Serialization
                     fieldValue = prop.GetValue(value, null);
                     if (!fieldTargetType.GetTypeInfo().IsAssignableFrom(prop.PropertyType.GetTypeInfo()))
                     {
-                        fieldValue = UdtMap.TypeConverter.ConvertToDbFromUdtFieldValue(prop.PropertyType,
-                                               fieldTargetType,
-                                               fieldValue);
+                        // A property that doesn't hold the CLR type of a TypeSerializer<T> that replaced a primitive
+                        // serializer in this field keeps the conversion it had before that replacement
+                        var targetType = GetClrTypeBeforeReplacement(field.TypeCode, field.TypeInfo);
+                        if (!targetType.GetTypeInfo().IsAssignableFrom(prop.PropertyType.GetTypeInfo()))
+                        {
+                            fieldValue = UdtMap.TypeConverter.ConvertToDbFromUdtFieldValue(prop.PropertyType,
+                                                   targetType,
+                                                   fieldValue);
+                        }
                     }
                 }
                 var itemBuffer = SerializeChild(protocolVersion, fieldValue);

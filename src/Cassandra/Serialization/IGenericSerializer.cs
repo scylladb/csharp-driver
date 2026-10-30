@@ -41,6 +41,12 @@ namespace Cassandra.Serialization
         /// </summary>
         bool IsAssignableFrom(ColumnTypeCode columnTypeCode, IColumnInfo typeInfo, object value, out string failureMsg);
 
+        /// <summary>
+        /// The CLR type <see cref="GetClrType"/> returned before any <see cref="TypeSerializer{T}"/> replaced the
+        /// serializer of a primitive CQL type, including those inside collections, tuples and vectors.
+        /// </summary>
+        Type GetClrTypeBeforeReplacement(ColumnTypeCode typeCode, IColumnInfo typeInfo);
+
         UdtMap GetUdtMapByName(string name);
 
         UdtMap GetUdtMapByType(Type type);

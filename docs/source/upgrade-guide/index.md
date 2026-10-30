@@ -139,6 +139,14 @@ is cached, and the server's response lets the driver learn the tablet for later
 queries. When other tablets of the table are cached but not the one owning the
 partition key, `TokenAwarePolicy` uses its child policy's query plan.
 
+### Column types with custom type serializers
+
+When a `TypeSerializer<T>` registered with `Builder.WithTypeSerializers` replaces the
+serializer of a CQL type such as `decimal`, the driver now reports its CLR type `T` for
+columns of that type, in `CqlColumn.Type` and in the element types of collections and
+UDTs. Before, it reported the default type, for example `decimal`. The Mapper then
+read such a column as the default type, which failed for a `T` property.
+
 ### Removed obsolete APIs
 
 Version 4 removes public APIs that version 3 marked `[Obsolete]`. Each section below
@@ -327,6 +335,107 @@ error saying which protocol version it used and that the driver requires 3 or ab
 Hosts whose Cassandra version is unknown no longer lower the protocol version
 either. Before, such a host made the driver use protocol version 1, unless a host
 ran Cassandra 3.0 or later.
+
+### Removed and internalized legacy APIs
+
+Version 4 removes, or makes internal, public APIs left over from the driver's early
+design that 3.x did not mark `[Obsolete]`. Each section below names the replacement.
+
+#### `Diagnostics.CassandraPerformanceCountersEnabled`
+
+The property is removed. Nothing read it, so setting it had no effect: remove the
+code that sets it.
+
+#### `RoutingKey.Empty`
+
+The static field is removed. The driver never used it, and any code could replace it
+or change its `RawRoutingKey`, which affected every other user of the field. Use
+`new RoutingKey()` instead.
+
+#### `QueryProtocolOptions`
+
+The `QueryProtocolOptions` class, with its `QueryFlags` enum, is no longer public. It
+holds the options of a request as the driver encodes it, and applications could not
+create one: its only public member that returned one was `QueryProtocolOptions.Default`.
+The `protected Statement(QueryProtocolOptions)` constructor, which ignored its
+argument, is removed too. A class that derives from `Statement` and calls it should
+call the parameterless constructor instead.
+
+#### `SchemaChangedEventArgs` and `HostsEventArgs` properties
+
+The public fields of `SchemaChangedEventArgs` (`Keyspace`, `Table`, `What`) and
+`HostsEventArgs` (`Address`, `What`) are now properties that can only be set when the
+object is created. Code that reads them, or that creates the objects with an object
+initializer, compiles unchanged. Code that assigns them after creating the object, or
+passes them as `ref` or `out` arguments, no longer compiles.
+
+#### `TypeAdapters` and `ITypeAdapter`
+
+The type adapter mechanism is removed: the `TypeAdapters` class, the `ITypeAdapter`
+interface, and its `BigIntegerTypeAdapter`, `DecimalTypeAdapter`,
+`DynamicCompositeTypeAdapter` and `NullTypeAdapter` implementations. Replacing
+`TypeAdapters.DecimalTypeAdapter` or `TypeAdapters.VarIntTypeAdapter` changed the CLR
+type used for `decimal` or `varint` values. Do the same with a `TypeSerializer<T>`
+registered on the `Builder`:
+
+```csharp
+// Before
+TypeAdapters.DecimalTypeAdapter = new BigDecimalTypeAdapter();
+
+// After
+class BigDecimalSerializer : TypeSerializer<BigDecimal>
+{
+    public override ColumnTypeCode CqlType => ColumnTypeCode.Decimal;
+
+    public override BigDecimal Deserialize(ushort protocolVersion, byte[] buffer, int offset, int length, IColumnInfo typeInfo)
+    {
+        // Read length bytes from buffer, starting at offset
+    }
+
+    public override byte[] Serialize(ushort protocolVersion, BigDecimal value)
+    {
+        // Return the value's bytes
+    }
+}
+
+var cluster = Cluster.Builder()
+    .AddContactPoint("127.0.0.1")
+    .WithTypeSerializers(new TypeSerializerDefinitions().Define(new BigDecimalSerializer()))
+    .Build();
+```
+
+The adapter's `ConvertFrom` received only the value's bytes, and for `varint` in reverse
+(little-endian) order, and its `ConvertTo` returned them in that order. A
+`TypeSerializer<T>` reads and writes the bytes as the protocol encodes them, so reverse
+the bytes when reusing a `varint` adapter's code.
+
+#### `RetryLoadBalancingPolicy`
+
+`RetryLoadBalancingPolicy` and `RetryLoadBalancingPolicyEventArgs` are removed. The
+policy repeated its child policy's query plan without end. Between passes it raised
+`ReconnectionEvent`, or, with no handler attached, blocked the thread for the
+reconnection policy's delay. A request therefore never failed with
+`NoHostAvailableException` while every node was down. The policy also hid the LWT
+routing of the policy it wrapped.
+
+Configure the wrapped policy directly. To keep trying while the cluster is
+unavailable, catch `NoHostAvailableException` and retry the request after a delay:
+
+```csharp
+// Before
+.WithLoadBalancingPolicy(new RetryLoadBalancingPolicy(childPolicy, reconnectionPolicy))
+
+// After
+.WithLoadBalancingPolicy(childPolicy)
+```
+
+#### `Logger`
+
+The `Logger` class is no longer public. The driver uses it internally to write its log
+messages. An application that created a `Logger` to write its own messages where the
+driver writes its own should use its own logging instead. To receive the driver's
+messages, add an `ILoggerProvider` with `Diagnostics.AddLoggerProvider`, or set the level
+of `Diagnostics.CassandraTraceSwitch`.
 
 ## 3.13.0 - Unified driver
 

@@ -27,8 +27,8 @@ namespace Cassandra
             Updated
         }
 
-        public string Keyspace;
-        public string Table;
-        public Kind What;
+        public string Keyspace { get; init; }
+        public string Table { get; init; }
+        public Kind What { get; init; }
     }
 }

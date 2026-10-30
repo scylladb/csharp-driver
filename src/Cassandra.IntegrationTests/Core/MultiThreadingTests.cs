@@ -37,12 +37,10 @@ namespace Cassandra.IntegrationTests.Core
         [OneTimeSetUp]
         public void OneTimeSetUp()
         {
-            var rp = new RetryLoadBalancingPolicy(new RoundRobinPolicy(), new ConstantReconnectionPolicy(100));
-            rp.ReconnectionEvent += (s, ev) => Thread.Sleep((int)ev.DelayMs);
             _builder = ClusterBuilder()
                 .WithReconnectionPolicy(new ConstantReconnectionPolicy(100))
                 .WithQueryTimeout(60 * 1000)
-                .WithLoadBalancingPolicy(rp);
+                .WithLoadBalancingPolicy(new RoundRobinPolicy());
 
             _builder = _builder.AddContactPoint(TestClusterManager.GetNonShareableTestCluster(NodeCount).InitialContactPoint);
         }

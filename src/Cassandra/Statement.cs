@@ -128,12 +128,6 @@ namespace Cassandra
 
         }
 
-        // ReSharper disable once UnusedParameter.Local
-        protected Statement(QueryProtocolOptions queryProtocolOptions)
-        {
-            //the unused parameter is maintained for backward compatibility
-        }
-
         /// <inheritdoc />
         public IStatement ExecutingAs(string userOrRole)
         {

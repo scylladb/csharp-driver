@@ -873,41 +873,6 @@ namespace Cassandra.Tests.Requests
         }
 
         [Test]
-        public void Should_ReportACustomLoadBalancingPolicy_By_TheOutermostConfiguredName()
-        {
-            var report = DriverConfigReporterTests.BuildReport(
-                DriverConfigReporterTests.WithPolicies(
-                    loadBalancingPolicy: new RetryLoadBalancingPolicy(new FakeLoadBalancingPolicy(), new ConstantReconnectionPolicy(1))));
-
-            Assert.AreEqual("RetryLoadBalancingPolicy", report["query"]["load-balancing"]["policy"]["name"].Value<string>());
-            DriverConfigReporterTests.AssertConformsToSchema(report);
-        }
-
-        [Test]
-        public void Should_ReportACustomLoadBalancingPolicy_When_RetryLoadBalancingPolicyWrapsABuiltInChain()
-        {
-            // Every policy underneath is one the driver knows, but RetryLoadBalancingPolicy is not a transparent
-            // delegator: its plan re-enumerates the child's in an unbounded loop and sleeps between passes. Flags
-            // taken from the chain below would describe plain token-aware routing and hide that entirely.
-            var report = DriverConfigReporterTests.BuildReport(
-                DriverConfigReporterTests.WithPolicies(
-                    loadBalancingPolicy: new RetryLoadBalancingPolicy(
-                        new TokenAwarePolicy(new DCAwareRoundRobinPolicy("dc1")), new ConstantReconnectionPolicy(100))));
-
-            var policy = report["query"]["load-balancing"]["policy"];
-            Assert.AreEqual("custom", policy["type"].Value<string>());
-            Assert.AreEqual("RetryLoadBalancingPolicy", policy["name"].Value<string>());
-            Assert.IsNull(policy["load-distribution"]);
-
-            // The datacenter preference below it is still in force: it delegates Distance to the child, so which
-            // nodes are local is unchanged.
-            var preference = report["query"]["load-balancing"]["node-preference"];
-            Assert.AreEqual("dc", preference["type"].Value<string>());
-            Assert.AreEqual("dc1", preference["local-dc"].Value<string>());
-            DriverConfigReporterTests.AssertConformsToSchema(report);
-        }
-
-        [Test]
         public void Should_StopWalkingTheLoadBalancingChain_At_TheBound()
         {
             // Nested past the reporter's chain bound of 16. The walk must stop rather than follow an arbitrarily

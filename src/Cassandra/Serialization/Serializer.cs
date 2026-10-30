@@ -184,6 +184,11 @@ namespace Cassandra.Serialization
             return _serializer.GetCqlType(type, out typeInfo);
         }
 
+        public Type GetClrTypeBeforeReplacement(ColumnTypeCode typeCode, IColumnInfo typeInfo)
+        {
+            return _serializer.GetClrTypeBeforeReplacement(typeCode, typeInfo);
+        }
+
         public bool IsAssignableFrom(ColumnTypeCode columnTypeCode, IColumnInfo typeInfo, object value, out string failureMsg)
         {
             return _serializer.IsAssignableFrom(columnTypeCode, typeInfo, value, out failureMsg);
