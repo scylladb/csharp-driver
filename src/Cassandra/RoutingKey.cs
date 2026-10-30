@@ -23,8 +23,6 @@ namespace Cassandra
     /// </summary>
     public class RoutingKey
     {
-        public static RoutingKey Empty = new RoutingKey();
-
         /// <summary>
         /// Byte array representing the partition key (or one of the partition)
         /// </summary>
