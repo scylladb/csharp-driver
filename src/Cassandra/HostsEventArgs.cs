@@ -27,7 +27,7 @@ namespace Cassandra
             Down
         }
 
-        public IPEndPoint Address;
-        public Kind What;
+        public IPEndPoint Address { get; init; }
+        public Kind What { get; init; }
     }
 }
