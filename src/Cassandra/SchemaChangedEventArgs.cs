@@ -27,8 +27,19 @@ namespace Cassandra
             Updated
         }
 
-        public string Keyspace;
-        public string Table;
-        public Kind What;
+        /// <summary>
+        /// The name of the keyspace that changed.
+        /// </summary>
+        public string Keyspace { get; init; }
+
+        /// <summary>
+        /// Always <c>null</c>: the driver raises this event only for keyspace changes.
+        /// </summary>
+        public string Table { get; init; }
+
+        /// <summary>
+        /// Whether the keyspace was created, dropped or updated.
+        /// </summary>
+        public Kind What { get; init; }
     }
 }
