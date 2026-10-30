@@ -429,6 +429,14 @@ unavailable, catch `NoHostAvailableException` and retry the request after a dela
 .WithLoadBalancingPolicy(childPolicy)
 ```
 
+#### `Logger`
+
+The `Logger` class is no longer public. The driver uses it internally to write its log
+messages. An application that created a `Logger` to write its own messages where the
+driver writes its own should use its own logging instead. To receive the driver's
+messages, add an `ILoggerProvider` with `Diagnostics.AddLoggerProvider`, or set the level
+of `Diagnostics.CassandraTraceSwitch`.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.
