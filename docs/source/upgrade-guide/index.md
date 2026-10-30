@@ -344,6 +344,15 @@ The static field is removed. The driver never used it, and any code could replac
 or change its `RawRoutingKey`, which affected every other user of the field. Use
 `new RoutingKey()` instead.
 
+#### `QueryProtocolOptions`
+
+The `QueryProtocolOptions` class, with its `QueryFlags` enum, is no longer public. It
+holds the options of a request as the driver encodes it, and applications could not
+create one: its only public member that returned one was `QueryProtocolOptions.Default`.
+The `protected Statement(QueryProtocolOptions)` constructor, which ignored its
+argument, is removed too. A class that derives from `Statement` and calls it should
+call the parameterless constructor instead.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.
