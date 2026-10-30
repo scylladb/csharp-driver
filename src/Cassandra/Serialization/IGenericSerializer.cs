@@ -41,6 +41,14 @@ namespace Cassandra.Serialization
         /// </summary>
         bool IsAssignableFrom(ColumnTypeCode columnTypeCode, IColumnInfo typeInfo, object value, out string failureMsg);
 
+        /// <summary>
+        /// The CLR type to convert a value of <paramref name="valueType"/> to before writing it as a CQL type whose CLR
+        /// type is <paramref name="clrType"/>. Where a <see cref="TypeSerializer{T}"/> replaced the serializer of a
+        /// primitive CQL type, at any depth of collections, tuples and vectors, an element that doesn't hold T keeps the
+        /// CLR type it had before that replacement. Without replacements, it is <paramref name="clrType"/>.
+        /// </summary>
+        Type GetConversionTargetType(Type valueType, Type clrType, ColumnTypeCode typeCode, IColumnInfo typeInfo);
+
         UdtMap GetUdtMapByName(string name);
 
         UdtMap GetUdtMapByType(Type type);

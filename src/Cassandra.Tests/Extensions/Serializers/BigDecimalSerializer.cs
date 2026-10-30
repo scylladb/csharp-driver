@@ -36,7 +36,7 @@ namespace Cassandra.Tests.Extensions.Serializers
         public override BigDecimal Deserialize(ushort protocolVersion, byte[] buffer, int offset, int length, IColumnInfo typeInfo)
         {
             var scale = BeConverter.ToInt32(buffer, offset);
-            var unscaledValue = _bigIntegerSerializer.Deserialize(protocolVersion, buffer, 4, length - 4, null);
+            var unscaledValue = _bigIntegerSerializer.Deserialize(protocolVersion, buffer, offset + 4, length - 4, null);
             return new BigDecimal(scale, unscaledValue);
         }
 

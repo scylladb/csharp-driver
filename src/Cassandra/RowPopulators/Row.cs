@@ -213,17 +213,20 @@ namespace Cassandra
                 case ColumnTypeCode.Map:
                     return TryConvertDictionary((IDictionary)value, column, targetType);
                 case ColumnTypeCode.Timestamp:
-                    // The type of the value is DateTimeOffset
-                    if (targetType == typeof(object) || targetType.GetTypeInfo().IsAssignableFrom(typeof(DateTimeOffset)))
+                    // The type of the value is DateTimeOffset, unless a TypeSerializer<T> replaced the timestamp
+                    // serializer, whose values are returned as they are
+                    if (!(value is DateTimeOffset dateTimeOffset)
+                        || targetType.GetTypeInfo().IsAssignableFrom(typeof(DateTimeOffset)))
                     {
                         return value;
                     }
-                    return ((DateTimeOffset)value).DateTime;
+                    return dateTimeOffset.DateTime;
                 case ColumnTypeCode.Timeuuid:
-                    // The type of the value is a Uuid
-                    if (targetType.GetTypeInfo().IsAssignableFrom(typeof(TimeUuid)) && !(value is TimeUuid))
+                    // The type of the value is Guid, unless a TypeSerializer<T> replaced the timeuuid serializer, whose
+                    // values are returned as they are
+                    if (value is Guid guid && targetType.GetTypeInfo().IsAssignableFrom(typeof(TimeUuid)))
                     {
-                        return (TimeUuid)(Guid)value;
+                        return (TimeUuid)guid;
                     }
                     return value;
                 case ColumnTypeCode.Custom:
