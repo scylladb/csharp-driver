@@ -680,12 +680,6 @@ namespace Cassandra.Requests
                     // node-preference, round robin has no node preference, and DefaultLoadBalancingPolicy only
                     // delegates.
                 }
-                // RetryLoadBalancingPolicy is deliberately absent from that list, so its presence forces the
-                // custom branch below. It is not a transparent delegator: its query plan re-enumerates the
-                // child's plan in an unbounded loop, sleeping the enumerating thread between passes when no
-                // ReconnectionEvent handler cancels it. Flags derived from the policies underneath would describe
-                // ordinary token-aware routing and say nothing about that, which is worse than saying the driver
-                // does not recognize the chain.
                 else
                 {
                     allRecognized = false;
@@ -797,11 +791,6 @@ namespace Cassandra.Requests
             if (policy is TokenAwarePolicy tokenAware)
             {
                 return tokenAware.ChildPolicy;
-            }
-
-            if (policy is RetryLoadBalancingPolicy retry)
-            {
-                return retry.LoadBalancingPolicy;
             }
 
             return null;

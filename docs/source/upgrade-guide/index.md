@@ -442,6 +442,28 @@ holding a `List<BigDecimal>`. Declare such properties with `T`, for example as
 Nothing read `TypeAdapters.CustomTypeAdapter`, so assigning it had no effect: remove
 that code.
 
+#### `RetryLoadBalancingPolicy`
+
+`RetryLoadBalancingPolicy` and `RetryLoadBalancingPolicyEventArgs` are removed. The
+policy repeated its child policy's query plan until a `ReconnectionEvent` handler set
+`Cancel`. Between passes it raised that event, or, with no handler attached, blocked
+the thread for the reconnection policy's delay. Without a handler that cancels, a
+request never failed with `NoHostAvailableException` while every node was down. The
+policy also hid the policy it wrapped from the driver's LWT routing for a
+`ConsistencyLevel` of `Serial` or `LocalSerial` set in an execution profile or the
+default query options.
+
+Configure the wrapped policy directly. To keep trying while the cluster is
+unavailable, catch `NoHostAvailableException` and retry the request after a delay:
+
+```csharp
+// Before
+.WithLoadBalancingPolicy(new RetryLoadBalancingPolicy(childPolicy, reconnectionPolicy))
+
+// After
+.WithLoadBalancingPolicy(childPolicy)
+```
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.
