@@ -65,6 +65,8 @@ namespace Cassandra.Serialization
         private readonly TupleSerializer _tupleSerializer = new TupleSerializer();
         private readonly Dictionary<ColumnTypeCode, Func<IColumnInfo, Type>> _defaultTypes = new Dictionary<ColumnTypeCode, Func<IColumnInfo, Type>>();
         private readonly Dictionary<ColumnTypeCode, Func<IColumnInfo, Type>> _defaultGraphTypes;
+        // The default CLR type of each primitive CQL type whose serializer a TypeSerializer<T> replaced
+        private readonly Dictionary<ColumnTypeCode, Type> _replacedPrimitiveTypes = new Dictionary<ColumnTypeCode, Type>();
         //Udt serializer can be specified
         private UdtSerializer _udtSerializer = new UdtSerializer();
 
@@ -399,6 +401,41 @@ namespace Cassandra.Serialization
             return true;
         }
 
+        public Type GetClrTypeBeforeReplacement(ColumnTypeCode typeCode, IColumnInfo typeInfo)
+        {
+            if (_replacedPrimitiveTypes.Count == 0)
+            {
+                return GetClrType(typeCode, typeInfo);
+            }
+            if (_replacedPrimitiveTypes.TryGetValue(typeCode, out Type defaultType))
+            {
+                return defaultType;
+            }
+            switch (typeInfo)
+            {
+                case ListColumnInfo listInfo:
+                    return typeof(IEnumerable<>).MakeGenericType(
+                        GetClrTypeBeforeReplacement(listInfo.ValueTypeCode, listInfo.ValueTypeInfo));
+                case SetColumnInfo setInfo:
+                    return typeof(IEnumerable<>).MakeGenericType(
+                        GetClrTypeBeforeReplacement(setInfo.KeyTypeCode, setInfo.KeyTypeInfo));
+                case MapColumnInfo mapInfo:
+                    return typeof(IDictionary<,>).MakeGenericType(
+                        GetClrTypeBeforeReplacement(mapInfo.KeyTypeCode, mapInfo.KeyTypeInfo),
+                        GetClrTypeBeforeReplacement(mapInfo.ValueTypeCode, mapInfo.ValueTypeInfo));
+                case VectorColumnInfo vectorInfo:
+                    return typeof(CqlVector<>).MakeGenericType(
+                        GetClrTypeBeforeReplacement(vectorInfo.ValueTypeCode, vectorInfo.ValueTypeInfo));
+                case TupleColumnInfo tupleInfo:
+                    var tupleType = GetClrType(typeCode, typeInfo);
+                    return tupleType.GetTypeInfo().IsGenericType
+                        ? tupleType.GetGenericTypeDefinition().MakeGenericType(
+                            tupleInfo.Elements.Select(e => GetClrTypeBeforeReplacement(e.TypeCode, e.TypeInfo)).ToArray())
+                        : tupleType;
+            }
+            return GetClrType(typeCode, typeInfo);
+        }
+
         public UdtMap GetUdtMapByName(string name)
         {
             return _udtSerializer.GetUdtMap(name);
@@ -498,6 +535,12 @@ namespace Cassandra.Serialization
                     Logger.Info($"Using {ts.GetType().Name} serializer for primitive type {ts.CqlType}");
                     _primitiveDeserializers[ts.CqlType] = ts;
                     _primitiveSerializers[ts.Type] = ts;
+                    // Columns of this CQL type now hold values of the serializer's CLR type, which the mapper and
+                    // the collection and UDT serializers read from here.
+                    _replacedPrimitiveTypes.TryAdd(ts.CqlType, GetClrType(ts.CqlType, null));
+                    var clrType = ts.Type;
+                    _defaultTypes[ts.CqlType] = _ => clrType;
+                    _defaultGraphTypes[ts.CqlType] = _ => clrType;
                     continue;
                 }
                 throw new DriverInternalError($"TypeSerializer defined for unsupported CQL type {ts.CqlType}");

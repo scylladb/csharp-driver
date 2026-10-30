@@ -139,6 +139,14 @@ is cached, and the server's response lets the driver learn the tablet for later
 queries. When other tablets of the table are cached but not the one owning the
 partition key, `TokenAwarePolicy` uses its child policy's query plan.
 
+### Column types with custom type serializers
+
+When a `TypeSerializer<T>` registered with `Builder.WithTypeSerializers` replaces the
+serializer of a CQL type such as `decimal`, the driver now reports its CLR type `T` for
+columns of that type, in `CqlColumn.Type` and in the element types of collections and
+UDTs. Before, it reported the default type, for example `decimal`. The Mapper then
+read such a column as the default type, which failed for a `T` property.
+
 ### Removed obsolete APIs
 
 Version 4 removes public APIs that version 3 marked `[Obsolete]`. Each section below

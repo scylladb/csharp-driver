@@ -14,6 +14,7 @@
 //   limitations under the License.
 //
 
+using System;
 using System.Collections;
 using System.Text;
 using Cassandra.Serialization;
@@ -44,6 +45,21 @@ namespace Cassandra.Tests
             //Check that other serializers are still working
             CollectionAssert.AreEqual(new byte[] { 0, 0, 0, 10 }, serializer.Serialize(10));
             CollectionAssert.AreEqual(new byte[] { 0x61 }, serializer.Serialize("a"));
+        }
+
+        [Test]
+        public void Should_Report_The_Clr_Type_Of_Custom_Primitive_Serializers()
+        {
+            var serializer = new SerializerManager(ProtocolVersion.MaxSupported, null, new[] { new BigDecimalSerializer() })
+                .GetCurrentSerializer();
+            // The mapper and the collection and UDT serializers take a column's CLR type from here
+            Assert.AreEqual(typeof(BigDecimal), serializer.GetClrType(ColumnTypeCode.Decimal, null));
+            Assert.AreEqual(typeof(BigDecimal), serializer.GetClrTypeForGraph(ColumnTypeCode.Decimal, null));
+            Assert.AreEqual(
+                typeof(System.Collections.Generic.IEnumerable<BigDecimal>),
+                serializer.GetClrType(ColumnTypeCode.List, new ListColumnInfo { ValueTypeCode = ColumnTypeCode.Decimal }));
+            // Other types keep their default CLR type
+            Assert.AreEqual(typeof(int), serializer.GetClrType(ColumnTypeCode.Int, null));
         }
 
         [Test]
@@ -78,6 +94,79 @@ namespace Cassandra.Tests
             CollectionAssert.AreEqual(new byte[] { 0x61, 0x62 }, serializer.Serialize("ab"));
             Assert.AreEqual(1, typeSerializer.DeserializationCounter);
             Assert.AreEqual(1, typeSerializer.SerializationCounter);
+        }
+
+        [Test]
+        public void Should_Serialize_Udt_Fields_Whose_Property_Type_Keeps_Its_Default_Serializer()
+        {
+            // Serializers for decimal and timeuuid with other CLR types leave System.Decimal and Guid values, alone or
+            // in a collection, with their default serializers: UDT properties of those types are written as they are,
+            // without a conversion to the new CLR types
+            var serializerManager = new SerializerManager(
+                ProtocolVersion.MaxSupported, null, new ITypeSerializer[] { new BigDecimalSerializer(), new WrappedTimeUuidSerializer() });
+            var udtInfo = new UdtColumnInfo("ks1.price");
+            udtInfo.Fields.Add(new ColumnDesc { Name = "amount", TypeCode = ColumnTypeCode.Decimal });
+            udtInfo.Fields.Add(new ColumnDesc { Name = "discount", TypeCode = ColumnTypeCode.Decimal });
+            udtInfo.Fields.Add(new ColumnDesc
+            {
+                Name = "history",
+                TypeCode = ColumnTypeCode.List,
+                TypeInfo = new ListColumnInfo { ValueTypeCode = ColumnTypeCode.Decimal }
+            });
+            udtInfo.Fields.Add(new ColumnDesc { Name = "id", TypeCode = ColumnTypeCode.Timeuuid });
+            var udtMap = UdtMap.For<DecimalUdt>();
+            udtMap.SetSerializer(serializerManager.GetCurrentSerializer());
+            udtMap.Build(udtInfo);
+            serializerManager.SetUdtMap("price", udtMap);
+            var serializer = serializerManager.GetCurrentSerializer();
+            var value = new DecimalUdt
+            {
+                Amount = 1.5m,
+                Discount = 0.5m,
+                History = new System.Collections.Generic.List<decimal> { 2.5m },
+                Id = Guid.Parse("8f2c1e3a-6b4d-11ef-9c21-7d4e5f6a8b90")
+            };
+            var expected = new System.Collections.Generic.List<byte>();
+            foreach (var field in new object[] { value.Amount, value.Discount, value.History, value.Id })
+            {
+                var fieldBuffer = serializer.Serialize(field);
+                expected.AddRange(new byte[] { 0, 0, 0, (byte)fieldBuffer.Length });
+                expected.AddRange(fieldBuffer);
+            }
+            CollectionAssert.AreEqual(expected, serializer.Serialize(value));
+            // The decimal values are encoded by the default serializer: scale 1, then the unscaled value 15
+            CollectionAssert.AreEqual(new byte[] { 0, 0, 0, 1, 15 }, serializer.Serialize(1.5m));
+        }
+
+        public class DecimalUdt
+        {
+            public decimal Amount { get; set; }
+
+            public decimal? Discount { get; set; }
+
+            public System.Collections.Generic.List<decimal> History { get; set; }
+
+            public Guid Id { get; set; }
+        }
+
+        public class WrappedTimeUuid
+        {
+            public Guid Value { get; set; }
+        }
+
+        private class WrappedTimeUuidSerializer : TypeSerializer<WrappedTimeUuid>
+        {
+            public override ColumnTypeCode CqlType => ColumnTypeCode.Timeuuid;
+
+            public override WrappedTimeUuid Deserialize(ushort protocolVersion, byte[] buffer, int offset, int length, IColumnInfo typeInfo)
+            {
+                return new WrappedTimeUuid { Value = (Guid)TypeSerializer.PrimitiveGuidSerializer.Deserialize(protocolVersion, buffer, offset, length, typeInfo) };
+            }
+
+            public override byte[] Serialize(ushort protocolVersion, WrappedTimeUuid value)
+            {
+                return TypeSerializer.PrimitiveGuidSerializer.Serialize(protocolVersion, value.Value);
+            }
         }
     }
 }
