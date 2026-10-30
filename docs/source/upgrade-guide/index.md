@@ -388,6 +388,60 @@ these fields, for example in a `Metadata.HostsEvent` or `Metadata.SchemaChangedE
 handler or with an object initializer, throws `MissingFieldException` with version 4
 until it is recompiled.
 
+#### `TypeAdapters` and `ITypeAdapter`
+
+The type adapter mechanism is removed: the `TypeAdapters` class, the `ITypeAdapter`
+interface, and its `BigIntegerTypeAdapter`, `DecimalTypeAdapter`,
+`DynamicCompositeTypeAdapter` and `NullTypeAdapter` implementations. Replacing
+`TypeAdapters.DecimalTypeAdapter` or `TypeAdapters.VarIntTypeAdapter` changed the CLR
+type used for `decimal` or `varint` values. Do the same with a `TypeSerializer<T>`
+registered on the `Builder`:
+
+```csharp
+// Before
+TypeAdapters.DecimalTypeAdapter = new BigDecimalTypeAdapter();
+
+// After
+class BigDecimalSerializer : TypeSerializer<BigDecimal>
+{
+    public override ColumnTypeCode CqlType => ColumnTypeCode.Decimal;
+
+    public override BigDecimal Deserialize(ushort protocolVersion, byte[] buffer, int offset, int length, IColumnInfo typeInfo)
+    {
+        // Read length bytes from buffer, starting at offset
+    }
+
+    public override byte[] Serialize(ushort protocolVersion, BigDecimal value)
+    {
+        // Return the value's bytes
+    }
+}
+
+var cluster = Cluster.Builder()
+    .AddContactPoint("127.0.0.1")
+    .WithTypeSerializers(new TypeSerializerDefinitions().Define(new BigDecimalSerializer()))
+    .Build();
+```
+
+The adapter's `ConvertFrom` received only the value's bytes, and for `varint` in reverse
+(little-endian) order, and its `ConvertTo` returned them in that order. A
+`TypeSerializer<T>` reads and writes the bytes as the protocol encodes them, so reverse
+the bytes when reusing a `varint` adapter's code.
+
+A replaced adapter made its type the conversion target of every UDT property mapped to
+a field of its CQL type. A `TypeSerializer<T>` is the target only for the parts of a
+property whose declared type holds `T` or `Nullable<T>`, and the other parts are
+converted to the default type, as when no serializer is registered. So a container
+whose declared element type isn't `T` fails on write when it holds `T` values: with a
+decimal adapter each `BigDecimal` element was cast to `BigDecimal`, and now it is cast
+to `decimal`. This affects `List<object>`, `object[]` and `HashSet<object>` properties,
+the values of a `Dictionary<K, object>`, and an `object` or `IEnumerable` property
+holding a `List<BigDecimal>`. Declare such properties with `T`, for example as
+`List<BigDecimal>`.
+
+Nothing read `TypeAdapters.CustomTypeAdapter`, so assigning it had no effect: remove
+that code.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.
