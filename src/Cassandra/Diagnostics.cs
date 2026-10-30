@@ -55,12 +55,6 @@ namespace Cassandra
         public static bool CassandraStackTraceIncluded { get; set; }
 
         /// <summary>
-        /// Defines if performance counters should be enabled.
-        /// <para>Default value is <value>false</value>.</para>
-        /// </summary>
-        public static bool CassandraPerformanceCountersEnabled { get; set; }
-
-        /// <summary>
         /// Adds a <see cref="ILoggerProvider" /> to the logger factory used by the driver.
         /// <para>
         /// Be sure to call this method before initializing the <see cref="ICluster"/> to ensure that

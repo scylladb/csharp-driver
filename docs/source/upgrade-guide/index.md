@@ -328,6 +328,16 @@ Hosts whose Cassandra version is unknown no longer lower the protocol version
 either. Before, such a host made the driver use protocol version 1, unless a host
 ran Cassandra 3.0 or later.
 
+### Removed and internalized legacy APIs
+
+Version 4 removes, or makes internal, public APIs left over from the driver's early
+design that 3.x did not mark `[Obsolete]`. Each section below names the replacement.
+
+#### `Diagnostics.CassandraPerformanceCountersEnabled`
+
+The property is removed. Nothing read it, so setting it had no effect: remove the
+code that sets it.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.
