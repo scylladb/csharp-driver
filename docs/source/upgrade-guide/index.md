@@ -360,6 +360,19 @@ The `protected Statement(QueryProtocolOptions)` constructor, which ignored its
 argument, is removed too. A class that derives from `Statement` and calls it should
 call the parameterless constructor instead.
 
+#### `SchemaChangedEventArgs` and `HostsEventArgs` properties
+
+The public fields of `SchemaChangedEventArgs` (`Keyspace`, `Table`, `What`) and
+`HostsEventArgs` (`Address`, `What`) are now properties that can only be set when the
+object is created. Code that reads them, or that creates the objects with an object
+initializer, compiles unchanged. Code that assigns them after creating the object, or
+passes them as `ref` or `out` arguments, no longer compiles.
+
+The change is not binary compatible. Code compiled against version 3 that reads or sets
+these fields, for example in a `Metadata.HostsEvent` or `Metadata.SchemaChangedEvent`
+handler or with an object initializer, throws `MissingFieldException` with version 4
+until it is recompiled.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.
