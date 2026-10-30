@@ -29,6 +29,11 @@ namespace Cassandra.Serialization
         private readonly ConcurrentDictionary<string, UdtMap> _udtMapsByName = new ConcurrentDictionary<string, UdtMap>();
         private readonly ConcurrentDictionary<Type, UdtMap> _udtMapsByClrType = new ConcurrentDictionary<Type, UdtMap>();
 
+        // The conversion target of each property type and UDT field written so far. SetUdtMap clears it, as a new map
+        // can change the CLR type of a field holding a UDT
+        private readonly ConcurrentDictionary<(Type, ColumnDesc), Type> _conversionTargetTypes =
+            new ConcurrentDictionary<(Type, ColumnDesc), Type>();
+
         public override ColumnTypeCode CqlType => ColumnTypeCode.Udt;
 
         protected internal UdtSerializer()
@@ -104,9 +109,21 @@ namespace Cassandra.Serialization
                     fieldValue = prop.GetValue(value, null);
                     if (!fieldTargetType.GetTypeInfo().IsAssignableFrom(prop.PropertyType.GetTypeInfo()))
                     {
-                        fieldValue = UdtMap.TypeConverter.ConvertToDbFromUdtFieldValue(prop.PropertyType,
-                                               fieldTargetType,
-                                               fieldValue);
+                        // Where a TypeSerializer<T> replaced a primitive serializer in this field, the parts of the
+                        // property that don't hold T keep the conversion they had before that replacement
+                        var key = (prop.PropertyType, field);
+                        if (!_conversionTargetTypes.TryGetValue(key, out Type targetType))
+                        {
+                            targetType = GetConversionTargetType(prop.PropertyType, fieldTargetType, field.TypeCode, field.TypeInfo);
+                            _conversionTargetTypes.TryAdd(key, targetType);
+                        }
+
+                        if (!targetType.GetTypeInfo().IsAssignableFrom(prop.PropertyType.GetTypeInfo()))
+                        {
+                            fieldValue = UdtMap.TypeConverter.ConvertToDbFromUdtFieldValue(prop.PropertyType,
+                                                   targetType,
+                                                   fieldValue);
+                        }
                     }
                 }
                 var itemBuffer = SerializeChild(protocolVersion, fieldValue);
@@ -128,6 +145,7 @@ namespace Cassandra.Serialization
         {
             _udtMapsByName.AddOrUpdate(name, map, (k, oldValue) => map);
             _udtMapsByClrType.AddOrUpdate(map.NetType, map, (k, oldValue) => map);
+            _conversionTargetTypes.Clear();
         }
     }
 }

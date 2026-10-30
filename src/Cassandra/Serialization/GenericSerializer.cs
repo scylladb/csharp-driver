@@ -65,6 +65,9 @@ namespace Cassandra.Serialization
         private readonly TupleSerializer _tupleSerializer = new TupleSerializer();
         private readonly Dictionary<ColumnTypeCode, Func<IColumnInfo, Type>> _defaultTypes = new Dictionary<ColumnTypeCode, Func<IColumnInfo, Type>>();
         private readonly Dictionary<ColumnTypeCode, Func<IColumnInfo, Type>> _defaultGraphTypes;
+
+        // The default CLR type of each primitive CQL type whose serializer a TypeSerializer<T> replaced
+        private readonly Dictionary<ColumnTypeCode, Type> _replacedPrimitiveTypes = new Dictionary<ColumnTypeCode, Type>();
         //Udt serializer can be specified
         private UdtSerializer _udtSerializer = new UdtSerializer();
 
@@ -271,6 +274,95 @@ namespace Cassandra.Serialization
             throw new InvalidTypeException($"Unknown Cassandra target type for CLR type {type.FullName}");
         }
 
+        private static Type[] GetElementTypes(Type valueType, IColumnInfo typeInfo, int count)
+        {
+            if (valueType == null)
+            {
+                return null;
+            }
+
+            // The element types come from the collection or tuple type the value implements: its own type arguments
+            // can stand for something else, as in a class DecimalList<TTag> : List<decimal>
+            Type elementsType;
+            switch (typeInfo)
+            {
+                case ListColumnInfo _:
+                case SetColumnInfo _:
+                case VectorColumnInfo _:
+                    elementsType = GetSingleImplementation(valueType, typeof(IEnumerable<>));
+                    break;
+                case MapColumnInfo _:
+                    elementsType = GetSingleImplementation(valueType, typeof(IDictionary<,>))
+                                   ?? GetSingleImplementation(valueType, typeof(IReadOnlyDictionary<,>));
+                    break;
+                case TupleColumnInfo _:
+                    elementsType = GetTupleType(valueType);
+                    break;
+                default:
+                    elementsType = null;
+                    break;
+            }
+
+            var arguments = elementsType?.GetGenericArguments();
+            return arguments?.Length == count ? arguments : null;
+        }
+
+        private static Type GetSingleImplementation(Type type, Type genericInterface)
+        {
+            var interfaces = type.GetTypeInfo().IsInterface ? type.GetInterfaces().Append(type) : type.GetInterfaces();
+            var implementations = interfaces
+                                  .Where(i => i.GetTypeInfo().IsGenericType && i.GetGenericTypeDefinition() == genericInterface)
+                                  .Take(2)
+                                  .ToArray();
+            return implementations.Length == 1 ? implementations[0] : null;
+        }
+
+        private static Type GetTupleType(Type type)
+        {
+            for (; type != null; type = type.GetTypeInfo().BaseType)
+            {
+                if (type.GetTypeInfo().IsGenericType
+                    && type.GetGenericTypeDefinition().FullName is string name
+                    && (name.StartsWith("System.Tuple`", StringComparison.Ordinal) || name.StartsWith("System.ValueTuple`", StringComparison.Ordinal)))
+                {
+                    return type;
+                }
+            }
+
+            return null;
+        }
+
+        private static bool TryGetElementColumn(IColumnInfo typeInfo, int index, int count, out ColumnTypeCode typeCode, out IColumnInfo elementTypeInfo)
+        {
+            switch (typeInfo)
+            {
+                case ListColumnInfo listInfo when count == 1:
+                    typeCode = listInfo.ValueTypeCode;
+                    elementTypeInfo = listInfo.ValueTypeInfo;
+                    return true;
+                case SetColumnInfo setInfo when count == 1:
+                    typeCode = setInfo.KeyTypeCode;
+                    elementTypeInfo = setInfo.KeyTypeInfo;
+                    return true;
+                case VectorColumnInfo vectorInfo when count == 1:
+                    typeCode = vectorInfo.ValueTypeCode;
+                    elementTypeInfo = vectorInfo.ValueTypeInfo;
+                    return true;
+                case MapColumnInfo mapInfo when count == 2:
+                    typeCode = index == 0 ? mapInfo.KeyTypeCode : mapInfo.ValueTypeCode;
+                    elementTypeInfo = index == 0 ? mapInfo.KeyTypeInfo : mapInfo.ValueTypeInfo;
+                    return true;
+                case TupleColumnInfo tupleInfo when tupleInfo.Elements.Count == count:
+                    typeCode = tupleInfo.Elements[index].TypeCode;
+                    elementTypeInfo = tupleInfo.Elements[index].TypeInfo;
+                    return true;
+                default:
+                    typeCode = default;
+                    elementTypeInfo = null;
+                    return false;
+            }
+        }
+
         private void InitPrimitiveSerializers()
         {
             //Default primitive serializers
@@ -338,6 +430,13 @@ namespace Cassandra.Serialization
             return assignable;
         }
 
+        public Type GetConversionTargetType(Type valueType, Type clrType, ColumnTypeCode typeCode, IColumnInfo typeInfo)
+        {
+            return _replacedPrimitiveTypes.Count == 0
+                ? clrType
+                : GetConversionTargetTypeForReplacedTypes(valueType, clrType, typeCode, typeInfo);
+        }
+
         private bool IsAssignableHelper(ColumnTypeCode columnTypeCode, IColumnInfo typeInfo, object value, out string failureMsg)
         {
             failureMsg = $"It is not possible to encode a value of type {value?.GetType()} to a CQL type {columnTypeCode}";
@@ -397,6 +496,50 @@ namespace Cassandra.Serialization
                 }
             }
             return true;
+        }
+
+        private Type GetConversionTargetTypeForReplacedTypes(Type valueType, Type clrType, ColumnTypeCode typeCode, IColumnInfo typeInfo)
+        {
+            if (valueType != null
+                && (clrType.GetTypeInfo().IsAssignableFrom(valueType.GetTypeInfo()) || Nullable.GetUnderlyingType(valueType) == clrType))
+            {
+                // The value already holds this type, or a Nullable<T> of it, which the conversion passes through
+                return clrType;
+            }
+
+            if (_replacedPrimitiveTypes.TryGetValue(typeCode, out Type defaultType))
+            {
+                // A value that doesn't hold the CLR type of the replacing serializer keeps the conversion it had before
+                return defaultType;
+            }
+
+            if (!clrType.GetTypeInfo().IsGenericType)
+            {
+                return clrType;
+            }
+
+            // The container types come from GetClrType; each element type is selected the same way, against the
+            // matching element type of the value
+            var clrTypeArguments = clrType.GetGenericArguments();
+            var valueTypeArguments = GetElementTypes(valueType, typeInfo, clrTypeArguments.Length);
+            var changed = false;
+            for (var i = 0; i < clrTypeArguments.Length; i++)
+            {
+                if (!TryGetElementColumn(typeInfo, i, clrTypeArguments.Length, out ColumnTypeCode elementTypeCode, out IColumnInfo elementTypeInfo))
+                {
+                    return clrType;
+                }
+
+                var elementType = GetConversionTargetTypeForReplacedTypes(
+                    valueTypeArguments?[i], clrTypeArguments[i], elementTypeCode, elementTypeInfo);
+                if (elementType != clrTypeArguments[i])
+                {
+                    clrTypeArguments[i] = elementType;
+                    changed = true;
+                }
+            }
+
+            return changed ? clrType.GetGenericTypeDefinition().MakeGenericType(clrTypeArguments) : clrType;
         }
 
         public UdtMap GetUdtMapByName(string name)
@@ -498,6 +641,13 @@ namespace Cassandra.Serialization
                     Logger.Info($"Using {ts.GetType().Name} serializer for primitive type {ts.CqlType}");
                     _primitiveDeserializers[ts.CqlType] = ts;
                     _primitiveSerializers[ts.Type] = ts;
+
+                    // Columns of this CQL type now hold values of the serializer's CLR type, which the mapper and
+                    // the collection and UDT serializers read from here.
+                    _replacedPrimitiveTypes.TryAdd(ts.CqlType, GetClrType(ts.CqlType, null));
+                    var clrType = ts.Type;
+                    _defaultTypes[ts.CqlType] = _ => clrType;
+                    _defaultGraphTypes[ts.CqlType] = _ => clrType;
                     continue;
                 }
                 throw new DriverInternalError($"TypeSerializer defined for unsupported CQL type {ts.CqlType}");

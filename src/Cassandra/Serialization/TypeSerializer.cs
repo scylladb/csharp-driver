@@ -211,6 +211,15 @@ namespace Cassandra.Serialization
             return _serializer.GetClrTypeForGraph(typeCode, typeInfo);
         }
 
+        internal Type GetConversionTargetType(Type valueType, Type clrType, ColumnTypeCode typeCode, IColumnInfo typeInfo)
+        {
+            if (_serializer == null)
+            {
+                throw new NullReferenceException("Child serializer can not be null");
+            }
+            return _serializer.GetConversionTargetType(valueType, clrType, typeCode, typeInfo);
+        }
+
         internal byte[] SerializeChild(ushort protocolVersion, object obj)
         {
             if (_serializer == null)

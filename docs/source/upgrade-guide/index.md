@@ -139,6 +139,27 @@ is cached, and the server's response lets the driver learn the tablet for later
 queries. When other tablets of the table are cached but not the one owning the
 partition key, `TokenAwarePolicy` uses its child policy's query plan.
 
+### Column types with custom type serializers
+
+When a `TypeSerializer<T>` registered with `Builder.WithTypeSerializers` replaces the
+serializer of a CQL type such as `decimal`, the driver now reports its CLR type `T` for
+columns of that type, in `CqlColumn.Type` and in the element types of collections,
+tuples, vectors and UDTs. Before, it reported the default type, for example `decimal`.
+The Mapper then read such a column as the default type, which failed for a `T`
+property.
+
+A UDT property of the default type, such as a `decimal` property of a `decimal` field,
+is still written as before. Reading the UDT back needs a `T` property, because the
+driver has no conversion from `T` to the default type. A `TypeSerializer<T>` for the
+key type of a map must produce values that implement `IComparable<T>` or `IComparable`,
+because the driver reads maps into a `SortedDictionary`.
+
+The Mapper and LINQ compile how they read each query's rows once, and
+`MappingConfiguration.Global` shares that between clusters. An application with
+several clusters that register different serializers for the same CQL type should give
+each of them its own `MappingConfiguration`, so that a query's rows are read with the
+column types of the cluster that returned them.
+
 ### Removed obsolete APIs
 
 Version 4 removes public APIs that version 3 marked `[Obsolete]`. Each section below
