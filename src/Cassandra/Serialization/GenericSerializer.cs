@@ -17,7 +17,6 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
-using System.Numerics;
 using System.Reflection;
 
 namespace Cassandra.Serialization
@@ -79,7 +78,6 @@ namespace Cassandra.Serialization
             _tupleSerializer.SetChildSerializer(this);
             _udtSerializer.SetChildSerializer(this);
             InitDefaultTypes();
-            InitTypeAdapters();
             _defaultGraphTypes = new Dictionary<ColumnTypeCode, Func<IColumnInfo, Type>>(_defaultTypes)
             {
                 [ColumnTypeCode.Set] = _collectionSerializer.GetClrTypeForGraphSet,
@@ -299,29 +297,6 @@ namespace Cassandra.Serialization
             _defaultTypes.Add(ColumnTypeCode.Map, _dictionarySerializer.GetClrType);
             _defaultTypes.Add(ColumnTypeCode.Udt, _udtSerializer.GetClrType);
             _defaultTypes.Add(ColumnTypeCode.Tuple, _tupleSerializer.GetClrType);
-        }
-
-        private void InitTypeAdapters()
-        {
-            //TypeAdapters was the way we exposed type encoding/decoding extensions since v1
-            //Its going to be removed in future versions but we have to support them for now.
-            if (TypeAdapters.DecimalTypeAdapter.GetDataType() != typeof(decimal))
-            {
-                InsertLegacySerializer(ColumnTypeCode.Decimal, TypeAdapters.DecimalTypeAdapter, false);
-            }
-            if (TypeAdapters.VarIntTypeAdapter.GetDataType() != typeof(BigInteger))
-            {
-                InsertLegacySerializer(ColumnTypeCode.Varint, TypeAdapters.VarIntTypeAdapter, true);
-            }
-        }
-
-        public void InsertLegacySerializer(ColumnTypeCode typeCode, ITypeAdapter typeAdapter, bool reverse)
-        {
-            var type = typeAdapter.GetDataType();
-            var legacySerializer = new LegacyTypeSerializer(typeCode, typeAdapter, reverse);
-            _primitiveSerializers[type] = legacySerializer;
-            _primitiveDeserializers[typeCode] = legacySerializer;
-            _defaultTypes[typeCode] = _ => type;
         }
 
         /// <summary>
