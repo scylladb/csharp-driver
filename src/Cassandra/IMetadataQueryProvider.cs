@@ -64,5 +64,7 @@ namespace Cassandra
         /// queries are sent to, also after a reconnection.
         /// </summary>
         bool SupportsTablets { get; }
+
+        bool SupportsTabletsRoutingV2 { get; }
     }
 }

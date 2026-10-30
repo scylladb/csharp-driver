@@ -115,6 +115,32 @@ namespace Cassandra
             return ChildPolicy.NewQueryPlan(keyspace, statement);
         }
 
+        internal IEnumerable<HostShard> NewQueryPlan(string keyspace, IStatement statement, bool routeAsLwt, ConsistencyLevel consistency)
+        {
+            var plan = ChildPolicy is TokenAwarePolicy tokenAware
+                ? tokenAware.NewQueryPlan(keyspace, statement, routeAsLwt, consistency)
+                : ChildPolicy is DefaultLoadBalancingPolicy defaultPolicy
+                    ? defaultPolicy.NewQueryPlan(keyspace, statement, routeAsLwt, consistency)
+                    : ChildPolicy is IExtendedLoadBalancingPolicy extendedChild
+                        ? extendedChild.NewQueryPlan(keyspace, statement, routeAsLwt)
+                        : ChildPolicy.NewQueryPlan(keyspace, statement);
+            if (statement is TargettedSimpleStatement targeted && targeted.PreferredHost != null)
+            {
+                _lastPreferredHost = targeted.PreferredHost;
+                return YieldPreferred(targeted.PreferredHost, plan);
+            }
+            return plan;
+        }
+
+        private static IEnumerable<HostShard> YieldPreferred(Host preferred, IEnumerable<HostShard> plan)
+        {
+            yield return new HostShard(preferred, -1);
+            foreach (var host in plan)
+            {
+                yield return host;
+            }
+        }
+
         private IEnumerable<HostShard> YieldPreferred(string keyspace, TargettedSimpleStatement statement)
         {
             yield return new HostShard(statement.PreferredHost, -1);

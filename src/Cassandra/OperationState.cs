@@ -97,9 +97,9 @@ namespace Cassandra
         }
 
         public long WriteFrame(
-            short streamId, MemoryStream memoryStream, ISerializer serializer, bool useMetadataId, long timestamp)
+            short streamId, MemoryStream memoryStream, ISerializer serializer, bool useMetadataId, long timestamp, bool useTabletsRoutingV2 = false)
         {
-            var frameLength = Request.WriteFrame(streamId, memoryStream, serializer, useMetadataId);
+            var frameLength = Request.WriteFrame(streamId, memoryStream, serializer, useMetadataId, useTabletsRoutingV2);
             _operationObserver.OnOperationSend(frameLength, timestamp);
             //We will not use the request any more, stop reference it.
             Request = null;

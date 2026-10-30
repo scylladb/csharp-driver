@@ -812,7 +812,7 @@ namespace Cassandra.IntegrationTests.Core
             // Create a request that throws an exception when writing the frame
             requestMock.Setup(
                            r => r.WriteFrame(
-                               It.IsAny<short>(), It.IsAny<MemoryStream>(), It.IsAny<ISerializer>(), It.IsAny<bool>()))
+                               It.IsAny<short>(), It.IsAny<MemoryStream>(), It.IsAny<ISerializer>(), It.IsAny<bool>(), It.IsAny<bool>()))
                        .Throws(ex);
             requestMock.SetupGet(r => r.ResultMetadata)
                        .Returns((ResultMetadata)null);

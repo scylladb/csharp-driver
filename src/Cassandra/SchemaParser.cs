@@ -548,7 +548,7 @@ namespace Cassandra
             _udtResolver = udtResolver;
         }
 
-        private KeyspaceMetadata ParseKeyspaceRow(IRow row, ISet<string> tabletKeyspaces)
+        private KeyspaceMetadata ParseKeyspaceRow(IRow row, ISet<string> tabletKeyspaces, ISet<string> strongKeyspaces)
         {
             var replication = row.GetValue<IDictionary<string, string>>("replication");
             string strategy = null;
@@ -568,27 +568,57 @@ namespace Cassandra
                 replication,
                 new ReplicationStrategyFactory(),
                 row.ContainsColumn("graph_engine") ? row.GetValue<string>("graph_engine") : null,
-                usesTablets: tabletKeyspaces?.Contains(row.GetValue<string>("keyspace_name")));
+                usesTablets: tabletKeyspaces?.Contains(row.GetValue<string>("keyspace_name")),
+                isStronglyConsistent: strongKeyspaces.Contains(row.GetValue<string>("keyspace_name")));
         }
 
         public override async Task<KeyspaceMetadata> GetKeyspaceAsync(string name)
         {
             var keyspaceTask = Cc.QueryAsync(string.Format(SelectSingleKeyspace, name), true);
             var tabletKeyspacesTask = GetTabletKeyspacesAsync(string.Format(SelectSingleScyllaKeyspace, name), true);
-            await Task.WhenAll(keyspaceTask, tabletKeyspacesTask).ConfigureAwait(false);
+            var strongKeyspacesTask = GetStrongKeyspacesAsync(name, true);
+            await Task.WhenAll(keyspaceTask, tabletKeyspacesTask, strongKeyspacesTask).ConfigureAwait(false);
 
             var row = (await keyspaceTask.ConfigureAwait(false)).FirstOrDefault();
-            return row != null ? ParseKeyspaceRow(row, await tabletKeyspacesTask.ConfigureAwait(false)) : null;
+            return row != null ? ParseKeyspaceRow(row, await tabletKeyspacesTask.ConfigureAwait(false), await strongKeyspacesTask.ConfigureAwait(false)) : null;
         }
 
         public override async Task<IEnumerable<KeyspaceMetadata>> GetKeyspacesAsync(bool retry)
         {
             var keyspacesTask = Cc.QueryAsync(SelectKeyspaces, retry);
             var tabletKeyspacesTask = GetTabletKeyspacesAsync(SelectScyllaKeyspaces, retry);
-            await Task.WhenAll(keyspacesTask, tabletKeyspacesTask).ConfigureAwait(false);
+            var strongKeyspacesTask = GetStrongKeyspacesAsync(null, retry);
+            await Task.WhenAll(keyspacesTask, tabletKeyspacesTask, strongKeyspacesTask).ConfigureAwait(false);
 
             var tabletKeyspaces = await tabletKeyspacesTask.ConfigureAwait(false);
-            return (await keyspacesTask.ConfigureAwait(false)).Select(row => ParseKeyspaceRow(row, tabletKeyspaces)).ToList();
+            var strongKeyspaces = await strongKeyspacesTask.ConfigureAwait(false);
+            return (await keyspacesTask.ConfigureAwait(false)).Select(row => ParseKeyspaceRow(row, tabletKeyspaces, strongKeyspaces)).ToList();
+        }
+
+        private async Task<ISet<string>> GetStrongKeyspacesAsync(string keyspace, bool retry)
+        {
+            if (!Cc.SupportsTabletsRoutingV2)
+            {
+                return new HashSet<string>();
+            }
+            var query = "SELECT keyspace_name, consistency FROM system_schema.scylla_keyspaces";
+            if (keyspace != null)
+            {
+                query += " WHERE keyspace_name = '" + keyspace.Replace("'", "''") + "'";
+            }
+            try
+            {
+                var rows = await Cc.QueryAsync(query, retry).ConfigureAwait(false);
+                return new HashSet<string>(rows.Where(row =>
+                    row.ContainsColumn("consistency") && row.GetValue<string>("consistency") == "global")
+                    .Select(row => row.GetValue<string>("keyspace_name")));
+            }
+            catch (InvalidQueryException)
+            {
+                // Older Scylla versions lack the table or column. Transient failures must propagate
+                // so a refresh does not replace a previously known strong mode with eventual mode.
+                return new HashSet<string>();
+            }
         }
 
         /// <summary>

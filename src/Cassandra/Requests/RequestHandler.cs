@@ -70,7 +70,7 @@ namespace Cassandra.Requests
             _requestObserver = requestObserver;
             _sessionRequestInfo = sessionRequestInfo;
             _requestResultHandler = new TcsMetricsRequestResultHandler(_requestObserver);
-            _request = request;
+            _request = WithTabletVersion(request, sessionRequestInfo.Statement);
             Serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
             Statement = sessionRequestInfo.Statement;
             RequestOptions = requestOptions ?? throw new ArgumentNullException(nameof(requestOptions));
@@ -124,6 +124,18 @@ namespace Cassandra.Requests
                     && stmt.ConsistencyLevel == null
                     && requestOptions.ConsistencyLevel.IsSerialConsistencyLevel());
 
+            if (lbp is DefaultLoadBalancingPolicy defaultPolicy)
+            {
+                return defaultPolicy.NewQueryPlan(session.Keyspace, statement, routeAsLwt,
+                    statement?.ConsistencyLevel ?? requestOptions.ConsistencyLevel);
+            }
+
+            if (lbp is TokenAwarePolicy tokenAware)
+            {
+                return tokenAware.NewQueryPlan(session.Keyspace, statement, routeAsLwt,
+                    statement?.ConsistencyLevel ?? requestOptions.ConsistencyLevel);
+            }
+
             if (lbp is IExtendedLoadBalancingPolicy extendedLbp)
             {
                 return extendedLbp.NewQueryPlan(session.Keyspace, statement, routeAsLwt);
@@ -135,7 +147,18 @@ namespace Cassandra.Requests
         /// <inheritdoc />
         public IRequest BuildRequest()
         {
-            return RequestHandler.GetRequest(Statement, Serializer, RequestOptions);
+            return WithTabletVersion(RequestHandler.GetRequest(Statement, Serializer, RequestOptions), Statement);
+        }
+
+        private IRequest WithTabletVersion(IRequest request, IStatement statement)
+        {
+            if (request is ExecuteRequest execute)
+            {
+                execute.TabletVersionProvider = () => _session.Cluster.Metadata.GetTablet(
+                    statement?.Keyspace ?? _sessionRequestInfo.SessionKeyspace, statement?.TableName,
+                    statement?.RoutingKey?.RawRoutingKey)?.Version;
+            }
+            return request;
         }
 
         public bool OnNewNodeExecution(NodeRequestInfo nodeRequestInfo)
