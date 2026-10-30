@@ -223,6 +223,10 @@ namespace Cassandra.ProtocolEvents
                 }
                 catch (Exception ex)
                 {
+                    if (!queue.Callbacks.Any(cb => cb != null))
+                    {
+                        ProtocolEventDebouncer.Logger.Error("Exception thrown while processing a background protocol event.", ex);
+                    }
                     foreach (var cb in queue.Callbacks)
                     {
                         if (cb != null)
@@ -248,6 +252,10 @@ namespace Cassandra.ProtocolEvents
                     }
                     catch (Exception ex)
                     {
+                        if (!keyspace.Value.Events.Any(e => e.Callback != null))
+                        {
+                            ProtocolEventDebouncer.Logger.Error("Exception thrown while refreshing a background keyspace event.", ex);
+                        }
                         foreach (var cb in keyspace.Value.Events.Select(e => e.Callback).Where(e => e != null))
                         {
                             Task.Run(() => cb.TrySetException(ex)).Forget();
@@ -272,6 +280,10 @@ namespace Cassandra.ProtocolEvents
                         if (ev.Callback != null)
                         {
                             Task.Run(() => ev.Callback.TrySetException(ex)).Forget();
+                        }
+                        else
+                        {
+                            ProtocolEventDebouncer.Logger.Error("Exception thrown while processing a background keyspace object event.", ex);
                         }
                     }
                 }
