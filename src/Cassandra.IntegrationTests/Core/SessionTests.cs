@@ -268,10 +268,10 @@ namespace Cassandra.IntegrationTests.Core
                 var hosts = localCluster.AllHosts().ToArray();
                 var pool1 = localSession.GetOrCreateConnectionPool(hosts[0], HostDistance.Local);
                 var pool2 = localSession.GetOrCreateConnectionPool(hosts[1], HostDistance.Local);
-                var tcs = new TaskCompletionSource<RowSet>();
+                var tcs = new TaskCompletionSource<AsyncRowSet>();
                 tcs.SetResult(null);
                 var completedTask = tcs.Task;
-                Func<Task<RowSet>> execute = () =>
+                Func<Task<AsyncRowSet>> execute = () =>
                 {
                     var wasReset = Volatile.Read(ref distanceReset);
                     var count = Interlocked.Increment(ref counter);

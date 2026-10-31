@@ -266,7 +266,7 @@ which invokes the callback and keeps the state:
 ```csharp
 IAsyncResult ar = TaskToAsyncResult.Begin(session.ExecuteAsync(statement), callback, state);
 // In the callback, or to wait for the result:
-RowSet rs = TaskToAsyncResult.End<RowSet>(ar);
+AsyncRowSet rs = TaskToAsyncResult.End<AsyncRowSet>(ar);
 ```
 
 ### Removed exception serialization constructors
@@ -327,6 +327,55 @@ error saying which protocol version it used and that the driver requires 3 or ab
 Hosts whose Cassandra version is unknown no longer lower the protocol version
 either. Before, such a host made the driver use protocol version 1, unless a host
 ran Cassandra 3.0 or later.
+
+### `ExecuteAsync` returns `AsyncRowSet`
+
+`ISession.ExecuteAsync()` and the LINQ `CqlCommand.ExecuteAsync()` (used by `Insert`,
+`Update`, `Delete` and their conditional variants) now return `Task<AsyncRowSet>`
+instead of `Task<RowSet>`. `AsyncRowSet` implements `IAsyncEnumerable<Row>`, and
+retrieves the following pages without blocking the calling thread. It does not
+implement `IEnumerable<Row>`: iterating the result of `ExecuteAsync` synchronously
+no longer compiles. `Execute()` still returns a `RowSet`, iterated synchronously.
+
+| 3.x | 4.0 |
+|---|---|
+| `foreach (var row in await session.ExecuteAsync(s))` | `await foreach (var row in await session.ExecuteAsync(s))` |
+| `(await session.ExecuteAsync(s)).ToList()` | `await (await session.ExecuteAsync(s)).ToListAsync()` |
+| `(await session.ExecuteAsync(s)).First()` | `await (await session.ExecuteAsync(s)).FirstAsync()` |
+| `rs.GetAvailableWithoutFetching()`, `rs.Info`, `rs.Columns`, `rs.PagingState`, `rs.IsFullyFetched` | Same members on `AsyncRowSet` |
+| `await rs.FetchMoreResultsAsync()` | Same; it also takes a `CancellationToken` |
+| `rs.IsExhausted()` | Not available. To check without consuming rows: `if (rs.GetAvailableWithoutFetching() == 0) await rs.FetchMoreResultsAsync();`, then `rs.GetAvailableWithoutFetching() == 0`. `AnyAsync()` is not a replacement: it dequeues the first row |
+| `rs.FetchMoreResults()` | `await rs.FetchMoreResultsAsync()` |
+| `rs.GetRows()` | Iterate the `AsyncRowSet` itself, or use `ToListAsync()` |
+
+The asynchronous LINQ operators (`ToListAsync`, `FirstAsync`, `Where`, `Select`, ...)
+are part of .NET 10, in the `System.Linq` namespace, and need no extra package.
+Code that must keep a `RowSet`, for example to pass it to synchronous code, can
+call `Execute()` instead.
+
+Mocks of `ISession.ExecuteAsync` must return a `Task<AsyncRowSet>`. `AsyncRowSet`
+can be mocked like `RowSet`: its members are virtual, and a mock provides rows by
+overriding `GetAsyncEnumerator()`. For the Mapper and LINQ components, which map
+rows by column, it also overrides `Columns`.
+
+The Mapper and LINQ methods that return entities, such as `IMapper.FetchAsync()`
+or `CqlQuery<T>.ExecuteAsync()`, keep their signatures and still return an
+`IEnumerable<T>`, whose following pages are retrieved synchronously.
+
+As before, the query abort timeout (`Builder.WithQueryTimeout()`) applies only to
+synchronous operations, including the following pages of a `RowSet`. Like
+`ExecuteAsync()` for the first page, iterating an `AsyncRowSet` does not apply it:
+each page request is bounded by the socket read timeout only.
+
+### Paging after the session is disposed
+
+Retrieving the following page of a `RowSet` or `AsyncRowSet` after its session is
+disposed now throws an `ObjectDisposedException`. It previously threw a
+`NullReferenceException`.
+
+When the retry policy ignores the error of a request retrieving the following page,
+the iteration now ends after the rows already retrieved, as for any ignored request.
+It previously threw a `NullReferenceException`.
 
 ## 3.13.0 - Unified driver
 

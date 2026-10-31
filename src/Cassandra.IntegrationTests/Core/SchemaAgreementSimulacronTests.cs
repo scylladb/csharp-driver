@@ -136,7 +136,7 @@ namespace Cassandra.IntegrationTests.Core
             await _simulacronCluster.PrimeAsync(queryPrime).ConfigureAwait(false);
             var cql = new SimpleStatement(selectStatement);
             var rowSet = await session.ExecuteAsync(cql).ConfigureAwait(false);
-            Assert.AreEqual("123", rowSet.First().GetValue<string>("test"));
+            Assert.AreEqual("123", (await rowSet.FirstAsync().ConfigureAwait(false)).GetValue<string>("test"));
             Assert.IsTrue(rowSet.Info.IsSchemaInAgreement);
             Assert.IsFalse(await _cluster.Metadata.CheckSchemaAgreementAsync().ConfigureAwait(false));
         }

@@ -61,10 +61,10 @@ namespace Cassandra.IntegrationTests.Core
                 var rsWithoutPagingInherited = Session.Execute(boundStatemetWithoutPaging);
 
                 //Check that the internal list of items count is pageSize
-                Assert.AreEqual(pageSize, rsWithSessionPagingInherited.InnerQueueCount);
+                Assert.AreEqual(pageSize, rsWithSessionPagingInherited.GetAvailableWithoutFetching());
                 Assert.AreEqual(totalRowLength, rsWithoutPagingInherited.InnerQueueCount);
 
-                var allTheRowsPaged = rsWithSessionPagingInherited.ToList();
+                var allTheRowsPaged = rsWithSessionPagingInherited.ToListAsync().AsTask().Result;
                 Assert.AreEqual(totalRowLength, allTheRowsPaged.Count);
             }
         }
@@ -278,6 +278,88 @@ namespace Cassandra.IntegrationTests.Core
 
             //Check that the sum of all rows in different threads is the same as total rows
             Assert.AreEqual(totalRowLength, Volatile.Read(ref counter));
+        }
+
+        [Test]
+        [TestCassandraVersion(2, 0), Repeat(10)]
+        public async Task Should_IteratePaging_When_ParallelAsyncClientsReadRowSet()
+        {
+            const int pageSize = 25;
+            const int totalRowLength = 300;
+            const string table = "tbl_parallel_paging_read";
+            var query = new SimpleStatement($"SELECT * FROM {table} LIMIT 10000").SetPageSize(pageSize);
+            var rs = await Session.ExecuteAsync(query).ConfigureAwait(false);
+            Assert.AreEqual(pageSize, rs.GetAvailableWithoutFetching());
+
+            var counter = 0;
+
+            async Task IterateAsync()
+            {
+                var count = 0;
+                await foreach (var row in rs)
+                {
+                    count++;
+                }
+                Interlocked.Add(ref counter, count);
+            }
+
+            //Iterate in parallel the AsyncRowSet
+            await Task.WhenAll(IterateAsync(), IterateAsync(), IterateAsync(), IterateAsync()).ConfigureAwait(false);
+
+            //Check that the sum of all rows in different enumerators is the same as total rows
+            Assert.AreEqual(totalRowLength, Volatile.Read(ref counter));
+        }
+
+        [Test]
+        [TestCassandraVersion(2, 0)]
+        public async Task Should_ThrowObjectDisposedException_When_PagingAfterSessionIsDisposed()
+        {
+            const int pageSize = 25;
+            var session = GetNewTemporarySession(KeyspaceName);
+            var query = new SimpleStatement("SELECT * FROM tbl_parallel_paging_read").SetPageSize(pageSize);
+            var asyncRs = await session.ExecuteAsync(query).ConfigureAwait(false);
+            var syncRs = session.Execute(query);
+            await session.ShutdownAsync().ConfigureAwait(false);
+
+            var asyncCount = 0;
+            await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+            {
+                await foreach (var row in asyncRs)
+                {
+                    asyncCount++;
+                }
+            });
+            var syncCount = 0;
+            Assert.Throws<ObjectDisposedException>(() =>
+            {
+                foreach (var row in syncRs)
+                {
+                    syncCount++;
+                }
+            });
+
+            // The rows of the first page are yielded before paging fails
+            Assert.AreEqual(pageSize, asyncCount);
+            Assert.AreEqual(pageSize, syncCount);
+            Assert.IsFalse(asyncRs.IsFullyFetched);
+            Assert.IsFalse(syncRs.IsFullyFetched);
+        }
+
+        [Test]
+        [TestCassandraVersion(2, 0)]
+        public async Task Should_IteratePagingAsync_When_PreparedStatementIsUsed()
+        {
+            const int pageSize = 25;
+            const int totalRowLength = 300;
+            var ps = await Session.PrepareAsync("SELECT * FROM tbl_parallel_paging_read").ConfigureAwait(false);
+            var rs = await Session.ExecuteAsync(ps.Bind().SetPageSize(pageSize)).ConfigureAwait(false);
+            Assert.AreEqual(pageSize, rs.GetAvailableWithoutFetching());
+
+            var rows = await rs.ToListAsync().ConfigureAwait(false);
+
+            Assert.AreEqual(totalRowLength, rows.Count);
+            Assert.AreEqual(totalRowLength, rows.Select(r => r.GetValue<Guid>("id")).Distinct().Count());
+            Assert.IsTrue(rs.IsFullyFetched);
         }
 
         [Test]

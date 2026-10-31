@@ -156,8 +156,11 @@ namespace Cassandra
         /// Executes a query asynchronously
         /// </summary>
         /// <param name="statement">The statement to execute (simple, bound or batch statement)</param>
-        /// <returns>A task representing the asynchronous operation.</returns>
-        Task<RowSet> ExecuteAsync(IStatement statement);
+        /// <returns>
+        /// A task representing the asynchronous operation. Its result is iterated asynchronously, retrieving the
+        /// following pages without blocking.
+        /// </returns>
+        Task<AsyncRowSet> ExecuteAsync(IStatement statement);
 
         /// <summary>
         /// Executes a query asynchronously with the provided execution profile.
@@ -165,8 +168,11 @@ namespace Cassandra
         /// </summary>
         /// <param name="statement">The statement to execute (simple, bound or batch statement)</param>
         /// <param name="executionProfileName">ExecutionProfile name to be used while executing the statement.</param>
-        /// <returns>A task representing the asynchronous operation.</returns>
-        Task<RowSet> ExecuteAsync(IStatement statement, string executionProfileName);
+        /// <returns>
+        /// A task representing the asynchronous operation. Its result is iterated asynchronously, retrieving the
+        /// following pages without blocking.
+        /// </returns>
+        Task<AsyncRowSet> ExecuteAsync(IStatement statement, string executionProfileName);
 
         /// <summary>
         /// Prepares the provided query string.

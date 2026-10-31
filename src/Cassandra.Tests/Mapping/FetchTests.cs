@@ -65,7 +65,7 @@ namespace Cassandra.Tests.Mapping
             sessionMock.Setup(s => s.Keyspace).Returns<string>(null);
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BoundStatement>()))
-                .Returns(() => Task.FromResult(TestDataHelper.GetUsersRowSet(users)))
+                .Returns(() => Task.FromResult(TestDataHelper.GetUsersRowSet(users)).ToAsyncRowSet())
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
@@ -98,7 +98,7 @@ namespace Cassandra.Tests.Mapping
             sessionMock.Setup(s => s.Keyspace).Returns<string>(null);
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BoundStatement>()))
-                .Returns(() => Task.FromException<RowSet>(new InvalidQueryException("Mocked Exception")))
+                .Returns(() => Task.FromException<RowSet>(new InvalidQueryException("Mocked Exception")).ToAsyncRowSet())
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
@@ -222,7 +222,7 @@ namespace Cassandra.Tests.Mapping
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BoundStatement>()))
                 .Callback<IStatement>(s => stmt = (BoundStatement)s)
-                .Returns(() => TestHelper.DelayedTask(rs))
+                .Returns(() => TestHelper.DelayedTask(rs).ToAsyncRowSet())
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
@@ -252,7 +252,7 @@ namespace Cassandra.Tests.Mapping
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BoundStatement>()))
                 .Callback<IStatement>(s => stmt = (BoundStatement)s)
-                .Returns(() => TestHelper.DelayedTask(rs, 50))
+                .Returns(() => TestHelper.DelayedTask(rs, 50).ToAsyncRowSet())
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
@@ -301,7 +301,7 @@ namespace Cassandra.Tests.Mapping
                     consistency = b.ConsistencyLevel;
                     serialConsistency = b.SerialConsistencyLevel;
                 })
-                .Returns(() => Task.FromResult(TestDataHelper.GetUsersRowSet(TestDataHelper.GetUserList())))
+                .Returns(() => Task.FromResult(TestDataHelper.GetUsersRowSet(TestDataHelper.GetUserList())).ToAsyncRowSet())
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
@@ -332,7 +332,7 @@ namespace Cassandra.Tests.Mapping
             sessionMock.Setup(s => s.Keyspace).Returns<string>(null);
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BoundStatement>()))
-                .Returns(TestHelper.DelayedTask(rs, 100))
+                .Returns(TestHelper.DelayedTask(rs.ToAsyncRowSet(), 100))
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
@@ -375,7 +375,7 @@ namespace Cassandra.Tests.Mapping
             sessionMock.Setup(s => s.Keyspace).Returns<string>(null);
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BoundStatement>()))
-                .Returns(TestHelper.DelayedTask(rs, 100))
+                .Returns(TestHelper.DelayedTask(rs.ToAsyncRowSet(), 100))
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
