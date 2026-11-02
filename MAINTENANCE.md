@@ -35,6 +35,35 @@ must not remove or break an existing public API.
 5. Resolve conflicts in the backport. Never merge post-cut `master` into
    `branch-3.22`.
 
+## Code coverage
+
+`.github/workflows/coverage.yml` measures the three shipped assemblies on every
+pull request and every push to `master` or a release branch, and uploads the
+reports to Codecov with
+the `CODECOV_TOKEN` repository secret, the upload token from the repository's
+settings on Codecov. A run in this repository fails when Codecov refuses its
+upload, so keep that secret valid. Pull requests from forks, which get no
+secrets, and Dependabot's pull requests are exempt, as is every run in a fork.
+
+Only a run in which every step passed uploads, so a failed lane leaves no
+partial report to become the baseline that later pull requests are compared
+against. The coverage statuses are informational and never block a merge;
+`codecov.yml` holds that configuration, and "Code coverage" in
+[CONTRIBUTING.md](CONTRIBUTING.md) describes what is measured.
+
+Besides the actions, this workflow pins by hand the version of the Codecov CLI
+that `codecov/codecov-action` downloads, its `version` input, currently
+`v11.3.1`. The dependency bots cover the rest: the action digests and the
+`coverlet.collector` package reference in the two test projects. The CCM
+revision is the `Makefile`'s `CCM_SCYLLA_VERSION`, shared with the CI
+integration lanes. The ScyllaDB version is its `SCYLLA_VERSION`, which reaches
+this lane alone: every CI integration leg resolves its own version and writes
+it into `GITHUB_ENV`, which overrides the Makefile's `?=` default. So bumping
+`SCYLLA_VERSION` moves this lane and no CI leg, and the version measured here
+is one no CI leg runs. Adding or bumping an action here also needs the new
+`uses:` entry in **Settings -> Actions -> General -> Allow specified actions and
+reusable workflows**; without it the workflow ends in `startup_failure`.
+
 ## Releases
 
 Each release is tracked by a version milestone. A release is eligible to
