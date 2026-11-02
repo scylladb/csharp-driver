@@ -124,6 +124,18 @@ namespace Cassandra.ProtocolEvents
         // for tests
         internal EventQueue GetQueue() => _queue;
 
+        private static void LogBackgroundEventFailure(string message, Exception handlerException)
+        {
+            try
+            {
+                ProtocolEventDebouncer.Logger.Error(message, handlerException);
+            }
+            catch (Exception ex) when (!Utils.IsFatalException(ex))
+            {
+                // Diagnostic sink failures must not prevent later events or callbacks from completing.
+            }
+        }
+
         private void MainEventReceived(ProtocolEvent ev, bool processNow, TaskCompletionSource<bool> callback)
         {
             if (_queue == null)
@@ -223,6 +235,11 @@ namespace Cassandra.ProtocolEvents
                 }
                 catch (Exception ex)
                 {
+                    if (!queue.Callbacks.Any(cb => cb != null))
+                    {
+                        ProtocolEventDebouncer.LogBackgroundEventFailure("Exception thrown while processing a background protocol event.", ex);
+                    }
+
                     foreach (var cb in queue.Callbacks)
                     {
                         if (cb != null)
@@ -248,6 +265,11 @@ namespace Cassandra.ProtocolEvents
                     }
                     catch (Exception ex)
                     {
+                        if (!keyspace.Value.Events.Any(e => e.Callback != null))
+                        {
+                            ProtocolEventDebouncer.LogBackgroundEventFailure("Exception thrown while refreshing a background keyspace event.", ex);
+                        }
+
                         foreach (var cb in keyspace.Value.Events.Select(e => e.Callback).Where(e => e != null))
                         {
                             Task.Run(() => cb.TrySetException(ex)).Forget();
@@ -272,6 +294,10 @@ namespace Cassandra.ProtocolEvents
                         if (ev.Callback != null)
                         {
                             Task.Run(() => ev.Callback.TrySetException(ex)).Forget();
+                        }
+                        else
+                        {
+                            ProtocolEventDebouncer.LogBackgroundEventFailure("Exception thrown while processing a background keyspace object event.", ex);
                         }
                     }
                 }

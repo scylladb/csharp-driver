@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading.Tasks;
 
@@ -204,6 +205,153 @@ namespace Cassandra.Tests.MetadataTests
             Assert.IsTrue(handlerTask6.IsCompleted);
         }
 
+        [TestCase("main", "none")]
+        [TestCase("main", "direct")]
+        [TestCase("main", "coalesced")]
+        [TestCase("keyspace", "none")]
+        [TestCase("keyspace", "direct")]
+        [TestCase("keyspace", "coalesced")]
+        [TestCase("keyspace", "unrelated")]
+        [TestCase("object", "none")]
+        [TestCase("object", "direct")]
+        [TestCase("object", "unrelated")]
+        [NonParallelizable]
+        public async Task Should_LogHandlerFailure_OnlyWithoutAnAffectedCallback(string kind, string observer)
+        {
+            _target = MockTimerFactory(10000, 20000).Debouncer;
+            var failure = new InvalidOperationException("debouncer handler failure");
+            var handlerStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Func<Task> handler = () =>
+            {
+                handlerStarted.TrySetResult(true);
+                return Task.FromException(failure);
+            };
+            var failingEvent = kind == "main"
+                ? new ProtocolEvent(handler)
+                : new KeyspaceProtocolEvent(kind == "keyspace", "ks", handler);
+            var listener = new LoggingTests.TestTraceListener();
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Error;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                Task callback = null;
+                var callbackHandlerInvoked = false;
+                if (observer == "direct")
+                {
+                    callback = _target.HandleEventAsync(failingEvent, true);
+                }
+                else if (observer == "none")
+                {
+                    await _target.ScheduleEventAsync(failingEvent, true).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+                else
+                {
+                    await _target.ScheduleEventAsync(failingEvent, false).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    var callbackKeyspace = kind == "keyspace" && observer == "unrelated" ? "other" : "ks";
+                    callback = _target.HandleEventAsync(
+                        new KeyspaceProtocolEvent(
+                            false,
+                            callbackKeyspace,
+                            () =>
+                            {
+                                callbackHandlerInvoked = true;
+                                return TaskHelper.Completed;
+                            }),
+                        true);
+                }
+
+                var forwardsFailure = observer == "direct" || observer == "coalesced";
+                if (forwardsFailure)
+                {
+                    var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                        callback.WaitToCompleteAsync(5000)).ConfigureAwait(false);
+                    Assert.AreSame(failure, actual);
+                }
+                else if (callback != null)
+                {
+                    await callback.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+
+                await handlerStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                // A later processed batch is a barrier after the failing handler's catch and log processing.
+                await _target.HandleEventAsync(new ProtocolEvent(() => TaskHelper.Completed), true)
+                    .WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreEqual(
+                    forwardsFailure ? 0 : 1,
+                    listener.Messages.Values.Count(message => message.Contains(failure.Message)));
+                Assert.AreEqual(observer == "unrelated", callbackHandlerInvoked);
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                var target = _target;
+                _target = null;
+                await target.ShutdownAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+            }
+        }
+
+        [NonParallelizable]
+        [TestCase("main")]
+        [TestCase("keyspace")]
+        [TestCase("object")]
+        public async Task Should_KeepProcessingCallbacks_When_BackgroundDiagnosticListenerThrows(string kind)
+        {
+            _target = MockTimerFactory(10000, 20000).Debouncer;
+            var failure = new InvalidOperationException("original background handler failure");
+            Func<Task> handler = () => Task.FromException(failure);
+            var failingEvent = kind == "main"
+                ? new ProtocolEvent(handler)
+                : new KeyspaceProtocolEvent(kind == "keyspace", "ks", handler);
+            var listener = new ThrowingDiagnosticTraceListener();
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Error;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                Task laterCallback = null;
+                if (kind == "object")
+                {
+                    await _target.ScheduleEventAsync(failingEvent, false).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    laterCallback = _target.HandleEventAsync(
+                        new KeyspaceProtocolEvent(false, "ks", () => TaskHelper.Completed),
+                        true);
+                }
+                else
+                {
+                    await _target.ScheduleEventAsync(failingEvent, true).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+
+                await listener.Attempted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.IsTrue(listener.Messages.Values.Any(message => message.Contains(failure.Message)));
+                if (laterCallback != null)
+                {
+                    await laterCallback.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+
+                await _target.HandleEventAsync(new ProtocolEvent(() => TaskHelper.Completed), true)
+                    .WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreEqual(1, listener.Messages.Values.Count(message => message.Contains(failure.Message)));
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                var target = _target;
+                _target = null;
+                try
+                {
+                    await target.ShutdownAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+                catch (InvalidOperationException ex) when (ReferenceEquals(ex, listener.Failure))
+                {
+                    // A pre-fix processor fault can surface the same sink failure during cleanup.
+                }
+            }
+        }
+
         private ProtocolEvent CreateProtocolEvent(string keyspace = null, bool? isRefreshEvent = null)
         {
             var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.None);
@@ -252,6 +400,26 @@ namespace Cassandra.Tests.MetadataTests
             mockResult.Debouncer = target;
             mockResult.TimerFactory = timerFactory;
             return mockResult;
+        }
+
+        private sealed class ThrowingDiagnosticTraceListener : LoggingTests.TestTraceListener
+        {
+            public InvalidOperationException Failure { get; } = new InvalidOperationException("diagnostic listener failure");
+
+            public TaskCompletionSource<bool> Attempted { get; } =
+                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            public override void WriteLine(string message, string category)
+            {
+                if (category != nameof(ProtocolEventDebouncer))
+                {
+                    return;
+                }
+
+                WriteLine(message);
+                Attempted.TrySetResult(true);
+                throw Failure;
+            }
         }
 
         private class TimerMockResult
