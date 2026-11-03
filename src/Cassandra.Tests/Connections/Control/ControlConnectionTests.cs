@@ -1048,6 +1048,98 @@ namespace Cassandra.Tests.Connections.Control
             }
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_ObserveHostDownDuringReconnectRegistration(bool clientRoutesEnabled)
+        {
+            var hostId = Guid.NewGuid();
+            var registrationStarted = NewSignal();
+            var releaseRegistration = NewSignal();
+            var recoveryCompleted = NewSignal();
+            var registrations = 0;
+            var refreshes = 0;
+            var subscriber = new Mock<IServerEventsSubscriber>();
+            subscriber.Setup(value => value.SubscribeToServerEvents(
+                    It.IsAny<IConnection>(), It.IsAny<CassandraEventHandler>()))
+                .Returns<IConnection, CassandraEventHandler>(async (_, __) =>
+                {
+                    if (Interlocked.Increment(ref registrations) == 2)
+                    {
+                        registrationStarted.TrySetResult(true);
+                        await releaseRegistration.Task.ConfigureAwait(false);
+                    }
+                });
+            var debouncer = new Mock<IProtocolEventDebouncer>();
+            debouncer.Setup(value => value.ScheduleEventAsync(It.IsAny<ProtocolEvent>(), false))
+                .Callback(() =>
+                {
+                    if (Interlocked.Increment(ref refreshes) == 2)
+                    {
+                        recoveryCompleted.TrySetResult(true);
+                    }
+                })
+                .Returns(Task.CompletedTask);
+            var connections = new ConcurrentQueue<Mock<IConnection>>();
+            var requestHandler = new RecordingMetadataRequestHandler((_, __) => Task.FromResult(
+                ClientRouteRows(hostId, "127.0.0.10", 19042)));
+            var created = NewReconnectingClientRoutesInstance(
+                hostId, CreateRecordingConnectionFactory(connections), requestHandler,
+                subscriber.Object, clientRoutesEnabled, debouncer.Object);
+            using var metadata = created.Metadata;
+            using var control = created.ControlConnection;
+            ClientRoutesCache routesCache = null;
+            Task initialization = null;
+            Task reconnect = null;
+            try
+            {
+                routesCache = created.Config.ClientRoutesRuntime?.Bind(control);
+                initialization = control.InitAsync();
+                await initialization.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                var original = connections.Single().Object;
+                reconnect = control.Reconnect(null);
+                await registrationStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                var candidate = connections.Last().Object;
+                Assert.AreNotSame(original, candidate);
+                Assert.IsTrue(control.Host.IsUp);
+                Assert.IsFalse(candidate.IsClosed);
+
+                Assert.IsTrue(control.Host.SetDown());
+                releaseRegistration.TrySetResult(true);
+
+                await reconnect.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                await recoveryCompleted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreEqual(3, connections.Count);
+                Assert.AreEqual(3, Volatile.Read(ref registrations));
+                Assert.IsTrue(original.IsDisposed);
+                Assert.IsTrue(candidate.IsDisposed);
+                Assert.IsFalse(connections.Last().Object.IsClosed);
+                Assert.IsFalse(control.Host.IsUp);
+                if (clientRoutesEnabled)
+                {
+                    Assert.IsTrue(created.Config.ClientRoutesRuntime.IsLifecycleReady);
+                }
+            }
+            finally
+            {
+                releaseRegistration.TrySetResult(true);
+                try
+                {
+                    control.Shutdown();
+                    var inFlight = Task.WhenAll(
+                        initialization ?? Task.CompletedTask,
+                        reconnect ?? Task.CompletedTask,
+                        GetSharedReconnect(control) ?? Task.CompletedTask,
+                        routesCache?.RefreshDrain ?? Task.CompletedTask);
+                    await inFlight.ContinueWith(completed => _ = completed.Exception, TaskScheduler.Default)
+                        .WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+                finally
+                {
+                    created.Config.Timer.Dispose();
+                }
+            }
+        }
+
         [Test]
         public async Task Should_ReregisterAndRefreshRoutesInBackgroundWhenReconnectCompletes()
         {
