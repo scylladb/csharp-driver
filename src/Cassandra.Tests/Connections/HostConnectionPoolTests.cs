@@ -1308,57 +1308,64 @@ namespace Cassandra.Tests.Connections
                 clientRouteRowsFactory: _ => rows,
                 coreConnections: 2,
                 clientRoutesCacheCreated: cache => routesCache = cache);
-            Mock.Get(_resolver)
-                .Setup(resolver => resolver.GetConnectionShardAwareEndPointsAsync(_host, false, 19042))
-                .ReturnsAsync(new IConnectionEndPoint[]
-                {
-                    new ConnectionEndPoint(
-                        new IPEndPoint(_host.Address.Address, 19042),
-                        Mock.Of<IServerNameResolver>(),
-                        null)
-                });
-
-            await target.Warmup().ConfigureAwait(false);
-
-            Assert.AreEqual(4, target.OpenConnections);
-            Assert.AreEqual(4, directConnections.Count);
-            Assert.AreEqual(0, routedConnections.Count);
-
-            rows.Add(ClientRouteRow(_host.HostId, "198.51.100.90", 9042, "route-a"));
-            await routesCache.FullRefreshBarrierAsync().ConfigureAwait(false);
-
-            var directs = directConnections.ToArray();
-            directs[0].Object.Dispose();
-
-            TestHelper.RetryAssert(() =>
+            try
             {
+                Mock.Get(_resolver)
+                    .Setup(resolver => resolver.GetConnectionShardAwareEndPointsAsync(_host, false, 19042))
+                    .ReturnsAsync(new IConnectionEndPoint[]
+                    {
+                        new ConnectionEndPoint(
+                            new IPEndPoint(_host.Address.Address, 19042),
+                            Mock.Of<IServerNameResolver>(),
+                            null)
+                    });
+
+                await target.Warmup().WaitToCompleteAsync(5000).ConfigureAwait(false);
+
                 Assert.AreEqual(4, target.OpenConnections);
-                Assert.AreEqual(1, routedConnections.Count);
-                Assert.AreEqual(2, GetExpectedConnectionLength(target));
-            }, 20, 250);
-            CollectionAssert.AreEquivalent(
-                directs.Skip(1).Select(connection => connection.Object)
-                       .Concat(routedConnections.Select(connection => connection.Object)),
-                target.ConnectionsSnapshot);
+                Assert.AreEqual(4, directConnections.Count);
+                Assert.AreEqual(0, routedConnections.Count);
 
-            foreach (var direct in directs.Skip(1))
-            {
-                direct.Object.Dispose();
+                rows.Add(ClientRouteRow(_host.HostId, "198.51.100.90", 9042, "route-a"));
+                await routesCache.FullRefreshBarrierAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                var directs = directConnections.ToArray();
+                directs[0].Object.Dispose();
+
+                TestHelper.RetryAssert(() =>
+                {
+                    Assert.AreEqual(4, target.OpenConnections);
+                    Assert.AreEqual(1, routedConnections.Count);
+                    Assert.AreEqual(2, GetExpectedConnectionLength(target));
+                }, 20, 250);
+                CollectionAssert.AreEquivalent(
+                    directs.Skip(1).Select(connection => connection.Object)
+                           .Concat(routedConnections.Select(connection => connection.Object)),
+                    target.ConnectionsSnapshot);
+
+                foreach (var direct in directs.Skip(1))
+                {
+                    direct.Object.Dispose();
+                }
+
+                TestHelper.RetryAssert(() =>
+                {
+                    Assert.AreEqual(2, target.OpenConnections);
+                    Assert.AreEqual(2, routedConnections.Count);
+                    Assert.IsTrue(target.ConnectionsSnapshot.All(
+                        connection => connection.EndPoint is ClientRouteConnectionEndPoint));
+                }, 20, 250);
+                foreach (var routed in routedConnections)
+                {
+                    routed.Verify(connection => connection.Open(), Times.Once);
+                    routed.Verify(
+                        connection => connection.Open(It.IsAny<int>(), It.IsAny<int>()),
+                        Times.Never);
+                }
             }
-
-            TestHelper.RetryAssert(() =>
+            finally
             {
-                Assert.AreEqual(2, target.OpenConnections);
-                Assert.AreEqual(2, routedConnections.Count);
-                Assert.IsTrue(target.ConnectionsSnapshot.All(
-                    connection => connection.EndPoint is ClientRouteConnectionEndPoint));
-            }, 20, 250);
-            foreach (var routed in routedConnections)
-            {
-                routed.Verify(connection => connection.Open(), Times.Once);
-                routed.Verify(
-                    connection => connection.Open(It.IsAny<int>(), It.IsAny<int>()),
-                    Times.Never);
+                DisposePoolAndTimer(target);
             }
         }
 
