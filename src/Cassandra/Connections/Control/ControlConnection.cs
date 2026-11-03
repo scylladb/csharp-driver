@@ -523,19 +523,16 @@ namespace Cassandra.Connections.Control
                                 throw new SocketException((int)SocketError.NotConnected);
                             }
 
-                            if (_clientRoutesCache == null)
+                            // Observe host and idle failures during setup; Closing was attached by the handoff above.
+                            lock (_connectionHandoffLock)
                             {
-                                // Preserve the legacy subscription timing when client routes are disabled.
-                                lock (_connectionHandoffLock)
+                                if (IsShutdown || !ReferenceEquals(_connection, connection))
                                 {
-                                    if (IsShutdown || !ReferenceEquals(_connection, connection))
-                                    {
-                                        throw new ObjectDisposedException(
-                                            nameof(ControlConnection),
-                                            "The Control Connection was disposed before the connection lifecycle completed.");
-                                    }
-                                    Subscribe(currentHost, connection, false);
+                                    throw new ObjectDisposedException(
+                                        nameof(ControlConnection),
+                                        "The Control Connection was disposed before the connection lifecycle completed.");
                                 }
+                                Subscribe(currentHost, connection, false);
                             }
 
                             ControlConnection.Logger.Info(
@@ -573,8 +570,7 @@ namespace Cassandra.Connections.Control
                             }
                             if (_clientRoutesCache != null)
                             {
-                                // A failed REGISTER or initial route load must not launch a recursive reconnect
-                                // through the candidate connection's Closing event.
+                                // Validate the candidate again before publishing client-routes readiness.
                                 lock (_connectionHandoffLock)
                                 {
                                     if (IsShutdown)
@@ -583,7 +579,6 @@ namespace Cassandra.Connections.Control
                                             nameof(ControlConnection),
                                             "The Control Connection was disposed before the client-routes lifecycle completed.");
                                     }
-                                    Subscribe(currentHost, connection, false);
                                     if (!ReferenceEquals(_connection, connection) ||
                                         connection.IsDisposed ||
                                         connection.IsClosed ||
