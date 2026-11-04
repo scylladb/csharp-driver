@@ -390,7 +390,6 @@ namespace Cassandra.Tests
 
             // Fails instead of hanging the test run when a shared fetch task never completes
             await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(60));
-            Interlocked.Add(ref counter, (await asyncRs.ToListAsync()).Count);
 
             CollectionAssert.AreEqual(Enumerable.Range(1, pages - 1), fetchedPages.OrderBy(page => page));
             Assert.AreEqual(pageSize * pages, Volatile.Read(ref counter));

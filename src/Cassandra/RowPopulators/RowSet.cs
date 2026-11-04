@@ -241,6 +241,10 @@ namespace Cassandra
                 }
                 hasMoreData = AutoPage && _pagingState != null;
                 PageNext();
+
+                // Rows are enqueued before the paging state is cleared: a concurrent fetch, for example a
+                // FetchMoreResultsAsync() call, may have added the last page after the queue was found empty
+                hasMoreData = hasMoreData || !RowQueue.IsEmpty;
             }
         }
 
