@@ -239,7 +239,6 @@ namespace Cassandra.Tests
             Assert.That(CreateConfig(port).NativeTransportPort, Is.EqualTo(port));
         }
 
-
         private static ClientRoutesConfig CreateConfig(
             int nativeTransportPort = ClientRoutesConfig.DefaultNativeTransportPort)
         {

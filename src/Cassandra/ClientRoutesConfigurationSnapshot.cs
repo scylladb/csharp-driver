@@ -61,12 +61,14 @@ namespace Cassandra
                 {
                     throw new ArgumentException("Client-routes proxies must not contain null elements.", nameof(proxies));
                 }
+
                 if (!connectionIds.Add(proxy.ConnectionId))
                 {
                     throw new ArgumentException(
                         "Client-routes proxy connection IDs must be unique.",
                         nameof(proxies));
                 }
+
                 copiedProxies.Add(proxy);
             }
 

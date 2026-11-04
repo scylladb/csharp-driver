@@ -65,8 +65,8 @@ namespace Cassandra
 
         /// <summary>
         /// Creates a frozen selection for low-level callers that do not start with a
-        /// <see cref="ClientRoutesConfig"/>. Production cluster construction uses the validated
-        /// configuration snapshot instead.
+        /// <see cref="ClientRoutesConfig"/>. Callers with a validated configuration snapshot can
+        /// reuse its selection instead.
         /// </summary>
         internal static ClientRoutesSelection Create(
             IEnumerable<string> connectionIds,

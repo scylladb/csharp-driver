@@ -48,6 +48,7 @@ namespace Cassandra
                     "The client-routes connection ID must not be empty or whitespace.",
                     nameof(connectionId));
             }
+
             if (connectionAddressOverride != null && !IsValidHostOnlyAddress(connectionAddressOverride))
             {
                 throw new ArgumentException(
