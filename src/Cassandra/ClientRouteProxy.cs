@@ -96,7 +96,7 @@ namespace Cassandra
             {
                 return value.Length > 2 &&
                        value[value.Length - 1] == ']' &&
-                       IPAddress.TryParse(value.AsSpan(1, value.Length - 2), out ipAddress) &&
+                       IPAddress.TryParse(value, out ipAddress) &&
                        ipAddress.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6;
             }
 

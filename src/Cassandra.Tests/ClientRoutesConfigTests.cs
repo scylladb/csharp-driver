@@ -75,6 +75,8 @@ namespace Cassandra.Tests
         [TestCase("proxy.example.com:9042")]
         [TestCase("127.0.0.1:9042")]
         [TestCase("[2001:db8::1]:9042")]
+        [TestCase("[[::1]]")]
+        [TestCase("[[::1]:9042]")]
         public void Should_RejectAddressOverridesThatAreNotHostOnly(string addressOverride)
         {
             Assert.That(
