@@ -726,6 +726,42 @@ namespace Cassandra.Tests
             SetFetchNextMethod(rs, pagingState => Task.FromResult(handler(pagingState)));
         }
 
+        /// <summary>
+        /// The synchronous enumeration yields a row that is added during the PageNext call that finds no paging
+        /// state, as a concurrent fetch of the last page can.
+        /// </summary>
+        [Test]
+        public void RowSetIteratesRowsAddedWhenNoPagingStateIsLeft()
+        {
+            var row = CreateStringsRowset(1, 1).Single();
+            var rs = new RowAddingRowSet(row);
+
+            CollectionAssert.AreEqual(new[] { row }, rs.ToArray());
+            Assert.AreEqual(0, rs.GetAvailableWithoutFetching());
+        }
+
         private class TestException : Exception { }
+
+        /// <summary>
+        /// Adds a row on the first PageNext call, as a concurrent fetch of the last page would.
+        /// </summary>
+        private class RowAddingRowSet : RowSet
+        {
+            private Row _row;
+
+            public RowAddingRowSet(Row row)
+            {
+                _row = row;
+            }
+
+            protected override void PageNext()
+            {
+                var row = Interlocked.Exchange(ref _row, null);
+                if (row != null)
+                {
+                    AddRow(row);
+                }
+            }
+        }
     }
 }
