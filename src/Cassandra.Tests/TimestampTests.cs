@@ -31,14 +31,16 @@ namespace Cassandra.Tests
     {
         /// <summary>
         /// How far ahead of the system clock the generator has to be before it logs, in milliseconds,
-        /// for the tests that exercise the drift warning.
+        /// for the tests that exercise the drift warning. Only
+        /// <see cref="AtomicMonotonicTimestampGenerator_Next_Should_Log_Once_While_Drift_Stays_Above_Threshold"/>
+        /// can hold the generator to it, because it is the only one that owns the clock.
         /// </summary>
         private const int WarningThresholdMs = 5;
 
         /// <summary>
-        /// How many values <see cref="TimestampGeneratorLogDriftingTest"/> generates.
+        /// How many values <see cref="TimestampGeneratorLogRateLimitTest"/> generates, concurrently.
         /// </summary>
-        private const int DriftingIterations = 1000000;
+        private const int RateLimitIterations = 1000000;
 
         /// <summary>
         /// A log interval long enough that the suppression
@@ -56,13 +58,13 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public void AtomicMonotonicTimestampGenerator_Next_Should_Return_Log_When_Drifting_Above_Threshold()
+        public void AtomicMonotonicTimestampGenerator_Next_Should_Not_Log_More_Often_Than_The_Log_Interval()
         {
             var minLogInterval = 2500;
             var loggerHandler = new TestHelper.TestLoggerHandler();
             var generator = new AtomicMonotonicTimestampGenerator(
                 WarningThresholdMs, minLogInterval, new Logger(loggerHandler));
-            TimestampGeneratorLogDriftingTest(generator, loggerHandler, minLogInterval);
+            TimestampGeneratorLogRateLimitTest(generator, loggerHandler, minLogInterval);
         }
 
         [Test]
@@ -96,7 +98,7 @@ namespace Cassandra.Tests
             // The last of those calls was one microsecond short of the threshold when it ran, because the
             // generator weighs the value it holds before returning that value plus one. So the generator
             // now sits exactly thresholdMicros ahead of its clock with nothing logged yet, which is why
-            // TimestampGeneratorLogDriftingTest has to measure strictly past the threshold rather than to
+            // TimestampGeneratorLogRateLimitTest has to measure strictly past the threshold rather than to
             // it: this is the state a measurement landing exactly on the threshold cannot rule out.
             Assert.AreEqual(0, Interlocked.Read(ref loggerHandler.WarningCount));
 
@@ -120,13 +122,13 @@ namespace Cassandra.Tests
         }
 
         [Test, WinOnly(6, 2)]
-        public void AtomicMonotonicWinApiTimestampGenerator_Next_Should_Log_When_Drifting_Above_Threshold()
+        public void AtomicMonotonicWinApiTimestampGenerator_Next_Should_Not_Log_More_Often_Than_The_Log_Interval()
         {
             var minLogInterval = 2500;
             var loggerHandler = new TestHelper.TestLoggerHandler();
             var generator = new AtomicMonotonicWinApiTimestampGenerator(
                 WarningThresholdMs, minLogInterval, new Logger(loggerHandler));
-            TimestampGeneratorLogDriftingTest(generator, loggerHandler, minLogInterval);
+            TimestampGeneratorLogRateLimitTest(generator, loggerHandler, minLogInterval);
         }
 
         [Test, WinOnly(6, 2)]
@@ -166,7 +168,7 @@ namespace Cassandra.Tests
             Assert.AreEqual(iterations * threads, values.Count);
         }
 
-        private static void TimestampGeneratorLogDriftingTest(
+        private static void TimestampGeneratorLogRateLimitTest(
             ITimestampGenerator generator, TestHelper.TestLoggerHandler loggerHandler, int logIntervalMs)
         {
             var timestamp = DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond;
@@ -175,7 +177,7 @@ namespace Cassandra.Tests
                 {
                     generator.Next();
                 },
-                DriftingIterations);
+                RateLimitIterations);
 
             var elapsed = (DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond) - timestamp;
 
