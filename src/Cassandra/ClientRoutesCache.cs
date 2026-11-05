@@ -73,6 +73,8 @@ namespace Cassandra
         private long _scheduledRetryGeneration;
         private int _consecutiveFailedRefreshes;
         private int _consecutiveEmptyFullRefreshes;
+        private int _pendingQueuedRefreshBarrierCount;
+        private Task _refreshDrain = Task.CompletedTask;
 
         public ClientRoutesCache(
             IMetadataQueryProvider queryProvider,
@@ -115,6 +117,19 @@ namespace Cassandra
             Volatile.Read(ref _snapshot).ByHost;
 
         public bool HasCompleteSnapshot => Volatile.Read(ref _snapshot).IsComplete;
+
+        internal Task RefreshDrain
+        {
+            get
+            {
+                lock (_refreshLock)
+                {
+                    return _refreshDrain;
+                }
+            }
+        }
+
+        internal int PendingQueuedRefreshBarrierCount => Volatile.Read(ref _pendingQueuedRefreshBarrierCount);
 
         public bool TryGetRoutes(Guid hostId, out ImmutableArray<ClientRouteEndpoint> routes)
         {
@@ -170,6 +185,35 @@ namespace Cassandra
             }
         }
 
+        /// <summary>
+        /// Requests a full attempt, optionally confirming ignored empty results before returning.
+        /// Initial failures cannot establish readiness; later failures retain the usable snapshot.
+        /// </summary>
+        public Task FullRefreshBarrierAsync(
+            IEnumerable<Guid> topologyHostIds = null,
+            bool confirmIgnoredEmptyResults = false)
+        {
+            return CompleteFullRefreshAsync(RefreshAsync(topologyHostIds), confirmIgnoredEmptyResults);
+        }
+
+        /// <summary>
+        /// Waits for batches accepted before this call. Later requests do not extend the wait.
+        /// </summary>
+        public Task QueuedRefreshBarrierAsync()
+        {
+            lock (_refreshLock)
+            {
+                if (_shutdown)
+                {
+                    return Task.FromException(CreateShutdownException());
+                }
+                Task active = _activeRefresh == null ? Task.CompletedTask : _activeRefresh.Completion.Task;
+                Task pending = _pendingRefresh == null ? Task.CompletedTask : _pendingRefresh.Completion.Task;
+                var barrier = Task.WhenAll(active, pending);
+                return barrier.IsCompleted ? barrier : TrackQueuedRefreshBarrierAsync(barrier);
+            }
+        }
+
         public Task<ClientRoutesRefreshOutcome> RefreshAsync(ClientRoutesChangeEventArgs eventArgs)
         {
             if (!TryGetAffectedHostIds(eventArgs, out var hostIds))
@@ -188,6 +232,37 @@ namespace Cassandra
                 }
                 return QueueRefresh(ClientRoutesRefreshWorkItem.CreateTargeted(hostIds), hasCaller: true);
             }
+        }
+
+        public void Shutdown()
+        {
+            lock (_refreshLock)
+            {
+                if (_shutdown)
+                {
+                    return;
+                }
+                _shutdown = true;
+                _needsFullRetry = false;
+                _scheduledRetryGeneration = 0;
+                var exception = CreateShutdownException();
+                _activeRefresh?.Completion.TrySetException(exception);
+                _pendingRefresh?.Completion.TrySetException(exception);
+                _pendingRefresh = null;
+                _initialSnapshotReady.Task.Forget();
+                _initialSnapshotReady.TrySetException(exception);
+            }
+            _shutdownCancellation.Cancel();
+        }
+
+        private static string EscapeCqlString(string value)
+        {
+            return value.Replace("'", "''");
+        }
+
+        private static ObjectDisposedException CreateShutdownException()
+        {
+            return new ObjectDisposedException(nameof(ClientRoutesCache));
         }
 
         // Callers hold _refreshLock. A running batch is immutable; only pending work coalesces.
@@ -209,7 +284,8 @@ namespace Cassandra
                 _pendingRefresh = null;
                 try
                 {
-                    Task.Run(DrainRefreshesAsync).Forget();
+                    _refreshDrain = Task.Run(DrainRefreshesAsync);
+                    _refreshDrain.Forget();
                 }
                 catch (Exception ex)
                 {
@@ -368,8 +444,13 @@ namespace Cassandra
             }
             catch (Exception ex) when (!Utils.IsFatalException(ex))
             {
+                var permissionHint = ex is UnauthorizedException
+                    ? "Check SELECT permission on system.client_routes; an administrator can grant it with " +
+                      "GRANT SELECT ON TABLE system.client_routes TO <role>. "
+                    : string.Empty;
                 _logger.Warning("Could not refresh client routes. Existing routes are retained; " +
-                                "a full refresh will be retried when background retries are enabled. Exception: {0}", ex);
+                                "a full refresh will be retried when background retries are enabled. " +
+                                permissionHint + "Exception: {0}", ex);
                 return ClientRoutesRefreshOutcome.QueryFailed;
             }
 
@@ -524,35 +605,32 @@ namespace Cassandra
             return workItem.AppendQueryFilter(query);
         }
 
-        private static string EscapeCqlString(string value)
+        private async Task CompleteFullRefreshAsync(
+            Task<ClientRoutesRefreshOutcome> refresh,
+            bool confirmIgnoredEmptyResults)
         {
-            return value.Replace("'", "''");
-        }
-
-        public void Shutdown()
-        {
-            lock (_refreshLock)
+            var outcome = await refresh.ConfigureAwait(false);
+            while (confirmIgnoredEmptyResults && outcome == ClientRoutesRefreshOutcome.EmptyIgnored)
             {
-                if (_shutdown)
-                {
-                    return;
-                }
-                _shutdown = true;
-                _needsFullRetry = false;
-                _scheduledRetryGeneration = 0;
-                var exception = CreateShutdownException();
-                _activeRefresh?.Completion.TrySetException(exception);
-                _pendingRefresh?.Completion.TrySetException(exception);
-                _pendingRefresh = null;
-                _initialSnapshotReady.Task.Forget();
-                _initialSnapshotReady.TrySetException(exception);
+                outcome = await RefreshAsync().ConfigureAwait(false);
             }
-            _shutdownCancellation.Cancel();
+            if (outcome != ClientRoutesRefreshOutcome.Applied && !HasCompleteSnapshot)
+            {
+                throw new DriverException($"The initial client-routes refresh did not produce a complete snapshot: {outcome}.");
+            }
         }
 
-        private static ObjectDisposedException CreateShutdownException()
+        private async Task TrackQueuedRefreshBarrierAsync(Task barrier)
         {
-            return new ObjectDisposedException(nameof(ClientRoutesCache));
+            Interlocked.Increment(ref _pendingQueuedRefreshBarrierCount);
+            try
+            {
+                await barrier.ConfigureAwait(false);
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _pendingQueuedRefreshBarrierCount);
+            }
         }
 
         private sealed class RefreshBatch
