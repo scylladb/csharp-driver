@@ -263,6 +263,44 @@ namespace Cassandra.Tests
         }
 
         /// <summary>
+        /// Runs every cleanup action and reports all failures after cleanup has finished.
+        /// </summary>
+        public static void RunAllCleanupActions(params Action[] cleanupActions)
+        {
+            if (cleanupActions == null)
+            {
+                throw new ArgumentNullException(nameof(cleanupActions));
+            }
+
+            List<Exception> exceptions = null;
+            foreach (var cleanupAction in cleanupActions)
+            {
+                if (cleanupAction == null)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    cleanupAction();
+                }
+                catch (Exception ex)
+                {
+                    if (exceptions == null)
+                    {
+                        exceptions = new List<Exception>();
+                    }
+                    exceptions.Add(ex);
+                }
+            }
+
+            if (exceptions != null)
+            {
+                throw new AggregateException("One or more cleanup actions failed.", exceptions);
+            }
+        }
+
+        /// <summary>
         /// Waits on the current thread until the condition is met and returns the number of attempts made
         /// </summary>
         public static int WaitUntil(Func<bool> condition, int intervals = 500, int attempts = 10)
@@ -663,6 +701,8 @@ namespace Cassandra.Tests
 
         internal class TestLoggerHandler : Logger.ILoggerHandler
         {
+            public long InfoCount = 0;
+            public long VerboseCount = 0;
             public long WarningCount = 0;
 
             public void Error(Exception ex)
@@ -679,10 +719,12 @@ namespace Cassandra.Tests
 
             public void Verbose(string message, params object[] args)
             {
+                Interlocked.Increment(ref VerboseCount);
             }
 
             public void Info(string message, params object[] args)
             {
+                Interlocked.Increment(ref InfoCount);
             }
 
             public void Warning(string message, params object[] args)
