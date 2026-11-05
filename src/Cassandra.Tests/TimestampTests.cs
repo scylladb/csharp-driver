@@ -19,6 +19,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Threading;
 
+using Cassandra.Serialization;
 using Cassandra.Tests.TestAttributes;
 
 using NUnit.Framework;
@@ -29,6 +30,17 @@ namespace Cassandra.Tests
     [TestFixture]
     public class TimestampTests
     {
+        /// <summary>
+        /// How far ahead of the system clock the generator has to be before it logs, in milliseconds,
+        /// for the tests that exercise the drift warning.
+        /// </summary>
+        private const int WarningThresholdMs = 5;
+
+        /// <summary>
+        /// How many values <see cref="TimestampGeneratorLogDriftingTest"/> generates.
+        /// </summary>
+        private const int DriftingIterations = 1000000;
+
         [Test]
         public void AtomicMonotonicTimestampGenerator_Next_Should_Return_Increasing_Monotonic_Values()
         {
@@ -40,8 +52,9 @@ namespace Cassandra.Tests
         {
             var minLogInterval = 2500;
             var loggerHandler = new TestHelper.TestLoggerHandler();
-            var generator = new AtomicMonotonicTimestampGenerator(5, minLogInterval, new Logger(loggerHandler));
-            TimestampGeneratorLogDriftingTest(generator, loggerHandler, minLogInterval);
+            var generator = new AtomicMonotonicTimestampGenerator(
+                WarningThresholdMs, minLogInterval, new Logger(loggerHandler));
+            TimestampGeneratorLogDriftingTest(generator, loggerHandler, WarningThresholdMs, minLogInterval);
         }
 
         [Test]
@@ -50,6 +63,41 @@ namespace Cassandra.Tests
             var loggerHandler = new TestHelper.TestLoggerHandler();
             var generator = new AtomicMonotonicTimestampGenerator(80, 1000, new Logger(loggerHandler));
             TimestampGeneratorLogAfterCooldownTest(generator, loggerHandler);
+        }
+
+        [Test]
+        public void AtomicMonotonicTimestampGenerator_Next_Should_Log_Once_While_Drift_Stays_Above_Threshold()
+        {
+            const int thresholdMicros = WarningThresholdMs * 1000;
+            var loggerHandler = new TestHelper.TestLoggerHandler();
+            var generator = new StoppedClockTimestampGenerator(
+                WarningThresholdMs, 2500, new Logger(loggerHandler));
+
+            // The system clock this generator reads never moves, so the drift comes from calling it rather
+            // than from how fast the machine is: the first value is the clock itself and every later one is
+            // a microsecond past the one before, putting the generator exactly i microseconds ahead after
+            // i further calls. That makes the threshold the warning depends on an exact, reachable point.
+            var first = generator.Next();
+            Assert.AreEqual(StoppedClockTimestampGenerator.FixedMicros, first);
+
+            for (var i = 1; i <= thresholdMicros; i++)
+            {
+                Assert.AreEqual(first + i, generator.Next());
+            }
+
+            // The last of those calls was one microsecond short of the threshold when it ran.
+            Assert.AreEqual(0, Interlocked.Read(ref loggerHandler.WarningCount));
+
+            generator.Next();
+            Assert.AreEqual(1, Interlocked.Read(ref loggerHandler.WarningCount));
+
+            // Still drifting, and further past the threshold on every call, but within the log interval.
+            for (var i = 0; i < thresholdMicros; i++)
+            {
+                generator.Next();
+            }
+
+            Assert.AreEqual(1, Interlocked.Read(ref loggerHandler.WarningCount));
         }
 
         [Test, WinOnly(6, 2)]
@@ -63,8 +111,9 @@ namespace Cassandra.Tests
         {
             var minLogInterval = 2500;
             var loggerHandler = new TestHelper.TestLoggerHandler();
-            var generator = new AtomicMonotonicWinApiTimestampGenerator(5, minLogInterval, new Logger(loggerHandler));
-            TimestampGeneratorLogDriftingTest(generator, loggerHandler, minLogInterval);
+            var generator = new AtomicMonotonicWinApiTimestampGenerator(
+                WarningThresholdMs, minLogInterval, new Logger(loggerHandler));
+            TimestampGeneratorLogDriftingTest(generator, loggerHandler, WarningThresholdMs, minLogInterval);
         }
 
         [Test, WinOnly(6, 2)]
@@ -105,7 +154,10 @@ namespace Cassandra.Tests
         }
 
         private static void TimestampGeneratorLogDriftingTest(
-            ITimestampGenerator generator, TestHelper.TestLoggerHandler loggerHandler, int logIntervalMs)
+            ITimestampGenerator generator,
+            TestHelper.TestLoggerHandler loggerHandler,
+            int warningThresholdMs,
+            int logIntervalMs)
         {
             var timestamp = DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond;
             TestHelper.ParallelInvoke(
@@ -113,21 +165,42 @@ namespace Cassandra.Tests
                 {
                     generator.Next();
                 },
-                1000000);
+                DriftingIterations);
 
             var elapsed = (DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond) - timestamp;
 
-            if (elapsed > 3000)
+            // A call that finds the system clock has not moved on returns the previous value plus one
+            // microsecond, so the generator only runs ahead of the system clock while Next() is called
+            // more often than once per microsecond, and it only warns once it is warningThresholdMs
+            // ahead. Whether this machine is that fast is not something the test can decide in advance:
+            // measure the drift the run actually produced, from the generator's own value, and skip when
+            // the run never created the condition that the warning reports. Reading the system clock
+            // after the generator's value can only understate that drift, never overstate it, so a run
+            // that passes this guard really did drift.
+            var driftMicros = generator.Next() - NowMicros();
+            if (driftMicros < warningThresholdMs * 1000L)
             {
-                Assert.Ignore("Generated numbers too slowly for this test to work.");
-            }
-            else
-            {
-                var count = elapsed / logIntervalMs;
-
-                Assert.That(Interlocked.Read(ref loggerHandler.WarningCount), Is.InRange(count + 1, count + 2));
+                Assert.Ignore(
+                    $"Generated numbers too slowly for this test to work: {DriftingIterations} values took " +
+                    $"{elapsed}ms and left the generator {driftMicros}us ahead of the system clock, under the " +
+                    $"{warningThresholdMs}ms warning threshold.");
             }
 
+            // The generator ended up further ahead than the threshold, so some call took the drifting path
+            // while already past it and logged. Each warning then suppresses the next logIntervalMs worth,
+            // which bounds how many the run can have produced.
+            Assert.That(
+                Interlocked.Read(ref loggerHandler.WarningCount),
+                Is.InRange(1, elapsed / logIntervalMs + 1));
+        }
+
+        /// <summary>
+        /// The current system-clock time in microseconds since the UNIX epoch, the same scale as
+        /// <see cref="ITimestampGenerator.Next"/>.
+        /// </summary>
+        private static long NowMicros()
+        {
+            return (DateTime.UtcNow.Ticks - TypeSerializer.UnixStart.UtcTicks) / (TimeSpan.TicksPerMillisecond / 1000);
         }
 
         private static void TimestampGeneratorLogAfterCooldownTest(ITimestampGenerator generator,
@@ -166,6 +239,28 @@ namespace Cassandra.Tests
             // It should generate a warning initially
             TestHelper.ParallelInvoke(() => Action(TimeSpan.FromSeconds(0.8)), 2);
             Assert.That(Interlocked.Read(ref loggerHandler.WarningCount), Is.GreaterThanOrEqualTo(1));
+        }
+
+        /// <summary>
+        /// An <see cref="AtomicMonotonicTimestampGenerator"/> whose view of the system clock never moves,
+        /// so that a test can drive the drift it warns about instead of racing the machine for it.
+        /// </summary>
+        private class StoppedClockTimestampGenerator : AtomicMonotonicTimestampGenerator
+        {
+            /// <summary>
+            /// An arbitrary fixed point in time, in microseconds since the UNIX epoch.
+            /// </summary>
+            internal const long FixedMicros = 1500000000000000L;
+
+            internal StoppedClockTimestampGenerator(int warningThreshold, int minLogInterval, Logger logger)
+                : base(warningThreshold, minLogInterval, logger)
+            {
+            }
+
+            protected override long GetTimestamp()
+            {
+                return FixedMicros;
+            }
         }
     }
 }
