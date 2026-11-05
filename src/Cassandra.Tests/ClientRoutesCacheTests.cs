@@ -968,6 +968,46 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public async Task Should_ExplainAuthorizationFailureWithoutEstablishingReadinessOrReplacingRoutes()
+        {
+            var host = Guid.NewGuid();
+            var denied = new UnauthorizedException("User has no SELECT permission");
+            var authorized = false;
+            var provider = CreateProvider((_, __) => authorized
+                ? Task.FromResult(Rows(Route(host, "retained", 9042, 9142, ConnectionA)))
+                : Task.FromException<IEnumerable<IRow>>(denied));
+            var handler = new RecordingLoggerHandler();
+            var cache = CreateCache(provider.Object, logger: new Logger(handler));
+            var ready = cache.WaitForInitialSnapshotAsync();
+
+            var failure = await Assert.ThrowsAsync<DriverException>(async () =>
+                await cache.FullRefreshBarrierAsync(new[] { host }).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+
+            Assert.That(failure.Message, Does.Contain("QueryFailed"));
+            Assert.That(ready.IsCompleted, Is.False);
+            Assert.That(cache.HasCompleteSnapshot, Is.False);
+            Assert.That(cache.Routes, Is.Empty);
+            AssertCoverage(cache, host, false);
+            authorized = true;
+            await cache.FullRefreshBarrierAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            await ready.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            var snapshot = cache.Routes;
+            authorized = false;
+
+            Assert.That(await cache.RefreshAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false),
+                Is.EqualTo(ClientRoutesRefreshOutcome.QueryFailed));
+            Assert.That(cache.Routes, Is.SameAs(snapshot));
+            AssertCoverage(cache, host, true);
+            Assert.That(handler.Warnings, Has.Count.EqualTo(2));
+            foreach (var warning in handler.Warnings)
+            {
+                Assert.That(warning, Does.Contain("GRANT SELECT ON TABLE system.client_routes TO <role>"));
+                Assert.That(warning, Does.Contain(denied.Message));
+            }
+            Assert.That(handler.Errors, Is.Empty);
+        }
+
+        [Test]
         public async Task Should_KeepReadinessSeparateFromRecoverableOutcomesAndTargetedUpdates()
         {
             var host = Guid.NewGuid();
