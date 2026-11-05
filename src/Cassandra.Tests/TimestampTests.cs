@@ -41,6 +41,15 @@ namespace Cassandra.Tests
         /// </summary>
         private const int DriftingIterations = 1000000;
 
+        /// <summary>
+        /// A log interval long enough that the suppression
+        /// <see cref="AtomicMonotonicTimestampGenerator_Next_Should_Log_Once_While_Drift_Stays_Above_Threshold"/>
+        /// asserts on cannot expire while the test runs, however long a pause the machine takes. The first
+        /// warning is still free to fire: the generator measures the interval against milliseconds elapsed
+        /// since year 1, which is several orders of magnitude larger than this.
+        /// </summary>
+        private const int SuppressedLogIntervalMs = 24 * 60 * 60 * 1000;
+
         [Test]
         public void AtomicMonotonicTimestampGenerator_Next_Should_Return_Increasing_Monotonic_Values()
         {
@@ -71,7 +80,7 @@ namespace Cassandra.Tests
             const int thresholdMicros = WarningThresholdMs * 1000;
             var loggerHandler = new TestHelper.TestLoggerHandler();
             var generator = new StoppedClockTimestampGenerator(
-                WarningThresholdMs, 2500, new Logger(loggerHandler));
+                WarningThresholdMs, SuppressedLogIntervalMs, new Logger(loggerHandler));
 
             // The system clock this generator reads never moves, so the drift comes from calling it rather
             // than from how fast the machine is: the first value is the clock itself and every later one is
@@ -85,13 +94,18 @@ namespace Cassandra.Tests
                 Assert.AreEqual(first + i, generator.Next());
             }
 
-            // The last of those calls was one microsecond short of the threshold when it ran.
+            // The last of those calls was one microsecond short of the threshold when it ran, because the
+            // generator weighs the value it holds before returning that value plus one. So the generator
+            // now sits exactly thresholdMicros ahead of its clock with nothing logged yet, which is why
+            // TimestampGeneratorLogDriftingTest has to measure strictly past the threshold rather than to
+            // it: this is the state a measurement landing exactly on the threshold cannot rule out.
             Assert.AreEqual(0, Interlocked.Read(ref loggerHandler.WarningCount));
 
             generator.Next();
             Assert.AreEqual(1, Interlocked.Read(ref loggerHandler.WarningCount));
 
-            // Still drifting, and further past the threshold on every call, but within the log interval.
+            // Still drifting, and further past the threshold on every call, but within the log interval,
+            // which is long enough that this holds however long the loop itself takes to run.
             for (var i = 0; i < thresholdMicros; i++)
             {
                 generator.Next();
@@ -174,20 +188,35 @@ namespace Cassandra.Tests
             // more often than once per microsecond, and it only warns once it is warningThresholdMs
             // ahead. Whether this machine is that fast is not something the test can decide in advance:
             // measure the drift the run actually produced, from the generator's own value, and skip when
-            // the run never created the condition that the warning reports. Reading the system clock
-            // after the generator's value can only understate that drift, never overstate it, so a run
-            // that passes this guard really did drift.
-            var driftMicros = generator.Next() - NowMicros();
-            if (driftMicros < warningThresholdMs * 1000L)
+            // the run never created the condition that the warning reports.
+            var beforeMicros = NowMicros();
+            var generated = generator.Next();
+            var afterMicros = NowMicros();
+
+            if (afterMicros < beforeMicros)
+            {
+                // The reasoning below needs the system clock to move forwards across the measurement. It
+                // normally does, but a correction can step it backwards, which would make the generator
+                // look further ahead than any call actually saw.
+                Assert.Ignore(
+                    $"The system clock went backwards by {beforeMicros - afterMicros}us while the drift was " +
+                    "being measured, so the measurement says nothing about what the generator saw.");
+            }
+
+            // That call read the system clock before afterMicros was taken, and judged whether to warn on
+            // the value it held before returning generated, so the drift it weighed was at least
+            // generated - 1 - afterMicros. A measurement strictly past the threshold therefore means some
+            // call reached the threshold and logged; one landing exactly on it would leave that in doubt.
+            var driftMicros = generated - afterMicros;
+            if (driftMicros <= warningThresholdMs * 1000L)
             {
                 Assert.Ignore(
                     $"Generated numbers too slowly for this test to work: {DriftingIterations} values took " +
-                    $"{elapsed}ms and left the generator {driftMicros}us ahead of the system clock, under the " +
-                    $"{warningThresholdMs}ms warning threshold.");
+                    $"{elapsed}ms and left the generator {driftMicros}us ahead of the system clock, not past " +
+                    $"the {warningThresholdMs}ms warning threshold.");
             }
 
-            // The generator ended up further ahead than the threshold, so some call took the drifting path
-            // while already past it and logged. Each warning then suppresses the next logIntervalMs worth,
+            // So at least one warning was logged. Each one then suppresses the next logIntervalMs worth,
             // which bounds how many the run can have produced.
             Assert.That(
                 Interlocked.Read(ref loggerHandler.WarningCount),
