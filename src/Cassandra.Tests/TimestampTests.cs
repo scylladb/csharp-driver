@@ -19,7 +19,6 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Threading;
 
-using Cassandra.Serialization;
 using Cassandra.Tests.TestAttributes;
 
 using NUnit.Framework;
@@ -63,7 +62,7 @@ namespace Cassandra.Tests
             var loggerHandler = new TestHelper.TestLoggerHandler();
             var generator = new AtomicMonotonicTimestampGenerator(
                 WarningThresholdMs, minLogInterval, new Logger(loggerHandler));
-            TimestampGeneratorLogDriftingTest(generator, loggerHandler, WarningThresholdMs, minLogInterval);
+            TimestampGeneratorLogDriftingTest(generator, loggerHandler, minLogInterval);
         }
 
         [Test]
@@ -127,7 +126,7 @@ namespace Cassandra.Tests
             var loggerHandler = new TestHelper.TestLoggerHandler();
             var generator = new AtomicMonotonicWinApiTimestampGenerator(
                 WarningThresholdMs, minLogInterval, new Logger(loggerHandler));
-            TimestampGeneratorLogDriftingTest(generator, loggerHandler, WarningThresholdMs, minLogInterval);
+            TimestampGeneratorLogDriftingTest(generator, loggerHandler, minLogInterval);
         }
 
         [Test, WinOnly(6, 2)]
@@ -168,10 +167,7 @@ namespace Cassandra.Tests
         }
 
         private static void TimestampGeneratorLogDriftingTest(
-            ITimestampGenerator generator,
-            TestHelper.TestLoggerHandler loggerHandler,
-            int warningThresholdMs,
-            int logIntervalMs)
+            ITimestampGenerator generator, TestHelper.TestLoggerHandler loggerHandler, int logIntervalMs)
         {
             var timestamp = DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond;
             TestHelper.ParallelInvoke(
@@ -183,53 +179,26 @@ namespace Cassandra.Tests
 
             var elapsed = (DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond) - timestamp;
 
-            // A call that finds the system clock has not moved on returns the previous value plus one
-            // microsecond, so the generator only runs ahead of the system clock while Next() is called
-            // more often than once per microsecond, and it only warns once it is warningThresholdMs
-            // ahead. Whether this machine is that fast is not something the test can decide in advance:
-            // measure the drift the run actually produced, from the generator's own value, and skip when
-            // the run never created the condition that the warning reports.
-            var beforeMicros = NowMicros();
-            var generated = generator.Next();
-            var afterMicros = NowMicros();
-
-            if (afterMicros < beforeMicros)
-            {
-                // The reasoning below needs the system clock to move forwards across the measurement. It
-                // normally does, but a correction can step it backwards, which would make the generator
-                // look further ahead than any call actually saw.
-                Assert.Ignore(
-                    $"The system clock went backwards by {beforeMicros - afterMicros}us while the drift was " +
-                    "being measured, so the measurement says nothing about what the generator saw.");
-            }
-
-            // That call read the system clock before afterMicros was taken, and judged whether to warn on
-            // the value it held before returning generated, so the drift it weighed was at least
-            // generated - 1 - afterMicros. A measurement strictly past the threshold therefore means some
-            // call reached the threshold and logged; one landing exactly on it would leave that in doubt.
-            var driftMicros = generated - afterMicros;
-            if (driftMicros <= warningThresholdMs * 1000L)
-            {
-                Assert.Ignore(
-                    $"Generated numbers too slowly for this test to work: {DriftingIterations} values took " +
-                    $"{elapsed}ms and left the generator {driftMicros}us ahead of the system clock, not past " +
-                    $"the {warningThresholdMs}ms warning threshold.");
-            }
-
-            // So at least one warning was logged. Each one then suppresses the next logIntervalMs worth,
-            // which bounds how many the run can have produced.
+            // This test does not assert that a warning was due. Whether the run drifted past the
+            // threshold at all depends on how fast the machine generated the values, and nothing
+            // measurable from out here settles it: every drift the test could read back is the
+            // difference between a generator value and a system-clock sample the test takes itself,
+            // and a clock correction between the two can manufacture that difference or erase it.
+            // Drift is not bounded by the run's own length either, because GenerateNext returns the
+            // system clock outright once it catches up, which resets the lead to zero without logging,
+            // so a fast burst late in a slow run can rebuild a large lead. The claim therefore belongs
+            // to a test that owns the clock, which is what
+            // AtomicMonotonicTimestampGenerator_Next_Should_Log_Once_While_Drift_Stays_Above_Threshold
+            // does against a clock that cannot move.
+            //
+            // What the concurrent calls do establish is the rate limit: whatever the threads did, the
+            // generator never logged more often than its own interval allows. Two
+            // warnings are strictly more than logIntervalMs apart on the clock OnDrift compares
+            // against, which is the clock this elapsed time is measured on, and every call that could
+            // have logged ran inside that window.
             Assert.That(
                 Interlocked.Read(ref loggerHandler.WarningCount),
-                Is.InRange(1, elapsed / logIntervalMs + 1));
-        }
-
-        /// <summary>
-        /// The current system-clock time in microseconds since the UNIX epoch, the same scale as
-        /// <see cref="ITimestampGenerator.Next"/>.
-        /// </summary>
-        private static long NowMicros()
-        {
-            return (DateTime.UtcNow.Ticks - TypeSerializer.UnixStart.UtcTicks) / (TimeSpan.TicksPerMillisecond / 1000);
+                Is.AtMost(elapsed / logIntervalMs + 1));
         }
 
         private static void TimestampGeneratorLogAfterCooldownTest(ITimestampGenerator generator,
