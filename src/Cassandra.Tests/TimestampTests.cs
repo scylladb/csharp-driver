@@ -43,10 +43,22 @@ namespace Cassandra.Tests
         private const int RateLimitIterations = 1000000;
 
         /// <summary>
-        /// A log interval long enough that the suppression
+        /// The most warnings <see cref="TimestampGeneratorLogRateLimitTest"/> tolerates. A generator that
+        /// is rate limiting at all logs single figures across a run of a few seconds, and one that is not
+        /// logs on nearly every drifting call, so anything between the two separates them without the test
+        /// having to read a clock. The gap is wide enough that no clock behaviour short of jumping minutes
+        /// per warning can reach it.
+        /// </summary>
+        private const int MaxPlausibleWarnings = 100;
+
+        /// <summary>
+        /// A log interval beyond any plausible test run, so that the suppression
         /// <see cref="AtomicMonotonicTimestampGenerator_Next_Should_Log_Once_While_Drift_Stays_Above_Threshold"/>
-        /// asserts on cannot expire while the test runs, however long a pause the machine takes. The first
-        /// warning is still free to fire: the generator measures the interval against milliseconds elapsed
+        /// asserts on does not expire part way through it. Only the generator's view of the system clock is
+        /// frozen by <see cref="StoppedClockTimestampGenerator"/>; OnDrift still reads real UTC to decide
+        /// whether the interval has passed, so this is a margin rather than a guarantee: a pause or a
+        /// forward correction of more than a day would still let a second warning through. The first
+        /// warning is unaffected, because the generator measures the interval against milliseconds elapsed
         /// since year 1, which is several orders of magnitude larger than this.
         /// </summary>
         private const int SuppressedLogIntervalMs = 24 * 60 * 60 * 1000;
@@ -64,7 +76,7 @@ namespace Cassandra.Tests
             var loggerHandler = new TestHelper.TestLoggerHandler();
             var generator = new AtomicMonotonicTimestampGenerator(
                 WarningThresholdMs, minLogInterval, new Logger(loggerHandler));
-            TimestampGeneratorLogRateLimitTest(generator, loggerHandler, minLogInterval);
+            TimestampGeneratorLogRateLimitTest(generator, loggerHandler);
         }
 
         [Test]
@@ -97,16 +109,15 @@ namespace Cassandra.Tests
 
             // The last of those calls was one microsecond short of the threshold when it ran, because the
             // generator weighs the value it holds before returning that value plus one. So the generator
-            // now sits exactly thresholdMicros ahead of its clock with nothing logged yet, which is why
-            // TimestampGeneratorLogRateLimitTest has to measure strictly past the threshold rather than to
-            // it: this is the state a measurement landing exactly on the threshold cannot rule out.
+            // now sits exactly thresholdMicros ahead of its clock with nothing logged yet: being that far
+            // ahead is not by itself evidence that anything was logged.
             Assert.AreEqual(0, Interlocked.Read(ref loggerHandler.WarningCount));
 
             generator.Next();
             Assert.AreEqual(1, Interlocked.Read(ref loggerHandler.WarningCount));
 
             // Still drifting, and further past the threshold on every call, but within the log interval,
-            // which is long enough that this holds however long the loop itself takes to run.
+            // which is long enough to cover any run this loop plausibly takes.
             for (var i = 0; i < thresholdMicros; i++)
             {
                 generator.Next();
@@ -128,7 +139,7 @@ namespace Cassandra.Tests
             var loggerHandler = new TestHelper.TestLoggerHandler();
             var generator = new AtomicMonotonicWinApiTimestampGenerator(
                 WarningThresholdMs, minLogInterval, new Logger(loggerHandler));
-            TimestampGeneratorLogRateLimitTest(generator, loggerHandler, minLogInterval);
+            TimestampGeneratorLogRateLimitTest(generator, loggerHandler);
         }
 
         [Test, WinOnly(6, 2)]
@@ -169,17 +180,14 @@ namespace Cassandra.Tests
         }
 
         private static void TimestampGeneratorLogRateLimitTest(
-            ITimestampGenerator generator, TestHelper.TestLoggerHandler loggerHandler, int logIntervalMs)
+            ITimestampGenerator generator, TestHelper.TestLoggerHandler loggerHandler)
         {
-            var timestamp = DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond;
             TestHelper.ParallelInvoke(
                 () =>
                 {
                     generator.Next();
                 },
                 RateLimitIterations);
-
-            var elapsed = (DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond) - timestamp;
 
             // This test does not assert that a warning was due. Whether the run drifted past the
             // threshold at all depends on how fast the machine generated the values, and nothing
@@ -193,14 +201,17 @@ namespace Cassandra.Tests
             // AtomicMonotonicTimestampGenerator_Next_Should_Log_Once_While_Drift_Stays_Above_Threshold
             // does against a clock that cannot move.
             //
-            // What the concurrent calls do establish is the rate limit: whatever the threads did, the
-            // generator never logged more often than its own interval allows. Two
-            // warnings are strictly more than logIntervalMs apart on the clock OnDrift compares
-            // against, which is the clock this elapsed time is measured on, and every call that could
-            // have logged ran inside that window.
+            // Nor is the count compared against elapsed time. OnDrift decides whether the interval has
+            // passed by reading real UTC, and the test would have to read the same clock to turn that
+            // into a number, which puts any such bound at the mercy of a correction: one landing
+            // between the warnings and the final sample shortens the measured span without moving the
+            // timestamps the generator already compared, and correctly spaced warnings then look too
+            // frequent. What is left needs no clock. A generator that stopped rate limiting would log
+            // on nearly every one of these calls, so a count anywhere near RateLimitIterations says the
+            // suppression is gone, while a working one logs single figures over a run of a few seconds.
             Assert.That(
                 Interlocked.Read(ref loggerHandler.WarningCount),
-                Is.AtMost(elapsed / logIntervalMs + 1));
+                Is.LessThan(MaxPlausibleWarnings));
         }
 
         private static void TimestampGeneratorLogAfterCooldownTest(ITimestampGenerator generator,
