@@ -27,7 +27,14 @@ namespace Cassandra
             Down
         }
 
-        public IPEndPoint Address;
-        public Kind What;
+        /// <summary>
+        /// The address of the host whose state changed.
+        /// </summary>
+        public IPEndPoint Address { get; init; }
+
+        /// <summary>
+        /// Whether the host went up or down.
+        /// </summary>
+        public Kind What { get; init; }
     }
 }

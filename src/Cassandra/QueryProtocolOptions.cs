@@ -22,9 +22,8 @@ using Cassandra.Serialization;
 
 namespace Cassandra
 {
-    public class QueryProtocolOptions
+    internal class QueryProtocolOptions
     {
-        //This class was leaked to the API, making it internal would be a breaking change
         [Flags]
         public enum QueryFlags
         {
