@@ -55,7 +55,7 @@ namespace Cassandra.Data.Linq
             }
             _batchScript.SetBatchType(_batchType);
             this.CopyQueryPropertiesTo(_batchScript);
-            return _session.ExecuteAsync(_batchScript, executionProfile);
+            return AsyncRowSet.ToRowSetAsync(_session.ExecuteAsync(_batchScript, executionProfile));
         }
 
         public override string ToString()

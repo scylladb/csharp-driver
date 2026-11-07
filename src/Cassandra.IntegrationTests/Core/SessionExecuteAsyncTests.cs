@@ -30,7 +30,7 @@ namespace Cassandra.IntegrationTests.Core
             var task = Session.ExecuteAsync(new SimpleStatement("SELECT * FROM system.local WHERE key='local'"));
             //forcing it to execute sync for testing purposes
             var rowset = task.Result;
-            Assert.True(rowset.Any(), "Returned result should contain rows.");
+            Assert.True(rowset.AnyAsync().AsTask().Result, "Returned result should contain rows.");
         }
 
         [Test]
@@ -46,7 +46,7 @@ namespace Cassandra.IntegrationTests.Core
             var task = Session.ExecuteAsync(statement.Bind("local"));
             //forcing it to execute sync for testing purposes
             var rowset = task.Result;
-            Assert.True(rowset.Any(), "Returned result should contain rows.");
+            Assert.True(rowset.AnyAsync().AsTask().Result, "Returned result should contain rows.");
         }
 
         [Test]
@@ -90,9 +90,9 @@ namespace Cassandra.IntegrationTests.Core
             var task3 = Session.ExecuteAsync(new SimpleStatement("SELECT tokens FROM system.local WHERE key='local'"));
             //forcing the calling thread to wait for all the parallel task to finish
             Task.WaitAll(task1, task2, task3);
-            Assert.NotNull(task1.Result.First().GetValue<string>("key"));
-            Assert.NotNull(task2.Result.First().GetValue<string>("key"));
-            Assert.NotNull(task3.Result.First().GetValue<string[]>("tokens"));
+            Assert.NotNull(task1.Result.FirstAsync().AsTask().Result.GetValue<string>("key"));
+            Assert.NotNull(task2.Result.FirstAsync().AsTask().Result.GetValue<string>("key"));
+            Assert.NotNull(task3.Result.FirstAsync().AsTask().Result.GetValue<string[]>("tokens"));
         }
     }
 }

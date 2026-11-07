@@ -112,7 +112,7 @@ namespace Cassandra.Data.Linq
                 Cql.New(cqlQuery, values).WithExecutionProfile(executionProfile)).ConfigureAwait(false);
 
             this.CopyQueryPropertiesTo(statement);
-            var rs = await session.ExecuteAsync(statement, executionProfile).ConfigureAwait(false);
+            var rs = (await session.ExecuteAsync(statement, executionProfile).ConfigureAwait(false)).ToRowSet();
             QueryTrace = rs.Info.QueryTrace;
             return rs;
         }

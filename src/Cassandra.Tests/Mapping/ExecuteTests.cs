@@ -42,7 +42,7 @@ namespace Cassandra.Tests.Mapping
                     consistency = b.ConsistencyLevel;
                     serialConsistency = b.SerialConsistencyLevel;
                 })
-                .Returns(() => Task.FromResult(new RowSet()))
+                .Returns(() => Task.FromResult(new RowSet()).ToAsyncRowSet())
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
@@ -55,7 +55,7 @@ namespace Cassandra.Tests.Mapping
                     consistency = b.ConsistencyLevel;
                     serialConsistency = b.SerialConsistencyLevel;
                 })
-                .Returns(() => Task.FromResult(new RowSet()))
+                .Returns(() => Task.FromResult(new RowSet()).ToAsyncRowSet())
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
@@ -81,7 +81,7 @@ namespace Cassandra.Tests.Mapping
             sessionMock.Setup(s => s.Keyspace).Returns<string>(null);
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BatchStatement>(), It.IsAny<string>()))
-                .Returns(TestHelper.DelayedTask(new RowSet(), 2000).ContinueWith(t =>
+                .Returns(TestHelper.DelayedTask(new RowSet().ToAsyncRowSet(), 2000).ContinueWith(t =>
                 {
                     rowsetReturned = true;
                     return t.Result;

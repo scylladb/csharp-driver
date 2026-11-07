@@ -393,8 +393,9 @@ namespace Cassandra.Requests
                 {
                     if (_session.IsDisposed)
                     {
-                        RequestExecution.Logger.Warning("Trying to page results using a Session already disposed.");
-                        return RowSet.Empty();
+                        // Fail instead of ending the iteration, which would make a truncated result look complete
+                        throw new ObjectDisposedException(
+                            nameof(Session), "The next page of results can not be retrieved: the session is disposed.");
                     }
 
                     var request = (IQueryRequest)_parent.BuildRequest();

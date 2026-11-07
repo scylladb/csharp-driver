@@ -81,7 +81,7 @@ var rowSet = await session.ExecuteAsync(
         "SELECT * FROM table1 ORDER BY j ANN OF ? LIMIT ?",
         new CqlVector<float>(0.6f, 0.5f, 0.9f),
         1));
-var row = rowSet.Single();
+var row = await rowSet.SingleAsync();
 var i = row.GetValue<int>("i");
 var j = row.GetValue<CqlVector<float>?>("j");
 ```
@@ -98,7 +98,7 @@ await session.ExecuteAsync(boundInsert);
 var boundSelect = psSelect.Bind(new CqlVector<float>(4.7f, 5.0f, 5.0f), 1);
 var rowSet = await session.ExecuteAsync(boundSelect);
 
-var row = rowSet.Single();
+var row = await rowSet.SingleAsync();
 var i = row.GetValue<int>("i");
 var j = row.GetValue<CqlVector<float>>("j");
 ```
