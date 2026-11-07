@@ -677,6 +677,8 @@ namespace Cassandra.Tests.Connections
                             .ConfigureAwait(false));
 
             StringAssert.Contains("not available yet", ex.Message);
+            var expectedTimeoutMillis = useDefaultTimeout ? 5000 : 50;
+            StringAssert.Contains($"within {expectedTimeoutMillis}ms.", ex.Message);
             fallback.VerifyNoOtherCalls();
         }
 
