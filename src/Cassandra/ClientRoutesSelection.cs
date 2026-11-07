@@ -41,6 +41,33 @@ namespace Cassandra
 
         public ImmutableDictionary<string, int> ConnectionPriorities { get; }
 
+        internal static ClientRoutesSelection FromValidatedProxies(IReadOnlyList<ClientRouteProxy> proxies)
+        {
+            var connectionIds = ImmutableArray.CreateBuilder<string>(proxies.Count);
+            var addressOverrides = ImmutableDictionary.CreateBuilder<string, string>(StringComparer.Ordinal);
+            var connectionPriorities = ImmutableDictionary.CreateBuilder<string, int>(StringComparer.Ordinal);
+            for (var i = 0; i < proxies.Count; i++)
+            {
+                var proxy = proxies[i];
+                connectionIds.Add(proxy.ConnectionId);
+                connectionPriorities.Add(proxy.ConnectionId, i);
+                if (proxy.ConnectionAddressOverride != null)
+                {
+                    addressOverrides.Add(proxy.ConnectionId, proxy.ConnectionAddressOverride);
+                }
+            }
+
+            return new ClientRoutesSelection(
+                connectionIds.MoveToImmutable(),
+                addressOverrides.ToImmutable(),
+                connectionPriorities.ToImmutable());
+        }
+
+        /// <summary>
+        /// Creates a frozen selection for low-level callers that do not start with a
+        /// <see cref="ClientRoutesConfig"/>. Callers with a validated configuration snapshot can
+        /// reuse its selection instead.
+        /// </summary>
         internal static ClientRoutesSelection Create(
             IEnumerable<string> connectionIds,
             IReadOnlyDictionary<string, string> addressOverrides)
