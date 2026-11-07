@@ -68,6 +68,12 @@ namespace Cassandra.Responses
         }
         );
 
+        private static readonly TupleColumnInfo TabletV2ColumnInfo = new TupleColumnInfo(
+            new List<ColumnDesc>(TabletColumnInfo.Elements)
+            {
+                new ColumnDesc { TypeCode = ColumnTypeCode.Bigint }
+            });
+
         internal Response(Frame frame)
         {
             ArgumentNullException.ThrowIfNull(frame);
@@ -98,7 +104,23 @@ namespace Cassandra.Responses
             {
                 CustomPayload = Reader.ReadBytesMap();
 
-                if (CustomPayload.TryGetValue(TabletInfo.TABLETS_ROUTING_V1_CUSTOM_PAYLOAD_KEY, out var tabletInfo))
+                if (frame.UseTabletsRoutingV2 && CustomPayload.TryGetValue(TabletInfo.TABLETS_ROUTING_V2_CUSTOM_PAYLOAD_KEY, out var tabletV2))
+                {
+                    var decoded = frame.Serializer.Deserialize(tabletV2, 0, tabletV2.Length, ColumnTypeCode.Tuple, TabletV2ColumnInfo);
+                    if (decoded is Tuple<long, long, IEnumerable<Tuple<Guid, int>>, long> tablet && tablet.Item3 != null)
+                    {
+                        var replicas = new List<HostShardPair>();
+                        foreach (var replica in tablet.Item3)
+                        {
+                            replicas.Add(new HostShardPair(replica.Item1, replica.Item2));
+                        }
+                        if (replicas.Count > 0)
+                        {
+                            Tablet = new Tablet(tablet.Item1, tablet.Item2, replicas, unchecked((ulong)tablet.Item4));
+                        }
+                    }
+                }
+                else if (!frame.UseTabletsRoutingV2 && CustomPayload.TryGetValue(TabletInfo.TABLETS_ROUTING_V1_CUSTOM_PAYLOAD_KEY, out var tabletInfo))
                 {
 
                     var des = frame.Serializer.Deserialize(tabletInfo, 0, tabletInfo.Length, ColumnTypeCode.Tuple, TabletColumnInfo);

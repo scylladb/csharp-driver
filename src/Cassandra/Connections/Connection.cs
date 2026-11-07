@@ -846,6 +846,7 @@ namespace Cassandra.Connections
         {
             var compressor = Compressor;
             var useMetadataId = UseMetadataId;
+            var useTabletsRoutingV2 = TabletInfo()?.IsV2 == true;
 
             Task DeserializeResponseStream(MemoryStream stream, long timestamp)
             {
@@ -861,7 +862,7 @@ namespace Cassandra.Connections
                         plainTextStream.Position = 0;
                     }
                     response = FrameParser.Parse(
-                        new Frame(header, plainTextStream, serializer, resultMetadata, useMetadataId));
+                        new Frame(header, plainTextStream, serializer, resultMetadata, useMetadataId, useTabletsRoutingV2));
                     if (response is ResultResponse resultResponse && resultResponse.Output is OutputSetKeyspace keyspace)
                     {
                         // USE changes server-side connection state. Keep the local state authoritative even when
@@ -1252,7 +1253,7 @@ namespace Cassandra.Connections
                 {
                     //lazy initialize the stream
                     stream = stream ?? (RecyclableMemoryStream)Configuration.BufferPool.GetStream(Connection.StreamWriteTag);
-                    var frameLength = state.WriteFrame(streamId, stream, Serializer, UseMetadataId, timestamp);
+                    var frameLength = state.WriteFrame(streamId, stream, Serializer, UseMetadataId, timestamp, TabletInfo()?.IsV2 == true);
                     _connectionObserver.OnBytesSent(frameLength);
                     totalLength += frameLength;
                 }
