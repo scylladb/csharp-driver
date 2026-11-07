@@ -967,6 +967,7 @@ class ReleaseGateTests(unittest.TestCase):
         )
         self.assertIn("v3.22.0.5", api.releases)
         self.assertNotIn("target_commitish", api.posts[-1][1])
+        self.assertIs(api.posts[-1][1]["generate_release_notes"], True)
         with self.assertRaisesRegex(release_gate.ReleaseError, "recovery mode"):
             release_gate.ensure_release(
                 api,
