@@ -968,6 +968,218 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public async Task Should_RequireTopologyBeforeFullBarrierCanEstablishReadiness()
+        {
+            var host = Guid.NewGuid();
+            var provider = CreateProvider((_, __) =>
+                Task.FromResult(Rows(Route(host, "proxy", 9042, 9142, ConnectionA))));
+            var cache = CreateCache(provider.Object);
+            var ready = cache.WaitForInitialSnapshotAsync();
+
+            var failure = await Assert.ThrowsAsync<DriverException>(async () =>
+                await cache.FullRefreshBarrierAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+
+            Assert.That(failure.Message, Does.Contain("did not produce a complete snapshot: Applied"));
+            Assert.That(cache.HasCompleteSnapshot, Is.False);
+            Assert.That(ready.IsCompleted, Is.False);
+
+            await cache.FullRefreshBarrierAsync(new[] { host }).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            await ready.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            AssertCoverage(cache, host, true);
+        }
+
+        [Test]
+        public async Task Should_KeepLaterRequestsOutsideEachQueuedBarrier()
+        {
+            var hosts = new[] { Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid() };
+            var started = Enumerable.Range(0, 4).Select(_ => NewSignal()).ToArray();
+            var release = Enumerable.Range(0, 4).Select(_ => NewSignal()).ToArray();
+            var queries = new ConcurrentQueue<string>();
+            var calls = 0;
+            var provider = CreateProvider(async (query, _) =>
+            {
+                var index = Interlocked.Increment(ref calls) - 1;
+                queries.Enqueue(query);
+                started[index].TrySetResult(true);
+                await release[index].Task.ConfigureAwait(false);
+                return EmptyRows();
+            });
+            var cache = CreateCache(provider.Object);
+            try
+            {
+                await cache.QueuedRefreshBarrierAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.That(cache.PendingQueuedRefreshBarrierCount, Is.Zero);
+                var active = cache.RefreshAsync(Change((ConnectionA, hosts[0])));
+                await started[0].Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                var targeted = cache.RefreshAsync(Change((ConnectionA, hosts[1])));
+                var firstBarrier = cache.QueuedRefreshBarrierAsync();
+                var full = cache.RefreshAsync();
+                Assert.That(cache.RefreshAsync(), Is.SameAs(full));
+                var secondBarrier = cache.QueuedRefreshBarrierAsync();
+                var later = cache.RefreshAsync(Change((ConnectionA, hosts[2])));
+                Assert.That(cache.RefreshAsync(Change((ConnectionA, hosts[2]))), Is.SameAs(later));
+                Assert.That(cache.PendingQueuedRefreshBarrierCount, Is.EqualTo(2));
+
+                release[0].TrySetResult(true);
+                await active.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await started[1].Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.That(firstBarrier.IsCompleted, Is.False);
+                Assert.That(queries.Last(), Does.Contain(hosts[1].ToString("D")).And.Not.Contain("ALLOW FILTERING"));
+                release[1].TrySetResult(true);
+                await targeted.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await firstBarrier.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await started[2].Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.That(secondBarrier.IsCompleted, Is.False);
+                Assert.That(cache.PendingQueuedRefreshBarrierCount, Is.EqualTo(1));
+                Assert.That(queries.Last(), Does.EndWith("ALLOW FILTERING"));
+
+                release[2].TrySetResult(true);
+                await full.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await secondBarrier.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await started[3].Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.That(later.IsCompleted, Is.False);
+                Assert.That(cache.PendingQueuedRefreshBarrierCount, Is.Zero);
+                Assert.That(queries.Last(), Does.Contain(hosts[2].ToString("D")).And.Not.Contain("ALLOW FILTERING"));
+                release[3].TrySetResult(true);
+                await later.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await cache.RefreshDrain.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.That(calls, Is.EqualTo(4));
+            }
+            finally
+            {
+                cache.Shutdown();
+                foreach (var signal in release)
+                {
+                    signal.TrySetResult(true);
+                }
+                await cache.RefreshDrain.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_SettleQueuedBarriersAndObserveDrainOnShutdownOrFatalFailure(bool shutdown)
+        {
+            var host = Guid.NewGuid();
+            var started = NewSignal();
+            var release = NewSignal();
+            var fatal = new OutOfMemoryException("fatal query failure");
+            var provider = CreateProvider(async (_, __) =>
+            {
+                started.TrySetResult(true);
+                await release.Task.ConfigureAwait(false);
+                if (!shutdown)
+                {
+                    throw fatal;
+                }
+                return EmptyRows();
+            });
+            var cache = CreateCache(provider.Object);
+            var drain = Task.CompletedTask;
+            try
+            {
+                var active = cache.RefreshAsync(new[] { host });
+                drain = cache.RefreshDrain;
+                await started.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                var sealedRefresh = cache.RefreshAsync();
+                var barrier = cache.QueuedRefreshBarrierAsync();
+                var pending = cache.RefreshAsync();
+                Assert.That(cache.PendingQueuedRefreshBarrierCount, Is.EqualTo(1));
+                if (shutdown)
+                {
+                    cache.Shutdown();
+                    Assert.That(drain.IsCompleted, Is.False);
+                }
+                else
+                {
+                    release.TrySetResult(true);
+                }
+                foreach (var waiter in new Task[] { active, sealedRefresh, pending, barrier })
+                {
+                    var failure = await CaptureFailure(waiter).ConfigureAwait(false);
+                    if (shutdown)
+                    {
+                        Assert.That(failure, Is.TypeOf<ObjectDisposedException>());
+                    }
+                    else
+                    {
+                        Assert.That(failure, Is.SameAs(fatal));
+                    }
+                }
+                Assert.That(cache.PendingQueuedRefreshBarrierCount, Is.Zero);
+                release.TrySetResult(true);
+                if (shutdown)
+                {
+                    await drain.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    Assert.That(await CaptureFailure(cache.QueuedRefreshBarrierAsync()).ConfigureAwait(false),
+                        Is.TypeOf<ObjectDisposedException>());
+                }
+                else
+                {
+                    Assert.That(await CaptureFailure(drain).ConfigureAwait(false), Is.SameAs(fatal));
+                }
+                Assert.That(cache.HasCompleteSnapshot, Is.False);
+                Assert.That(cache.Routes, Is.Empty);
+            }
+            finally
+            {
+                cache.Shutdown();
+                release.TrySetResult(true);
+                try
+                {
+                    await drain.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                }
+                catch (OutOfMemoryException)
+                {
+                    // The fatal drain outcome was asserted above.
+                }
+            }
+        }
+
+        [Test]
+        public async Task Should_ConfirmIgnoredEmptyResultsBeforeFullBarrierReturns()
+        {
+            var host = Guid.NewGuid();
+            var confirmationStarted = NewSignal();
+            var releaseConfirmation = NewSignal();
+            var calls = 0;
+            var provider = CreateProvider(async (_, __) =>
+            {
+                var call = Interlocked.Increment(ref calls);
+                if (call == 1)
+                {
+                    return Rows(Route(host, "retained", 9042, 9142, ConnectionA));
+                }
+                if (call == 4)
+                {
+                    confirmationStarted.TrySetResult(true);
+                    await releaseConfirmation.Task.ConfigureAwait(false);
+                }
+                return EmptyRows();
+            });
+            var cache = CreateCache(provider.Object);
+            try
+            {
+                await cache.FullRefreshBarrierAsync(new[] { host }).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                var snapshot = cache.Routes;
+                var barrier = cache.FullRefreshBarrierAsync(confirmIgnoredEmptyResults: true);
+                await confirmationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.That(barrier.IsCompleted, Is.False);
+                Assert.That(cache.Routes, Is.SameAs(snapshot));
+                releaseConfirmation.TrySetResult(true);
+                await barrier.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.That(cache.Routes, Is.Empty);
+                AssertCoverage(cache, host, true);
+            }
+            finally
+            {
+                cache.Shutdown();
+                releaseConfirmation.TrySetResult(true);
+                await cache.RefreshDrain.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
+        }
+
+        [Test]
         public async Task Should_ExplainAuthorizationFailureWithoutEstablishingReadinessOrReplacingRoutes()
         {
             var host = Guid.NewGuid();

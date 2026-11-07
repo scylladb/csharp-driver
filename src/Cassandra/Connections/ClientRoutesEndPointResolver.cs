@@ -45,7 +45,8 @@ namespace Cassandra.Connections
         /// <param name="fallbackResolver">Resolves direct endpoints for hosts without routes.</param>
         /// <param name="initialSnapshotWaitTimeout">
         /// How long a pool connection waits for the first complete route snapshot. Later refreshes
-        /// never block endpoint resolution; readers use the last complete snapshot. Null waits indefinitely.
+        /// never block endpoint resolution; readers use the last complete snapshot. Null uses the
+        /// default socket connect timeout (5 seconds); Timeout.InfiniteTimeSpan waits indefinitely.
         /// </param>
         /// <param name="logger">Logger used for recovered-resolution and fallback diagnostics.</param>
         public ClientRoutesEndPointResolver(
@@ -59,12 +60,13 @@ namespace Cassandra.Connections
             _dnsResolver = dnsResolver ?? throw new ArgumentNullException(nameof(dnsResolver));
             _fallbackResolver = fallbackResolver ?? throw new ArgumentNullException(nameof(fallbackResolver));
             _logger = logger ?? ClientRoutesEndPointResolver.DefaultLogger;
-            _initialSnapshotWaitTimeout = initialSnapshotWaitTimeout ?? Timeout.InfiniteTimeSpan;
+            _initialSnapshotWaitTimeout = initialSnapshotWaitTimeout ??
+                TimeSpan.FromMilliseconds(SocketOptions.DefaultConnectTimeoutMillis);
             if (_initialSnapshotWaitTimeout != Timeout.InfiniteTimeSpan && _initialSnapshotWaitTimeout <= TimeSpan.Zero)
             {
                 throw new ArgumentOutOfRangeException(
                     nameof(initialSnapshotWaitTimeout),
-                    "The initial snapshot wait timeout must be positive, or null to wait indefinitely.");
+                    "The initial snapshot wait timeout must be positive, or Timeout.InfiniteTimeSpan to wait indefinitely.");
             }
         }
 
@@ -244,8 +246,8 @@ namespace Cassandra.Connections
                 if (!directFallbackConfirmed)
                 {
                     var exception = new DriverException(
-                        $"Client routes for host {host.HostId} are not available yet: the latest complete " +
-                        "route snapshot did not cover this host identity.");
+                        $"Client routes for host {host.HostId} are not available yet: no complete " +
+                        "route snapshot covers this host identity.");
                     return new ConnectionEndPointResolutionPlan(
                         new[]
                         {

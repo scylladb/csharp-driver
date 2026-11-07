@@ -655,8 +655,9 @@ namespace Cassandra.Tests.Connections
             fallback.VerifyNoOtherCalls();
         }
 
-        [Test]
-        public async Task Should_FailOpenWhenNoRoutesWereEverConfirmedWithinTimeout()
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_FailClosedWhenNoRoutesWereEverConfirmedWithinTimeout(bool useDefaultTimeout)
         {
             var host = CreateHost("192.0.2.82", Guid.NewGuid());
             var runtime = new ClientRoutesRuntime(
@@ -668,14 +669,36 @@ namespace Cassandra.Tests.Connections
                 runtime,
                 Mock.Of<IDnsResolver>(),
                 fallback.Object,
-                TimeSpan.FromMilliseconds(50));
+                useDefaultTimeout ? null : TimeSpan.FromMilliseconds(50));
 
             var ex = await Assert.ThrowsAsync<DriverException>(async () =>
                 await target.GetConnectionEndPointsAsync(host, false)
-                            .WaitToCompleteAsync(5000)
+                            .WaitToCompleteAsync(10000)
                             .ConfigureAwait(false));
 
             StringAssert.Contains("not available yet", ex.Message);
+            fallback.VerifyNoOtherCalls();
+        }
+
+        [Test]
+        public async Task Should_ExplainMissingSnapshotWhenControlPlanCannotConfirmFallback()
+        {
+            var host = CreateHost("192.0.2.87", Guid.NewGuid());
+            var runtime = new ClientRoutesRuntime(
+                new ClientRoutesOptions(new[] { new ClientRouteProxy("route-a") }, AdvertisedPort, false),
+                false);
+            var fallback = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            var target = new ClientRoutesEndPointResolver(runtime, Mock.Of<IDnsResolver>(), fallback.Object);
+            var plan = target.GetControlConnectionEndPointResolutionPlan(
+                host,
+                false,
+                () => throw new AssertionException("The default control factory must not be used."));
+
+            var failure = await Assert.ThrowsAsync<DriverException>(async () =>
+                await plan.ResolveNextAsync().WaitToCompleteAsync(5000).ConfigureAwait(false));
+
+            StringAssert.Contains("no complete route snapshot covers this host identity", failure.Message);
+            StringAssert.Contains(host.HostId.ToString("D"), failure.Message);
             fallback.VerifyNoOtherCalls();
         }
 
