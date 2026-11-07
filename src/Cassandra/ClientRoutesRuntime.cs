@@ -29,7 +29,6 @@ namespace Cassandra
     internal sealed class ClientRoutesRuntime
     {
         private readonly Lock _bindLock = new Lock();
-        private readonly ClientRoutesSelection _selection;
         private readonly bool _useTls;
         private ClientRoutesCache _cache;
         private IMetadataQueryProvider _queryProvider;
@@ -37,11 +36,13 @@ namespace Cassandra
         private TaskCompletionSource<bool> _lifecycleReady = CreateLifecycleCompletionSource();
         private bool _shutdown;
 
-        public ClientRoutesRuntime(ClientRoutesSelection selection, bool useTls)
+        public ClientRoutesRuntime(ClientRoutesOptions options, bool useTls)
         {
-            _selection = selection ?? throw new ArgumentNullException(nameof(selection));
+            Options = options ?? throw new ArgumentNullException(nameof(options));
             _useTls = useTls;
         }
+
+        public ClientRoutesOptions Options { get; }
 
         public ClientRoutesCache Bind(IMetadataQueryProvider queryProvider)
         {
@@ -66,7 +67,7 @@ namespace Cassandra
                     _queryProvider = queryProvider;
                     _cache = new ClientRoutesCache(
                         queryProvider,
-                        _selection,
+                        Options.Selection,
                         _useTls,
                         retryQueries: false);
                 }
