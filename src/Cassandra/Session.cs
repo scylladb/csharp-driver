@@ -245,6 +245,7 @@ namespace Cassandra
                 tasks[i] = WarmupHost(hosts[i]);
             }
 
+            var hostWarmups = tasks;
             tasks = tasks.Where(task => task != null).ToArray();
             var allWarmups = Task.WhenAll(tasks);
             try
@@ -257,6 +258,23 @@ namespace Cassandra
                 if (fatal != null)
                 {
                     ExceptionDispatchInfo.Capture(fatal).Throw();
+                }
+
+                for (var i = 0; i < hostWarmups.Length; i++)
+                {
+                    var failure = hostWarmups[i]?.Exception;
+                    if (failure == null)
+                    {
+                        continue;
+                    }
+                    try
+                    {
+                        Session.Logger.Info("Connection pool for host {0} failed to warm up: {1}", hosts[i].Address, failure);
+                    }
+                    catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
+                    {
+                        // A diagnostic sink must not change the result of recoverable warmup.
+                    }
                 }
 
                 if (tasks.Any(t => t.Status == TaskStatus.RanToCompletion))
