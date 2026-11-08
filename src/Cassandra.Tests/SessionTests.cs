@@ -40,6 +40,76 @@ namespace Cassandra.Tests
     [TestFixture]
     public class SessionTests
     {
+        [NonParallelizable]
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public async Task Should_LogInitialPoolFailuresConsumedByWarmup(bool allHostsFail, bool throwFromDiagnostic)
+        {
+            var failedAddress = new IPEndPoint(IPAddress.Parse("127.0.0.11"), 9042);
+            var otherAddress = new IPEndPoint(IPAddress.Parse("127.0.0.12"), 9042);
+            var attempts = new ConcurrentDictionary<IPEndPoint, int>();
+            var connectionFactory = new FakeConnectionFactory(endPoint =>
+            {
+                var address = endPoint.GetHostIpEndPointWithFallback();
+                attempts.AddOrUpdate(address, 1, (_, count) => count + 1);
+                var connection = new Mock<IConnection>();
+                connection.SetupGet(value => value.EndPoint).Returns(endPoint);
+                if (address.Equals(failedAddress) || allHostsFail)
+                {
+                    connection.Setup(value => value.Open()).ThrowsAsync(
+                        new InvalidOperationException("initial warmup failure at " + address));
+                }
+                else
+                {
+                    connection.Setup(value => value.Open()).ReturnsAsync((Responses.Response)null);
+                }
+                return connection.Object;
+            });
+            var config = new TestConfigurationBuilder
+            {
+                ConnectionFactory = connectionFactory,
+                PoolingOptions = new PoolingOptions().SetCoreConnectionsPerHost(HostDistance.Local, 1),
+                Policies = new Cassandra.Policies(
+                    new RoundRobinPolicy(), new ConstantReconnectionPolicy(3600000), new DefaultRetryPolicy())
+            }.Build();
+            using var metadata = new Metadata(config);
+            foreach (var address in new[] { failedAddress, otherAddress })
+            {
+                metadata.AddHost(address).SetInfo(CreateHostInfo(Guid.NewGuid()));
+            }
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            cluster.Setup(value => value.AllHosts()).Returns(() => metadata.AllHosts());
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new ConsumedWarmupTraceListener(throwFromDiagnostic);
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "initial-warmup-test");
+                await ((IInternalSession)session).Init().WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                foreach (var address in new[] { failedAddress, otherAddress })
+                {
+                    Assert.AreEqual(1, attempts[address], "A retry must not supply the initial diagnostic.");
+                    Assert.AreEqual(address.Equals(failedAddress) || allHostsFail ? 1 : 0,
+                        listener.Messages.Values.Count(message =>
+                            message.Contains("Connection pool for host " + address) &&
+                            message.Contains("initial warmup failure at " + address)));
+                }
+                Assert.AreEqual(allHostsFail, listener.Messages.Values.Any(message =>
+                    message.Contains("Connection pools for 2 host(s) failed to be warmed up")));
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                config.Timer.Dispose();
+            }
+        }
 
         [Test]
         public async Task Should_PropagateFatalWarmupFailure_WhenAnotherHostFailsNormally()
