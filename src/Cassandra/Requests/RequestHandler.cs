@@ -461,7 +461,23 @@ namespace Cassandra.Requests
             RoutingKey routingKey,
             int shardID = -1)
         {
-            var hostPool = session.GetOrCreateConnectionPool(host, distance);
+            IHostConnectionPool hostPool;
+            try
+            {
+                hostPool = session.GetOrCreateConnectionPool(host, distance);
+            }
+            catch (HostConnectionPoolNotEligibleException ex)
+            {
+                // The host became ineligible (down, ignored, or replaced) after it was selected.
+                triedHosts[host.Address] = ex;
+                return null;
+            }
+            catch (ObjectDisposedException ex) when (session.IsDisposed)
+            {
+                // Shutdown may race the caller's disposed check before pool lookup.
+                triedHosts[host.Address] = ex;
+                throw new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>(triedHosts));
+            }
 
             try
             {
