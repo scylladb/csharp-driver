@@ -20,3 +20,8 @@ dotnet_diagnostic.SA1602.severity = silent
 
 # SA1600: Elements should be documented
 dotnet_diagnostic.SA1600.severity = silent
+
+[TestHelperTests.cs]
+
+# Preserve this new file's ScyllaDB attribution instead of the legacy DataStax template.
+dotnet_diagnostic.SA1636.severity = none
