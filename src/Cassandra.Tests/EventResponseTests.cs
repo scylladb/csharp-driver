@@ -17,6 +17,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Net;
 using Cassandra.Responses;
 using Cassandra.Serialization;
 using NUnit.Framework;
@@ -56,7 +57,7 @@ namespace Cassandra.Tests
                 writer.WriteString("CLIENT_ROUTES_CHANGE");
                 writer.WriteString("UPDATE_NODES");
                 writer.WriteStringList(new[] { "connection-b", "connection-a" });
-                writer.WriteStringList(hostIds.Select(value => value.ToString()).ToArray());
+                writer.WriteStringList(hostIds.Select(value => value.ToString("D")).ToArray());
             });
 
             var eventArgs = (ClientRoutesChangeEventArgs)response.CassandraEventArgs;
@@ -75,7 +76,7 @@ namespace Cassandra.Tests
                 writer.WriteString("CLIENT_ROUTES_CHANGE");
                 writer.WriteString("UPDATE_NODES");
                 writer.WriteStringList(Enumerable.Repeat("connection", routeCount).ToArray());
-                writer.WriteStringList(Enumerable.Repeat(hostId.ToString(), routeCount).ToArray());
+                writer.WriteStringList(Enumerable.Repeat(hostId.ToString("D"), routeCount).ToArray());
             });
 
             var eventArgs = (ClientRoutesChangeEventArgs)response.CassandraEventArgs;
@@ -95,7 +96,7 @@ namespace Cassandra.Tests
                 writer.WriteString("CLIENT_ROUTES_CHANGE");
                 writer.WriteString("UPDATE_NODES");
                 writer.WriteStringList(new[] { connectionId });
-                writer.WriteStringList(new[] { hostId.ToString() });
+                writer.WriteStringList(new[] { hostId.ToString("D") });
             });
 
             var eventArgs = (ClientRoutesChangeEventArgs)response.CassandraEventArgs;
@@ -133,7 +134,7 @@ namespace Cassandra.Tests
                 writer.WriteString("CLIENT_ROUTES_CHANGE");
                 writer.WriteString("UPDATE_NODES");
                 writer.WriteStringList(new[] { "connection-a" });
-                writer.WriteStringList(hostIds.Select(hostId => hostId.ToString()).ToArray());
+                writer.WriteStringList(hostIds.Select(hostId => hostId.ToString("D")).ToArray());
             });
 
             var eventArgs = (ClientRoutesChangeEventArgs)response.CassandraEventArgs;
@@ -164,7 +165,7 @@ namespace Cassandra.Tests
                 writer.WriteString("CLIENT_ROUTES_CHANGE");
                 writer.WriteString("UPDATE_NODES");
                 writer.WriteStringList(new[] { "connection-a" });
-                writer.WriteStringList(new[] { Guid.NewGuid().ToString() });
+                writer.WriteStringList(new[] { Guid.NewGuid().ToString("D") });
             });
 
             var exception = Assert.Throws<DriverInternalError>(
@@ -186,7 +187,7 @@ namespace Cassandra.Tests
 
             var eventArgs = (TopologyChangeEventArgs)response.CassandraEventArgs;
             Assert.That(eventArgs.What, Is.EqualTo(TopologyChangeEventArgs.Reason.NewNode));
-            Assert.That(eventArgs.Address.Address.ToString(), Is.EqualTo("127.0.0.2"));
+            Assert.That(eventArgs.Address.Address, Is.EqualTo(IPAddress.Parse("127.0.0.2")));
             Assert.That(eventArgs.Address.Port, Is.EqualTo(9042));
         }
 
@@ -202,7 +203,7 @@ namespace Cassandra.Tests
 
             var eventArgs = (StatusChangeEventArgs)response.CassandraEventArgs;
             Assert.That(eventArgs.What, Is.EqualTo(StatusChangeEventArgs.Reason.Up));
-            Assert.That(eventArgs.Address.Address.ToString(), Is.EqualTo("127.0.0.3"));
+            Assert.That(eventArgs.Address.Address, Is.EqualTo(IPAddress.Parse("127.0.0.3")));
             Assert.That(eventArgs.Address.Port, Is.EqualTo(9043));
         }
 
