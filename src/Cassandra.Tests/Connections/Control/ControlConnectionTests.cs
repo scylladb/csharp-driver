@@ -21,12 +21,14 @@ using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Connections;
 using Cassandra.Connections.Control;
 using Cassandra.MetadataHelpers;
 using Cassandra.ProtocolEvents;
+using Cassandra.Requests;
 using Cassandra.Responses;
 using Cassandra.Serialization;
 using Cassandra.SessionManagement;
@@ -43,6 +45,10 @@ namespace Cassandra.Tests.Connections.Control
     [TestFixture]
     public class ControlConnectionTests
     {
+        private const string ClientRoutesQuery =
+            "SELECT host_id, address, port, tls_port, connection_id FROM system.client_routes " +
+            "WHERE connection_id IN ('connection-a') ALLOW FILTERING";
+
         private IPEndPoint _endpoint1 = new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042);
         private IPEndPoint _endpoint2 = new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042);
         private TestContactPoint _cp1;
@@ -97,6 +103,94 @@ namespace Cassandra.Tests.Connections.Control
             return result is IConnection connection
                 ? connection
                 : (IConnection)result.GetType().GetProperty("Connection").GetValue(result);
+        }
+
+        private static ClientRoutesOptions CreateClientRoutesOptions(params string[] connectionIds)
+        {
+            if (connectionIds.Length == 0)
+            {
+                connectionIds = new[] { "connection-a" };
+            }
+            return new ClientRoutesOptions(
+                connectionIds.Select(connectionId => new ClientRouteProxy(connectionId)),
+                ProtocolOptions.DefaultPort,
+                false);
+        }
+
+        private static IDictionary<IPEndPoint, IRow> CreateHostRows(Guid hostId)
+        {
+            return new Dictionary<IPEndPoint, IRow>
+            {
+                {
+                    new IPEndPoint(IPAddress.Parse("127.0.0.1"), ProtocolOptions.DefaultPort),
+                    TestHelper.CreateRow(new Dictionary<string, object>
+                    {
+                        { "cluster_name", "ut-cluster" },
+                        { "data_center", "ut-dc" },
+                        { "rack", "ut-rack" },
+                        { "tokens", null },
+                        { "release_version", "2.2.1-SNAPSHOT" },
+                        { "host_id", hostId }
+                    })
+                }
+            };
+        }
+
+        private static IEnumerable<IRow> ClientRouteRows(Guid hostId, string address, int port)
+        {
+            return new[]
+            {
+                new TestHelper.DictionaryBasedRow(new Dictionary<string, object>
+                {
+                    { "host_id", hostId },
+                    { "address", address },
+                    { "port", port },
+                    { "tls_port", port + 100 },
+                    { "connection_id", "connection-a" }
+                })
+            };
+        }
+
+        private static FakeConnectionFactory CreateRecordingConnectionFactory(
+            ConcurrentQueue<Mock<IConnection>> connections,
+            Action<Mock<IConnection>> configure = null)
+        {
+            return new FakeConnectionFactory(endPoint =>
+            {
+                var connection = CreateClosableConnection(endPoint);
+                configure?.Invoke(connection);
+                connections.Enqueue(connection);
+                return connection.Object;
+            });
+        }
+
+        /// <summary>
+        /// Mirrors <see cref="Connection"/>: closing marks the connection closed before raising
+        /// <see cref="IConnection.Closing"/> once, and disposing closes it.
+        /// </summary>
+        private static Mock<IConnection> CreateClosableConnection(IConnectionEndPoint endPoint)
+        {
+            var closed = 0;
+            var disposed = 0;
+            var connection = new Mock<IConnection>();
+            connection.SetupGet(value => value.EndPoint).Returns(endPoint);
+            connection.SetupGet(value => value.IsClosed).Returns(() => Volatile.Read(ref closed) != 0);
+            connection.SetupGet(value => value.IsDisposed).Returns(() => Volatile.Read(ref disposed) != 0);
+            connection.Setup(value => value.Open()).ReturnsAsync((Response)null);
+            void Close()
+            {
+                if (Interlocked.Exchange(ref closed, 1) == 0)
+                {
+                    connection.Raise(value => value.Closing += null, connection.Object);
+                }
+            }
+            connection.Setup(value => value.Close()).Callback(Close);
+            connection.Setup(value => value.Dispose()).Callback(() =>
+            {
+                Interlocked.Exchange(ref disposed, 1);
+                Close();
+            });
+            return connection;
         }
 
         private IProtocolEventDebouncer GetEventDebouncer(Configuration config)
@@ -375,6 +469,521 @@ namespace Cassandra.Tests.Connections.Control
             }
 
             Assert.AreEqual(-1, requestHandler.Requests.Single().QueryProtocolOptions.PageSize);
+        }
+
+        [Test]
+        public async Task Should_RegisterThenLoadClientRoutesDuringInitialization()
+        {
+            var hostId = Guid.NewGuid();
+            var operations = new ConcurrentQueue<string>();
+            var requestHandler = new RecordingMetadataRequestHandler((query, _) =>
+            {
+                operations.Enqueue("query");
+                Assert.AreEqual(ClientRoutesQuery, query);
+                return Task.FromResult(ClientRouteRows(hostId, "127.0.0.10", 19042));
+            });
+            var subscriber = new RecordingServerEventsSubscriber(() => operations.Enqueue("register"));
+            var createResult = NewClientRoutesInstance(hostId, requestHandler, subscriber);
+
+            using (var controlConnection = createResult.ControlConnection)
+            {
+                await controlConnection.InitAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                Assert.AreEqual(1, subscriber.SubscriptionCount);
+                CollectionAssert.AreEqual(new[] { "register", "query" }, operations.ToArray());
+                Assert.IsTrue(createResult.Config.ClientRoutesRuntime.TryGetRoutes(hostId, out var routes));
+                var boundCache = createResult.Config.ClientRoutesRuntime.Bind(controlConnection);
+                Assert.AreSame(boundCache, createResult.Config.ClientRoutesRuntime.Bind(controlConnection));
+                Assert.Throws<InvalidOperationException>(() =>
+                    createResult.Config.ClientRoutesRuntime.Bind(Mock.Of<IMetadataQueryProvider>()));
+                Assert.AreEqual(1, routes.Length);
+                Assert.AreEqual("127.0.0.10", routes[0].Address);
+                Assert.AreEqual(19042, routes[0].Port);
+            }
+        }
+
+        [Test]
+        public async Task Should_NotCompleteClientRoutesLifecycleAfterColdStartQueryFailure()
+        {
+            var hostId = Guid.NewGuid();
+            var queryFailure = new InvalidQueryException("client routes query failed");
+            var requestHandler = new RecordingMetadataRequestHandler((_, call) =>
+                call == 1
+                    ? Task.FromException<IEnumerable<IRow>>(queryFailure)
+                    : Task.FromResult(ClientRouteRows(hostId, "127.0.0.10", 19042)));
+            var subscriber = new RecordingServerEventsSubscriber();
+            var createResult = NewClientRoutesInstance(hostId, requestHandler, subscriber);
+
+            try
+            {
+                var exception = await Assert.ThrowsAsync<NoHostAvailableException>(
+                    () => createResult.ControlConnection.InitAsync().WaitToCompleteAsync(5000));
+
+                var routeFailure = exception.Errors.Values.Single();
+                Assert.IsInstanceOf<DriverException>(routeFailure);
+                StringAssert.Contains("QueryFailed", routeFailure.Message);
+                Assert.IsFalse(createResult.Config.ClientRoutesRuntime.IsLifecycleReady);
+
+                await createResult.ControlConnection.InitAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                Assert.IsTrue(createResult.Config.ClientRoutesRuntime.IsLifecycleReady);
+                Assert.IsTrue(createResult.Config.ClientRoutesRuntime.TryGetRoutes(hostId, out var routes));
+                Assert.AreEqual("127.0.0.10", routes.Single().Address);
+
+                // The cache may also retry the failed query before the second initialization.
+                Assert.GreaterOrEqual(requestHandler.QueryCount, 2);
+                Assert.AreEqual(2, subscriber.SubscriptionCount);
+            }
+            finally
+            {
+                createResult.ControlConnection.Dispose();
+            }
+        }
+
+        [Test]
+        public async Task Should_RefreshUnscopedAndConfiguredRouteEventsButIgnoreUnconfiguredOnes()
+        {
+            var hostId = Guid.NewGuid();
+            var requestHandler = new RecordingMetadataRequestHandler((_, call) =>
+            {
+                if (call == 1)
+                {
+                    return Task.FromResult(ClientRouteRows(hostId, "127.0.0.10", 19042));
+                }
+                return Task.FromResult(call == 2
+                    ? ClientRouteRows(hostId, "127.0.0.20", 29042)
+                    : ClientRouteRows(hostId, "127.0.0.30", 39042));
+            });
+            var subscriber = new RecordingServerEventsSubscriber();
+            var createResult = NewClientRoutesInstance(hostId, requestHandler, subscriber);
+
+            using (var controlConnection = createResult.ControlConnection)
+            {
+                await controlConnection.InitAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                await subscriber.RaiseAsync(new ClientRoutesChangeEventArgs
+                {
+                    ConnectionIds = new string[0],
+                    HostIds = new[] { hostId }
+                }).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.IsTrue(createResult.Config.ClientRoutesRuntime.TryGetRoutes(hostId, out var unscopedRoutes));
+                Assert.AreEqual("127.0.0.20", unscopedRoutes.Single().Address);
+
+                await subscriber.RaiseAsync(new ClientRoutesChangeEventArgs
+                {
+                    ConnectionIds = new[] { "unconfigured" },
+                    HostIds = new[] { hostId }
+                }).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreEqual(2, requestHandler.QueryCount);
+
+                await subscriber.RaiseAsync(new ClientRoutesChangeEventArgs
+                {
+                    ConnectionIds = new[] { "connection-a" },
+                    HostIds = new[] { hostId }
+                }).WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                Assert.AreEqual(3, requestHandler.QueryCount);
+                Assert.IsTrue(createResult.Config.ClientRoutesRuntime.TryGetRoutes(hostId, out var refreshedRoutes));
+                Assert.AreEqual(1, refreshedRoutes.Length);
+                Assert.AreEqual("127.0.0.30", refreshedRoutes[0].Address);
+            }
+        }
+
+        [Test]
+        public async Task Should_DrainRouteEventThatRacesInitialFullRefresh()
+        {
+            var hostId = Guid.NewGuid();
+            var firstQueryStarted = NewSignal();
+            var releaseFirstQuery = NewSignal();
+            var secondQueryStarted = NewSignal();
+            var releaseSecondQuery = NewSignal();
+            var requestHandler = new RecordingMetadataRequestHandler(async (_, call) =>
+            {
+                if (call == 1)
+                {
+                    firstQueryStarted.TrySetResult(true);
+                    await releaseFirstQuery.Task.ConfigureAwait(false);
+                    return ClientRouteRows(hostId, "127.0.0.10", 19042);
+                }
+
+                secondQueryStarted.TrySetResult(true);
+                await releaseSecondQuery.Task.ConfigureAwait(false);
+                return ClientRouteRows(hostId, "127.0.0.20", 29042);
+            });
+            var subscriber = new RecordingServerEventsSubscriber();
+            var createResult = NewClientRoutesInstance(hostId, requestHandler, subscriber);
+
+            try
+            {
+                var initialization = createResult.ControlConnection.InitAsync();
+                await firstQueryStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                var cache = createResult.Config.ClientRoutesRuntime.Bind(createResult.ControlConnection);
+                subscriber.Raise(new ClientRoutesChangeEventArgs
+                {
+                    ConnectionIds = new[] { "connection-a" },
+                    HostIds = new[] { hostId }
+                });
+
+                releaseFirstQuery.TrySetResult(true);
+                await secondQueryStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                await TestHelper.WaitUntilAsync(
+                    () => cache.PendingQueuedRefreshBarrierCount == 1,
+                    20,
+                    250).ConfigureAwait(false);
+                Assert.AreEqual(1, cache.PendingQueuedRefreshBarrierCount);
+
+                var lifecycleReady = createResult.Config.ClientRoutesRuntime.WaitForLifecycleReadyAsync();
+                var endpointResolution = createResult.Config.EndPointResolver.GetConnectionEndPointsAsync(
+                    createResult.ControlConnection.Host,
+                    false);
+                Assert.IsFalse(initialization.IsCompleted);
+                Assert.IsFalse(createResult.Config.ClientRoutesRuntime.IsLifecycleReady);
+                Assert.IsFalse(lifecycleReady.IsCompleted);
+                await endpointResolution.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreEqual(
+                    new IPEndPoint(IPAddress.Parse("127.0.0.10"), 19042),
+                    endpointResolution.Result.Single().SocketIpEndPoint);
+
+                releaseSecondQuery.TrySetResult(true);
+                await initialization.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                await lifecycleReady.WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                Assert.AreEqual(2, requestHandler.QueryCount);
+                Assert.IsTrue(createResult.Config.ClientRoutesRuntime.IsLifecycleReady);
+                Assert.IsTrue(createResult.Config.ClientRoutesRuntime.TryGetRoutes(hostId, out var refreshedRoutes));
+                Assert.AreEqual("127.0.0.20", refreshedRoutes[0].Address);
+                var postInitializationResolution = createResult.Config.EndPointResolver.GetConnectionEndPointsAsync(
+                    createResult.ControlConnection.Host,
+                    false);
+                await postInitializationResolution.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreEqual(
+                    new IPEndPoint(IPAddress.Parse("127.0.0.20"), 29042),
+                    postInitializationResolution.Result.Single().SocketIpEndPoint);
+            }
+            finally
+            {
+                releaseFirstQuery.TrySetResult(true);
+                releaseSecondQuery.TrySetResult(true);
+                createResult.ControlConnection.Dispose();
+            }
+        }
+
+        [Test]
+        public async Task Should_RejectCandidateThatClosesDuringInitialRouteLoading()
+        {
+            var hostId = Guid.NewGuid();
+            var requestHandler = new RecordingMetadataRequestHandler((_, __) => Task.FromResult(
+                ClientRouteRows(hostId, "127.0.0.10", 19042)));
+            var subscriber = new Mock<IServerEventsSubscriber>();
+            subscriber.Setup(value => value.SubscribeToServerEvents(
+                          It.IsAny<IConnection>(),
+                          It.IsAny<CassandraEventHandler>()))
+                      .Returns<IConnection, CassandraEventHandler>((connection, _) =>
+                      {
+                          Mock.Get(connection).Raise(value => value.Closing += null, connection);
+                          return Task.CompletedTask;
+                      });
+            var createResult = NewClientRoutesInstance(hostId, requestHandler, subscriber.Object);
+
+            try
+            {
+                await Assert.ThrowsAsync<NoHostAvailableException>(() => createResult.ControlConnection.InitAsync().WaitToCompleteAsync(5000));
+            }
+            finally
+            {
+                createResult.ControlConnection.Dispose();
+            }
+        }
+
+        [Test]
+        public async Task Should_FaultLifecycleAndDisposeCandidateWhenDisposedDuringInitialRouteLoad()
+        {
+            var hostId = Guid.NewGuid();
+            var routeQueryStarted = NewSignal();
+            var releaseRouteQuery = NewSignal();
+            var connections = new ConcurrentQueue<Mock<IConnection>>();
+            var requestHandler = new RecordingMetadataRequestHandler(async (_, __) =>
+            {
+                routeQueryStarted.TrySetResult(true);
+                await releaseRouteQuery.Task.ConfigureAwait(false);
+                return ClientRouteRows(hostId, "127.0.0.10", 19042);
+            });
+            var createResult = NewInstance(
+                CreateHostRows(hostId),
+                configBuilderAct: builder =>
+                {
+                    builder.ConnectionFactory = CreateRecordingConnectionFactory(connections);
+                    builder.ClientRoutesOptions = CreateClientRoutesOptions();
+                    builder.MetadataRequestHandler = requestHandler;
+                    builder.ServerEventsSubscriber = new RecordingServerEventsSubscriber();
+                });
+            var runtime = createResult.Config.ClientRoutesRuntime;
+
+            Task initialization;
+            Task lifecycleReady;
+            try
+            {
+                initialization = createResult.ControlConnection.InitAsync();
+                await routeQueryStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                lifecycleReady = runtime.WaitForLifecycleReadyAsync();
+                Assert.IsFalse(lifecycleReady.IsCompleted);
+
+                createResult.ControlConnection.Dispose();
+            }
+            finally
+            {
+                releaseRouteQuery.TrySetResult(true);
+                createResult.ControlConnection.Dispose();
+            }
+
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => initialization.WaitToCompleteAsync(5000));
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => lifecycleReady.WaitToCompleteAsync(5000));
+            await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+                runtime.WaitForLifecycleReadyAsync().WaitToCompleteAsync(5000));
+            Assert.IsFalse(runtime.IsLifecycleReady);
+            Assert.IsFalse(runtime.HasCompletedLifecyclePass);
+            var candidate = connections.Single();
+            candidate.Verify(value => value.Dispose(), Times.AtLeastOnce);
+            Assert.IsTrue(candidate.Object.IsDisposed);
+            Assert.AreEqual(1, requestHandler.QueryCount);
+        }
+
+        [Test]
+        public async Task Should_RejectRenegotiatedCandidateThatClosesDuringInitialRouteLoad()
+        {
+            var hostId = Guid.NewGuid();
+            Mock<IConnection> renegotiated = null;
+            var connections = new ConcurrentQueue<Mock<IConnection>>();
+            var connectionFactory = CreateRecordingConnectionFactory(
+                connections,
+                connection => connection
+                              .Setup(value => value.Open())
+                              .ThrowsAsync(new UnsupportedProtocolVersionException(
+                                  ProtocolVersion.MaxSupported,
+                                  ProtocolVersion.V4,
+                                  (string)null)));
+            var negotiator = new RenegotiatingProtocolVersionNegotiator(previous =>
+            {
+                previous.Dispose();
+                renegotiated = CreateClosableConnection(previous.EndPoint);
+                return renegotiated.Object;
+            });
+            var requestHandler = new RecordingMetadataRequestHandler((_, __) =>
+            {
+                // Raise Closing without marking the connection closed, so only the candidate Closing
+                // subscription that moved to the renegotiated connection can reject it.
+                renegotiated.Raise(value => value.Closing += null, renegotiated.Object);
+                return Task.FromResult(ClientRouteRows(hostId, "127.0.0.10", 19042));
+            });
+            var createResult = NewInstance(
+                CreateHostRows(hostId),
+                configBuilderAct: builder =>
+                {
+                    builder.ConnectionFactory = connectionFactory;
+                    builder.ProtocolVersionNegotiator = negotiator;
+                    builder.ClientRoutesOptions = CreateClientRoutesOptions();
+                    builder.MetadataRequestHandler = requestHandler;
+                    builder.ServerEventsSubscriber = new RecordingServerEventsSubscriber();
+                });
+            var runtime = createResult.Config.ClientRoutesRuntime;
+
+            try
+            {
+                var exception = await Assert.ThrowsAsync<NoHostAvailableException>(
+                    () => createResult.ControlConnection.InitAsync().WaitToCompleteAsync(5000));
+
+                Assert.AreEqual(1, negotiator.ChangeCount);
+                var error = exception.Errors.Values.Single();
+                Assert.IsInstanceOf<SocketException>(error);
+                Assert.AreEqual(SocketError.NotConnected, ((SocketException)error).SocketErrorCode);
+                renegotiated.Verify(value => value.Dispose(), Times.AtLeastOnce);
+                Assert.IsFalse(runtime.IsLifecycleReady);
+                Assert.IsFalse(runtime.HasCompletedLifecyclePass);
+                Assert.AreEqual(1, requestHandler.QueryCount);
+            }
+            finally
+            {
+                createResult.ControlConnection.Dispose();
+            }
+        }
+
+        [Test]
+        public async Task Should_AdoptRenegotiatedCandidateWhenOnlyReplacedConnectionClosesDuringNegotiation()
+        {
+            var hostId = Guid.NewGuid();
+            Mock<IConnection> renegotiated = null;
+            var connections = new ConcurrentQueue<Mock<IConnection>>();
+            var connectionFactory = CreateRecordingConnectionFactory(
+                connections,
+                connection => connection
+                              .Setup(value => value.Open())
+                              .ThrowsAsync(new UnsupportedProtocolVersionException(
+                                  ProtocolVersion.MaxSupported,
+                                  ProtocolVersion.V4,
+                                  (string)null)));
+            var negotiator = new RenegotiatingProtocolVersionNegotiator(previous =>
+            {
+                // Disposing the replaced connection raises its Closing event before the handoff.
+                previous.Dispose();
+                renegotiated = CreateClosableConnection(previous.EndPoint);
+                return renegotiated.Object;
+            });
+            var requestHandler = new RecordingMetadataRequestHandler((_, __) =>
+                Task.FromResult(ClientRouteRows(hostId, "127.0.0.10", 19042)));
+            var createResult = NewInstance(
+                CreateHostRows(hostId),
+                configBuilderAct: builder =>
+                {
+                    builder.ConnectionFactory = connectionFactory;
+                    builder.ProtocolVersionNegotiator = negotiator;
+                    builder.ClientRoutesOptions = CreateClientRoutesOptions();
+                    builder.MetadataRequestHandler = requestHandler;
+                    builder.ServerEventsSubscriber = new RecordingServerEventsSubscriber();
+                });
+            var runtime = createResult.Config.ClientRoutesRuntime;
+
+            using (var controlConnection = createResult.ControlConnection)
+            {
+                await controlConnection.InitAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                Assert.AreEqual(1, negotiator.ChangeCount);
+                Assert.IsTrue(connections.Single().Object.IsDisposed);
+                renegotiated.Verify(value => value.Dispose(), Times.Never);
+                Assert.IsTrue(runtime.IsLifecycleReady);
+                Assert.IsTrue(runtime.TryGetRoutes(hostId, out var routes));
+                Assert.AreEqual("127.0.0.10", routes.Single().Address);
+            }
+        }
+
+        [Test]
+        public async Task Should_SurfaceUnsupportedClientRoutesRegistrationAsNestedHostFailure()
+        {
+            var protocolError = new ProtocolErrorException("Unsupported CLIENT_ROUTES_CHANGE event");
+            var registrationError = new NotSupportedException(
+                "The server may not support the CLIENT_ROUTES_CHANGE event required by client routes.",
+                protocolError);
+            var subscriber = new RecordingServerEventsSubscriber(onSubscribe: null, subscribeError: registrationError);
+            var createResult = NewInstance(configBuilderAct: builder =>
+            {
+                builder.ClientRoutesOptions = CreateClientRoutesOptions();
+                builder.ServerEventsSubscriber = subscriber;
+            });
+
+            try
+            {
+                var exception = await Assert.ThrowsAsync<NoHostAvailableException>(
+                    () => createResult.ControlConnection.InitAsync().WaitToCompleteAsync(5000));
+                var nested = exception.Errors.Values.Single();
+                Assert.AreSame(registrationError, nested);
+                Assert.AreSame(protocolError, nested.InnerException);
+                Assert.IsTrue(nested.Message.Contains("CLIENT_ROUTES_CHANGE"));
+            }
+            finally
+            {
+                createResult.ControlConnection.Dispose();
+            }
+        }
+
+        [Test]
+        public async Task Should_RetainLoadedRoutesWhenEventRefreshQueryFails()
+        {
+            var hostId = Guid.NewGuid();
+            var failedQueryObserved = NewSignal();
+            var laterPassStarted = NewSignal();
+            var requestHandler = new RecordingMetadataRequestHandler((_, call) =>
+            {
+                if (call == 1)
+                {
+                    return Task.FromResult(ClientRouteRows(hostId, "127.0.0.10", 19042));
+                }
+
+                (call == 2 ? failedQueryObserved : laterPassStarted).TrySetResult(true);
+                return Task.FromException<IEnumerable<IRow>>(new InvalidQueryException("route query failed"));
+            });
+            var subscriber = new RecordingServerEventsSubscriber();
+            var createResult = NewClientRoutesInstance(hostId, requestHandler, subscriber);
+
+            using (var controlConnection = createResult.ControlConnection)
+            {
+                await controlConnection.InitAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                var cache = createResult.Config.ClientRoutesRuntime.Bind(controlConnection);
+                var originalSnapshot = cache.Routes;
+                Assert.IsTrue(createResult.Config.ClientRoutesRuntime.TryGetRoutes(hostId, out var originalRoutes));
+
+                subscriber.Raise(new ClientRoutesChangeEventArgs
+                {
+                    ConnectionIds = new[] { "connection-a" },
+                    HostIds = new[] { hostId }
+                });
+                await failedQueryObserved.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                // Refresh passes are serialized, so a later pass starting proves the failed one was applied.
+                subscriber.Raise(new ClientRoutesChangeEventArgs
+                {
+                    ConnectionIds = new[] { "connection-a" },
+                    HostIds = new[] { hostId }
+                });
+                await laterPassStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                Assert.IsTrue(createResult.Config.ClientRoutesRuntime.TryGetRoutes(hostId, out var retainedRoutes));
+                Assert.AreSame(originalSnapshot, cache.Routes);
+                CollectionAssert.AreEqual(originalRoutes, retainedRoutes);
+                Assert.AreEqual("127.0.0.10", retainedRoutes[0].Address);
+            }
+        }
+
+        [Test]
+        public async Task Should_NotLoadOrHandleClientRoutesWhenDisabled()
+        {
+            var requestHandler = new RecordingMetadataRequestHandler((_, __) =>
+                Task.FromResult(Enumerable.Empty<IRow>()));
+            var subscriber = new RecordingServerEventsSubscriber();
+            var createResult = NewInstance(configBuilderAct: builder =>
+            {
+                builder.MetadataRequestHandler = requestHandler;
+                builder.ServerEventsSubscriber = subscriber;
+            });
+
+            using (var controlConnection = createResult.ControlConnection)
+            {
+                await controlConnection.InitAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                await subscriber.RaiseAsync(new ClientRoutesChangeEventArgs
+                {
+                    ConnectionIds = new[] { "connection-a" },
+                    HostIds = new[] { Guid.NewGuid() }
+                }).WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                Assert.IsNull(createResult.Config.ClientRoutesRuntime);
+                Assert.AreEqual(0, requestHandler.QueryCount);
+                Assert.AreEqual(1, subscriber.SubscriptionCount);
+            }
+        }
+
+        [Test]
+        public async Task Should_IgnoreRouteEventsAfterShutdown()
+        {
+            var hostId = Guid.NewGuid();
+            var requestHandler = new RecordingMetadataRequestHandler((_, __) =>
+                Task.FromResult(ClientRouteRows(hostId, "127.0.0.10", 19042)));
+            var subscriber = new RecordingServerEventsSubscriber();
+            var createResult = NewClientRoutesInstance(hostId, requestHandler, subscriber);
+
+            try
+            {
+                await createResult.ControlConnection.InitAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+            }
+            finally
+            {
+                createResult.ControlConnection.Dispose();
+            }
+
+            await subscriber.RaiseAsync(new ClientRoutesChangeEventArgs
+            {
+                ConnectionIds = new[] { "connection-a" },
+                HostIds = new[] { hostId }
+            }).WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+            Assert.AreEqual(1, requestHandler.QueryCount);
         }
 
         [Test]
@@ -2919,6 +3528,167 @@ namespace Cassandra.Tests.Connections.Control
             public FakeConnectionFactory ConnectionFactory { get; set; }
 
             public IInternalCluster Cluster { get; set; }
+        }
+
+        private ControlConnectionCreateResult NewClientRoutesInstance(
+            Guid hostId,
+            IMetadataRequestHandler requestHandler,
+            IServerEventsSubscriber subscriber)
+        {
+            return NewInstance(
+                CreateHostRows(hostId),
+                configBuilderAct: builder =>
+                {
+                    builder.ClientRoutesOptions = CreateClientRoutesOptions();
+                    builder.MetadataRequestHandler = requestHandler;
+                    builder.ServerEventsSubscriber = subscriber;
+                });
+        }
+
+        private sealed class RenegotiatingProtocolVersionNegotiator : IProtocolVersionNegotiator
+        {
+            private readonly Func<IConnection, IConnection> _changeProtocolVersion;
+            private int _changeCount;
+
+            public RenegotiatingProtocolVersionNegotiator(Func<IConnection, IConnection> changeProtocolVersion)
+            {
+                _changeProtocolVersion = changeProtocolVersion;
+            }
+
+            public int ChangeCount => Volatile.Read(ref _changeCount);
+
+            public Task<IConnection> ChangeProtocolVersion(
+                Configuration config,
+                ISerializerManager serializer,
+                ProtocolVersion nextVersion,
+                IConnection previousConnection,
+                UnsupportedProtocolVersionException ex = null,
+                ProtocolVersion? previousVersion = null)
+            {
+                Interlocked.Increment(ref _changeCount);
+                return Task.FromResult(_changeProtocolVersion(previousConnection));
+            }
+
+            public Task<IConnection> NegotiateVersionAsync(
+                Configuration config,
+                Metadata metadata,
+                IConnection connection,
+                ISerializerManager serializer)
+            {
+                return Task.FromResult(connection);
+            }
+        }
+
+        private sealed class RecordingServerEventsSubscriber : IServerEventsSubscriber
+        {
+            private readonly Action _onSubscribe;
+            private readonly Exception _subscribeError;
+            private CassandraEventHandler _handler;
+            private IConnection _connection;
+            private int _subscriptionCount;
+
+            public RecordingServerEventsSubscriber(Action onSubscribe = null, Exception subscribeError = null)
+            {
+                _onSubscribe = onSubscribe;
+                _subscribeError = subscribeError;
+            }
+
+            public int SubscriptionCount => Volatile.Read(ref _subscriptionCount);
+
+            public Task SubscribeToServerEvents(IConnection connection, CassandraEventHandler handler)
+            {
+                _connection = connection;
+                _handler = handler;
+                Interlocked.Increment(ref _subscriptionCount);
+                _onSubscribe?.Invoke();
+                return _subscribeError == null
+                    ? Task.FromResult(0)
+                    : Task.FromException(_subscribeError);
+            }
+
+            public void Raise(CassandraEventArgs eventArgs, IConnection sender = null)
+            {
+                if (_handler == null)
+                {
+                    throw new InvalidOperationException("No event handler has been registered.");
+                }
+                _handler(sender ?? _connection, eventArgs);
+            }
+
+            public Task RaiseAsync(CassandraEventArgs eventArgs, IConnection sender = null)
+            {
+                var context = new EventCompletionContext();
+                var previousContext = SynchronizationContext.Current;
+                SynchronizationContext.SetSynchronizationContext(context);
+                try
+                {
+                    Raise(eventArgs, sender);
+                    return context.Completion.Task;
+                }
+                finally
+                {
+                    SynchronizationContext.SetSynchronizationContext(previousContext);
+                }
+            }
+        }
+
+        private sealed class EventCompletionContext : SynchronizationContext
+        {
+            public TaskCompletionSource<bool> Completion { get; } = NewSignal();
+
+            public override void OperationCompleted()
+            {
+                // async-void event handlers signal completion through their captured context.
+                Completion.TrySetResult(true);
+            }
+        }
+
+        private sealed class RecordingMetadataRequestHandler : IMetadataRequestHandler
+        {
+            private readonly Func<string, int, Task<IEnumerable<IRow>>> _query;
+            private readonly ConcurrentDictionary<Response, IEnumerable<IRow>> _rows =
+                new ConcurrentDictionary<Response, IEnumerable<IRow>>();
+            private int _queryCount;
+
+            public RecordingMetadataRequestHandler(Func<string, int, Task<IEnumerable<IRow>>> query)
+            {
+                _query = query;
+            }
+
+            public int QueryCount => Volatile.Read(ref _queryCount);
+
+            public Task<Response> SendMetadataRequestAsync(
+                IConnection connection,
+                ISerializer serializer,
+                string cqlQuery,
+                QueryProtocolOptions queryProtocolOptions)
+            {
+                return Send(cqlQuery);
+            }
+
+            public Task<Response> UnsafeSendQueryRequestAsync(
+                IConnection connection,
+                ISerializer serializer,
+                string cqlQuery,
+                QueryProtocolOptions queryProtocolOptions)
+            {
+                return Send(cqlQuery);
+            }
+
+            public IEnumerable<IRow> GetRowSet(Response response)
+            {
+                return _rows[response];
+            }
+
+            private async Task<Response> Send(string cqlQuery)
+            {
+                var call = Interlocked.Increment(ref _queryCount);
+                var rows = await _query(cqlQuery, call).ConfigureAwait(false);
+                var response = new FakeMetadataRequestHandler.FakeResultResponse(
+                    ResultResponse.ResultResponseKind.Rows);
+                _rows.TryAdd(response, rows);
+                return response;
+            }
         }
 
         private class TestContactPoint : IContactPoint

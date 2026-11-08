@@ -60,6 +60,43 @@ namespace Cassandra.Tests.Connections.Control
                 }));
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_RegisterConfiguredEvents_WithDefaultConfigurationSubscriber(bool clientRoutesEnabled)
+        {
+            var builder = new TestConfigurationBuilder();
+            if (clientRoutesEnabled)
+            {
+                builder.ClientRoutesOptions = new ClientRoutesOptions(
+                    new[] { new ClientRouteProxy("connection-a") }, ProtocolOptions.DefaultPort, false);
+            }
+            var config = builder.Build();
+            IRequest request = null;
+            var connection = ServerEventsSubscriberTests.CreateConnection(requestSent => request = requestSent);
+
+            await config.ServerEventsSubscriber.SubscribeToServerEvents(connection.Object, (sender, args) => { });
+
+            Assert.That(
+                RegisterForEventRequestTests.SerializeEventTypes(request),
+                Is.EqualTo(clientRoutesEnabled
+                    ? new[] { "STATUS_CHANGE", "TOPOLOGY_CHANGE", "SCHEMA_CHANGE", "CLIENT_ROUTES_CHANGE" }
+                    : new[] { "STATUS_CHANGE", "TOPOLOGY_CHANGE", "SCHEMA_CHANGE" }));
+        }
+
+        [Test]
+        public void Should_PreserveExplicitConfigurationSubscriber_WhenClientRoutesAreEnabled()
+        {
+            var subscriber = Mock.Of<IServerEventsSubscriber>();
+            var config = new TestConfigurationBuilder
+            {
+                ClientRoutesOptions = new ClientRoutesOptions(
+                    new[] { new ClientRouteProxy("connection-a") }, ProtocolOptions.DefaultPort, false),
+                ServerEventsSubscriber = subscriber
+            }.Build();
+
+            Assert.That(config.ServerEventsSubscriber, Is.SameAs(subscriber));
+        }
+
         [Test]
         public async Task Should_TranslateProtocolError_WhenClientRoutesAreEnabled()
         {
