@@ -17,6 +17,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Responses;
 using Cassandra.Serialization;
@@ -35,6 +36,7 @@ namespace Cassandra.Connections.Control
 
         private readonly Configuration _config;
         private readonly Metadata _metadata;
+        private readonly SemaphoreSlim _refreshLock = new SemaphoreSlim(1, 1);
 
         /// <summary>
         /// Once this is set to false, it will never be set to true again.
@@ -50,6 +52,27 @@ namespace Cassandra.Connections.Control
         /// <inheritdoc />
         public async Task<Host> RefreshNodeListAsync(
             IConnectionEndPoint currentEndPoint, IConnection connection, ISerializer serializer)
+        {
+            if (_config.ClientRoutesRuntime == null)
+            {
+                return await UnsafeRefreshNodeListAsync(currentEndPoint, connection, serializer).ConfigureAwait(false);
+            }
+
+            await _refreshLock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                return await UnsafeRefreshNodeListAsync(currentEndPoint, connection, serializer).ConfigureAwait(false);
+            }
+            finally
+            {
+                _refreshLock.Release();
+            }
+        }
+
+        private async Task<Host> UnsafeRefreshNodeListAsync(
+            IConnectionEndPoint currentEndPoint,
+            IConnection connection,
+            ISerializer serializer)
         {
             ControlConnection.Logger.Info("Refreshing node list");
 
@@ -134,16 +157,18 @@ namespace Cassandra.Connections.Control
         /// </summary>
         private Host GetAndUpdateLocalHost(IConnectionEndPoint endPoint, IRow row)
         {
-            var hostIpEndPoint =
-                endPoint.GetHostIpEndPoint()
-                ?? GetRpcEndPoint(false, row, _config.AddressTranslator, _config.ProtocolOptions.Port);
+            var defaultPort = GetAdvertisedNativeTransportPort();
+            var hostIpEndPoint = _config.ClientRoutesRuntime == null
+                ? endPoint.GetHostIpEndPoint()
+                  ?? GetRpcEndPoint(false, row, _config.AddressTranslator, defaultPort)
+                : GetRpcEndPoint(false, row, _config.AddressTranslator, defaultPort);
 
             if (hostIpEndPoint == null)
             {
                 throw new DriverInternalError("Could not parse the node's ip address from system tables.");
             }
 
-            var host = _metadata.GetHost(hostIpEndPoint) ?? _metadata.AddHost(hostIpEndPoint, endPoint.ContactPoint);
+            var host = GetOrReplaceHost(hostIpEndPoint, endPoint.ContactPoint, row);
 
             // Update cluster name, DC and rack for the one node we are connected to
             var clusterName = row.GetValue<string>("cluster_name");
@@ -165,7 +190,11 @@ namespace Cassandra.Connections.Control
             var foundPeers = new HashSet<IPEndPoint>();
             foreach (var row in peersRs)
             {
-                var address = GetRpcEndPoint(isPeersV2, row, _config.AddressTranslator, _config.ProtocolOptions.Port);
+                var address = GetRpcEndPoint(
+                    isPeersV2,
+                    row,
+                    _config.AddressTranslator,
+                    GetAdvertisedNativeTransportPort());
                 if (address == null)
                 {
                     ControlConnection.Logger.Error("No address found for host, ignoring it.");
@@ -173,7 +202,7 @@ namespace Cassandra.Connections.Control
                 }
 
                 foundPeers.Add(address);
-                var host = _metadata.GetHost(address) ?? _metadata.AddHost(address);
+                var host = GetOrReplaceHost(address, null, row);
                 host.SetInfo(row);
             }
 
@@ -185,6 +214,37 @@ namespace Cassandra.Connections.Control
                     _metadata.RemoveHost(address);
                 }
             }
+        }
+
+        private int GetAdvertisedNativeTransportPort()
+        {
+            return _config.ClientRoutesRuntime?.Options.NativeTransportPort ?? _config.ProtocolOptions.Port;
+        }
+
+        private Host GetOrReplaceHost(IPEndPoint address, IContactPoint contactPoint, IRow row)
+        {
+            var host = _metadata.GetHost(address);
+            if (_config.ClientRoutesRuntime != null &&
+                host != null &&
+                host.HostId != Guid.Empty &&
+                row.ContainsColumn("host_id"))
+            {
+                var incomingHostId = row.GetValue<Guid?>("host_id");
+                if (incomingHostId.HasValue &&
+                    incomingHostId.Value != Guid.Empty &&
+                    incomingHostId.Value != host.HostId)
+                {
+                    ControlConnection.Logger.Verbose(
+                        "Replacing host {0}: its Host ID changed from {1} to {2}.",
+                        address,
+                        host.HostId,
+                        incomingHostId.Value);
+                    _metadata.RemoveHost(address);
+                    host = null;
+                }
+            }
+
+            return host ?? _metadata.AddHost(address, contactPoint);
         }
 
         /// <summary>

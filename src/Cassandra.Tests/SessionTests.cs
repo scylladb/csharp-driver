@@ -12,17 +12,24 @@
 //   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 //   See the License for the specific language governing permissions and
 //   limitations under the License.
-// 
+//
 
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
 using System.Net;
+using System.Net.Sockets;
+using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Connections;
+using Cassandra.Metrics;
+using Cassandra.Metrics.Abstractions;
 using Cassandra.Observers.Abstractions;
 using Cassandra.Serialization;
 using Cassandra.SessionManagement;
+using Cassandra.Tasks;
 using Cassandra.Tests.Connections.TestHelpers;
 using Moq;
 using NUnit.Framework;
@@ -33,6 +40,7 @@ namespace Cassandra.Tests
     [TestFixture]
     public class SessionTests
     {
+
         [Test]
         public async Task Should_PropagateFatalWarmupFailure_WhenAnotherHostFailsNormally()
         {
@@ -116,6 +124,714 @@ namespace Cassandra.Tests
                 Assert.AreNotEqual(Guid.Empty, sessionId);
                 Assert.AreNotEqual(sessionId, newSessionId);
             }
+        }
+
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public async Task Should_WarmUpDownHostsAndReportFailures(
+            bool clientRoutesEnabled,
+            bool failWarmup)
+        {
+            var healthyAddress = new IPEndPoint(IPAddress.Parse("127.0.0.7"), 9042);
+            var downAddress = new IPEndPoint(IPAddress.Parse("127.0.0.8"), 9042);
+            var healthyPool = new Mock<IHostConnectionPool>();
+            healthyPool.Setup(value => value.Warmup()).Returns(failWarmup
+                ? Task.FromException(new SocketException((int)SocketError.ConnectionRefused))
+                : Task.CompletedTask);
+            var downPool = new Mock<IHostConnectionPool>();
+            downPool.Setup(value => value.Warmup()).Returns(Task.CompletedTask);
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                           It.IsAny<Host>(),
+                           It.IsAny<Configuration>(),
+                           It.IsAny<ISerializerManager>(),
+                           It.IsAny<IObserverFactory>(),
+                           It.IsAny<TokenFactory>()))
+                       .Returns((Host host, Configuration _, ISerializerManager _, IObserverFactory _, TokenFactory _) =>
+                           host.Address.Equals(downAddress) ? downPool.Object : healthyPool.Object);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object,
+                ClientRoutesOptions = clientRoutesEnabled
+                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    : null
+            }.Build();
+            var metadata = new Metadata(config);
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            cluster.Setup(value => value.AllHosts()).Returns(() => metadata.AllHosts());
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            var healthyHost = metadata.AddHost(healthyAddress);
+            healthyHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var downHost = metadata.AddHost(downAddress);
+            downHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            downHost.SetDown();
+
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new LoggingTests.TestTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Error;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                using (var session = new Session(cluster.Object, config, null, SerializerManager.Default, "down-host-warmup-test"))
+                {
+                    await ((IInternalSession)session).Init().ConfigureAwait(false);
+
+                    healthyPool.Verify(value => value.Warmup(), Times.Once);
+                    poolFactory.Verify(value => value.Create(
+                        It.Is<Host>(host => host.Address.Equals(healthyAddress)),
+                        It.IsAny<Configuration>(),
+                        It.IsAny<ISerializerManager>(),
+                        It.IsAny<IObserverFactory>(),
+                        It.IsAny<TokenFactory>()), Times.Once);
+                    poolFactory.Verify(value => value.Create(
+                        It.Is<Host>(host => host.Address.Equals(downAddress)),
+                        It.IsAny<Configuration>(),
+                        It.IsAny<ISerializerManager>(),
+                        It.IsAny<IObserverFactory>(),
+                        It.IsAny<TokenFactory>()), Times.Once());
+                    downPool.Verify(value => value.Warmup(), Times.Once());
+                }
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+
+            Assert.IsFalse(listener.Messages.Values.Any(message =>
+                message.Contains("Connection pools for 2 host(s) failed to be warmed up")));
+        }
+
+        [Test]
+        public async Task Should_ReconnectDownHostAfterReplacingItsLastSession()
+        {
+            var available = 0;
+            var factory = new Mock<IHostConnectionPoolFactory>();
+            factory.Setup(value => value.Create(
+                    It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>()))
+                .Returns((Host host, Configuration config, ISerializerManager serializer,
+                    IObserverFactory observer, TokenFactory tokens) =>
+                {
+                    // Keep the real pool's failure handling, timer, and Host-Up producer.
+                    var pool = new Mock<HostConnectionPool>(host, config, serializer, observer, tokens);
+                    pool.Setup(value => value.DoCreateAndOpen(It.IsAny<bool>(), -1, 0, 0))
+                        .Returns(() => Volatile.Read(ref available) == 0
+                            ? Task.FromException<IConnection>(new SocketException((int)SocketError.ConnectionRefused))
+                            : Task.FromResult(Mock.Of<IConnection>()));
+                    return pool.Object;
+                });
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = factory.Object,
+                PoolingOptions = new PoolingOptions().SetCoreConnectionsPerHost(HostDistance.Local, 1),
+                Policies = new Cassandra.Policies(
+                    new RoundRobinPolicy(), new ConstantReconnectionPolicy(100), new DefaultRetryPolicy()),
+                ClientRoutesOptions = new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+            }.Build();
+            using var metadata = new Metadata(config);
+            var host = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
+            host.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            cluster.Setup(value => value.AllHosts()).Returns(() => metadata.AllHosts());
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            var down = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var up = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            host.Down += _ => down.TrySetResult(true);
+            host.Up += _ => up.TrySetResult(true);
+            try
+            {
+                using (var original = new Session(cluster.Object, config, null, SerializerManager.Default, "original"))
+                {
+                    await ((IInternalSession)original).Init().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    await down.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+                Assert.IsFalse(host.IsUp);
+
+                using var replacement = new Session(cluster.Object, config, null, SerializerManager.Default, "replacement");
+                var session = (IInternalSession)replacement;
+                await session.Init().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreEqual(1, session.GetPools().Count(), "The replacement must own a recovery pool.");
+                Assert.Throws<HostConnectionPoolNotEligibleException>(
+                    () => session.GetOrCreateConnectionPool(host, HostDistance.Local));
+
+                Volatile.Write(ref available, 1);
+                await up.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                var recoveredPool = session.GetOrCreateConnectionPool(host, HostDistance.Local);
+                Assert.IsTrue(host.IsUp);
+                Assert.AreEqual(1, recoveredPool.ConnectionsSnapshot.Length);
+                Assert.IsNotNull(await recoveredPool.BorrowConnectionAsync().ConfigureAwait(false));
+            }
+            finally
+            {
+                config.Timer.Dispose();
+            }
+        }
+
+        [Test]
+        public async Task Should_PropagatePoolFactoryNotConnectedExceptionDuringWarmup()
+        {
+            var failure = new SocketException((int)SocketError.NotConnected);
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                           It.IsAny<Host>(),
+                           It.IsAny<Configuration>(),
+                           It.IsAny<ISerializerManager>(),
+                           It.IsAny<IObserverFactory>(),
+                           It.IsAny<TokenFactory>()))
+                       .Throws(failure);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object
+            }.Build();
+
+            using (var session = CreateWarmupSession(config, "factory-not-connected-test"))
+            {
+                var ex = await Assert.ThrowsAsync<SocketException>(async () =>
+                    await ((IInternalSession)session).Init().ConfigureAwait(false));
+
+                Assert.AreSame(failure, ex);
+            }
+        }
+
+        [Test]
+        public async Task Should_PropagateMetricsExceptionDuringWarmup()
+        {
+            var failure = new InvalidOperationException("node metrics initialization failed");
+            var metricsProvider = new Mock<IDriverMetricsProvider>();
+            metricsProvider.Setup(value => value.Timer(It.IsAny<string>(), It.IsAny<IMetric>()))
+                           .Returns(Mock.Of<IDriverTimer>());
+            metricsProvider.Setup(value => value.Meter(It.IsAny<string>(), It.IsAny<IMetric>()))
+                           .Returns(Mock.Of<IDriverMeter>());
+            metricsProvider.Setup(value => value.Counter(It.IsAny<string>(), It.IsAny<IMetric>()))
+                           .Returns(Mock.Of<IDriverCounter>());
+            metricsProvider.Setup(value => value.Gauge(
+                               It.IsAny<string>(),
+                               It.IsAny<IMetric>(),
+                               It.IsAny<Func<double?>>()))
+                           .Returns((string _, IMetric metric, Func<double?> __) =>
+                           {
+                               if (metric is NodeMetric)
+                               {
+                                   throw failure;
+                               }
+                               return Mock.Of<IDriverGauge>();
+                           });
+            var pool = new Mock<IHostConnectionPool>();
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                           It.IsAny<Host>(),
+                           It.IsAny<Configuration>(),
+                           It.IsAny<ISerializerManager>(),
+                           It.IsAny<IObserverFactory>(),
+                           It.IsAny<TokenFactory>()))
+                       .Returns(pool.Object);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object,
+                MetricsProvider = metricsProvider.Object
+            }.Build();
+
+            using (var session = CreateWarmupSession(config, "metrics-failure-test"))
+            {
+                var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                    await ((IInternalSession)session).Init().ConfigureAwait(false));
+
+                Assert.AreSame(failure, ex);
+                pool.Verify(value => value.Warmup(), Times.Never);
+            }
+        }
+
+        [Test]
+        public async Task Should_PropagateSynchronousPoolWarmupException()
+        {
+            var failure = new InvalidOperationException("synchronous pool warmup failure");
+            var pool = new Mock<IHostConnectionPool>();
+            pool.Setup(value => value.Warmup()).Throws(failure);
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                           It.IsAny<Host>(),
+                           It.IsAny<Configuration>(),
+                           It.IsAny<ISerializerManager>(),
+                           It.IsAny<IObserverFactory>(),
+                           It.IsAny<TokenFactory>()))
+                       .Returns(pool.Object);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object
+            }.Build();
+
+            using (var session = CreateWarmupSession(config, "synchronous-warmup-failure-test"))
+            {
+                var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                    await ((IInternalSession)session).Init().ConfigureAwait(false));
+
+                Assert.AreSame(failure, ex);
+            }
+        }
+
+        [Test]
+        public async Task Should_PropagateSynchronousFatalPoolWarmupException()
+        {
+            var failure = new OutOfMemoryException("fatal pool warmup failure");
+            var pool = new Mock<IHostConnectionPool>();
+            pool.Setup(value => value.Warmup()).Throws(failure);
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                           It.IsAny<Host>(),
+                           It.IsAny<Configuration>(),
+                           It.IsAny<ISerializerManager>(),
+                           It.IsAny<IObserverFactory>(),
+                           It.IsAny<TokenFactory>()))
+                       .Returns(pool.Object);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object
+            }.Build();
+
+            using (var session = CreateWarmupSession(config, "fatal-warmup-failure-test"))
+            {
+                var ex = await Assert.ThrowsAsync<OutOfMemoryException>(async () =>
+                    await ((IInternalSession)session).Init().ConfigureAwait(false));
+
+                Assert.AreSame(failure, ex);
+            }
+        }
+
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public async Task Should_SkipSameIdentityHostIgnoredAfterWarmupSelection(bool poolExists, bool isUp)
+        {
+            var pool = new Mock<IHostConnectionPool>();
+            pool.Setup(value => value.Warmup()).Returns(Task.CompletedTask);
+            var failedAddress = new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042);
+            var failedPool = new Mock<IHostConnectionPool>();
+            failedPool.Setup(value => value.Warmup())
+                      .Returns(Task.FromException(new SocketException((int)SocketError.ConnectionRefused)));
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                           It.IsAny<Host>(),
+                           It.IsAny<Configuration>(),
+                           It.IsAny<ISerializerManager>(),
+                           It.IsAny<IObserverFactory>(),
+                           It.IsAny<TokenFactory>()))
+                       .Returns((Host selectedHost, Configuration _, ISerializerManager _, IObserverFactory _, TokenFactory _) =>
+                           selectedHost.Address.Equals(failedAddress) ? failedPool.Object : pool.Object);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object,
+                ClientRoutesOptions = new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+            }.Build();
+            var metadata = new Metadata(config);
+            var host = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
+            host.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var failedHost = metadata.AddHost(failedAddress);
+            failedHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            cluster.Setup(value => value.AllHosts()).Returns(() => metadata.AllHosts());
+            cluster.Setup(value => value.RetrieveAndSetDistance(failedHost)).Returns(HostDistance.Local);
+            var distance = HostDistance.Local;
+            var selectingWarmupHosts = false;
+            cluster.Setup(value => value.RetrieveAndSetDistance(host)).Returns(() =>
+            {
+                var selectedDistance = distance;
+                if (selectingWarmupHosts)
+                {
+                    // Warmup retains Local, then the policy changes before its pool lookup.
+                    distance = HostDistance.Ignored;
+                }
+                return selectedDistance;
+            });
+
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new LoggingTests.TestTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Error;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                using (var session = new Session(cluster.Object, config, null, SerializerManager.Default, "ignored-warmup-test"))
+                {
+                    var internalSession = (IInternalSession)session;
+                    if (poolExists)
+                    {
+                        internalSession.GetOrCreateConnectionPool(host, HostDistance.Local);
+                    }
+                    if (!isUp)
+                    {
+                        host.SetDown();
+                    }
+                    selectingWarmupHosts = true;
+
+                    await internalSession.Init().ConfigureAwait(false);
+
+                    Assert.AreEqual(HostDistance.Ignored, distance);
+                    Assert.AreSame(host, metadata.GetHost(host.Address));
+                    pool.Verify(value => value.Warmup(), Times.Never);
+                    failedPool.Verify(value => value.Warmup(), Times.Once);
+                    poolFactory.Verify(value => value.Create(
+                        host,
+                        It.IsAny<Configuration>(),
+                        It.IsAny<ISerializerManager>(),
+                        It.IsAny<IObserverFactory>(),
+                        It.IsAny<TokenFactory>()), poolExists ? Times.Once() : Times.Never());
+                    Assert.AreEqual(poolExists ? 2 : 1, internalSession.GetPools().Count());
+                    Assert.IsTrue(listener.Messages.Values.Any(message =>
+                        message.Contains("Connection pools for 1 host(s) failed to be warmed up")));
+                    Assert.IsFalse(listener.Messages.Values.Any(message =>
+                        message.Contains("Connection pools for 2 host(s) failed to be warmed up")));
+                }
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+        }
+
+        [TestCase(false, HostDistance.Ignored, true)]
+        [TestCase(true, HostDistance.Ignored, true)]
+        [TestCase(false, HostDistance.Local, false)]
+        [TestCase(true, HostDistance.Local, false)]
+        public void Should_RejectSameIdentityHostThatBecomesIneligibleBeforePoolLookup(
+            bool poolExists,
+            HostDistance currentDistance,
+            bool isUp)
+        {
+            var pool = Mock.Of<IHostConnectionPool>();
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                           It.IsAny<Host>(),
+                           It.IsAny<Configuration>(),
+                           It.IsAny<ISerializerManager>(),
+                           It.IsAny<IObserverFactory>(),
+                           It.IsAny<TokenFactory>()))
+                       .Returns(pool);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object,
+                ClientRoutesOptions = new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+            }.Build();
+            var metadata = new Metadata(config);
+            var host = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
+            host.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            var distance = HostDistance.Local;
+            cluster.Setup(value => value.RetrieveAndSetDistance(host)).Returns(() => distance);
+
+            using (var session = new Session(cluster.Object, config, null, SerializerManager.Default, "ineligible-host-test"))
+            {
+                var internalSession = (IInternalSession)session;
+                if (poolExists)
+                {
+                    internalSession.GetOrCreateConnectionPool(host, HostDistance.Local);
+                }
+                distance = currentDistance;
+                if (!isUp)
+                {
+                    host.SetDown();
+                }
+
+                Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
+                    internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+
+                poolFactory.Verify(value => value.Create(
+                    It.IsAny<Host>(),
+                    It.IsAny<Configuration>(),
+                    It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(),
+                    It.IsAny<TokenFactory>()), poolExists ? Times.Once() : Times.Never());
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void Should_UseCurrentHostAndDistanceForReplacementOnlyWithClientRoutes(bool clientRoutesEnabled)
+        {
+            var address = new IPEndPoint(IPAddress.Parse("127.0.0.9"), 9042);
+            var oldHostId = Guid.NewGuid();
+            var replacementHostId = Guid.NewGuid();
+            var pools = new Queue<IHostConnectionPool>(new[]
+            {
+                Mock.Of<IHostConnectionPool>(),
+                Mock.Of<IHostConnectionPool>()
+            });
+            var createdHosts = new List<Host>();
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                           It.IsAny<Host>(),
+                           It.IsAny<Configuration>(),
+                           It.IsAny<ISerializerManager>(),
+                           It.IsAny<IObserverFactory>(),
+                           It.IsAny<TokenFactory>()))
+                       .Returns(() => pools.Dequeue())
+                       .Callback<Host, Configuration, ISerializerManager, IObserverFactory, TokenFactory>(
+                           (host, _, __, ___, ____) => createdHosts.Add(host));
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object,
+                ClientRoutesOptions = clientRoutesEnabled
+                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    : null
+            }.Build();
+            var metadata = new Metadata(config);
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Remote);
+            var oldHost = metadata.AddHost(address);
+            oldHost.SetInfo(CreateHostInfo(oldHostId));
+
+            using (var session = new Session(cluster.Object, config, null, SerializerManager.Default, "replacement-test"))
+            {
+                var internalSession = (IInternalSession)session;
+                var oldPool = internalSession.GetOrCreateConnectionPool(oldHost, HostDistance.Local);
+
+                metadata.RemoveHost(address);
+                cluster.Raise(value => value.HostRemoved += null, oldHost);
+                var replacementHost = metadata.AddHost(address);
+                replacementHost.SetInfo(CreateHostInfo(replacementHostId));
+
+                var replacementPool = internalSession.GetOrCreateConnectionPool(oldHost, HostDistance.Local);
+
+                Assert.AreNotSame(oldPool, replacementPool);
+                Assert.AreSame(oldHost, createdHosts[0]);
+                Assert.AreSame(clientRoutesEnabled ? replacementHost : oldHost, createdHosts[1]);
+                var expectedDistance = clientRoutesEnabled ? HostDistance.Remote : HostDistance.Local;
+                Mock.Get(replacementPool).Verify(value => value.SetDistance(expectedDistance), Times.Once);
+                cluster.Verify(value => value.RetrieveAndSetDistance(It.Is<Host>(host => ReferenceEquals(host, replacementHost))),
+                    clientRoutesEnabled ? Times.Once() : Times.Never());
+                Mock.Get(oldPool).Verify(value => value.OnHostRemoved(), Times.Once);
+                Mock.Get(oldPool).Verify(value => value.Dispose(), Times.Once);
+            }
+        }
+
+        [TestCase(HostDistance.Ignored, true)]
+        [TestCase(HostDistance.Local, false)]
+        public void Should_NotCreatePoolForIneligibleHostThatReplacedAStaleHostReference(
+            HostDistance replacementDistance,
+            bool replacementIsUp)
+        {
+            var address = new IPEndPoint(IPAddress.Parse("127.0.0.10"), 9042);
+            var oldHostId = Guid.NewGuid();
+            var replacementHostId = Guid.NewGuid();
+            var oldPool = Mock.Of<IHostConnectionPool>();
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                           It.IsAny<Host>(),
+                           It.IsAny<Configuration>(),
+                           It.IsAny<ISerializerManager>(),
+                           It.IsAny<IObserverFactory>(),
+                           It.IsAny<TokenFactory>()))
+                       .Returns(oldPool);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object,
+                ClientRoutesOptions = new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+            }.Build();
+            var metadata = new Metadata(config);
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            var currentDistance = HostDistance.Local;
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(() => currentDistance);
+            var oldHost = metadata.AddHost(address);
+            oldHost.SetInfo(CreateHostInfo(oldHostId));
+
+            using (var session = new Session(cluster.Object, config, null, SerializerManager.Default, "ignored-replacement-test"))
+            {
+                var internalSession = (IInternalSession)session;
+                internalSession.GetOrCreateConnectionPool(oldHost, HostDistance.Local);
+
+                metadata.RemoveHost(address);
+                cluster.Raise(value => value.HostRemoved += null, oldHost);
+                var replacementHost = metadata.AddHost(address);
+                replacementHost.SetInfo(CreateHostInfo(replacementHostId));
+                currentDistance = replacementDistance;
+                if (!replacementIsUp)
+                {
+                    replacementHost.SetDown();
+                }
+
+                var ex = Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
+                    internalSession.GetOrCreateConnectionPool(oldHost, HostDistance.Local));
+                Assert.AreEqual(SocketError.NotConnected, ex.SocketErrorCode);
+
+                cluster.Verify(value => value.RetrieveAndSetDistance(It.Is<Host>(host => ReferenceEquals(host, replacementHost))), Times.Once);
+                poolFactory.Verify(value => value.Create(
+                    It.IsAny<Host>(),
+                    It.IsAny<Configuration>(),
+                    It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(),
+                    It.IsAny<TokenFactory>()), Times.Once);
+            }
+        }
+
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public void Should_RejectRevivedHostMissingFromMetadataOnlyWithClientRoutes(
+            bool clientRoutesEnabled,
+            bool poolRemovalCompleted)
+        {
+            var pool = Mock.Of<IHostConnectionPool>();
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                           It.IsAny<Host>(),
+                           It.IsAny<Configuration>(),
+                           It.IsAny<ISerializerManager>(),
+                           It.IsAny<IObserverFactory>(),
+                           It.IsAny<TokenFactory>()))
+                       .Returns(pool);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object,
+                ClientRoutesOptions = clientRoutesEnabled
+                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    : null
+            }.Build();
+            var metadata = new Metadata(config);
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            var host = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
+            host.SetInfo(CreateHostInfo(Guid.NewGuid()));
+
+            using (var session = new Session(cluster.Object, config, null, SerializerManager.Default, "removed-host-test"))
+            {
+                var internalSession = (IInternalSession)session;
+                internalSession.GetOrCreateConnectionPool(host, HostDistance.Local);
+
+                metadata.RemoveHost(host.Address);
+                Assert.IsFalse(host.IsUp);
+                if (poolRemovalCompleted)
+                {
+                    cluster.Raise(value => value.HostRemoved += null, host);
+                }
+
+                // HostConnectionPool.CreateOrScheduleReconnectAsync can complete a successful open,
+                // then call BringUpIfDown after removal. A retained query plan still holds this Host.
+                Assert.IsTrue(host.BringUpIfDown());
+                Assert.IsNull(metadata.GetHost(host.Address));
+
+                if (clientRoutesEnabled)
+                {
+                    var ex = Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
+                        internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+                    Assert.AreEqual(SocketError.NotConnected, ex.SocketErrorCode);
+                }
+                else
+                {
+                    Assert.AreSame(pool, internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+                }
+
+                var expectedCreations = !clientRoutesEnabled && poolRemovalCompleted ? 2 : 1;
+                poolFactory.Verify(value => value.Create(
+                    host,
+                    config,
+                    It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(),
+                    It.IsAny<TokenFactory>()), Times.Exactly(expectedCreations));
+                cluster.Verify(value => value.RetrieveAndSetDistance(It.IsAny<Host>()),
+                    clientRoutesEnabled ? Times.Once() : Times.Never());
+                if (!clientRoutesEnabled)
+                {
+                    // Only creation reads metadata for its token factory; cached lookup remains unchanged.
+                    cluster.VerifyGet(value => value.Metadata, Times.Exactly(expectedCreations));
+                }
+            }
+        }
+
+        [TestCase(HostDistance.Ignored, true)]
+        [TestCase(HostDistance.Local, false)]
+        public void Should_AllowPoolCreationAndReuseForSelectedHostWithoutClientRoutes(HostDistance distance, bool isUp)
+        {
+            var pool = Mock.Of<IHostConnectionPool>();
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                           It.IsAny<Host>(),
+                           It.IsAny<Configuration>(),
+                           It.IsAny<ISerializerManager>(),
+                           It.IsAny<IObserverFactory>(),
+                           It.IsAny<TokenFactory>()))
+                       .Returns(pool);
+            var config = new TestConfigurationBuilder { HostConnectionPoolFactory = poolFactory.Object }.Build();
+            var metadata = new Metadata(config);
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            var host = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
+            if (!isUp)
+            {
+                host.SetDown();
+            }
+
+            using (var session = new Session(cluster.Object, config, null, SerializerManager.Default, "selected-host-test"))
+            {
+                var internalSession = (IInternalSession)session;
+
+                Assert.AreSame(pool, internalSession.GetOrCreateConnectionPool(host, distance));
+                Assert.AreSame(pool, internalSession.GetOrCreateConnectionPool(host, distance));
+
+                poolFactory.Verify(value => value.Create(
+                    host,
+                    config,
+                    It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(),
+                    It.IsAny<TokenFactory>()), Times.Once);
+                Mock.Get(pool).Verify(value => value.SetDistance(distance), Times.Once);
+
+                // Pool creation obtains the token factory; selection and reuse need no metadata lookup.
+                cluster.VerifyGet(value => value.Metadata, Times.Once);
+                cluster.Verify(value => value.RetrieveAndSetDistance(It.IsAny<Host>()), Times.Never);
+            }
+        }
+
+        private static IRow CreateHostInfo(Guid hostId)
+        {
+            return new TestHelper.DictionaryBasedRow(new Dictionary<string, object>
+            {
+                { "host_id", hostId },
+                { "data_center", "dc1" },
+                { "rack", "rack1" },
+                { "release_version", "2026.1" },
+                { "tokens", new string[0] }
+            });
+        }
+
+        private sealed class ConsumedWarmupTraceListener : LoggingTests.TestTraceListener
+        {
+            private readonly bool _throwFromDiagnostic;
+
+            public ConsumedWarmupTraceListener(bool throwFromDiagnostic)
+            {
+                _throwFromDiagnostic = throwFromDiagnostic;
+            }
+
+            public override void WriteLine(string message)
+            {
+                base.WriteLine(message);
+                if (_throwFromDiagnostic && message.Contains("initial warmup failure at "))
+                {
+                    throw new InvalidOperationException("warmup diagnostic sink failed");
+                }
+            }
+        }
+
+        private static Session CreateWarmupSession(Configuration config, string sessionName)
+        {
+            var metadata = new Metadata(config);
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            cluster.Setup(value => value.AllHosts()).Returns(() => metadata.AllHosts());
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            var host = metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.11"), 9042));
+            host.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            return new Session(cluster.Object, config, null, SerializerManager.Default, sessionName);
         }
     }
 }
