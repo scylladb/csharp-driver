@@ -169,6 +169,38 @@ namespace Cassandra.Connections
             return BorrowLeastBusyConnection(connections, routingKey, shardID);
         }
 
+        private static void ThrowPreferredConnectionFailure(
+            ConnectionAttemptFailure preferredFailure,
+            IEnumerable<ConnectionAttemptFailure> failures,
+            IEnumerable<Exception> unresolvedResolutionErrors)
+        {
+            var supersededConnectionErrors = failures
+                .Where(failure => !ReferenceEquals(failure, preferredFailure))
+                .Select(failure => failure.Exception.SourceException)
+                .ToArray();
+            var resolutionErrors = unresolvedResolutionErrors?.ToArray() ?? new Exception[0];
+            if (supersededConnectionErrors.Length > 0 || resolutionErrors.Length > 0)
+            {
+                throw new ConnectionFailure(
+                    preferredFailure.Exception.SourceException,
+                    supersededConnectionErrors,
+                    resolutionErrors);
+            }
+
+            preferredFailure.Exception.Throw();
+            throw new DriverInternalError("The preferred connection failure did not propagate.");
+        }
+
+        private static SocketException GetNotConnectedException()
+        {
+            return new SocketException((int)SocketError.NotConnected);
+        }
+
+        private static int CeilingDivide(int value, int divisor)
+        {
+            return value / divisor + (value % divisor > 0 ? 1 : 0);
+        }
+
         private IConnection BorrowLeastBusyConnection(ShardedList<IConnection> connections, RoutingKey routingKey = null, int shardID = -1)
         {
             if (shardingInfo != null)
@@ -496,28 +528,6 @@ namespace Cassandra.Connections
                     resolutionPlan.UnresolvedResolutionErrors);
             }
             throw new DriverInternalError($"No connection endpoints were resolved for host {_host.Address}.");
-        }
-
-        private static void ThrowPreferredConnectionFailure(
-            ConnectionAttemptFailure preferredFailure,
-            IEnumerable<ConnectionAttemptFailure> failures,
-            IEnumerable<Exception> unresolvedResolutionErrors)
-        {
-            var supersededConnectionErrors = failures
-                .Where(failure => !ReferenceEquals(failure, preferredFailure))
-                .Select(failure => failure.Exception.SourceException)
-                .ToArray();
-            var resolutionErrors = unresolvedResolutionErrors?.ToArray() ?? new Exception[0];
-            if (supersededConnectionErrors.Length > 0 || resolutionErrors.Length > 0)
-            {
-                throw new ConnectionFailure(
-                    preferredFailure.Exception.SourceException,
-                    supersededConnectionErrors,
-                    resolutionErrors);
-            }
-
-            preferredFailure.Exception.Throw();
-            throw new DriverInternalError("The preferred connection failure did not propagate.");
         }
 
         private bool TryTransferConnectionToPool(
@@ -1130,11 +1140,6 @@ namespace Cassandra.Connections
             return tcs.Task;
         }
 
-        private static SocketException GetNotConnectedException()
-        {
-            return new SocketException((int)SocketError.NotConnected);
-        }
-
         /// <summary>
         /// Ensures that the pool has at least contains 1 connection to the host.
         /// </summary>
@@ -1342,11 +1347,6 @@ namespace Cassandra.Connections
         private int GetConnectionsPerShardTarget(int shardCount)
         {
             return shardCount <= 0 ? 0 : HostConnectionPool.CeilingDivide(_expectedConnectionLength, shardCount);
-        }
-
-        private static int CeilingDivide(int value, int divisor)
-        {
-            return value / divisor + (value % divisor > 0 ? 1 : 0);
         }
 
         /// <summary>
