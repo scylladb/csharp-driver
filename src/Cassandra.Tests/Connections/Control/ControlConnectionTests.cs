@@ -519,6 +519,7 @@ namespace Cassandra.Tests.Connections.Control
 
             using (var cc = createResult.ControlConnection)
             {
+                await cc.InitAsync().ConfigureAwait(false);
                 await cc.QueryUnpagedAsync(query).ConfigureAwait(false);
             }
 
@@ -743,6 +744,40 @@ namespace Cassandra.Tests.Connections.Control
         }
 
         [Test]
+        public async Task Should_NotConfirmDirectFallbackForAnUnknownHostIdentity()
+        {
+            var requestHandler = new RecordingMetadataRequestHandler((_, __) =>
+                Task.FromResult(Enumerable.Empty<IRow>()));
+            var created = NewClientRoutesInstance(Guid.Empty, requestHandler, new RecordingServerEventsSubscriber());
+            using (var control = created.ControlConnection)
+            {
+                await control.InitAsync().ConfigureAwait(false);
+                Assert.IsFalse(created.Config.ClientRoutesRuntime.IsHostCoveredByCompleteSnapshot(Guid.Empty));
+
+                await ((Task)typeof(ControlConnection).GetMethod("Refresh", BindingFlags.Instance | BindingFlags.NonPublic)
+                    .Invoke(control, null)).ConfigureAwait(false);
+
+                Assert.IsFalse(created.Config.ClientRoutesRuntime.IsHostCoveredByCompleteSnapshot(Guid.Empty));
+            }
+        }
+
+        [Test]
+        public async Task Should_FailMetadataQueryWithoutAConnectionBeforeCallingRequestHandler()
+        {
+            var requestHandler = new RecordingMetadataRequestHandler((_, __) =>
+                Task.FromResult(Enumerable.Empty<IRow>()));
+            var created = NewClientRoutesInstance(Guid.NewGuid(), requestHandler, new RecordingServerEventsSubscriber());
+            using (var control = created.ControlConnection)
+            {
+                var exception = await Assert.ThrowsAsync<SocketException>(() =>
+                    control.SendQueryRequestAsync("SELECT * FROM system.local", false, QueryProtocolOptions.Default));
+
+                Assert.AreEqual(SocketError.NotConnected, exception.SocketErrorCode);
+                Assert.AreEqual(0, requestHandler.QueryCount);
+            }
+        }
+
+        [Test]
         public async Task Should_RegisterThenLoadClientRoutesDuringInitialization()
         {
             var hostId = Guid.NewGuid();
@@ -794,6 +829,10 @@ namespace Cassandra.Tests.Connections.Control
                 Assert.IsInstanceOf<DriverException>(routeFailure);
                 StringAssert.Contains("QueryFailed", routeFailure.Message);
                 Assert.IsFalse(createResult.Config.ClientRoutesRuntime.IsLifecycleReady);
+
+                // An abandoned cold start must not retain a background route-retry loop.
+                await Task.Delay(TimeSpan.FromMilliseconds(1200)).ConfigureAwait(false);
+                Assert.AreEqual(1, requestHandler.QueryCount);
 
                 await createResult.ControlConnection.InitAsync().ConfigureAwait(false);
 

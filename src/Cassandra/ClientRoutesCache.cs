@@ -54,6 +54,7 @@ namespace Cassandra
         private readonly ClientRoutesSelection _selection;
         private readonly bool _useTls;
         private readonly bool _retryQueries;
+        private readonly Func<bool> _canRetryRefresh;
         private readonly Lock _refreshLock = new Lock();
         private readonly TimeSpan _failedRefreshRetryDelay;
         private readonly TimeProvider _timeProvider;
@@ -98,13 +99,15 @@ namespace Cassandra
             Logger logger = null,
             bool retryQueries = true,
             TimeSpan? failedRefreshRetryDelay = null,
-            TimeProvider timeProvider = null)
+            TimeProvider timeProvider = null,
+            Func<bool> canRetryRefresh = null)
         {
             _queryProvider = queryProvider ?? throw new ArgumentNullException(nameof(queryProvider));
             _selection = selection ?? throw new ArgumentNullException(nameof(selection));
             _logger = logger ?? DefaultLogger;
             _useTls = useTls;
             _retryQueries = retryQueries;
+            _canRetryRefresh = canRetryRefresh;
             _timeProvider = timeProvider ?? TimeProvider.System;
             _failedRefreshRetryDelay = failedRefreshRetryDelay ?? TimeSpan.FromSeconds(1);
             if (_failedRefreshRetryDelay != Timeout.InfiniteTimeSpan && _failedRefreshRetryDelay <= TimeSpan.Zero)
@@ -413,7 +416,8 @@ namespace Cassandra
         private void ScheduleFailedRefreshRetry()
         {
             if (!_needsFullRetry || _scheduledRetryGeneration != 0 ||
-                _failedRefreshRetryDelay == Timeout.InfiniteTimeSpan)
+                _failedRefreshRetryDelay == Timeout.InfiniteTimeSpan ||
+                _canRetryRefresh?.Invoke() == false)
             {
                 return;
             }

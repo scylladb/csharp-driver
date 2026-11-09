@@ -493,7 +493,7 @@ namespace Cassandra.Connections.Control
                                 endPoint, connection, _serializer.GetCurrentSerializer()).ConfigureAwait(false);
                             var topologyHostIds = _clientRoutesCache == null
                                 ? null
-                                : _metadata.AllHosts().Select(host => host.HostId).ToArray();
+                                : _metadata.AllHosts().Select(host => host.HostId).Where(id => id != Guid.Empty).ToArray();
 
                             if (isInitializing)
                             {
@@ -1215,7 +1215,7 @@ namespace Cassandra.Connections.Control
                 var waitForInitialClientRoutesSnapshot = false;
                 if (_clientRoutesCache != null)
                 {
-                    var topologyHostIds = _metadata.AllHosts().Select(host => host.HostId).ToArray();
+                    var topologyHostIds = _metadata.AllHosts().Select(host => host.HostId).Where(id => id != Guid.Empty).ToArray();
                     waitForInitialClientRoutesSnapshot = !_clientRoutesCache.HasCompleteSnapshot;
                     var routeRefresh = _clientRoutesCache.FullRefreshBarrierAsync(
                         topologyHostIds,
@@ -1600,8 +1600,13 @@ namespace Cassandra.Connections.Control
             Response response;
             try
             {
+                var connection = _connection;
+                if (connection == null)
+                {
+                    throw new SocketException((int)SocketError.NotConnected);
+                }
                 response = await _config.MetadataRequestHandler.SendMetadataRequestAsync(
-                    _connection, _serializer.GetCurrentSerializer(), cqlQuery, queryProtocolOptions).ConfigureAwait(false);
+                    connection, _serializer.GetCurrentSerializer(), cqlQuery, queryProtocolOptions).ConfigureAwait(false);
             }
             catch (SocketException)
             {

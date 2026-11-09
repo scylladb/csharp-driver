@@ -69,7 +69,8 @@ namespace Cassandra
                         queryProvider,
                         Options.Selection,
                         _useTls,
-                        retryQueries: false);
+                        retryQueries: false,
+                        canRetryRefresh: () => HasCompletedLifecyclePass);
                 }
                 return _cache;
             }
