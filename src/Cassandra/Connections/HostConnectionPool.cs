@@ -590,9 +590,10 @@ namespace Cassandra.Connections
 
         private bool ShouldUseShardAwareSourcePort(IConnectionEndPoint endPoint)
         {
-            return _config.ClientRoutesRuntime == null ||
-                   !(endPoint is ClientRouteConnectionEndPoint) ||
-                   _config.ClientRoutesRuntime.Options.ShardAwarenessEnabled;
+            return ClientRoutesOptions.ShouldUseShardAwareness(
+                _poolingOptions,
+                _config.ClientRoutesRuntime?.Options,
+                endPoint is ClientRouteConnectionEndPoint);
         }
 
         private bool TryTransferConnectionToPool(
@@ -1214,9 +1215,10 @@ namespace Cassandra.Connections
             // Publish shard state before releasing _connectionOpenOperation. Connection creation is
             // serialized by that field, so an older connection cannot overwrite a newer route
             // transition after the next open has already updated the pool.
+            var shardStatePublished = false;
             try
             {
-                UpdateShardingInfo(c);
+                shardStatePublished = UpdateShardingInfo(c);
             }
             catch (Exception ex)
             {
@@ -1240,7 +1242,7 @@ namespace Cassandra.Connections
                 return await FinishOpen(openOperation, true, ex).ConfigureAwait(false);
             }
 
-            if (!TryAddConnectionToPool(c, false, out newLength))
+            if (!shardStatePublished)
             {
                 Exception failure = HostConnectionPool.GetNotConnectedException();
                 try
@@ -1536,37 +1538,53 @@ namespace Cassandra.Connections
                          "avoid hitting this node as part of the query plan for a while", _host.Address, ex.ProtocolVersion);
         }
 
-        private void UpdateShardingInfo(IConnection c)
+        private bool UpdateShardingInfo(IConnection c)
         {
-            if (_poolingOptions.GetDisableShardAwareness() ||
-                !ShouldUseShardAwareSourcePort(c.EndPoint) ||
-                (c.EndPoint is ClientRouteConnectionEndPoint && c.ShardingInfo() == null))
+            var previousShardingInfo = Volatile.Read(ref _shardingInfo);
+            var nextShardingInfo = previousShardingInfo;
+            var expectedConnectionLength = _expectedConnectionLength;
+            if (!ShouldUseShardAwareSourcePort(c.EndPoint))
             {
-                // Clear shard metadata before publishing the core-size target. Readers use a
-                // stable snapshot, so an in-flight borrow or open can safely finish its decision
-                // with the previous value while later operations observe the transition.
-                if (Interlocked.Exchange(ref _shardingInfo, null) != null)
+                nextShardingInfo = null;
+                expectedConnectionLength = _poolingOptions.GetCoreConnectionsPerHost(_distance);
+            }
+            else
+            {
+                var isRouted = c.EndPoint is ClientRouteConnectionEndPoint;
+                var connectionShardingInfo = isRouted || previousShardingInfo == null
+                    ? c.ShardingInfo()
+                    : previousShardingInfo;
+                if (isRouted && connectionShardingInfo == null)
                 {
-                    _expectedConnectionLength = _poolingOptions.GetCoreConnectionsPerHost(_distance);
+                    nextShardingInfo = null;
+                    expectedConnectionLength = _poolingOptions.GetCoreConnectionsPerHost(_distance);
                 }
-                return;
+                else if (previousShardingInfo == null && connectionShardingInfo != null)
+                {
+                    var coreSize = _poolingOptions.GetCoreConnectionsPerHost(_distance);
+                    var shardsCount = connectionShardingInfo.ScyllaNrShards;
+                    var connectionsPerShard = HostConnectionPool.CeilingDivide(coreSize, shardsCount);
+                    nextShardingInfo = connectionShardingInfo;
+                    expectedConnectionLength = shardsCount * connectionsPerShard;
+                }
             }
 
-            if (Volatile.Read(ref _shardingInfo) == null)
+            // Reading a candidate's metadata can race with its Closing callback. Compute the
+            // prospective state first, then validate membership and publish under the same lock
+            // used by admission and removal. A rejected candidate must not change either field.
+            lock (_connectionHandoffLock)
             {
-                var connectionShardingInfo = c.ShardingInfo();
-                if (connectionShardingInfo == null)
+                if (!TryAddConnectionToPool(c, false, out _))
                 {
-                    return;
+                    return false;
                 }
 
-                var coreSize = _poolingOptions.GetCoreConnectionsPerHost(_distance);
-                var shardsCount = connectionShardingInfo.ScyllaNrShards;
-                var connectionsPerShard = HostConnectionPool.CeilingDivide(coreSize, shardsCount);
-                if (Interlocked.CompareExchange(ref _shardingInfo, connectionShardingInfo, null) == null)
+                if (!ReferenceEquals(previousShardingInfo, nextShardingInfo))
                 {
-                    _expectedConnectionLength = shardsCount * connectionsPerShard;
+                    Interlocked.Exchange(ref _shardingInfo, nextShardingInfo);
+                    _expectedConnectionLength = expectedConnectionLength;
                 }
+                return true;
             }
         }
 

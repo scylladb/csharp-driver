@@ -142,7 +142,7 @@
           "properties": {
             "enabled": {
               "type": "boolean",
-              "description": "Whether the client is configured to use ScyllaDB's dedicated shard-aware port (default 19042, TLS 19043) to reach a chosen shard in a single connect, versus the fallback of opening connections on the normal port and reading the server-assigned shard. Reports configuration intent; at runtime the port must also be advertised by the server and reachable, otherwise the client falls back transparently."
+              "description": "Whether the client is configured to use ScyllaDB's dedicated shard-aware port (default 19042, TLS 19043) to reach a chosen shard in a single connect, versus the fallback of opening connections on the normal port and reading the server-assigned shard. Reports configuration intent; at runtime the port must also be advertised by the server and reachable, otherwise the client falls back transparently. With client routes, enabled is true only when global shard awareness and the routed opt-in are both enabled. A false value caused by the routed opt-in does not disable shard awareness for direct-fallback hosts."
             }
           }
         }

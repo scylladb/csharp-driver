@@ -1396,21 +1396,26 @@ namespace Cassandra.Tests.Connections
         {
             var endPoint = new FakeConnectionEndPoint("198.51.100.57", 9042);
             var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
-            var connection = CreateConnection(endPoint);
+            var rejectedInfo = ShardingInfo.Create("0", "4", "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin", "12", "19042", "19142");
+            var recoveryInfo = ShardingInfo.Create("0", "8", "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin", "12", "19042", "19142");
+            var connection = CreateConnection(endPoint, shardingInfo: rejectedInfo);
             var closingRaised = 0;
-            connection.SetupGet(value => value.ShardID).Returns(() =>
+            connection.Setup(value => value.ShardingInfo()).Returns(() =>
             {
-                if (Interlocked.Exchange(ref closingRaised, 1) == 0)
-                {
-                    connection.Raise(value => value.Closing += null, connection.Object);
-                }
-                return -1;
+                Interlocked.Increment(ref closingRaised);
+                connection.Raise(value => value.Closing += null, connection.Object);
+                return rejectedInfo;
             });
+            var recoveredConnection = CreateConnection(endPoint, shardingInfo: recoveryInfo);
+            var attempts = 0;
             var target = CreatePool(
                 res: resolver.Object,
-                connectionFactory: new FakeConnectionFactory(
-                    (IConnectionEndPoint _) => connection.Object),
-                coreConnections: 1);
+                connectionFactory: new FakeConnectionFactory((IConnectionEndPoint _) =>
+                    Interlocked.Increment(ref attempts) == 1 ? connection.Object : recoveredConnection.Object),
+                coreConnections: 1,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
             resolver.Setup(value => value.GetConnectionEndPointsAsync(_host, false))
                     .ReturnsAsync(new IConnectionEndPoint[] { endPoint });
 
@@ -1421,11 +1426,74 @@ namespace Cassandra.Tests.Connections
                 Assert.AreEqual(1, Volatile.Read(ref closingRaised));
                 Assert.AreEqual(0, target.OpenConnections);
                 Assert.IsEmpty(target.ConnectionsSnapshot);
+                Assert.IsNull(GetShardingInfo(target));
+                Assert.AreEqual(1, GetExpectedConnectionLength(target));
                 connection.Verify(value => value.Dispose(), Times.AtLeastOnce);
+
+                var recovered = await InvokeCreateOpenConnection(target).ConfigureAwait(false);
+                Assert.AreSame(recoveredConnection.Object, recovered);
+                Assert.AreSame(recoveryInfo, GetShardingInfo(target));
+                Assert.AreEqual(8, GetExpectedConnectionLength(target));
+                recoveredConnection.Verify(value => value.Open(), Times.Once);
+                recoveredConnection.Verify(value => value.Open(It.IsAny<int>(), It.IsAny<int>()), Times.Never);
             }
             finally
             {
-                target.Dispose();
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [Test]
+        public async Task Should_KeepPublishedShardStateWhenRejectedRouteOmitsMetadata()
+        {
+            IConnectionEndPoint endPoint = new FakeConnectionEndPoint("198.51.100.58", 9042);
+            var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            var shardingInfo = ShardingInfo.Create("0", "4", "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin", "12", "19042", "19142");
+            Mock<IConnection> rejectedConnection = null;
+            var target = CreatePool(
+                res: resolver.Object,
+                connectionFactory: new FakeConnectionFactory(candidate =>
+                {
+                    var connection = CreateConnection(candidate, shardingInfo: shardingInfo);
+                    if (candidate is ClientRouteConnectionEndPoint)
+                    {
+                        rejectedConnection = connection;
+                        connection.Setup(value => value.ShardingInfo()).Returns(() =>
+                        {
+                            connection.Raise(value => value.Closing += null, connection.Object);
+                            return null;
+                        });
+                    }
+                    return connection.Object;
+                }),
+                clientRoutesOptions: new ClientRoutesOptions(new[] { new ClientRouteProxy("route-a") }, 9042, true),
+                hostHasClientRoute: false,
+                coreConnections: 1,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            resolver.Setup(value => value.GetConnectionEndPointsAsync(_host, false))
+                    .ReturnsAsync(() => new[] { endPoint });
+            resolver.Setup(value => value.GetConnectionShardAwareEndPointsAsync(_host, false, 19042))
+                    .ReturnsAsync(() => new[] { endPoint });
+            try
+            {
+                await InvokeCreateOpenConnection(target).ConfigureAwait(false);
+                Assert.AreSame(shardingInfo, GetShardingInfo(target));
+                Assert.AreEqual(4, GetExpectedConnectionLength(target));
+
+                endPoint = new ClientRouteConnectionEndPoint(new IPEndPoint(IPAddress.Parse("198.51.100.59"), 9042),
+                    _host.Address, "route.proxy", "route-a");
+                await Assert.ThrowsAsync<SocketException>(async () =>
+                    await InvokeCreateOpenConnection(target).ConfigureAwait(false));
+
+                Assert.AreEqual(1, target.OpenConnections);
+                Assert.AreSame(shardingInfo, GetShardingInfo(target));
+                Assert.AreEqual(4, GetExpectedConnectionLength(target));
+                rejectedConnection.Verify(value => value.Dispose(), Times.AtLeastOnce);
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
             }
         }
 
@@ -1473,22 +1541,23 @@ namespace Cassandra.Tests.Connections
                 connection = CreateConnection(endPoint);
                 return connection.Object;
             });
-            var target = CreatePool(resolver.Object, factory);
-            var routeEndPoint = new ClientRouteConnectionEndPoint(
-                new IPEndPoint(IPAddress.Parse("198.51.100.5"), 9142),
-                _host.Address,
-                "route.proxy",
-                "route-a");
-            resolver.Setup(r => r.GetConnectionShardAwareEndPointsAsync(_host, false, 19042))
-                    .ReturnsAsync(new IConnectionEndPoint[] { routeEndPoint });
+            var target = CreatePool(resolver.Object, factory,
+                new ClientRoutesOptions(new[] { new ClientRouteProxy("route-a") }, 9042, true),
+                clientRouteRowsFactory: hostId => new[] { ClientRouteRow(hostId, "198.51.100.5", 9142, "route-a") });
+            try
+            {
+                var opened = await target.DoCreateAndOpen(false, 2, 19042, 4).ConfigureAwait(false);
 
-            var opened = await target.DoCreateAndOpen(false, 2, 19042, 4).ConfigureAwait(false);
-
-            Assert.AreSame(connection.Object, opened);
-            Assert.AreEqual(new IPEndPoint(IPAddress.Parse("198.51.100.5"), 9142), opened.EndPoint.SocketIpEndPoint);
-            connection.Verify(c => c.Open(2, 4), Times.Once);
-            connection.Verify(c => c.Open(), Times.Never);
-            resolver.Verify(r => r.GetConnectionShardAwareEndPointsAsync(_host, false, 19042), Times.Once);
+                Assert.AreSame(connection.Object, opened);
+                Assert.AreEqual(new IPEndPoint(IPAddress.Parse("198.51.100.5"), 9142), opened.EndPoint.SocketIpEndPoint);
+                connection.Verify(c => c.Open(2, 4), Times.Once);
+                connection.Verify(c => c.Open(), Times.Never);
+                resolver.VerifyNoOtherCalls();
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
         }
 
         [Test]
@@ -1503,17 +1572,33 @@ namespace Cassandra.Tests.Connections
                 "12",
                 "19042",
                 "19142");
-            var factory = new FakeConnectionFactory(endPoint => CreateConnection(endPoint, shardingInfo: shardingInfo).Object);
+            var connections = new List<Mock<IConnection>>();
+            var factory = new FakeConnectionFactory(endPoint =>
+            {
+                var connection = CreateConnection(endPoint, shardingInfo: shardingInfo);
+                connections.Add(connection);
+                return connection.Object;
+            });
             var clientRoutesOptions = new ClientRoutesOptions(
-                new[] { new ClientRouteProxy("route-a") },
-                9042,
-                false);
+                new ClientRoutesConfig(new[] { new ClientRouteProxy("route-a") }).Snapshot);
             var target = CreatePool(resolver.Object, factory, clientRoutesOptions);
 
-            await target.Warmup().ConfigureAwait(false);
+            try
+            {
+                await target.Warmup().ConfigureAwait(false);
 
-            Assert.AreEqual(2, target.OpenConnections);
-            resolver.VerifyNoOtherCalls();
+                Assert.AreEqual(2, target.OpenConnections);
+                foreach (var connection in connections)
+                {
+                    connection.Verify(value => value.Open(), Times.Once);
+                    connection.Verify(value => value.Open(It.IsAny<int>(), It.IsAny<int>()), Times.Never);
+                }
+                resolver.VerifyNoOtherCalls();
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
         }
 
         [Test]
@@ -1526,20 +1611,25 @@ namespace Cassandra.Tests.Connections
                 return createdConnection.Object;
             });
             var clientRoutesOptions = new ClientRoutesOptions(
-                new[] { new ClientRouteProxy("route-a") },
-                9042,
-                false);
+                new ClientRoutesConfig(new[] { new ClientRouteProxy("route-a") }).Snapshot);
             var target = CreatePool(
                 new Mock<IEndPointResolver>(MockBehavior.Strict).Object,
                 factory,
                 clientRoutesOptions);
 
-            var opened = await target.DoCreateAndOpen(false, 2, 19042, 4).ConfigureAwait(false);
+            try
+            {
+                var opened = await target.DoCreateAndOpen(false, 2, 19042, 4).ConfigureAwait(false);
 
-            Assert.IsInstanceOf<ClientRouteConnectionEndPoint>(opened.EndPoint);
-            Assert.AreEqual(9042, opened.EndPoint.SocketIpEndPoint.Port);
-            createdConnection.Verify(value => value.Open(), Times.Once);
-            createdConnection.Verify(value => value.Open(It.IsAny<int>(), It.IsAny<int>()), Times.Never);
+                Assert.IsInstanceOf<ClientRouteConnectionEndPoint>(opened.EndPoint);
+                Assert.AreEqual(9042, opened.EndPoint.SocketIpEndPoint.Port);
+                createdConnection.Verify(value => value.Open(), Times.Once);
+                createdConnection.Verify(value => value.Open(It.IsAny<int>(), It.IsAny<int>()), Times.Never);
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
         }
 
         [Test]
@@ -1574,15 +1664,23 @@ namespace Cassandra.Tests.Connections
                             null)
                     });
 
-            await target.Warmup().ConfigureAwait(false);
+            try
+            {
+                await target.Warmup().ConfigureAwait(false);
 
-            Assert.AreEqual(4, target.OpenConnections);
-            resolver.Verify(r => r.GetConnectionEndPointsAsync(_host, false), Times.Once);
-            resolver.Verify(r => r.GetConnectionShardAwareEndPointsAsync(_host, false, 19042), Times.Exactly(3));
+                Assert.AreEqual(4, target.OpenConnections);
+                resolver.Verify(r => r.GetConnectionEndPointsAsync(_host, false), Times.Once);
+                resolver.Verify(r => r.GetConnectionShardAwareEndPointsAsync(_host, false, 19042), Times.Exactly(3));
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
         }
 
-        [Test]
-        public async Task Should_ResetShardStateWhenDirectHostBecomesRouted()
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_UpdatePoolShardStateWhenEndpointTypeChanges(bool initiallyRouted)
         {
             var rows = new List<IRow>();
             var directConnections = new ConcurrentQueue<Mock<IConnection>>();
@@ -1619,7 +1717,14 @@ namespace Cassandra.Tests.Connections
                 connectionFactory: factory,
                 clientRoutesOptions: options,
                 hostHasClientRoute: true,
-                clientRouteRowsFactory: _ => rows,
+                clientRouteRowsFactory: hostId =>
+                {
+                    if (initiallyRouted && directConnections.IsEmpty && routedConnections.IsEmpty && rows.Count == 0)
+                    {
+                        rows.Add(ClientRouteRow(hostId, "198.51.100.90", 9042, "route-a"));
+                    }
+                    return rows;
+                },
                 coreConnections: 2,
                 reconnectionPolicy: new ConstantReconnectionPolicy(60000),
                 clientRoutesCacheCreated: cache => routesCache = cache);
@@ -1637,41 +1742,47 @@ namespace Cassandra.Tests.Connections
 
                 await target.Warmup().WaitToCompleteAsync(5000).ConfigureAwait(false);
 
-                Assert.AreEqual(4, target.OpenConnections);
-                Assert.AreEqual(4, directConnections.Count);
-                Assert.AreEqual(0, routedConnections.Count);
+                Assert.AreEqual(initiallyRouted ? 2 : 4, target.OpenConnections);
+                Assert.AreEqual(initiallyRouted ? 0 : 4, directConnections.Count);
+                Assert.AreEqual(initiallyRouted ? 2 : 0, routedConnections.Count);
 
-                rows.Add(ClientRouteRow(_host.HostId, "198.51.100.90", 9042, "route-a"));
-                await routesCache.FullRefreshBarrierAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
-
-                var directs = directConnections.ToArray();
-                directs[0].Object.Dispose();
-
-                await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
-                Assert.AreEqual(4, target.OpenConnections);
-                Assert.AreEqual(1, routedConnections.Count);
-                Assert.AreEqual(2, GetExpectedConnectionLength(target));
-                CollectionAssert.AreEquivalent(
-                    directs.Skip(1).Select(connection => connection.Object)
-                           .Concat(routedConnections.Select(connection => connection.Object)),
-                    target.ConnectionsSnapshot);
-
-                foreach (var direct in directs.Skip(1))
+                if (initiallyRouted)
                 {
-                    direct.Object.Dispose();
+                    rows.Clear();
+                    // An existing nonempty snapshot requires three empty refreshes before clearing.
+                    for (var i = 0; i < 3; i++)
+                    {
+                        await routesCache.FullRefreshBarrierAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    }
+                }
+                else
+                {
+                    rows.Add(ClientRouteRow(_host.HostId, "198.51.100.90", 9042, "route-a"));
+                    await routesCache.FullRefreshBarrierAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+
+                var previousConnections = (initiallyRouted ? routedConnections : directConnections).ToArray();
+                previousConnections[0].Object.Dispose();
+                await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                Assert.AreEqual(initiallyRouted ? 4 : 2, GetExpectedConnectionLength(target));
+                Assert.AreEqual(initiallyRouted ? 1 : 3,
+                    target.ConnectionsSnapshot.Count(connection => (connection.EndPoint is ClientRouteConnectionEndPoint) == initiallyRouted));
+                Assert.AreEqual(initiallyRouted ? 3 : 1,
+                    target.ConnectionsSnapshot.Count(connection => (connection.EndPoint is ClientRouteConnectionEndPoint) != initiallyRouted));
+                foreach (var connection in previousConnections.Skip(1))
+                {
+                    connection.Object.Dispose();
                 }
 
                 await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
-                Assert.AreEqual(2, target.OpenConnections);
-                Assert.AreEqual(2, routedConnections.Count);
+                Assert.AreEqual(initiallyRouted ? 4 : 2, target.OpenConnections);
                 Assert.IsTrue(target.ConnectionsSnapshot.All(
-                    connection => connection.EndPoint is ClientRouteConnectionEndPoint));
+                    connection => (connection.EndPoint is ClientRouteConnectionEndPoint) != initiallyRouted));
                 foreach (var routed in routedConnections)
                 {
                     routed.Verify(connection => connection.Open(), Times.Once);
-                    routed.Verify(
-                        connection => connection.Open(It.IsAny<int>(), It.IsAny<int>()),
-                        Times.Never);
+                    routed.Verify(connection => connection.Open(It.IsAny<int>(), It.IsAny<int>()), Times.Never);
                 }
             }
             finally
@@ -1756,30 +1867,41 @@ namespace Cassandra.Tests.Connections
                 clientRoutesOptions: options,
                 hostHasClientRoute: false,
                 coreConnections: 1,
-                tokenFactory: tokenFactory);
+                tokenFactory: tokenFactory,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
 
-            await target.Warmup().ConfigureAwait(false);
-            Assert.AreEqual(4, target.OpenConnections);
-
-            var routedEndPoint = new ClientRouteConnectionEndPoint(
-                new IPEndPoint(IPAddress.Parse("198.51.100.91"), 9042),
-                _host.Address,
-                "route.proxy",
-                "route-a");
-            var routedConnection = CreateConnection(routedEndPoint, shardingInfo: shardingInfo).Object;
-            var transitions = 0;
-            tokenFactory.OnHash = () =>
+            try
             {
-                Interlocked.Increment(ref transitions);
-                UpdateShardingInfo(target, routedConnection);
-            };
+                await target.Warmup().ConfigureAwait(false);
+                Assert.AreEqual(4, target.OpenConnections);
 
-            var borrowed = target.BorrowExistingConnection(new RoutingKey(new byte[] { 1 }));
+                var routedEndPoint = new ClientRouteConnectionEndPoint(
+                    new IPEndPoint(IPAddress.Parse("198.51.100.91"), 9042),
+                    _host.Address,
+                    "route.proxy",
+                    "route-a");
+                var transitions = 0;
+                tokenFactory.OnHash = () =>
+                {
+                    Interlocked.Increment(ref transitions);
+                    resolver.Setup(value => value.GetConnectionShardAwareEndPointsAsync(
+                                It.IsAny<Host>(), false, 19042))
+                            .ReturnsAsync(new IConnectionEndPoint[] { routedEndPoint });
+                    target.OnConnectionClosing(target.ConnectionsSnapshot[0]);
+                    InvokeCreateOpenConnection(target).GetAwaiter().GetResult();
+                };
 
-            Assert.IsNotNull(borrowed);
-            Assert.AreEqual(1, transitions);
-            Assert.IsNull(GetShardingInfo(target));
-            Assert.AreEqual(1, GetExpectedConnectionLength(target));
+                var borrowed = target.BorrowExistingConnection(new RoutingKey(new byte[] { 1 }));
+
+                Assert.IsNotNull(borrowed);
+                Assert.AreEqual(1, transitions);
+                Assert.IsNull(GetShardingInfo(target));
+                Assert.AreEqual(1, GetExpectedConnectionLength(target));
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
         }
 
         [Test]
@@ -1958,7 +2080,7 @@ namespace Cassandra.Tests.Connections
             {
                 Trace.Listeners.Remove(listener);
                 Diagnostics.CassandraTraceSwitch.Level = previousLevel;
-                target.Dispose();
+                DisposePoolAndTimer(target);
             }
         }
 

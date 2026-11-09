@@ -414,12 +414,20 @@ namespace Cassandra.Tests.Requests
             DriverConfigReporterTests.AssertConformsToSchema(report);
         }
 
-        [TestCase(false)]
-        [TestCase(true)]
-        public void Should_ReportEffectiveClientRoutesShardAwareness(bool enabled)
+        [TestCase(false, false)]
+        [TestCase(true, false)]
+        [TestCase(false, true)]
+        [TestCase(true, true)]
+        public void Should_ReportEffectiveClientRoutesShardAwareness(bool enabled, bool disableShardAwareness)
         {
+            var poolingOptions = new PoolingOptions();
+            if (disableShardAwareness)
+            {
+                poolingOptions.DisableShardAwareness();
+            }
             var config = new TestConfigurationBuilder
             {
+                PoolingOptions = poolingOptions,
                 ClientRoutesOptions = new ClientRoutesOptions(
                     new[] { new ClientRouteProxy("route-a") },
                     9042,
@@ -429,7 +437,7 @@ namespace Cassandra.Tests.Requests
             var report = DriverConfigReporterTests.BuildReport(config);
 
             Assert.AreEqual(
-                enabled,
+                enabled && !disableShardAwareness,
                 report["connection"]["pool"]["shard-aware"]["enabled"].Value<bool>());
             DriverConfigReporterTests.AssertConformsToSchema(report);
         }

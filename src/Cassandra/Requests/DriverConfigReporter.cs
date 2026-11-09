@@ -320,13 +320,12 @@ namespace Cassandra.Requests
             // Routed connections additionally require an explicit client-routes opt-in because the proxy must
             // preserve the selected source port. A single false value is the safe representation for a mixed
             // routed/direct cluster when routed connections have that opt-in disabled.
-            var clientRoutesShardAwareness = _configuration.ClientRoutesRuntime == null ||
-                                              _configuration.ClientRoutesRuntime.Options.ShardAwarenessEnabled;
             return new JObject
             {
                 ["shard-aware"] = new JObject
                 {
-                    ["enabled"] = !pooling.GetDisableShardAwareness() && clientRoutesShardAwareness
+                    ["enabled"] = ClientRoutesOptions.ShouldUseShardAwareness(
+                        pooling, _configuration.ClientRoutesRuntime?.Options, true)
                 }
             };
         }
