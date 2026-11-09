@@ -22,6 +22,7 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 
+using Cassandra.IntegrationTests.SimulacronAPI.PrimeBuilder.Then;
 using Cassandra.IntegrationTests.TestBase;
 using Cassandra.IntegrationTests.TestClusterManagement.Simulacron;
 using Cassandra.Tasks;
@@ -267,6 +268,10 @@ namespace Cassandra.IntegrationTests.TestClusterManagement
                     node.ContactPoint = nodeJObject["address"].ToString();
                 }
             }
+            // Simulacron defaults unknown queries to RESULT/VOID. Match Cassandra's missing
+            // Scylla schema table so optional consistency discovery follows its real fallback.
+            cluster.PrimeFluent(b => b.WhenQuery("SELECT keyspace_name, consistency FROM system_schema.scylla_keyspaces")
+                .ThenServerError(ServerError.Invalid, "unconfigured table scylla_keyspaces"));
             return cluster;
         }
 
