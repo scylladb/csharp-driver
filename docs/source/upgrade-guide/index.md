@@ -4,6 +4,10 @@ The purpose of this guide is to detail the changes made by the successive versio
 
 ## Unreleased
 
+### Connection pool warmup diagnostics
+
+When session warmup consumes a recoverable connection-pool failure, the driver now logs the host and exception at Warning level, whether client routes are configured or not. If every host fails to warm up, the existing aggregate Error is still logged; session initialization still succeeds when the control connection is connected.
+
 ### IPv6 wildcard topology addresses
 
 The driver now treats an advertised IPv6 wildcard RPC address (`::`) like the IPv4 wildcard (`0.0.0.0`), whether client routes are enabled or disabled. When deriving an endpoint from system tables, it uses the peer address for `system.peers`, or the broadcast or listen address for `system.local`. A peer with no fallback address is excluded. If the local endpoint must be derived from `system.local` and no fallback address is available, topology discovery fails.

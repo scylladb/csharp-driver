@@ -84,7 +84,7 @@ namespace Cassandra.Tests
             cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
             using var listener = new ConsumedWarmupTraceListener(throwFromDiagnostic);
-            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Warning;
             Trace.Listeners.Add(listener);
             try
             {

@@ -272,7 +272,7 @@ namespace Cassandra
                     }
                     try
                     {
-                        Session.Logger.Info("Connection pool for host {0} failed to warm up: {1}", hosts[i].Address, failure);
+                        Session.Logger.Warning("Connection pool for host {0} failed to warm up: {1}", hosts[i].Address, failure);
                     }
                     catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
                     {
@@ -403,7 +403,7 @@ namespace Cassandra
                         // A replacement can remove the old Host between query-plan selection and
                         // pool lookup. Do not recreate a pool for a replaced identity or create
                         // one for a host that is not eligible for requests. RequestHandler treats
-                        // the SocketException as a per-host failure and moves to the next host.
+                        // HostConnectionPoolNotEligibleException as a per-host failure and moves to the next host.
                         Session.Logger.Verbose(
                             "Not creating a connection pool for host {0}: it is {1}.",
                             host.Address,
