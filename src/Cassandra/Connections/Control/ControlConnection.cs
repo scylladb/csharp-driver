@@ -41,7 +41,6 @@ namespace Cassandra.Connections.Control
         private readonly IInternalCluster _cluster;
         private readonly Metadata _metadata;
         private readonly Lock _connectionHandoffLock = new Lock();
-        private IConnection _refreshConnection;
         private volatile Host _host;
         private volatile IConnectionEndPoint _currentConnectionEndPoint;
         private volatile IConnection _connection;
@@ -544,14 +543,6 @@ namespace Cassandra.Connections.Control
                             if (_clientRoutesCache != null)
                             {
                                 waitForInitialClientRoutesSnapshot = !_clientRoutesCache.HasCompleteSnapshot;
-                                if (waitForInitialClientRoutesSnapshot)
-                                {
-                                    lock (_connectionHandoffLock)
-                                    {
-                                        // Track the connection used for the initial route query.
-                                        _refreshConnection = connection;
-                                    }
-                                }
                                 var routeRefresh = _clientRoutesCache.FullRefreshBarrierAsync(
                                     topologyHostIds,
                                     confirmIgnoredEmptyResults: true);
@@ -561,6 +552,8 @@ namespace Cassandra.Connections.Control
                                 }
                                 else
                                 {
+                                    // Keep the completed snapshot usable during recovery. The cache
+                                    // schedules a full retry if this background refresh fails.
                                     routeRefresh.Forget();
                                 }
                                 if (connection.IsDisposed ||
@@ -634,16 +627,6 @@ namespace Cassandra.Connections.Control
                             // There was a socket or authentication exception or an unexpected error
                             var hostEndPoint = endPoint.GetHostIpEndPointWithFallback();
                             attempt.RecordConnectionFailure(hostEndPoint, ex);
-                        }
-                        finally
-                        {
-                            lock (_connectionHandoffLock)
-                            {
-                                if (ReferenceEquals(_refreshConnection, connection))
-                                {
-                                    _refreshConnection = null;
-                                }
-                            }
                         }
                     }
                 }
