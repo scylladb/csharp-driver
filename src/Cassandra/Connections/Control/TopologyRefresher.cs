@@ -36,7 +36,10 @@ namespace Cassandra.Connections.Control
 
         private readonly Configuration _config;
         private readonly Metadata _metadata;
-        private readonly SemaphoreSlim _refreshLock = new SemaphoreSlim(1, 1);
+        private readonly Lock _refreshLock = new Lock();
+        private long _refreshSequence;
+        private long _lastAppliedRefresh;
+        private Host _lastRefreshedHost;
 
         /// <summary>
         /// Once this is set to false, it will never be set to true again.
@@ -53,27 +56,8 @@ namespace Cassandra.Connections.Control
         public async Task<Host> RefreshNodeListAsync(
             IConnectionEndPoint currentEndPoint, IConnection connection, ISerializer serializer)
         {
-            if (_config.ClientRoutesRuntime == null)
-            {
-                return await UnsafeRefreshNodeListAsync(currentEndPoint, connection, serializer).ConfigureAwait(false);
-            }
-
-            await _refreshLock.WaitAsync().ConfigureAwait(false);
-            try
-            {
-                return await UnsafeRefreshNodeListAsync(currentEndPoint, connection, serializer).ConfigureAwait(false);
-            }
-            finally
-            {
-                _refreshLock.Release();
-            }
-        }
-
-        private async Task<Host> UnsafeRefreshNodeListAsync(
-            IConnectionEndPoint currentEndPoint,
-            IConnection connection,
-            ISerializer serializer)
-        {
+            var refreshSequence = _config.ClientRoutesRuntime == null
+                ? 0 : Interlocked.Increment(ref _refreshSequence);
             ControlConnection.Logger.Info("Refreshing node list");
 
             // safe guard against concurrent changes of this field
@@ -96,9 +80,32 @@ namespace Cassandra.Connections.Control
                 throw new DriverInternalError("Local host metadata could not be retrieved");
             }
 
+            if (refreshSequence == 0)
+            {
+                return ApplyNodeList(currentEndPoint, localRow, localIsPeersV2, rsPeers);
+            }
+
+            // Network requests must not hold up a replacement control connection.
+            // Serialize only publication and discard results superseded by a newer refresh.
+            lock (_refreshLock)
+            {
+                if (refreshSequence < _lastAppliedRefresh)
+                {
+                    return _lastRefreshedHost;
+                }
+                var host = ApplyNodeList(currentEndPoint, localRow, localIsPeersV2, rsPeers);
+                _lastRefreshedHost = host;
+                _lastAppliedRefresh = refreshSequence;
+                return host;
+            }
+        }
+
+        private Host ApplyNodeList(
+            IConnectionEndPoint currentEndPoint, IRow localRow, bool isPeersV2, IEnumerable<IRow> peers)
+        {
             _metadata.Partitioner = localRow.GetValue<string>("partitioner");
             var host = GetAndUpdateLocalHost(currentEndPoint, localRow);
-            UpdatePeersInfo(localIsPeersV2, rsPeers, host);
+            UpdatePeersInfo(isPeersV2, peers, host);
             ControlConnection.Logger.Info("Node list retrieved successfully");
             return host;
         }

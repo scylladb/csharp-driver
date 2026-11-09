@@ -111,14 +111,26 @@ namespace Cassandra.Tests.Connections.Control
             return new TopologyRefresher(metadata, config);
         }
 
-        [Test]
-        public async Task Should_RefreshReplacementConnectionWhileOldMetadataQueryIsPending_WhenClientRoutesDisabled()
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_RefreshReplacementConnectionWhileOldMetadataQueryIsPending(bool clientRoutesEnabled)
         {
             var oldRequestStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var releaseOldRequest = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var oldConnection = Mock.Of<IConnection>();
             var newConnection = Mock.Of<IConnection>();
-            var fakeHandler = CreateFakeMetadataRequestHandler();
+            var oldHostId = Guid.NewGuid();
+            var newHostId = Guid.NewGuid();
+            IRow LocalRow(Guid hostId) => TestHelper.CreateRow(new Dictionary<string, object>
+            {
+                { "cluster_name", "ut-cluster" }, { "rpc_address", IPAddress.Parse("127.0.0.1") },
+                { "data_center", "ut-dc" }, { "rack", "ut-rack" }, { "tokens", null },
+                { "release_version", "2026.1" }, { "partitioner", "Murmur3Partitioner" },
+                { "host_id", hostId }
+            });
+            var oldHandler = CreateFakeMetadataRequestHandler(LocalRow(oldHostId));
+            var fakeHandler = CreateFakeMetadataRequestHandler(LocalRow(newHostId));
+            var responses = new System.Collections.Concurrent.ConcurrentDictionary<Cassandra.Responses.Response, IEnumerable<IRow>>();
             var handler = new Mock<IMetadataRequestHandler>();
             handler.Setup(value => value.SendMetadataRequestAsync(
                        It.IsAny<IConnection>(), It.IsAny<ISerializer>(), It.IsAny<string>(), It.IsAny<QueryProtocolOptions>()))
@@ -129,12 +141,22 @@ namespace Cassandra.Tests.Connections.Control
                            oldRequestStarted.TrySetResult(true);
                            await releaseOldRequest.Task.ConfigureAwait(false);
                        }
-                       return await fakeHandler.SendMetadataRequestAsync(connection, serializer, query, options).ConfigureAwait(false);
+                       var source = ReferenceEquals(connection, oldConnection) ? oldHandler : fakeHandler;
+                       var response = await source.SendMetadataRequestAsync(connection, serializer, query, options).ConfigureAwait(false);
+                       responses[response] = source.GetRowSet(response);
+                       return response;
                    });
             handler.Setup(value => value.GetRowSet(It.IsAny<Cassandra.Responses.Response>()))
-                   .Returns<Cassandra.Responses.Response>(fakeHandler.GetRowSet);
-            var config = new TestConfigurationBuilder { MetadataRequestHandler = handler.Object }.Build();
-            var refresher = new TopologyRefresher(new Metadata(config), config);
+                   .Returns<Cassandra.Responses.Response>(response => responses[response]);
+            var config = new TestConfigurationBuilder
+            {
+                MetadataRequestHandler = handler.Object,
+                ClientRoutesOptions = clientRoutesEnabled
+                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    : null
+            }.Build();
+            _metadata = new Metadata(config);
+            var refresher = new TopologyRefresher(_metadata, config);
             var endpoint = new FakeConnectionEndPoint("127.0.0.1", 9042);
             var oldRefresh = refresher.RefreshNodeListAsync(endpoint, oldConnection, _serializer);
             Task<Host> replacementRefresh = null;
@@ -151,6 +173,8 @@ namespace Cassandra.Tests.Connections.Control
                 await Task.WhenAll(oldRefresh, replacementRefresh ?? Task.FromResult<Host>(null))
                           .WaitToCompleteAsync(5000).ConfigureAwait(false);
             }
+            Assert.AreEqual(clientRoutesEnabled ? newHostId : oldHostId,
+                _metadata.GetHost(new IPEndPoint(IPAddress.Loopback, 9042)).HostId);
         }
 
         [Test]
