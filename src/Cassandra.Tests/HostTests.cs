@@ -44,6 +44,28 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public void Should_NotReviveOrRemoveAgainAfterRemoval()
+        {
+            var host = new Host(Address, contactPoint: null);
+            var removed = 0;
+            var up = 0;
+            host.Remove += () => Interlocked.Increment(ref removed);
+            host.Up += _ => Interlocked.Increment(ref up);
+            host.SetAsRemoved();
+
+            TestHelper.ParallelInvoke(() =>
+            {
+                Assert.IsFalse(host.BringUpIfDown());
+                Assert.IsFalse(host.SetDown());
+                host.SetAsRemoved();
+            }, 100);
+
+            Assert.IsFalse(host.IsUp);
+            Assert.AreEqual(0, up);
+            Assert.AreEqual(1, removed);
+        }
+
+        [Test]
         public void Should_UseHostIdEmpty_When_HostIdIsNull()
         {
             var hostAddress = new IPEndPoint(IPAddress.Parse("163.10.10.10"), 9092);
