@@ -33,8 +33,6 @@ namespace Cassandra.Connections.Control
         internal const string SelectPeersV2 = "SELECT peer, data_center, host_id, native_address, native_port, rack, release_version, schema_version, tokens FROM system.peers_v2";
         internal const string SelectLocal = "SELECT broadcast_address, cluster_name, data_center, host_id, listen_address, partitioner, rack, release_version, rpc_address, schema_version, tokens FROM system.local WHERE key='local'";
 
-        private static readonly IPAddress BindAllAddress = new IPAddress(new byte[4]);
-
         private readonly Configuration _config;
         private readonly Metadata _metadata;
 
@@ -202,8 +200,9 @@ namespace Cassandra.Connections.Control
                 return null;
             }
 
-            if (TopologyRefresher.BindAllAddress.Equals(address))
+            if (IPAddress.Any.Equals(address) || IPAddress.IPv6Any.Equals(address))
             {
+                var bindAllAddress = address;
                 if (row.ContainsColumn("peer") && !row.IsNull("peer"))
                 {
                     // system.peers
@@ -222,14 +221,17 @@ namespace Cassandra.Connections.Control
                 else
                 {
                     ControlConnection.Logger.Error(
-                        "Found host with 0.0.0.0 as rpc_address and nulls as listen_address and broadcast_address. " +
-                        "Because of this, the driver can not connect to this node.");
+                        "Found host with bind-all address {0} as rpc_address and no fallback address. " +
+                        "Because of this, the driver can not connect to this node.",
+                        bindAllAddress);
                     return null;
                 }
 
                 ControlConnection.Logger.Warning(
-                    "Found host with 0.0.0.0 as rpc_address, using listen_address ({0}) to contact it instead. " +
-                    "If this is incorrect you should avoid the use of 0.0.0.0 server side.", address.ToString());
+                    "Found host with bind-all address {0} as rpc_address, using advertised address ({1}) to contact it instead. " +
+                    "If this is incorrect you should avoid the use of a bind-all address server side.",
+                    bindAllAddress,
+                    address);
             }
 
             var rpcPort = defaultPort;

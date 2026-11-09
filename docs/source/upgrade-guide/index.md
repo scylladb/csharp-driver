@@ -2,6 +2,12 @@
 
 The purpose of this guide is to detail the changes made by the successive versions of the ScyllaDB C# Driver that are relevant to for an upgrade from prior versions.
 
+## Unreleased
+
+### IPv6 wildcard topology addresses
+
+The driver now treats an advertised IPv6 wildcard RPC address (`::`) like the IPv4 wildcard (`0.0.0.0`), whether client routes are enabled or disabled. When deriving an endpoint from system tables, it uses the peer address for `system.peers`, or the broadcast or listen address for `system.local`. A peer with no fallback address is excluded. If the local endpoint must be derived from `system.local` and no fallback address is available, topology discovery fails.
+
 ## Our policy regarding API changes and release versioning
 
 The driver versions follow semantic versioning.
