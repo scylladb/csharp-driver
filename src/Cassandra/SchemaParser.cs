@@ -569,7 +569,8 @@ namespace Cassandra
                 new ReplicationStrategyFactory(),
                 row.ContainsColumn("graph_engine") ? row.GetValue<string>("graph_engine") : null,
                 usesTablets: tabletKeyspaces?.Contains(row.GetValue<string>("keyspace_name")),
-                isStronglyConsistent: strongKeyspaces.Contains(row.GetValue<string>("keyspace_name")));
+                isStronglyConsistent: strongKeyspaces?.Contains(row.GetValue<string>("keyspace_name")) ??
+                    Parent.GetKeyspaceFromCache(row.GetValue<string>("keyspace_name"))?.IsStronglyConsistent ?? false);
         }
 
         public override async Task<KeyspaceMetadata> GetKeyspaceAsync(string name)
@@ -597,10 +598,7 @@ namespace Cassandra
 
         private async Task<ISet<string>> GetStrongKeyspacesAsync(string keyspace, bool retry)
         {
-            if (!Cc.SupportsTabletsRoutingV2)
-            {
-                return new HashSet<string>();
-            }
+            // Schema consistency is independent of the control connection's negotiated routing extension.
             var query = "SELECT keyspace_name, consistency FROM system_schema.scylla_keyspaces";
             if (keyspace != null)
             {
@@ -615,9 +613,9 @@ namespace Cassandra
             }
             catch (InvalidQueryException)
             {
-                // Older Scylla versions lack the table or column. Transient failures must propagate
-                // so a refresh does not replace a previously known strong mode with eventual mode.
-                return new HashSet<string>();
+                // Older nodes can lack the table or column during a rolling upgrade. Preserve a
+                // known mode until a successful query confirms it; transient failures still propagate.
+                return null;
             }
         }
 

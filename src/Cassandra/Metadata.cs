@@ -205,13 +205,11 @@ namespace Cassandra
             }
 
             var tokenMap = TokenMap.Build(Partitioner, Hosts.ToCollection(), keyspaces.Values);
-            foreach (var entry in _keyspaces)
+            foreach (var entry in _keyspaces.Where(entry =>
+                !keyspaces.TryGetValue(entry.Key, out var next) ||
+                entry.Value.IsStronglyConsistent != next.IsStronglyConsistent))
             {
-                if (!keyspaces.TryGetValue(entry.Key, out var next) ||
-                    entry.Value.IsStronglyConsistent != next.IsStronglyConsistent)
-                {
-                    TabletMap.RemoveTableMappings(entry.Key);
-                }
+                TabletMap.RemoveTableMappings(entry.Key);
             }
             _keyspaces = keyspaces;
             _tokenMap = tokenMap;
