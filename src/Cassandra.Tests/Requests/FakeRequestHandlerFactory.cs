@@ -15,6 +15,7 @@
 //
 
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 
 using Cassandra.ExecutionProfiles;
@@ -56,7 +57,7 @@ namespace Cassandra.Tests.Requests
         {
             var handler = Mock.Of<IRequestHandler>();
             var mock = Mock.Get(handler)
-                .Setup(h => h.SendAsync())
+                .Setup(h => h.SendAsync(It.IsAny<CancellationToken>()))
                 .Returns(FakeRequestHandlerFactory.TaskOf(_rs(statement)));
 
             if (statement != null)

@@ -92,13 +92,13 @@ namespace Cassandra.Tests.Mapping
             sessionMock1.Setup(s => s.Keyspace).Returns("ks1");
             sessionMock1
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns<string>(query => Task.FromResult(GetPrepared(query)));
+                .Returns<string, CancellationToken>((query, _) => Task.FromResult(GetPrepared(query)));
 
             var sessionMock2 = new Mock<ISession>(MockBehavior.Strict);
             sessionMock2.Setup(s => s.Keyspace).Returns("ks2");
             sessionMock2
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns<string>(query => Task.FromResult(GetPrepared(query)));
+                .Returns<string, CancellationToken>((query, _) => Task.FromResult(GetPrepared(query)));
 
             var loggerHandler = new TestHelper.TestLoggerHandler();
             var sf = new StatementFactory(new Logger(loggerHandler))

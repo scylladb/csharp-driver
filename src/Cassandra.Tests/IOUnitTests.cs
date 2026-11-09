@@ -161,6 +161,40 @@ namespace Cassandra.Tests
             Assert.AreEqual(1, calls);
         }
 
+        [Test]
+        public void OperationState_TryCancelUnwritten_Should_Cancel_An_Operation_Before_The_Writer_Claims_It()
+        {
+            var state = OperationStateExtensions.CreateMock((_, __) => { });
+
+            Assert.IsTrue(state.TryCancelUnwritten());
+
+            Assert.IsFalse(state.CanBeWritten());
+            Assert.IsFalse(state.TryStartWriting());
+        }
+
+        [Test]
+        public void OperationState_TryCancelUnwritten_Should_Leave_An_Operation_The_Writer_Claimed_Running()
+        {
+            var state = OperationStateExtensions.CreateMock((_, __) => { });
+
+            Assert.IsTrue(state.TryStartWriting());
+
+            // Its frame is about to be written: it keeps running, with its read timeout
+            Assert.IsFalse(state.TryCancelUnwritten());
+            Assert.IsTrue(state.CanBeWritten());
+            Assert.IsFalse(state.TryStartWriting());
+        }
+
+        [Test]
+        public void OperationState_TryStartWriting_Should_Not_Claim_A_Cancelled_Operation()
+        {
+            var state = OperationStateExtensions.CreateMock((_, __) => { });
+
+            state.Cancel();
+
+            Assert.IsFalse(state.TryStartWriting());
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         public void OperationState_Cancel_Should_Keep_Wire_Handler_Until_Operation_Is_Terminal(bool cancelFirst)

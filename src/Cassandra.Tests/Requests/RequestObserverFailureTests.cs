@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Generic;
 using System.Net;
+using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Observers.Abstractions;
 using Cassandra.Requests;
@@ -84,7 +85,7 @@ namespace Cassandra.Tests.Requests
             var execution = new Mock<IRequestExecution>();
             execution.Setup(e => e.Start(false)).Returns(Host);
             var handler = BuildRequestHandler(observer.Object, execution);
-            var task = handler.SendAsync();
+            var task = handler.SendAsync(CancellationToken.None);
             // A speculative execution is still running when the request succeeds
             Assert.IsTrue(handler.OnNewNodeExecution(new NodeRequestInfo(Host, null)));
             var result = new RowSet();
@@ -117,7 +118,7 @@ namespace Cassandra.Tests.Requests
             var handler = BuildRequestHandler(observer.Object, execution);
 
             // The caller gets the request error, which also observes the task's exception
-            await Assert.ThrowsAsync<NoHostAvailableException>(async () => await handler.SendAsync().WaitAsync(Timeout).ConfigureAwait(false));
+            await Assert.ThrowsAsync<NoHostAvailableException>(async () => await handler.SendAsync(CancellationToken.None).WaitAsync(Timeout).ConfigureAwait(false));
         }
 
         private static IRequestHandler BuildRequestHandler(IRequestObserver observer, Mock<IRequestExecution> execution)

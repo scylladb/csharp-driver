@@ -334,7 +334,7 @@ namespace Cassandra.Tests
         }
 
         /// <summary>
-        /// Wraps the RowSet like <see cref="ISession.ExecuteAsync(IStatement)"/> does, for mocks of that method.
+        /// Wraps the RowSet like <see cref="ISession.ExecuteAsync(IStatement, System.Threading.CancellationToken)"/> does, for mocks of that method.
         /// </summary>
         public static AsyncRowSet ToAsyncRowSet(this RowSet rowSet)
         {
@@ -342,7 +342,7 @@ namespace Cassandra.Tests
         }
 
         /// <summary>
-        /// Wraps the RowSet of the task like <see cref="ISession.ExecuteAsync(IStatement)"/> does, for mocks of that
+        /// Wraps the RowSet of the task like <see cref="ISession.ExecuteAsync(IStatement, System.Threading.CancellationToken)"/> does, for mocks of that
         /// method.
         /// </summary>
         public static async Task<AsyncRowSet> ToAsyncRowSet(this Task<RowSet> rowSet)

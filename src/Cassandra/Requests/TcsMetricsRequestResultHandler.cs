@@ -64,6 +64,22 @@ namespace Cassandra.Requests
             }
         }
 
+        public async Task TrySetCanceledAsync(CancellationToken cancellationToken, SessionRequestInfo sessionRequestInfo)
+        {
+            if (Interlocked.CompareExchange(ref _done, 1, 0) == 0)
+            {
+                try
+                {
+                    await _requestObserver.OnRequestFailureAsync(
+                        new OperationCanceledException(cancellationToken), sessionRequestInfo).ConfigureAwait(false);
+                }
+                finally
+                {
+                    _taskCompletionSource.SetCanceled(cancellationToken);
+                }
+            }
+        }
+
         public Task<RowSet> Task => _taskCompletionSource.Task;
     }
 }

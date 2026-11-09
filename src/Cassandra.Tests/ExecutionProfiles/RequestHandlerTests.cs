@@ -84,7 +84,7 @@ namespace Cassandra.Tests.ExecutionProfiles
                 },
                 profile);
 
-            await mockResult.RequestHandler.SendAsync().ConfigureAwait(false);
+            await mockResult.RequestHandler.SendAsync(CancellationToken.None).ConfigureAwait(false);
 
             var results = mockResult.SendResults.ToArray();
             Assert.GreaterOrEqual(results.Length, 1);
@@ -139,7 +139,7 @@ namespace Cassandra.Tests.ExecutionProfiles
                 },
                 profile);
 
-            await mockResult.RequestHandler.SendAsync().ConfigureAwait(false);
+            await mockResult.RequestHandler.SendAsync(CancellationToken.None).ConfigureAwait(false);
 
             var results = mockResult.SendResults.ToArray();
             Assert.GreaterOrEqual(results.Length, 1);
@@ -185,7 +185,7 @@ namespace Cassandra.Tests.ExecutionProfiles
                 },
                 null);
 
-            await mockResult.RequestHandler.SendAsync().ConfigureAwait(false);
+            await mockResult.RequestHandler.SendAsync(CancellationToken.None).ConfigureAwait(false);
 
             var results = mockResult.SendResults.ToArray();
             Assert.GreaterOrEqual(results.Length, 1);

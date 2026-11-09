@@ -42,6 +42,8 @@ namespace Cassandra.Requests
         private volatile int _retryCount;
         private volatile OperationState _operation;
         private int _cancelled;
+        private volatile bool _keepSentOperation;
+        private volatile bool _isKeyspaceSwitch;
         private readonly IRequestObserver _requestObserver;
         private readonly SessionRequestInfo _sessionRequestInfo;
 
@@ -70,6 +72,40 @@ namespace Cassandra.Requests
             Interlocked.Exchange(ref _cancelled, 1);
             // if null then the request has not been sent yet
             _operation?.Cancel();
+        }
+
+        /// <inheritdoc />
+        public void CancelUnsent()
+        {
+            _keepSentOperation = true;
+            Interlocked.Exchange(ref _cancelled, 1);
+            CancelOperation(_operation);
+        }
+
+        /// <summary>
+        /// Cancels the operation, unless the caller cancelled the request and the connection already writes or wrote
+        /// the operation, or it switches the keyspace: cancelling it would stop its read timeout, or close the
+        /// connection.
+        /// </summary>
+        private void CancelOperation(OperationState operation)
+        {
+            if (operation == null)
+            {
+                return;
+            }
+
+            if (_keepSentOperation)
+            {
+                if (!_isKeyspaceSwitch)
+                {
+                    // Atomic with the connection's writer claiming the operation
+                    operation.TryCancelUnwritten();
+                }
+
+                return;
+            }
+
+            operation.Cancel();
         }
 
         /// <inheritdoc />
@@ -129,6 +165,12 @@ namespace Cassandra.Requests
                 while (connection == null)
                 {
                     connection = await _parent.GetConnectionToValidHostAsync(validHost, _triedHosts).ConfigureAwait(false);
+                    if (Volatile.Read(ref _cancelled) != 0)
+                    {
+                        // Cancelled while waiting for a connection: don't try the next hosts
+                        return;
+                    }
+
                     if (connection == null)
                     {
                         validHost = _parent.GetNextValidHost(_triedHosts);
@@ -155,6 +197,12 @@ namespace Cassandra.Requests
         /// </summary>
         private async Task RetryExecutionAsync(bool currentHostRetry, Host host)
         {
+            if (Volatile.Read(ref _cancelled) != 0)
+            {
+                // Cancelled while handling the error: don't try another host
+                return;
+            }
+
             try
             {
                 Start(currentHostRetry);
@@ -172,6 +220,12 @@ namespace Cassandra.Requests
         /// </summary>
         private async Task SendAsync(IRequest request, Host host, Func<IRequestError, Response, NodeRequestInfo, Task> callback)
         {
+            if (Volatile.Read(ref _cancelled) != 0)
+            {
+                // Cancelled before the request was sent, for instance while waiting for a connection
+                return;
+            }
+
             var timeoutMillis = _parent.RequestOptions.ReadTimeoutMillis;
             if (_parent.Statement != null && _parent.Statement.ReadTimeoutMillis > 0)
             {
@@ -190,10 +244,17 @@ namespace Cassandra.Requests
                 await _requestObserver.OnNodeStartAsync(_sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
             }
 
+            if (Volatile.Read(ref _cancelled) != 0)
+            {
+                // Cancelled while the request observer was notified
+                return;
+            }
+
             try
             {
                 var isKeyspaceSwitch = request is QueryRequest queryRequest
                     && CqlQueryTools.IsUseKeyspaceCql(queryRequest.Query);
+                _isKeyspaceSwitch = isKeyspaceSwitch;
                 var keyspace = _sessionRequestInfo.SessionKeyspace;
                 if (request is InternalPrepareRequest prepareRequest
                     && !_parent.Serializer.ProtocolVersion.SupportsKeyspaceInRequest())
@@ -208,7 +269,7 @@ namespace Cassandra.Requests
                     isKeyspaceSwitch).ConfigureAwait(false);
                 if (Volatile.Read(ref _cancelled) != 0)
                 {
-                    _operation?.Cancel();
+                    CancelOperation(_operation);
                 }
             }
             catch (Exception ex)
@@ -223,20 +284,8 @@ namespace Cassandra.Requests
 
         private async Task HandleResponseAsync(IRequestError error, Response response, NodeRequestInfo nodeRequestInfo)
         {
-            if (_parent.HasCompleted())
+            if (await HandleResponseAfterCompletionAsync(error, nodeRequestInfo).ConfigureAwait(false))
             {
-                //Do nothing else (except calling request observer), another execution finished already set the response
-                if (_parent.SetNodeExecutionCompleted(nodeRequestInfo.ExecutionId))
-                {
-                    if (error?.Exception != null)
-                    {
-                        await _requestObserver.OnNodeRequestErrorAsync(error, _sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        await _requestObserver.OnNodeSuccessAsync(_sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
-                    }
-                }
                 return;
             }
             try
@@ -257,6 +306,41 @@ namespace Cassandra.Requests
                 }
                 await _parent.SetCompletedAsync(handlerException).ConfigureAwait(false);
             }
+        }
+
+        /// <summary>
+        /// Handles the response of a node request whose request already completed, for instance one left running when
+        /// its caller cancelled: it only reports the node request to the observers, without retrying or completing the
+        /// request. Returns false when the request hasn't completed.
+        /// </summary>
+        private async Task<bool> HandleResponseAfterCompletionAsync(IRequestError error, NodeRequestInfo nodeRequestInfo)
+        {
+            if (!_parent.HasCompleted())
+            {
+                return false;
+            }
+
+            // A request still running after the request completed can still time out: count it against the
+            // connection, so that a node that stops responding is detected
+            if (error?.Exception is OperationTimedOutException && _connection is { } timedOutConnection)
+            {
+                _session.CheckHealth(nodeRequestInfo.Host, timedOutConnection);
+            }
+
+            //Do nothing else (except calling request observer), another execution finished already set the response
+            if (_parent.SetNodeExecutionCompleted(nodeRequestInfo.ExecutionId))
+            {
+                if (error?.Exception != null)
+                {
+                    await _requestObserver.OnNodeRequestErrorAsync(error, _sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
+                }
+                else
+                {
+                    await _requestObserver.OnNodeSuccessAsync(_sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
+                }
+            }
+
+            return true;
         }
 
         private Task RetryAsync(ConsistencyLevel? consistency, bool useCurrentHost, Host host)
@@ -409,7 +493,7 @@ namespace Cassandra.Requests
                     request.PagingState = pagingState;
                     var handler = await _session.Cluster.Configuration.RequestHandlerFactory.CreateAsync(
                         session, _parent.Serializer, request, statement, _parent.RequestOptions).ConfigureAwait(false);
-                    return await handler.SendAsync().ConfigureAwait(false);
+                    return await handler.SendAsync(CancellationToken.None).ConfigureAwait(false);
                 }, _parent.RequestOptions.QueryAbortTimeout, _session.MetricsManager);
             }
         }
@@ -677,6 +761,12 @@ namespace Cassandra.Requests
         {
             async Task ResponseHandler(IRequestError error, Response response, NodeRequestInfo nodeRequestInfo)
             {
+                // A PREPARE left running when its caller cancelled: don't retry, nor execute the statement
+                if (await HandleResponseAfterCompletionAsync(error, nodeRequestInfo).ConfigureAwait(false))
+                {
+                    return;
+                }
+
                 try
                 {
                     if (error?.Exception != null)

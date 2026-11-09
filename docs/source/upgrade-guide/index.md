@@ -712,6 +712,54 @@ A mock implements `DisposeAsync()` itself. With Moq, it completes on a loose moc
 without calling `Dispose()` or `ShutdownAsync()`, even with `CallBase`, and throws on a strict mock
 unless it is set up.
 
+### Cancellation tokens on session methods
+
+`ISession.ExecuteAsync()` and `ISession.PrepareAsync()` take an optional
+`CancellationToken` as their last parameter. Calls that don't pass one compile
+unchanged, but code compiled against 3.x must be recompiled, and classes that
+implement `ISession` must add the parameter. A method group, such as
+`queries.Select(session.PrepareAsync)`, no longer converts to a delegate without the
+token, since optional parameters don't apply to delegate conversions: use a lambda,
+such as `queries.Select(q => session.PrepareAsync(q))`. A call that passes the `default`
+literal as its second argument, such as `session.ExecuteAsync(statement, default)`, no
+longer compiles either: it's ambiguous between the execution profile name and the token.
+In 3.x it passed a null profile name, which threw at run time, so pass the token or a
+profile name instead. Mocks of these methods must
+accept it too. With Moq, a setup that omits the token only matches calls that pass no
+token or the default one, so code under test that passes another token needs
+`It.IsAny<CancellationToken>()`, for example
+`Setup(s => s.ExecuteAsync(It.IsAny<IStatement>(), It.IsAny<CancellationToken>()))`.
+A `Callback` or `Returns` that receives the arguments takes one more, for example
+`.Returns<IStatement, CancellationToken>((s, _) => ...)`.
+
+Cancelling the token passed to `ExecuteAsync()` completes the task as cancelled,
+with an `OperationCanceledException` (a `TaskCanceledException`) that carries the
+token. The request timeouts still raise `OperationTimedOutException`, so the two can
+be told apart. What else happens depends on when the token is cancelled:
+
+| Token cancelled | Effect |
+|---|---|
+| Before the call | Nothing is sent |
+| While waiting for a connection, or while the request observers are notified that an execution starts | The request isn't sent, and no other host is tried |
+| While the request is in the connection's write queue | The request isn't written. If the connection is already writing it, it is left running, as after it is written |
+| After the request is written | The driver stops waiting for the response, and starts no retry or speculative execution. The native protocol can't recall a request: the node still runs it, and a write may still be applied. The request keeps its stream id until the response arrives, and its read timeout keeps running, so the driver still detects a node that stops responding |
+| While a schema change waits for schema agreement | The task completes as cancelled |
+
+A request that switches the keyspace (`USE`) isn't cancelled once it is handed to the
+connection, since cancelling it would close the connection, which other requests
+share.
+
+The token only applies to the first page. For the following pages, cancelling the
+token passed to the iteration, for example with `WithCancellation()`, or to
+`FetchMoreResultsAsync()` stops waiting for the page, but not the page request,
+whose rows are still added to the `AsyncRowSet`.
+
+Cancelling the token passed to `PrepareAsync()` only stops the call waiting for the
+preparation, which continues. Concurrent calls for the same query and effective
+keyspace, without a custom payload, share one preparation, whose prepared statement is
+still cached. A call with a
+custom payload sends its own prepare request, which isn't cached.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.

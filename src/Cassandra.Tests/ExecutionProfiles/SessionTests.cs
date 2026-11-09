@@ -15,6 +15,7 @@
 //
 
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 
 using Cassandra.Connections;
@@ -56,7 +57,7 @@ namespace Cassandra.Tests.ExecutionProfiles
                 SocketOptions = new SocketOptions().SetReadTimeoutMillis(60000)
             }.Build();
             Mock.Get(clusterMock).Setup(c => c.Configuration).Returns(config);
-            Mock.Get(requestHandlerMock).Setup(r => r.SendAsync()).Returns(Task.FromResult(new RowSet()));
+            Mock.Get(requestHandlerMock).Setup(r => r.SendAsync(It.IsAny<CancellationToken>())).Returns(Task.FromResult(new RowSet()));
 
             var session = new Session(clusterMock, config, null, serializer, null);
 
@@ -102,7 +103,7 @@ namespace Cassandra.Tests.ExecutionProfiles
                 SocketOptions = new SocketOptions().SetReadTimeoutMillis(60000)
             }.Build();
             Mock.Get(clusterMock).Setup(c => c.Configuration).Returns(config);
-            Mock.Get(requestHandlerMock).Setup(r => r.SendAsync()).Returns(Task.FromResult(new RowSet()));
+            Mock.Get(requestHandlerMock).Setup(r => r.SendAsync(It.IsAny<CancellationToken>())).Returns(Task.FromResult(new RowSet()));
 
             var session = new Session(clusterMock, config, null, serializer, null);
 
