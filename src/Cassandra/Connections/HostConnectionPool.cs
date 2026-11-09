@@ -90,7 +90,7 @@ namespace Cassandra.Connections
         private int _state = PoolState.Init;
         private HashedWheelTimer.ITimeout _newConnectionTimeout;
         private ConnectionOpenOperation _connectionOpenOperation;
-        private ShardingInfo _shardingInfo;
+        private ShardingInfo shardingInfo;
         private int _connectionIndex;
         private readonly int _maxRequestsPerConnection;
         private readonly PoolingOptions _poolingOptions;
@@ -110,16 +110,19 @@ namespace Cassandra.Connections
 
         private sealed class ConnectionOpenOperation
         {
-            private int _failureObservedByCaller;
+            private int _failureObserved;
 
             internal TaskCompletionSource<IConnection> Completion { get; } =
                 new TaskCompletionSource<IConnection>();
 
-            internal bool FailureObservedByCaller => Volatile.Read(ref _failureObservedByCaller) != 0;
+            internal bool TryObserveConsumedFailure()
+            {
+                return Interlocked.CompareExchange(ref _failureObserved, 1, 0) == 0;
+            }
 
             internal void MarkFailureObservedByCaller()
             {
-                Interlocked.Exchange(ref _failureObservedByCaller, 1);
+                Interlocked.Exchange(ref _failureObserved, 1);
             }
         }
 
@@ -256,7 +259,6 @@ namespace Cassandra.Connections
 
         private IConnection BorrowLeastBusyConnection(ShardedList<IConnection> connections, RoutingKey routingKey = null, int shardID = -1)
         {
-            var shardingInfo = Volatile.Read(ref _shardingInfo);
             if (shardingInfo != null)
             {
                 if (routingKey != null)
@@ -1001,19 +1003,15 @@ namespace Cassandra.Connections
             }
             catch (Exception ex)
             {
-                // The connection could not be opened
-                if (IsClosing)
-                {
-                    // don't mind, the pool is not supposed to be open
-                    return;
-                }
-
-                if (openOperation != null && !openOperation.FailureObservedByCaller)
+                // A shared background failure is consumed once, including during teardown.
+                if (openOperation != null && openOperation.TryObserveConsumedFailure())
                 {
                     try
                     {
                         HostConnectionPool.Logger.Info(
-                            "Connection to {0} could not be created and will be retried: {1}",
+                            IsClosing
+                                ? "Connection to {0} could not be created while the pool was closing: {1}"
+                                : "Connection to {0} could not be created and will be retried: {1}",
                             _host.Address,
                             ex);
                     }
@@ -1021,6 +1019,11 @@ namespace Cassandra.Connections
                     {
                         // Failed diagnostics must not prevent the consumed failure from being retried.
                     }
+                }
+
+                if (IsClosing)
+                {
+                    return;
                 }
 
                 if (schedule == null)
@@ -1143,7 +1146,6 @@ namespace Cassandra.Connections
                 var shardID = -1;
                 var shardAwarePort = 0;
                 var shardCount = 0;
-                var shardingInfo = Volatile.Read(ref _shardingInfo);
                 if (shardingInfo != null)
                 {
                     shardAwarePort = _config.ProtocolOptions.SslOptions != null ? shardingInfo.ScyllaShardAwarePortSSL : shardingInfo.ScyllaShardAwarePort;
@@ -1288,13 +1290,13 @@ namespace Cassandra.Connections
                 // It's the first time accessing or it has been recently set as UP
                 // CreateOpenConnection() supports concurrent calls
                 c = await CreateOpenConnection(true, false).ConfigureAwait(false);
+                UpdateShardingInfo(c);
             }
             catch (Exception)
             {
                 OnConnectionClosing();
                 throw;
             }
-            UpdateShardingInfo(c);
             StartCreatingConnection(null);
             return new ShardedList<IConnection>(new[] { c });
         }
@@ -1447,11 +1449,11 @@ namespace Cassandra.Connections
 
         private void UpdateShardingInfo(IConnection c)
         {
-            if (!_poolingOptions.GetDisableShardAwareness() && _shardingInfo == null && c.ShardingInfo() != null)
+            if (!_poolingOptions.GetDisableShardAwareness() && shardingInfo == null && c.ShardingInfo() != null)
             {
-                _shardingInfo = c.ShardingInfo();
+                shardingInfo = c.ShardingInfo();
                 var coreSize = _poolingOptions.GetCoreConnectionsPerHost(_distance);
-                var shardsCount = _shardingInfo == null ? 1 : _shardingInfo.ScyllaNrShards;
+                var shardsCount = shardingInfo == null ? 1 : shardingInfo.ScyllaNrShards;
 
                 var connectionsPerShard = HostConnectionPool.CeilingDivide(coreSize, shardsCount);
                 _expectedConnectionLength = shardsCount * connectionsPerShard;
@@ -1491,7 +1493,6 @@ namespace Cassandra.Connections
                 }
                 catch (Exception ex) when (!Utils.IsFatalException(ex))
                 {
-                    var shardingInfo = Volatile.Read(ref _shardingInfo);
                     HostConnectionPool.Logger.Warning(
                         "Pool #{0} for host {1} failed to open a warmup connection: {2} of {3} open, " +
                         "attempted shard: {4}, shard count: {5}, error: {6}",
