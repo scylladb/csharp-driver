@@ -354,7 +354,7 @@ namespace Cassandra.Requests
             while (TryGetNextHost(out var target) && !_session.IsDisposed)
             {
                 triedHosts[target.Host.Address] = null;
-                if (!TryValidateHost(target.Host, out var validHost))
+                if (!TryValidateHost(target, out var validHost))
                 {
                     continue;
                 }
@@ -369,14 +369,14 @@ namespace Cassandra.Requests
         /// Checks if the host is a valid candidate for the purpose of obtaining a connection.
         /// This method obtains the <see cref="HostDistance"/> from the load balancing policy.
         /// </summary>
-        /// <param name="host">Host to check.</param>
+        /// <param name="target">Host to check, with the shard the query plan chose for it.</param>
         /// <param name="validHost">Output parameter that will contain the <see cref="ValidHost"/> instance.</param>
         /// <returns><code>true</code> if the host is valid and <code>false</code> if not valid
         /// (see documentation of <see cref="ValidHost.New"/>)</returns>
-        private bool TryValidateHost(Host host, out ValidHost validHost)
+        private bool TryValidateHost(RoutingTarget target, out ValidHost validHost)
         {
-            var distance = _session.InternalCluster.RetrieveAndSetDistance(host);
-            validHost = ValidHost.New(host, distance);
+            var distance = _session.InternalCluster.RetrieveAndSetDistance(target.Host);
+            validHost = ValidHost.New(target.Host, distance, target.Shard);
             return validHost != null;
         }
 
@@ -406,18 +406,20 @@ namespace Cassandra.Requests
             }
 
             triedHosts[target.Host.Address] = null;
-            if (!TryValidateHost(target.Host, out var validHost))
+            if (!TryValidateHost(target, out var validHost))
             {
                 return null;
             }
 
-            var c = await GetConnectionToValidHostAsync(validHost, triedHosts, target.Shard ?? -1).ConfigureAwait(false);
+            var c = await GetConnectionToValidHostAsync(validHost, triedHosts).ConfigureAwait(false);
             return c;
         }
 
         /// <inheritdoc />
-        public Task<IConnection> GetConnectionToValidHostAsync(ValidHost validHost, IDictionary<IPEndPoint, Exception> triedHosts, int shardID = -1)
+        public Task<IConnection> GetConnectionToValidHostAsync(ValidHost validHost, IDictionary<IPEndPoint, Exception> triedHosts)
         {
+            // The shard the query plan chose, such as the shard that owns a tablet
+            var shardID = validHost.Shard ?? -1;
             return RequestHandler.GetConnectionFromHostAsync(validHost.Host, validHost.Distance, _session, triedHosts, Statement != null ? Statement.RoutingKey : null, shardID);
         }
 

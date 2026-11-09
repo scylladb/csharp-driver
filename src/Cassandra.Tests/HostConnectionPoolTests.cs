@@ -460,6 +460,29 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public async Task Borrow_Should_Use_The_Requested_Shard_When_There_Is_No_Routing_Key()
+        {
+            const int shardCount = 4;
+            _mock = GetPoolMock(null, GetConfig(1, 1));
+            _mock
+                .Setup(p => p.DoCreateAndOpen(It.IsAny<bool>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>()))
+                .Returns<bool, int, int, int>((isReconnection, shardId, shardAwarePort, count) =>
+                    Task.FromResult(GetShardedConnectionMock(shardId == -1 ? 0 : shardId, shardCount)));
+            var pool = _mock.Object;
+            pool.SetDistance(HostDistance.Local);
+            await pool.Warmup().ConfigureAwait(false);
+            Assert.AreEqual(shardCount, pool.OpenConnections);
+
+            // Without a routing key the pool used to pick a random shard, ignoring the requested one
+            for (var i = 0; i < 20; i++)
+            {
+                Assert.AreEqual(2, pool.BorrowExistingConnection(null, 2).ShardID);
+            }
+            // Without a routing key or a requested shard it picks any shard
+            Assert.NotNull(pool.BorrowExistingConnection(null));
+        }
+
+        [Test]
         public async Task ConsiderResizingPool_Should_Target_Shard_When_Core_Per_Shard_Is_Full()
         {
             const int shardCount = 4;

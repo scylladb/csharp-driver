@@ -19,6 +19,7 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Threading.Tasks;
+using Cassandra.Connections;
 using Cassandra.Metrics;
 using Cassandra.Metrics.Internal;
 using Cassandra.Metrics.Providers.Null;
@@ -203,6 +204,38 @@ namespace Cassandra.Tests
 
             await Assert.ThrowsAsync<NoHostAvailableException>(() => sut.GetNextConnectionAsync(triedHosts)).ConfigureAwait(false);
             CollectionAssert.AreEquivalent(new[] { host.Address }, triedHosts.Keys);
+        }
+
+        [Test]
+        public async Task Should_Get_A_Connection_To_The_Shard_Of_The_Query_Plan()
+        {
+            // For instance the shard that owns a tablet, which can differ from the shard of the routing key's token
+            var sessionMock = GetMockInternalSession();
+            var lbpMock = Mock.Of<ILoadBalancingPolicy>();
+            Mock.Get(sessionMock).SetupGet(m => m.Cluster.Configuration).Returns(RequestHandlerMockTests.GetConfig(lbpMock));
+            var target = new RoutingTarget(new Host(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9047), contactPoint: null), 3);
+            Mock.Get(lbpMock)
+                .Setup(m => m.NewQueryPlan(It.IsAny<string>(), It.IsAny<IStatement>()))
+                .Returns(new[] { target });
+            var connection = Mock.Of<IConnection>();
+            var pool = new Mock<IHostConnectionPool>();
+            pool
+                .Setup(p => p.GetConnectionFromHostAsync(
+                    It.IsAny<IDictionary<IPEndPoint, Exception>>(), It.IsAny<Func<string>>(), It.IsAny<RoutingKey>(), It.IsAny<int>()))
+                .ReturnsAsync(connection);
+            Mock.Get(sessionMock).Setup(m => m.GetOrCreateConnectionPool(target.Host, It.IsAny<HostDistance>())).Returns(pool.Object);
+            var triedHosts = new Dictionary<IPEndPoint, Exception>();
+
+            var requestTrackingInfoAndObserver = RequestHandler.CreateRequestObserver(sessionMock, null).GetAwaiter().GetResult();
+            var sut = new RequestHandler(sessionMock, new SerializerManager(ProtocolVersion.V4).GetCurrentSerializer(), requestTrackingInfoAndObserver.Item1, requestTrackingInfoAndObserver.Item2);
+            var validHost = sut.GetNextValidHost(triedHosts);
+
+            Assert.AreEqual(3, validHost.Shard);
+            Assert.AreSame(connection, await sut.GetConnectionToValidHostAsync(validHost, triedHosts).ConfigureAwait(false));
+            pool.Verify(
+                p => p.GetConnectionFromHostAsync(
+                    It.IsAny<IDictionary<IPEndPoint, Exception>>(), It.IsAny<Func<string>>(), It.IsAny<RoutingKey>(), 3),
+                Times.Once);
         }
     }
 }

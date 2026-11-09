@@ -50,6 +50,11 @@ namespace Cassandra.Requests
         /// </summary>
         private volatile Host _host;
 
+        /// <summary>
+        /// Shard of <see cref="_host"/> that the query plan chose, used again when retrying on the same host.
+        /// </summary>
+        private int? _shard;
+
         public RequestExecution(IRequestHandler parent, IInternalSession session, IRequest request, IRequestObserver requestObserver, SessionRequestInfo sessionRequestInfo)
         {
             _parent = parent;
@@ -92,7 +97,7 @@ namespace Cassandra.Requests
             try
             {
                 // host needs to be re-validated using the load balancing policy
-                _connection = await _parent.ValidateHostAndGetConnectionAsync(new RoutingTarget(host, null), _triedHosts).ConfigureAwait(false);
+                _connection = await _parent.ValidateHostAndGetConnectionAsync(new RoutingTarget(host, _shard), _triedHosts).ConfigureAwait(false);
                 if (_connection != null)
                 {
                     await SendAsync(_request, host, HandleResponseAsync).ConfigureAwait(false);
@@ -131,11 +136,13 @@ namespace Cassandra.Requests
                 }
 
                 _connection = connection;
+                _shard = validHost.Shard;
                 _host = validHost.Host;
                 await SendAsync(_request, validHost.Host, HandleResponseAsync).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
+                _shard = validHost.Shard;
                 _host = validHost.Host;
                 await HandleResponseAsync(RequestError.CreateClientError(ex, true), null, new NodeRequestInfo(validHost.Host, _sessionRequestInfo.PrepareRequest)).ConfigureAwait(false);
             }
