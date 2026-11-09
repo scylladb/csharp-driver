@@ -788,11 +788,13 @@ namespace Cassandra
         /// </remarks>
         /// <param name="addressTranslator">the translator to use.</param>
         /// <returns>this Builder</returns>
+        /// <exception cref="ArgumentNullException"><paramref name="addressTranslator"/> is null.</exception>
         /// <exception cref="InvalidOperationException">
         /// Client routes were configured on this builder with <see cref="WithClientRoutesConfig"/>.
         /// </exception>
         public Builder WithAddressTranslator(IAddressTranslator addressTranslator)
         {
+            ArgumentNullException.ThrowIfNull(addressTranslator);
             if (_clientRoutesConfig != null)
             {
                 throw new InvalidOperationException(

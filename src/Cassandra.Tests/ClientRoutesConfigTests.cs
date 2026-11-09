@@ -250,11 +250,35 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public void Should_AcceptNullAddressTranslatorWithoutClientRoutes()
+        public void Should_RejectNullAddressTranslatorBeforeChangingBuilderConfiguration()
         {
             var builder = Cluster.Builder();
 
-            Assert.That(builder.WithAddressTranslator(null), Is.SameAs(builder));
+            Assert.That(
+                delegate { builder.WithAddressTranslator(null); },
+                Throws.TypeOf<ArgumentNullException>().With.Property("ParamName").EqualTo("addressTranslator"));
+            Assert.That(builder.WithClientRoutesConfig(CreateConfig()), Is.SameAs(builder));
+            Assert.That(
+                delegate { builder.WithAddressTranslator(null); },
+                Throws.TypeOf<ArgumentNullException>().With.Property("ParamName").EqualTo("addressTranslator"));
+        }
+
+        [Test]
+        public void Should_UseLastClientRoutesConfiguration()
+        {
+            var builder = Cluster.Builder();
+            builder.WithClientRoutesConfig(CreateConfig());
+            var replacement = new ClientRoutesConfig(
+                new[] { new ClientRouteProxy("replacement") },
+                nativeTransportPort: 9142,
+                shardAwarenessEnabled: true);
+
+            Assert.That(builder.WithClientRoutesConfig(replacement), Is.SameAs(builder));
+            var options = builder.GetConfiguration().ClientRoutesRuntime.Options;
+            Assert.That(options.NativeTransportPort, Is.EqualTo(9142));
+            Assert.That(options.ShardAwarenessEnabled, Is.True);
+            Assert.That(options.Proxies, Has.Count.EqualTo(1));
+            Assert.That(options.Proxies[0], Is.SameAs(replacement.Proxies[0]));
         }
 
         [Test]
