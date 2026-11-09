@@ -1305,9 +1305,9 @@ namespace Cassandra.Tests.Requests
                 return HostDistance.Local;
             }
 
-            public IEnumerable<HostShard> NewQueryPlan(string keyspace, IStatement query)
+            public IEnumerable<RoutingTarget> NewQueryPlan(string keyspace, IStatement query)
             {
-                return Enumerable.Empty<HostShard>();
+                return Enumerable.Empty<RoutingTarget>();
             }
         }
 

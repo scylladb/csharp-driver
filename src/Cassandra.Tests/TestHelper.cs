@@ -732,9 +732,9 @@ namespace Cassandra.Tests
                 return _childPolicy.Distance(host);
             }
 
-            public IEnumerable<HostShard> NewQueryPlan(string keyspace, IStatement query)
+            public IEnumerable<RoutingTarget> NewQueryPlan(string keyspace, IStatement query)
             {
-                return !_useRoundRobin ? _hosts.Select(h => new HostShard(h, -1)) : _childPolicy.NewQueryPlan(keyspace, query);
+                return !_useRoundRobin ? _hosts.Select(h => new RoutingTarget(h, null)) : _childPolicy.NewQueryPlan(keyspace, query);
             }
         }
 
@@ -766,9 +766,9 @@ namespace Cassandra.Tests
                 return _distanceHandler(_cluster, host);
             }
 
-            public IEnumerable<HostShard> NewQueryPlan(string keyspace, IStatement query)
+            public IEnumerable<RoutingTarget> NewQueryPlan(string keyspace, IStatement query)
             {
-                return _queryPlanHandler(_cluster, keyspace, query).Select(h => new HostShard(h, -1));
+                return _queryPlanHandler(_cluster, keyspace, query).Select(h => new RoutingTarget(h, null));
             }
         }
     }

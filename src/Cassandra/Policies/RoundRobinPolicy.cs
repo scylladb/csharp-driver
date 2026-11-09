@@ -66,13 +66,13 @@ namespace Cassandra
         /// <param name="query"> the query for which to build the plan. </param>
         /// <returns>a new query plan, i.e. an iterator indicating which host to try
         ///  first for querying, which one to use as failover, etc...</returns>
-        public IEnumerable<HostShard> NewQueryPlan(string keyspace, IStatement query)
+        public IEnumerable<RoutingTarget> NewQueryPlan(string keyspace, IStatement query)
         {
             return NewQueryPlan(keyspace, query, query?.ShouldRouteAsLwt() == true);
         }
 
         /// <inheritdoc />
-        public IEnumerable<HostShard> NewQueryPlan(string keyspace, IStatement query, bool routeAsLwt)
+        public IEnumerable<RoutingTarget> NewQueryPlan(string keyspace, IStatement query, bool routeAsLwt)
         {
             //shallow copy the all hosts
             var hosts = (from h in _cluster.AllHosts() select h).ToArray();
@@ -90,7 +90,7 @@ namespace Cassandra
 
             for (var i = 0; i < hosts.Length; i++)
             {
-                yield return new HostShard(hosts[(startIndex + i) % hosts.Length], -1);
+                yield return new RoutingTarget(hosts[(startIndex + i) % hosts.Length], null);
             }
         }
     }

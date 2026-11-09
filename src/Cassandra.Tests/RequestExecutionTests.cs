@@ -286,7 +286,7 @@ namespace Cassandra.Tests
 
             // Setup successful second connection on the same host retry (different method call - ValidateHostAndGetConnectionAsync)
             Mock.Get(mockParent)
-                .Setup(m => m.ValidateHostAndGetConnectionAsync(new HostShard(validHost.Host, -1), It.IsAny<Dictionary<IPEndPoint, Exception>>()))
+                .Setup(m => m.ValidateHostAndGetConnectionAsync(new RoutingTarget(validHost.Host, null), It.IsAny<Dictionary<IPEndPoint, Exception>>()))
                 .ReturnsAsync(connection);
 
             Mock.Get(mockParent)
@@ -323,7 +323,7 @@ namespace Cassandra.Tests
                 m => m.GetConnectionToValidHostAsync(validHost, It.IsAny<Dictionary<IPEndPoint, Exception>>(), It.IsAny<int>()),
                 Times.Once);
             Mock.Get(mockParent).Verify(
-                m => m.ValidateHostAndGetConnectionAsync(new HostShard(validHost.Host, -1), It.IsAny<Dictionary<IPEndPoint, Exception>>()),
+                m => m.ValidateHostAndGetConnectionAsync(new RoutingTarget(validHost.Host, null), It.IsAny<Dictionary<IPEndPoint, Exception>>()),
                 Times.Once);
         }
 

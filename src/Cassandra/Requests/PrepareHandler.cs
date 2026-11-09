@@ -52,7 +52,7 @@ namespace Cassandra.Requests
         public async Task<PreparedStatement> Prepare(
             InternalPrepareRequest request,
             IInternalSession session,
-            IEnumerator<HostShard> queryPlan,
+            IEnumerator<RoutingTarget> queryPlan,
             string sessionKeyspace,
             string effectiveKeyspace)
         {
@@ -113,7 +113,7 @@ namespace Cassandra.Requests
 
         private async Task<PrepareResult> SendRequestToOneNode(
             IInternalSession session,
-            IEnumerator<HostShard> queryPlan,
+            IEnumerator<RoutingTarget> queryPlan,
             InternalPrepareRequest request,
             IRequestObserver observer,
             SessionRequestInfo info,
@@ -184,7 +184,7 @@ namespace Cassandra.Requests
 
         private async Task<Tuple<Host, IConnection>> GetNextConnection(
             IInternalSession session,
-            IEnumerator<HostShard> queryPlan,
+            IEnumerator<RoutingTarget> queryPlan,
             Dictionary<IPEndPoint, Exception> triedHosts,
             string connectionKeyspace)
         {
@@ -201,7 +201,7 @@ namespace Cassandra.Requests
             throw new NoHostAvailableException(triedHosts);
         }
 
-        private Host GetNextHost(IEnumerator<HostShard> queryPlan, out HostDistance distance)
+        private Host GetNextHost(IEnumerator<RoutingTarget> queryPlan, out HostDistance distance)
         {
             distance = HostDistance.Ignored;
             while (queryPlan.MoveNext())

@@ -39,6 +39,6 @@ namespace Cassandra
         /// transaction for routing purposes (e.g. always start from the same replica).
         /// </param>
         /// <returns>An iterator of hosts to try in order.</returns>
-        IEnumerable<HostShard> NewQueryPlan(string keyspace, IStatement query, bool routeAsLwt);
+        IEnumerable<RoutingTarget> NewQueryPlan(string keyspace, IStatement query, bool routeAsLwt);
     }
 }

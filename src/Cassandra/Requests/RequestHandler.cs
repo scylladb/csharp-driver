@@ -44,7 +44,7 @@ namespace Cassandra.Requests
         private readonly IInternalSession _session;
         private readonly IRequestResultHandler _requestResultHandler;
         private long _state;
-        private readonly IEnumerator<HostShard> _queryPlan;
+        private readonly IEnumerator<RoutingTarget> _queryPlan;
         private readonly Lock _queryPlanLock = new Lock();
         private readonly ICollection<IRequestExecution> _running = new CopyOnWriteList<IRequestExecution>();
         private ISpeculativeExecutionPlan _executionPlan;
@@ -107,14 +107,14 @@ namespace Cassandra.Requests
         /// In the special case when a Host is provided at Statement level, it will return a query plan with a single
         /// host.
         /// </summary>
-        private static IEnumerable<HostShard> GetQueryPlan(ISession session, IStatement statement, ILoadBalancingPolicy lbp, IRequestOptions requestOptions)
+        private static IEnumerable<RoutingTarget> GetQueryPlan(ISession session, IStatement statement, ILoadBalancingPolicy lbp, IRequestOptions requestOptions)
         {
             // Single host iteration
             var host = (statement as Statement)?.Host;
 
             if (host != null)
             {
-                return Enumerable.Repeat(new HostShard(host, -1), 1);
+                return Enumerable.Repeat(new RoutingTarget(host, null), 1);
             }
 
             // Determine whether to route as LWT: either the statement itself says so,
@@ -126,10 +126,10 @@ namespace Cassandra.Requests
 
             if (lbp is IExtendedLoadBalancingPolicy extendedLbp)
             {
-                return extendedLbp.NewQueryPlan(session.Keyspace, statement, routeAsLwt);
+                return extendedLbp.NewQueryPlan(session.Keyspace, statement, routeAsLwt).TakeWhileHostIsSet();
             }
 
-            return lbp.NewQueryPlan(session.Keyspace, statement);
+            return lbp.NewQueryPlan(session.Keyspace, statement).TakeWhileHostIsSet();
         }
 
         /// <inheritdoc />
@@ -332,27 +332,29 @@ namespace Cassandra.Requests
             return Interlocked.Read(ref _state) == RequestHandler.StateCompleted;
         }
 
-        private HostShard GetNextHost()
+        private bool TryGetNextHost(out RoutingTarget target)
         {
             // Lock to handle multiple threads from multiple executions to get a new host
             lock (_queryPlanLock)
             {
                 if (_queryPlan.MoveNext())
                 {
-                    return _queryPlan.Current;
+                    target = _queryPlan.Current;
+                    return true;
                 }
             }
-            return null;
+
+            target = default;
+            return false;
         }
 
         /// <inheritdoc />
         public ValidHost GetNextValidHost(Dictionary<IPEndPoint, Exception> triedHosts)
         {
-            HostShard hostShard;
-            while ((hostShard = GetNextHost()) != null && !_session.IsDisposed)
+            while (TryGetNextHost(out var target) && !_session.IsDisposed)
             {
-                triedHosts[hostShard.Host.Address] = null;
-                if (!TryValidateHost(hostShard.Host, out var validHost))
+                triedHosts[target.Host.Address] = null;
+                if (!TryValidateHost(target.Host, out var validHost))
                 {
                     continue;
                 }
@@ -381,11 +383,10 @@ namespace Cassandra.Requests
         /// <inheritdoc />
         public async Task<IConnection> GetNextConnectionAsync(Dictionary<IPEndPoint, Exception> triedHosts)
         {
-            HostShard hostShard;
             // While there is an available host
-            while ((hostShard = GetNextHost()) != null)
+            while (TryGetNextHost(out var target))
             {
-                var c = await ValidateHostAndGetConnectionAsync(hostShard, triedHosts).ConfigureAwait(false);
+                var c = await ValidateHostAndGetConnectionAsync(target, triedHosts).ConfigureAwait(false);
                 if (c == null)
                 {
                     continue;
@@ -397,20 +398,20 @@ namespace Cassandra.Requests
         }
 
         /// <inheritdoc />
-        public async Task<IConnection> ValidateHostAndGetConnectionAsync(HostShard hostShard, Dictionary<IPEndPoint, Exception> triedHosts)
+        public async Task<IConnection> ValidateHostAndGetConnectionAsync(RoutingTarget target, Dictionary<IPEndPoint, Exception> triedHosts)
         {
             if (_session.IsDisposed)
             {
                 throw new NoHostAvailableException(triedHosts);
             }
 
-            triedHosts[hostShard.Host.Address] = null;
-            if (!TryValidateHost(hostShard.Host, out var validHost))
+            triedHosts[target.Host.Address] = null;
+            if (!TryValidateHost(target.Host, out var validHost))
             {
                 return null;
             }
 
-            var c = await GetConnectionToValidHostAsync(validHost, triedHosts, hostShard.Shard).ConfigureAwait(false);
+            var c = await GetConnectionToValidHostAsync(validHost, triedHosts, target.Shard ?? -1).ConfigureAwait(false);
             return c;
         }
 

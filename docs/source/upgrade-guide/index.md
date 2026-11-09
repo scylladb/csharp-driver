@@ -478,6 +478,25 @@ driver writes its own should use its own logging instead. To receive the driver'
 messages, add an `ILoggerProvider` with `Diagnostics.AddLoggerProvider`, or set the level
 of `Diagnostics.CassandraTraceSwitch`.
 
+### `RoutingTarget` replaces `HostShard`
+
+Query plans and replica lookups return `RoutingTarget` values instead of `HostShard`
+objects: `ILoadBalancingPolicy.NewQueryPlan()`,
+`IExtendedLoadBalancingPolicy.NewQueryPlan()`, `Metadata.GetReplicas()` and
+`ICluster.GetReplicas()`. `RoutingTarget` is a `readonly record struct` with the same
+`Host` and `Shard` properties, but `Shard` is an `int?`: `null` replaces `-1`, which
+meant "let the connection pool choose the shard".
+
+| 3.x | 4.0 |
+|---|---|
+| `new HostShard(host, -1)` | `new RoutingTarget(host, null)` |
+| `new HostShard(host, shard)` | `new RoutingTarget(host, shard)` |
+| `target.Shard == -1` | `target.Shard == null` |
+| `target == null` | `target.Host == null`, for a `default(RoutingTarget)` |
+
+Two targets are equal when their host and shard are equal, as with `HostShard`. A
+query plan that yields `default(RoutingTarget)` ends there, as a `null` element did.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.

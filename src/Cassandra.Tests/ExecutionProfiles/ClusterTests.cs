@@ -363,9 +363,9 @@ namespace Cassandra.Tests.ExecutionProfiles
                 return HostDistance.Local;
             }
 
-            public IEnumerable<HostShard> NewQueryPlan(string keyspace, IStatement query)
+            public IEnumerable<RoutingTarget> NewQueryPlan(string keyspace, IStatement query)
             {
-                return _cluster.AllHosts().Select(h => new HostShard(h, -1));
+                return _cluster.AllHosts().Select(h => new RoutingTarget(h, null));
             }
         }
     }

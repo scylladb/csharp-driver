@@ -39,13 +39,13 @@ namespace Cassandra.IntegrationTests.Policies.Util
             return HostDistance.Local;
         }
 
-        public IEnumerable<HostShard> NewQueryPlan(string keyspace, IStatement query)
+        public IEnumerable<RoutingTarget> NewQueryPlan(string keyspace, IStatement query)
         {
-            var queryPlan = new List<HostShard>();
+            var queryPlan = new List<RoutingTarget>();
             var allHosts = _cluster.AllHosts();
             foreach (var host in _hosts)
             {
-                queryPlan.Add(new HostShard(allHosts.Single(h => h.Address.ToString() == host), -1));
+                queryPlan.Add(new RoutingTarget(allHosts.Single(h => h.Address.ToString() == host), null));
             }
             return queryPlan;
         }

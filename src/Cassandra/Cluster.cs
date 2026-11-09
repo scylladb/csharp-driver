@@ -488,20 +488,20 @@ namespace Cassandra
 
         /// <inheritdoc />
         [Obsolete("Use Metadata.GetReplicas(string keyspaceName, string tableName, byte[] partitionKey) for tablet-aware replica resolution.")]
-        public ICollection<HostShard> GetReplicas(byte[] partitionKey)
+        public ICollection<RoutingTarget> GetReplicas(byte[] partitionKey)
         {
             return Metadata.GetReplicas(null, null, partitionKey);
         }
 
         /// <inheritdoc />
         [Obsolete("Use Metadata.GetReplicas(string keyspaceName, string tableName, byte[] partitionKey) for tablet-aware replica resolution.")]
-        public ICollection<HostShard> GetReplicas(string keyspace, byte[] partitionKey)
+        public ICollection<RoutingTarget> GetReplicas(string keyspace, byte[] partitionKey)
         {
             return Metadata.GetReplicas(keyspace, null, partitionKey);
         }
 
         /// <inheritdoc />
-        ICollection<HostShard> IInternalCluster.GetRoutingReplicas(string keyspace, string table, byte[] partitionKey)
+        ICollection<RoutingTarget> IInternalCluster.GetRoutingReplicas(string keyspace, string table, byte[] partitionKey)
         {
             return Metadata.GetRoutingReplicas(keyspace, table, partitionKey);
         }
@@ -751,7 +751,7 @@ namespace Cassandra
                 return await handler.Prepare(
                     request,
                     session,
-                    lbp.NewQueryPlan(effectiveKeyspace, null).GetEnumerator(),
+                    lbp.NewQueryPlan(effectiveKeyspace, null).TakeWhileHostIsSet().GetEnumerator(),
                     sessionKeyspace,
                     effectiveKeyspace).ConfigureAwait(false);
             }

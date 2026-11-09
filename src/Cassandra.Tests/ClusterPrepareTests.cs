@@ -50,8 +50,8 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
-                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<HostShard>, string, string>((request, session, _, sessionKeyspace, effectiveKeyspace) =>
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
+                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<RoutingTarget>, string, string>((request, session, _, sessionKeyspace, effectiveKeyspace) =>
                     Task.FromResult(CreatePreparedStatement(
                         serializerManager,
                         sessionKeyspace == "ks1" ? (byte)1 : (byte)2,
@@ -75,7 +75,7 @@ namespace Cassandra.Tests
                 Assert.AreNotSame(first, fromDifferentKeyspace);
                 handlerMock.Verify(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()), Times.Exactly(2));
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()), Times.Exactly(2));
             }
         }
 
@@ -88,7 +88,7 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
                 .ReturnsAsync(preparedStatement);
 
             using (var cluster = CreateCluster(handlerMock.Object))
@@ -118,7 +118,7 @@ namespace Cassandra.Tests
                 Assert.AreSame(preparedStatement, await cacheHit.ConfigureAwait(false));
                 handlerMock.Verify(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()), Times.Once);
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()), Times.Once);
             }
         }
 
@@ -130,8 +130,8 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
-                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<HostShard>, string, string>(
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
+                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<RoutingTarget>, string, string>(
                     (request, _, __, sessionKeyspace, effectiveKeyspace) => Task.FromResult(CreatePreparedStatement(
                         serializerManager, 1, request.Query, sessionKeyspace)));
 
@@ -144,7 +144,7 @@ namespace Cassandra.Tests
                 Assert.IsNull(preparedStatement.Keyspace);
                 handlerMock.Verify(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), null, null), Times.Once);
+                    It.IsAny<IEnumerator<RoutingTarget>>(), null, null), Times.Once);
             }
         }
 
@@ -157,8 +157,8 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
-                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<HostShard>, string, string>(
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
+                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<RoutingTarget>, string, string>(
                     (request, _, __, sessionKeyspace, effectiveKeyspace) => Task.FromResult(
                         CreatePreparedStatement(serializerManager, 1, request.Query, sessionKeyspace)));
 
@@ -177,7 +177,7 @@ namespace Cassandra.Tests
                 Assert.AreEqual("ks1", preparedStatement.Keyspace);
                 handlerMock.Verify(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), session.Object,
-                    It.IsAny<IEnumerator<HostShard>>(), "ks1", "ks1"), Times.Once);
+                    It.IsAny<IEnumerator<RoutingTarget>>(), "ks1", "ks1"), Times.Once);
             }
         }
 
@@ -189,8 +189,8 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
-                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<HostShard>, string, string>((request, session, _, sessionKeyspace, effectiveKeyspace) =>
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
+                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<RoutingTarget>, string, string>((request, session, _, sessionKeyspace, effectiveKeyspace) =>
                     Task.FromResult(CreatePreparedStatement(
                         serializerManager,
                         sessionKeyspace == "ks1" ? (byte)1 : (byte)2,
@@ -211,13 +211,13 @@ namespace Cassandra.Tests
                 handlerMock.Verify(handler => handler.Prepare(
                     It.Is<InternalPrepareRequest>(request => request.Keyspace == null),
                     firstSession,
-                    It.IsAny<IEnumerator<HostShard>>(),
+                    It.IsAny<IEnumerator<RoutingTarget>>(),
                     "ks1",
                     "ks1"), Times.Once);
                 handlerMock.Verify(handler => handler.Prepare(
                     It.Is<InternalPrepareRequest>(request => request.Keyspace == null),
                     secondSession,
-                    It.IsAny<IEnumerator<HostShard>>(),
+                    It.IsAny<IEnumerator<RoutingTarget>>(),
                     "ks2",
                     "ks2"), Times.Once);
             }
@@ -232,13 +232,13 @@ namespace Cassandra.Tests
             var loadBalancingPolicy = new Mock<ILoadBalancingPolicy>();
             loadBalancingPolicy
                 .Setup(policy => policy.NewQueryPlan(It.IsAny<string>(), It.IsAny<IStatement>()))
-                .Returns(Enumerable.Empty<HostShard>());
+                .Returns(Enumerable.Empty<RoutingTarget>());
             var handlerMock = new Mock<IPrepareHandler>();
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
-                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<HostShard>, string, string>(
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
+                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<RoutingTarget>, string, string>(
                     (request, _, __, ___, effectiveKeyspace) => Task.FromResult(CreatePreparedStatement(
                         serializerManager, 1, request.Query, request.Keyspace)));
 
@@ -258,7 +258,7 @@ namespace Cassandra.Tests
                 handlerMock.Verify(handler => handler.Prepare(
                     It.Is<InternalPrepareRequest>(request => request.Keyspace == requestKeyspace),
                     session,
-                    It.IsAny<IEnumerator<HostShard>>(),
+                    It.IsAny<IEnumerator<RoutingTarget>>(),
                     sessionKeyspace,
                     requestKeyspace), Times.Once);
             }
@@ -274,8 +274,8 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
-                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<HostShard>, string, string>(
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
+                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<RoutingTarget>, string, string>(
                     async (request, _, __, sessionKeyspace, effectiveKeyspace) =>
                     {
                         prepareStarted.SetResult(sessionKeyspace);
@@ -304,7 +304,7 @@ namespace Cassandra.Tests
                         cluster, session, serializerManager, "SELECT * FROM table1").ConfigureAwait(false));
                 handlerMock.Verify(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), "ks1", "ks1"), Times.Once);
+                    It.IsAny<IEnumerator<RoutingTarget>>(), "ks1", "ks1"), Times.Once);
             }
         }
 
@@ -318,7 +318,7 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
                 .Returns(prepareCompletion.Task);
 
             using (var cluster = CreateCluster(handlerMock.Object))
@@ -330,7 +330,7 @@ namespace Cassandra.Tests
 
                 handlerMock.Verify(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()), Times.Once);
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()), Times.Once);
                 prepareCompletion.SetResult(preparedStatement);
 
                 var results = await Task.WhenAll(prepareTasks).ConfigureAwait(false);
@@ -348,7 +348,7 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
                 .Returns(() => ++attempts == 1
                     ? Task.FromException<PreparedStatement>(new InvalidOperationException("prepare failed"))
                     : Task.FromResult(preparedStatement));
@@ -376,8 +376,8 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
-                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<HostShard>, string, string>(
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
+                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<RoutingTarget>, string, string>(
                     (request, _, __, sessionKeyspace, effectiveKeyspace) => Task.FromResult(CreatePreparedStatement(
                         serializerManager,
                         (byte)Interlocked.Increment(ref attempts),
@@ -447,8 +447,8 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
-                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<HostShard>, string, string>((request, session, _, sessionKeyspace, effectiveKeyspace) =>
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
+                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<RoutingTarget>, string, string>((request, session, _, sessionKeyspace, effectiveKeyspace) =>
                 {
                     Interlocked.Increment(ref attempts);
                     return Task.FromResult(CreatePreparedStatement(
@@ -498,8 +498,8 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
-                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<HostShard>, string, string>(
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
+                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<RoutingTarget>, string, string>(
                     (request, _, __, sessionKeyspace, ___) =>
                         Task.FromResult(CreatePreparedStatement(
                             serializerManager, 1, request.Query, request.Keyspace ?? sessionKeyspace, request.Payload)));
@@ -514,7 +514,7 @@ namespace Cassandra.Tests
                 handlerMock.Verify(handler => handler.Prepare(
                     It.Is<InternalPrepareRequest>(request => request.Keyspace == null && ReferenceEquals(request.Payload, payload)),
                     session,
-                    It.IsAny<IEnumerator<HostShard>>(),
+                    It.IsAny<IEnumerator<RoutingTarget>>(),
                     "ks1",
                     "ks1"), Times.Once);
             }
@@ -531,7 +531,7 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
                 .Returns(() => Interlocked.Increment(ref attempts) == 1
                     ? firstPrepareCompletion.Task
                     : Task.FromResult(CreatePreparedStatement(serializerManager, 2)));
@@ -570,7 +570,7 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
                 .Returns(() => Interlocked.Increment(ref attempts) == 1
                     ? firstPrepareCompletion.Task
                     : Task.FromResult(replacement));
@@ -608,8 +608,8 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
-                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<HostShard>, string, string>((request, session, _, sessionKeyspace, effectiveKeyspace) =>
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
+                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<RoutingTarget>, string, string>((request, session, _, sessionKeyspace, effectiveKeyspace) =>
                     Task.FromResult(CreatePreparedStatement(
                         serializerManager,
                         (byte)Interlocked.Increment(ref attempts),
@@ -642,8 +642,8 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
-                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<HostShard>, string, string>(
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
+                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<RoutingTarget>, string, string>(
                     (request, _, __, ___, effectiveKeyspace) =>
                     {
                         var attempt = Interlocked.Increment(ref attempts);
@@ -683,8 +683,8 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
-                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<HostShard>, string, string>(
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
+                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<RoutingTarget>, string, string>(
                     (request, _, __, sessionKeyspace, effectiveKeyspace) => Task.FromResult(CreatePreparedStatement(
                         serializerManager,
                         (byte)Interlocked.Increment(ref attempts),
@@ -723,8 +723,8 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
-                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<HostShard>, string, string>(
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
+                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<RoutingTarget>, string, string>(
                     (request, _, __, sessionKeyspace, effectiveKeyspace) =>
                     {
                         var attempt = Interlocked.Increment(ref attempts);
@@ -772,8 +772,8 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
-                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<HostShard>, string, string>(
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
+                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<RoutingTarget>, string, string>(
                     (request, _, __, sessionKeyspace, effectiveKeyspace) =>
                     {
                         Interlocked.Increment(ref attempts);
@@ -841,8 +841,8 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
-                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<HostShard>, string, string>(
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
+                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<RoutingTarget>, string, string>(
                     (request, _, __, sessionKeyspace, effectiveKeyspace) => Task.FromResult(CreatePreparedStatement(
                         serializerManager, 1, request.Query, sessionKeyspace)));
 
@@ -902,8 +902,8 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
-                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<HostShard>, string, string>(
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
+                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<RoutingTarget>, string, string>(
                     (request, _, __, sessionKeyspace, effectiveKeyspace) =>
                     {
                         if (request.Query == "SELECT * FROM table2")
@@ -946,7 +946,7 @@ namespace Cassandra.Tests
                     handlerMock.Verify(handler => handler.Prepare(
                         It.Is<InternalPrepareRequest>(request => request.Query == "SELECT * FROM table2"),
                         It.IsAny<IInternalSession>(),
-                        It.IsAny<IEnumerator<HostShard>>(),
+                        It.IsAny<IEnumerator<RoutingTarget>>(),
                         It.IsAny<string>(),
                         It.IsAny<string>()), Times.Once);
                 }
@@ -968,8 +968,8 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
-                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<HostShard>, string, string>(
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
+                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<RoutingTarget>, string, string>(
                     (request, _, __, sessionKeyspace, effectiveKeyspace) =>
                     {
                         var attempt = Interlocked.Increment(ref attempts);
@@ -1030,7 +1030,7 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
                 .Returns(() => Interlocked.Increment(ref attempts) == 1
                     ? firstPrepareCompletion.Task
                     : Task.FromResult(replacement));
@@ -1068,8 +1068,8 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
-                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<HostShard>, string, string>(
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
+                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<RoutingTarget>, string, string>(
                     (request, _, __, sessionKeyspace, effectiveKeyspace) => request.Query == "SELECT * FROM table2"
                         ? secondPrepareCompletion.Task
                         : Task.FromResult(CreatePreparedStatement(
@@ -1106,8 +1106,8 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
-                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<HostShard>, string, string>(
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
+                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<RoutingTarget>, string, string>(
                     (request, _, __, sessionKeyspace, effectiveKeyspace) =>
                     {
                         var attempt = Interlocked.Increment(ref attempts);
@@ -1258,7 +1258,7 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
                 .Returns(() =>
                 {
                     var attempt = Interlocked.Increment(ref attempts);
@@ -1317,7 +1317,7 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
                 .Returns(() => Interlocked.Increment(ref attempts) == 1
                     ? firstPrepareCompletion.Task
                     : Task.FromResult(replacement));
@@ -1362,8 +1362,8 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
-                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<HostShard>, string, string>(
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
+                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<RoutingTarget>, string, string>(
                     (request, _, __, sessionKeyspace, effectiveKeyspace) =>
                     {
                         var attempt = Interlocked.Increment(ref attempts);
@@ -1439,7 +1439,7 @@ namespace Cassandra.Tests
             handlerMock
                 .Setup(handler => handler.Prepare(
                     It.IsAny<InternalPrepareRequest>(), It.IsAny<IInternalSession>(),
-                    It.IsAny<IEnumerator<HostShard>>(), It.IsAny<string>(), It.IsAny<string>()))
+                    It.IsAny<IEnumerator<RoutingTarget>>(), It.IsAny<string>(), It.IsAny<string>()))
                 .Returns(prepareCompletion.Task);
 
             using (var cluster = CreateCluster(handlerMock.Object))
@@ -1500,7 +1500,7 @@ namespace Cassandra.Tests
                 var loadBalancingPolicyMock = new Mock<ILoadBalancingPolicy>();
                 loadBalancingPolicyMock
                     .Setup(policy => policy.NewQueryPlan(It.IsAny<string>(), It.IsAny<IStatement>()))
-                    .Returns(Enumerable.Empty<HostShard>());
+                    .Returns(Enumerable.Empty<RoutingTarget>());
                 loadBalancingPolicy = loadBalancingPolicyMock.Object;
             }
             var configuration = new TestConfigurationBuilder
@@ -1584,7 +1584,7 @@ namespace Cassandra.Tests
             public async Task<PreparedStatement> Prepare(
                 InternalPrepareRequest request,
                 IInternalSession session,
-                IEnumerator<HostShard> queryPlan,
+                IEnumerator<RoutingTarget> queryPlan,
                 string sessionKeyspace,
                 string effectiveKeyspace)
             {

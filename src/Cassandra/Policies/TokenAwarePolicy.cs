@@ -81,16 +81,16 @@ namespace Cassandra
         /// <param name="loggedKeyspace">Keyspace on which the query is going to be executed</param>
         /// <param name="query"> the query for which to build the plan. </param>
         /// <returns>the new query plan.</returns>
-        public IEnumerable<HostShard> NewQueryPlan(string loggedKeyspace, IStatement query)
+        public IEnumerable<RoutingTarget> NewQueryPlan(string loggedKeyspace, IStatement query)
         {
             return NewQueryPlan(loggedKeyspace, query, query?.ShouldRouteAsLwt() == true);
         }
 
         /// <inheritdoc />
-        public IEnumerable<HostShard> NewQueryPlan(string loggedKeyspace, IStatement query, bool routeAsLwt)
+        public IEnumerable<RoutingTarget> NewQueryPlan(string loggedKeyspace, IStatement query, bool routeAsLwt)
         {
             var routingKey = query?.RoutingKey;
-            IEnumerable<HostShard> childIterator;
+            IEnumerable<RoutingTarget> childIterator;
             if (routingKey == null)
             {
                 childIterator = ChildPolicy is IExtendedLoadBalancingPolicy extChild
@@ -108,11 +108,11 @@ namespace Cassandra
             var replicas = (_cluster is IInternalCluster internalCluster
                                ? internalCluster.GetRoutingReplicas(keyspace, table, routingKey.RawRoutingKey)
                                : _cluster.Metadata.GetRoutingReplicas(keyspace, table, routingKey.RawRoutingKey))
-                           ?? new HostShard[0];
+                           ?? new RoutingTarget[0];
 
-            // Keyed by host only: tablet replicas carry their shard while the child policy yields shard -1
+            // Keyed by host only: tablet replicas carry their shard while the child policy yields no shard
             var localReplicaSet = new HashSet<Host>();
-            var localReplicaList = new List<HostShard>(replicas.Count());
+            var localReplicaList = new List<RoutingTarget>(replicas.Count());
             // We can't do it lazily as we need to balance the load between local replicas
             foreach (var localReplica in replicas.Where(hs => ChildPolicy.Distance(hs.Host) == HostDistance.Local))
             {

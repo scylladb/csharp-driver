@@ -71,8 +71,8 @@ namespace Cassandra.IntegrationTests.MetadataTests
                 sessionNotSync.ChangeKeyspace(keyspaceName);
                 sessionSync.ChangeKeyspace(keyspaceName);
 
-                ICollection<HostShard> replicasSync = null;
-                ICollection<HostShard> replicasNotSync = null;
+                ICollection<RoutingTarget> replicasSync = null;
+                ICollection<RoutingTarget> replicasNotSync = null;
                 // Without metadata synchronization the keyspace is not cached. On servers supporting tablets it is then
                 // unknown whether it uses tablets, so no replica is returned, otherwise the token map primary replica is.
                 var expectedReplicasNotSync = ClusterObjNotSync.Metadata.ControlConnection.SupportsTablets ? 0 : 1;

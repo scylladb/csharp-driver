@@ -60,7 +60,7 @@ namespace Cassandra.Tests
             }
 
             //test the same but in the following times
-            var followingRounds = new List<HostShard>();
+            var followingRounds = new List<RoutingTarget>();
             for (var i = 0; i < 10; i++)
             {
                 followingRounds.AddRange(policy.NewQueryPlan(null, new SimpleStatement()));
@@ -151,7 +151,7 @@ namespace Cassandra.Tests
             Assert.AreEqual(0, firstRound.Count(h => h.Host.Datacenter != "local"));
 
             //following rounds: test it multiple times
-            var followingRounds = new List<HostShard>();
+            var followingRounds = new List<RoutingTarget>();
             for (var i = 0; i < 10; i++)
             {
                 followingRounds.AddRange(policy.NewQueryPlan(null, new SimpleStatement()).ToList());
@@ -422,7 +422,7 @@ namespace Cassandra.Tests
                         //The host at with address == k || address == k + n
                         var address = TestHelper.GetLastAddressByte(h);
                         return address == i || address == i + n;
-                    }).Select(h => new HostShard(h, -1)).ToList();
+                    }).Select(h => new RoutingTarget(h, null)).ToList();
                 })
                 .Verifiable();
 
@@ -483,7 +483,7 @@ namespace Cassandra.Tests
                         //The host at with address == k and the next one
                         var address = TestHelper.GetLastAddressByte(h);
                         return address == i || address == i + 1;
-                    }).Select(h => new HostShard(h, -1)).ToList();
+                    }).Select(h => new RoutingTarget(h, null)).ToList();
                 })
                 .Verifiable();
 
@@ -510,11 +510,11 @@ namespace Cassandra.Tests
             clusterMock.Verify();
         }
 
-        [TestCase(-1, false, TestName = "TokenAwarePolicyDoesNotDuplicateReplicas_Vnodes")]
-        [TestCase(-1, true, TestName = "TokenAwarePolicyDoesNotDuplicateReplicas_Vnodes_Lwt")]
+        [TestCase(null, false, TestName = "TokenAwarePolicyDoesNotDuplicateReplicas_Vnodes")]
+        [TestCase(null, true, TestName = "TokenAwarePolicyDoesNotDuplicateReplicas_Vnodes_Lwt")]
         [TestCase(3, false, TestName = "TokenAwarePolicyDoesNotDuplicateReplicas_Tablets")]
         [TestCase(3, true, TestName = "TokenAwarePolicyDoesNotDuplicateReplicas_Tablets_Lwt")]
-        public void TokenAwarePolicyDoesNotDuplicateReplicasFromChildPolicy(int replicaShard, bool routeAsLwt)
+        public void TokenAwarePolicyDoesNotDuplicateReplicasFromChildPolicy(int? replicaShard, bool routeAsLwt)
         {
             var hostList = new List<Host>
             {
@@ -528,10 +528,10 @@ namespace Cassandra.Tests
                 .Setup(c => c.AllHosts())
                 .Returns(hostList);
             // Hosts 1 and 2 are replicas; for tablets they carry the shard that owns the tablet,
-            // while the child policy always yields hosts with shard -1
+            // while the child policy always yields hosts without a shard
             clusterMock
                 .Setup(c => c.GetRoutingReplicas(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<byte[]>()))
-                .Returns(new List<HostShard> { new HostShard(hostList[0], replicaShard), new HostShard(hostList[1], replicaShard) });
+                .Returns(new List<RoutingTarget> { new RoutingTarget(hostList[0], replicaShard), new RoutingTarget(hostList[1], replicaShard) });
 
             var policy = new TokenAwarePolicy(new DCAwareRoundRobinPolicy("dc1"));
             policy.Initialize(clusterMock.Object);
@@ -544,7 +544,7 @@ namespace Cassandra.Tests
             CollectionAssert.AreEquivalent(new[] { hostList[0], hostList[1] }, hosts.Take(2).Select(h => h.Host));
             Assert.That(hosts.Take(2).Select(h => h.Shard), Is.All.EqualTo(replicaShard));
             Assert.AreEqual(hostList[2], hosts[2].Host);
-            Assert.AreEqual(-1, hosts[2].Shard);
+            Assert.IsNull(hosts[2].Shard);
         }
 
         [Test]
@@ -557,7 +557,7 @@ namespace Cassandra.Tests
                 .Returns(new List<Host>());
             clusterMock
                 .Setup(c => c.GetRoutingReplicas(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<byte[]>()))
-                .Returns(new List<HostShard>());
+                .Returns(new List<RoutingTarget>());
             var policy = new TokenAwarePolicy(new RoundRobinPolicy());
             policy.Initialize(clusterMock.Object);
 

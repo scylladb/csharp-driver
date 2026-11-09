@@ -87,7 +87,7 @@ namespace Cassandra.Requests
         /// <param name="triedHosts">Hosts for which there were attempts to connect and send the request.</param>
         /// <exception cref="InvalidQueryException">When the keyspace is not valid</exception>
         /// <exception cref="NoHostAvailableException">If every host from the query plan is unavailable.</exception>
-        Task<IConnection> ValidateHostAndGetConnectionAsync(HostShard host, Dictionary<IPEndPoint, Exception> triedHosts);
+        Task<IConnection> ValidateHostAndGetConnectionAsync(RoutingTarget host, Dictionary<IPEndPoint, Exception> triedHosts);
 
         Task<RowSet> SendAsync();
 

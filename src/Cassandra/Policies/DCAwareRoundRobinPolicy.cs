@@ -169,13 +169,13 @@ namespace Cassandra
         /// <param name="query"> the query for which to build the plan. </param>
         /// <returns>a new query plan, i.e. an iterator indicating which host to try
         ///  first for querying, which one to use as failover, etc...</returns>
-        public IEnumerable<HostShard> NewQueryPlan(string keyspace, IStatement query)
+        public IEnumerable<RoutingTarget> NewQueryPlan(string keyspace, IStatement query)
         {
             return NewQueryPlan(keyspace, query, query?.ShouldRouteAsLwt() == true);
         }
 
         /// <inheritdoc />
-        public IEnumerable<HostShard> NewQueryPlan(string keyspace, IStatement query, bool routeAsLwt)
+        public IEnumerable<RoutingTarget> NewQueryPlan(string keyspace, IStatement query, bool routeAsLwt)
         {
             var startIndex = 0;
             if (!routeAsLwt)
@@ -191,7 +191,7 @@ namespace Cassandra
             //Round-robin through local nodes
             for (var i = 0; i < localHosts.Count; i++)
             {
-                yield return new HostShard(localHosts[(startIndex + i) % localHosts.Count], -1);
+                yield return new RoutingTarget(localHosts[(startIndex + i) % localHosts.Count], null);
             }
         }
 
