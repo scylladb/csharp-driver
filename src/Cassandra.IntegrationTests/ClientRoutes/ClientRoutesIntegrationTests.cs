@@ -200,7 +200,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
         }
 
         [Test]
-        public async Task FailedTcpConnectionOnFirstProxyFallsThroughToSecondProxy()
+        public async Task FirstProxyAcceptingThenClosingFallsThroughToSecondProxy()
         {
             Dictionary<Guid, TcpRelay> failingRelays = null;
             Dictionary<Guid, TcpRelay> liveRelays = null;
@@ -390,12 +390,13 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             }
         }
 
-        [Test]
-        public async Task ProxyProtocolRelayExercisesBothShardAwarenessModes()
+        [TestCase(false, ProxyProtocolPort)]
+        [TestCase(true, ShardAwareProxyProtocolPort)]
+        public async Task ProxyProtocolRelayUsesListenerForShardAwarenessMode(bool shardAwarenessEnabled, int targetPort)
         {
             var relays = StartRelays(
                 _nodes,
-                ShardAwareProxyProtocolPort,
+                targetPort,
                 TcpRelayMode.ProxyProtocolV2);
             try
             {
@@ -403,37 +404,22 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                     .ReplaceAsync(CreateEntries(PrimaryConnectionId, _nodes, relays, "127.0.0.1"))
                     .ConfigureAwait(false);
 
-                var disabledConfig = new ClientRoutesConfig(
+                var config = new ClientRoutesConfig(
                     new[] { new ClientRouteProxy(PrimaryConnectionId) },
-                    shardAwarenessEnabled: false);
-                using (var cluster = BuildClient(disabledConfig))
+                    shardAwarenessEnabled: shardAwarenessEnabled);
+                using (var cluster = BuildClient(config))
                 using (var session = cluster.Connect())
                 {
                     AssertQueriesLandOnIntendedHosts(session, _nodes);
                     Assert.IsTrue(relays.Values.All(relay => relay.ForwardedConnectionCount > 0));
-                    Assert.IsTrue(
-                        relays.Values.All(relay => relay.OpenConnectionCount == 1),
-                        "Disabling routed shard awareness should keep one core connection per host.");
-                }
+                    if (!shardAwarenessEnabled)
+                    {
+                        Assert.IsTrue(
+                            relays.Values.All(relay => relay.OpenConnectionCount == 1),
+                            "Disabling routed shard awareness should keep one core connection per host.");
+                        return;
+                    }
 
-                await ClientRoutesTestSupport.WaitUntilAsync(
-                        () => relays.Values.All(relay => relay.OpenConnectionCount == 0),
-                        TimeSpan.FromSeconds(5),
-                        TimeSpan.FromMilliseconds(100),
-                        "Connections from the shard-awareness-disabled cluster did not close.")
-                    .ConfigureAwait(false);
-                foreach (var relay in relays.Values)
-                {
-                    relay.ResetObservations();
-                }
-
-                var enabledConfig = new ClientRoutesConfig(
-                    new[] { new ClientRouteProxy(PrimaryConnectionId) },
-                    shardAwarenessEnabled: true);
-                using (var cluster = BuildClient(enabledConfig))
-                using (var session = cluster.Connect())
-                {
-                    AssertQueriesLandOnIntendedHosts(session, _nodes);
                     IReadOnlyDictionary<Guid, int> shardCounts = null;
                     await ClientRoutesTestSupport.WaitUntilAsync(
                             () => (shardCounts = GetShardCountsWhenPoolsCoverServerReportedShardSets(session)) != null,
@@ -695,7 +681,8 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 }
 
                 var shardCount = shardingInfos[0].ScyllaNrShards;
-                if (shardCount <= 0 || shardingInfos.Any(info => info.ScyllaNrShards != shardCount))
+                Assert.Greater(shardCount, 1, "Source-port shard coverage requires a Scylla cluster with at least two shards.");
+                if (shardingInfos.Any(info => info.ScyllaNrShards != shardCount))
                 {
                     return null;
                 }

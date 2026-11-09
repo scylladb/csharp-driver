@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Net.Security;
@@ -53,6 +54,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             new ConcurrentDictionary<long, RelayConnection>();
         private readonly ConcurrentQueue<int> _acceptedSourcePorts = new ConcurrentQueue<int>();
         private readonly ConcurrentQueue<string> _requestedServerNames = new ConcurrentQueue<string>();
+        private readonly ConcurrentQueue<Exception> _failures = new ConcurrentQueue<Exception>();
         private readonly CancellationTokenSource _cancellation = new CancellationTokenSource();
         private readonly TcpListener _listener;
         private readonly IPEndPoint _target;
@@ -97,6 +99,8 @@ namespace Cassandra.IntegrationTests.ClientRoutes
         public IReadOnlyCollection<int> AcceptedSourcePorts => _acceptedSourcePorts.ToArray();
 
         public IReadOnlyCollection<string> RequestedServerNames => _requestedServerNames.ToArray();
+
+        public IReadOnlyCollection<Exception> Failures => _failures.ToArray();
 
         public void DisableForwarding()
         {
@@ -159,15 +163,6 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 }
                 _cancellation.Dispose();
             }
-        }
-
-        private static bool IsExpectedRelayException(Exception ex)
-        {
-            return ex is SocketException ||
-                   ex is ObjectDisposedException ||
-                   ex is InvalidOperationException ||
-                   ex is AuthenticationException ||
-                   ex is System.IO.IOException;
         }
 
         private static byte[] CreateProxyProtocolV2Header(IPEndPoint source, IPEndPoint destination)
@@ -281,10 +276,16 @@ namespace Cassandra.IntegrationTests.ClientRoutes
 
                 var upstreamCopy = clientStream.CopyToAsync(upstreamStream);
                 var downstreamCopy = upstreamStream.CopyToAsync(clientStream);
-                await Task.WhenAny(upstreamCopy, downstreamCopy).ConfigureAwait(false);
+                var completedCopy = await Task.WhenAny(upstreamCopy, downstreamCopy).ConfigureAwait(false);
+                await completedCopy.ConfigureAwait(false);
             }
-            catch (Exception ex) when (IsExpectedRelayException(ex))
+            catch (Exception ex) when (!Utils.IsFatalException(ex))
             {
+                if (Volatile.Read(ref _disposed) == 0 && Volatile.Read(ref _forwardingEnabled) != 0)
+                {
+                    _failures.Enqueue(ex);
+                    Trace.TraceError("Client-routes {0} relay to {1} failed: {2}", _mode, _target, ex);
+                }
             }
             finally
             {

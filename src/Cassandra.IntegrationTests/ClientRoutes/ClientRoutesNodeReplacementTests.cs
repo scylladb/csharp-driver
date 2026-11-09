@@ -147,7 +147,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                                       routes.Any(route => route.Port == replacementRoutePort),
                                 TimeSpan.FromSeconds(30),
                                 TimeSpan.FromMilliseconds(250),
-                                "The replacement Host ID was visible before its client route was refreshed.")
+                                "The replacement host's client route was not observed within 30 seconds.")
                             .ConfigureAwait(false);
 
                         relays[replacedNode.HostId].ResetObservations();
@@ -276,6 +276,10 @@ namespace Cassandra.IntegrationTests.ClientRoutes
 
         private async Task RecreateNodeAtSameAddressAsync(int nodeId, string address, Guid replacedHostId)
         {
+            Assert.AreEqual(
+                _testCluster.ClusterIpPrefix + nodeId.ToString(CultureInfo.InvariantCulture),
+                address,
+                "The replacement node must reuse its original CCM address.");
             _testCluster.StopForce(nodeId);
             await ClientRoutesTestSupport.WaitUntilAsync(
                     () => IsNodeDownInNodetool(address),
@@ -286,13 +290,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             _testCluster.Remove(nodeId);
             _testCluster.SwitchToThisCluster();
 
-            TestClusterManager.Executor.ExecuteCcm(
-                string.Format(
-                    CultureInfo.InvariantCulture,
-                    "add node{0} -i {1} -j {2} -b --scylla",
-                    nodeId,
-                    address,
-                    7000 + (100 * nodeId)));
+            _testCluster.BootstrapNode(nodeId, start: false);
             TestClusterManager.Executor.ExecuteCcm(
                 string.Format(
                     CultureInfo.InvariantCulture,
