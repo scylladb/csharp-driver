@@ -81,7 +81,12 @@ namespace Cassandra.Tests
             cluster.Setup(value => value.AllHosts()).Returns(hosts);
             cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>()))
                 .Returns(HostDistance.Local);
-            cluster.SetupGet(value => value.Metadata).Returns(new Metadata(config));
+            var metadata = new Metadata(config);
+            foreach (var host in hosts)
+            {
+                metadata.AddHost(host.Address);
+            }
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
             var session = new Session(cluster.Object, config, null, SerializerManager.Default, null);
 
             var actual = await Assert.ThrowsAsync<OutOfMemoryException>(
@@ -130,7 +135,7 @@ namespace Cassandra.Tests
         [TestCase(false, true)]
         [TestCase(true, false)]
         [TestCase(true, true)]
-        public async Task Should_WarmUpDownHostsAndReportFailures(
+        public async Task Should_WarmUpDownHostsWhenAnotherHostMayFail(
             bool clientRoutesEnabled,
             bool failWarmup)
         {
@@ -343,6 +348,8 @@ namespace Cassandra.Tests
 
                 Assert.AreSame(failure, ex);
                 pool.Verify(value => value.Warmup(), Times.Never);
+                pool.Verify(value => value.Dispose(), Times.Once);
+                Assert.IsEmpty(((IInternalSession)session).GetPools());
             }
         }
 
@@ -551,9 +558,11 @@ namespace Cassandra.Tests
             }
         }
 
-        [TestCase(false)]
-        [TestCase(true)]
-        public void Should_UseCurrentHostAndDistanceForReplacementOnlyWithClientRoutes(bool clientRoutesEnabled)
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public void Should_UseCurrentPoolOwnerAndClientRoutesDistanceForReplacement(bool clientRoutesEnabled, bool poolRemovalCompleted)
         {
             var address = new IPEndPoint(IPAddress.Parse("127.0.0.9"), 9042);
             var oldHostId = Guid.NewGuid();
@@ -594,15 +603,24 @@ namespace Cassandra.Tests
                 var oldPool = internalSession.GetOrCreateConnectionPool(oldHost, HostDistance.Local);
 
                 metadata.RemoveHost(address);
-                cluster.Raise(value => value.HostRemoved += null, oldHost);
+                if (poolRemovalCompleted)
+                {
+                    cluster.Raise(value => value.HostRemoved += null, oldHost);
+                }
                 var replacementHost = metadata.AddHost(address);
                 replacementHost.SetInfo(CreateHostInfo(replacementHostId));
 
                 var replacementPool = internalSession.GetOrCreateConnectionPool(oldHost, HostDistance.Local);
 
+                if (!poolRemovalCompleted)
+                {
+                    // A delayed notification for the retired Host must not remove its replacement's pool.
+                    cluster.Raise(value => value.HostRemoved += null, oldHost);
+                }
+                Assert.AreSame(replacementPool, internalSession.GetPools().Single().Value);
                 Assert.AreNotSame(oldPool, replacementPool);
                 Assert.AreSame(oldHost, createdHosts[0]);
-                Assert.AreSame(clientRoutesEnabled ? replacementHost : oldHost, createdHosts[1]);
+                Assert.AreSame(replacementHost, createdHosts[1]);
                 var expectedDistance = clientRoutesEnabled ? HostDistance.Remote : HostDistance.Local;
                 Mock.Get(replacementPool).Verify(value => value.SetDistance(expectedDistance), Times.Once);
                 cluster.Verify(value => value.RetrieveAndSetDistance(It.Is<Host>(host => ReferenceEquals(host, replacementHost))),
@@ -676,7 +694,7 @@ namespace Cassandra.Tests
         [TestCase(false, true)]
         [TestCase(true, false)]
         [TestCase(true, true)]
-        public void Should_RejectRevivedHostMissingFromMetadataOnlyWithClientRoutes(
+        public void Should_RejectRemovedHostMissingFromMetadata(
             bool clientRoutesEnabled,
             bool poolRemovalCompleted)
         {
@@ -716,34 +734,19 @@ namespace Cassandra.Tests
 
                 // HostConnectionPool.CreateOrScheduleReconnectAsync can complete a successful open,
                 // then call BringUpIfDown after removal. A retained query plan still holds this Host.
-                Assert.IsTrue(host.BringUpIfDown());
+                Assert.IsFalse(host.BringUpIfDown());
                 Assert.IsNull(metadata.GetHost(host.Address));
 
-                if (clientRoutesEnabled)
-                {
-                    var ex = Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
-                        internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
-                    Assert.AreEqual(SocketError.NotConnected, ex.SocketErrorCode);
-                }
-                else
-                {
-                    Assert.AreSame(pool, internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
-                }
+                var ex = Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
+                    internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+                Assert.AreEqual(SocketError.NotConnected, ex.SocketErrorCode);
 
-                var expectedCreations = !clientRoutesEnabled && poolRemovalCompleted ? 2 : 1;
                 poolFactory.Verify(value => value.Create(
                     host,
                     config,
                     It.IsAny<ISerializerManager>(),
                     It.IsAny<IObserverFactory>(),
-                    It.IsAny<TokenFactory>()), Times.Exactly(expectedCreations));
-                cluster.Verify(value => value.RetrieveAndSetDistance(It.IsAny<Host>()),
-                    clientRoutesEnabled ? Times.Once() : Times.Never());
-                if (!clientRoutesEnabled)
-                {
-                    // Only creation reads metadata for its token factory; cached lookup remains unchanged.
-                    cluster.VerifyGet(value => value.Metadata, Times.Exactly(expectedCreations));
-                }
+                    It.IsAny<TokenFactory>()), Times.Once);
             }
         }
 
@@ -785,9 +788,74 @@ namespace Cassandra.Tests
                     It.IsAny<TokenFactory>()), Times.Once);
                 Mock.Get(pool).Verify(value => value.SetDistance(distance), Times.Once);
 
-                // Pool creation obtains the token factory; selection and reuse need no metadata lookup.
-                cluster.VerifyGet(value => value.Metadata, Times.Once);
+                // Both modes check membership; only client routes re-evaluates policy distance.
                 cluster.Verify(value => value.RetrieveAndSetDistance(It.IsAny<Host>()), Times.Never);
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_RejectPoolLookupAfterShutdown(bool clientRoutesEnabled)
+        {
+            var pool = Mock.Of<IHostConnectionPool>();
+            Mock.Get(pool).Setup(value => value.Warmup()).Returns(Task.CompletedTask);
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>())).Returns(pool);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object,
+                ClientRoutesOptions = clientRoutesEnabled
+                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    : null
+            }.Build();
+            using var session = CreateWarmupSession(config, "shutdown-pool-test");
+            var internalSession = (IInternalSession)session;
+            await internalSession.Init().ConfigureAwait(false);
+            var host = internalSession.InternalCluster.AllHosts().Single();
+            Assert.AreEqual(1, internalSession.GetPools().Count());
+
+            await session.ShutdownAsync().ConfigureAwait(false);
+
+            Assert.IsEmpty(internalSession.GetPools());
+            Assert.Throws<ObjectDisposedException>(() =>
+                internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+            Mock.Get(pool).Verify(value => value.Dispose(), Times.Once);
+            poolFactory.Verify(value => value.Create(
+                It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>()), Times.Once);
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_SkipWarmupWhenShutdownFollowsHostSelection(bool clientRoutesEnabled)
+        {
+            var poolFactory = new Mock<IHostConnectionPoolFactory>(MockBehavior.Strict);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object,
+                ClientRoutesOptions = clientRoutesEnabled
+                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    : null
+            }.Build();
+            using var metadata = new Metadata(config);
+            metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            cluster.Setup(value => value.AllHosts()).Returns(() => metadata.AllHosts());
+            Session session = null;
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(() =>
+            {
+                session.ShutdownAsync().GetAwaiter().GetResult();
+                return HostDistance.Local;
+            });
+            using (session = new Session(cluster.Object, config, null, SerializerManager.Default, "shutdown-warmup-test"))
+            {
+                await ((IInternalSession)session).Init().ConfigureAwait(false);
+                Assert.IsTrue(session.IsDisposed);
+                Assert.IsEmpty(((IInternalSession)session).GetPools());
+                poolFactory.VerifyNoOtherCalls();
             }
         }
 
@@ -801,25 +869,6 @@ namespace Cassandra.Tests
                 { "release_version", "2026.1" },
                 { "tokens", new string[0] }
             });
-        }
-
-        private sealed class ConsumedWarmupTraceListener : LoggingTests.TestTraceListener
-        {
-            private readonly bool _throwFromDiagnostic;
-
-            public ConsumedWarmupTraceListener(bool throwFromDiagnostic)
-            {
-                _throwFromDiagnostic = throwFromDiagnostic;
-            }
-
-            public override void WriteLine(string message)
-            {
-                base.WriteLine(message);
-                if (_throwFromDiagnostic && message.Contains("initial warmup failure at "))
-                {
-                    throw new InvalidOperationException("warmup diagnostic sink failed");
-                }
-            }
         }
 
         private static Session CreateWarmupSession(Configuration config, string sessionName)
