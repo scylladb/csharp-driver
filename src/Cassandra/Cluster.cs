@@ -260,6 +260,14 @@ namespace Cassandra
                     // Only abort the async operations when at least twice the time for ConnectTimeout per host passed
                     var initialAbortTimeout = Configuration.SocketOptions.ConnectTimeoutMillis * 2 * _metadata.Hosts.Count;
                     initialAbortTimeout = Math.Max(initialAbortTimeout, Configuration.SocketOptions.MetadataAbortTimeout);
+                    if (_clientRoutesInitTask != null && _clientRoutesInitTask.IsFaulted &&
+                        (_clientRoutesInitTask.Exception.InnerException is NoHostAvailableException ||
+                         _clientRoutesInitTask.Exception.InnerException is TimeoutException))
+                    {
+                        // A previous caller may have stopped waiting before this recoverable failure.
+                        // Start a fresh attempt for this caller rather than replaying that failure.
+                        _clientRoutesInitTask = null;
+                    }
                     var initTask = Configuration.ClientRoutesRuntime == null
                         ? _controlConnection.InitAsync()
                         : _clientRoutesInitTask ?? (_clientRoutesInitTask = _controlConnection.InitAsync());
@@ -641,7 +649,7 @@ namespace Cassandra
             {
                 DisposeControlConnectionOnce();
             }
-            catch (Exception disposeException)
+            catch (Exception disposeException) when (!Utils.IsFatalException(disposeException))
             {
                 // The initialization exception is the terminal cause. Cleanup failures must not
                 // replace it for either the current caller or later initialization attempts.

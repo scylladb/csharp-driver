@@ -181,6 +181,26 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public void TerminalInitializationFailureDoesNotSuppressFatalCleanupFailure()
+        {
+            var terminalFailure = new InvalidOperationException("terminal initialization failure");
+            var fatalCleanupFailure = new OutOfMemoryException("fatal cleanup failure");
+            var controlConnection = new Mock<IControlConnection>();
+            controlConnection.Setup(value => value.InitAsync()).Returns(Task.FromException(terminalFailure));
+            controlConnection.Setup(value => value.Dispose()).Throws(fatalCleanupFailure);
+            var configuration = CreateClientRoutesClusterConfiguration(controlConnection.Object, _ => { });
+
+            using (var cluster = CreateCluster(configuration))
+            {
+                Assert.AreSame(fatalCleanupFailure, Assert.Throws<OutOfMemoryException>(() => _ = cluster.Metadata));
+                var cached = Assert.Throws<InitFatalErrorException>(() => _ = cluster.Metadata);
+                Assert.AreSame(terminalFailure, cached.InnerException);
+                controlConnection.Verify(value => value.Dispose(), Times.Once);
+            }
+            controlConnection.Verify(value => value.Dispose(), Times.Once);
+        }
+
+        [Test]
         public async Task InitializationTimeoutPreservesOrdinaryLifecycleAndDiagnostic()
         {
             var initCompletion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -197,8 +217,7 @@ namespace Cassandra.Tests
                 ControlConnectionFactory = CreateControlConnectionFactory(controlConnection.Object),
                 SocketOptions = new SocketOptions().SetConnectTimeoutMillis(1).SetMetadataAbortTimeout(10)
             }.Build();
-            var cluster = CreateCluster(configuration);
-            try
+            using (var cluster = CreateCluster(configuration))
             {
                 var timeout = Assert.Throws<TimeoutException>(() => _ = cluster.Metadata);
                 var cached = Assert.Throws<InitFatalErrorException>(() => _ = cluster.Metadata);
@@ -215,10 +234,6 @@ namespace Cassandra.Tests
                 var finalFailure = Assert.Throws<InitFatalErrorException>(() => _ = cluster.Metadata);
                 Assert.AreSame(lateFailure, finalFailure.InnerException);
                 Assert.AreEqual(0, disposeCount);
-            }
-            finally
-            {
-                cluster.Dispose();
             }
             Assert.AreEqual(1, disposeCount);
         }
@@ -246,8 +261,9 @@ namespace Cassandra.Tests
             controlConnection.Verify(c => c.Dispose(), Times.Once);
         }
 
-        [Test]
-        public void ClientRoutesInitializationCanRetryAfterTimedOutSetupFailsToFindAHost()
+        [TestCase(false)]
+        [TestCase(true)]
+        public void ClientRoutesInitializationCanRetryAfterTimedOutSetupFailsRecoverably(bool setupTimeout)
         {
             var initCompletion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var controlConnection = new Mock<IControlConnection>();
@@ -258,9 +274,10 @@ namespace Cassandra.Tests
             using (var cluster = CreateCluster(configuration))
             {
                 Assert.Throws<TimeoutException>(() => _ = cluster.Metadata);
-                var failure = new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>());
+                Exception failure = setupTimeout
+                    ? new TimeoutException("late setup timeout")
+                    : new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>());
                 initCompletion.TrySetException(failure);
-                Assert.AreSame(failure, Assert.Throws<NoHostAvailableException>(() => _ = cluster.Metadata));
                 controlConnection.Verify(c => c.Dispose(), Times.Never);
 
                 controlConnection.Setup(c => c.InitAsync()).Returns(Task.CompletedTask);
@@ -339,9 +356,7 @@ namespace Cassandra.Tests
             var configuration = CreateClientRoutesClusterConfiguration(
                 controlConnection.Object,
                 runtime => routesCache = runtime.Bind(controlConnection.Object));
-            var cluster = CreateCluster(configuration);
-
-            try
+            using (var cluster = CreateCluster(configuration))
             {
                 var thrown = Assert.Throws<NoHostAvailableException>(() => _ = cluster.Metadata);
                 Assert.AreSame(noHost, thrown);
@@ -350,10 +365,6 @@ namespace Cassandra.Tests
 
                 Assert.DoesNotThrow(() => _ = cluster.Metadata);
                 Assert.AreEqual(2, initAttempts);
-            }
-            finally
-            {
-                cluster.Dispose();
             }
             Assert.AreEqual(1, disposeCount);
         }

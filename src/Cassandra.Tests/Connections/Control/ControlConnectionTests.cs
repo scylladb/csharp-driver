@@ -503,6 +503,116 @@ namespace Cassandra.Tests.Connections.Control
         }
 
         [Test]
+        public async Task Should_KeepCompletedRoutesUsableWhileRecoveryRefreshFailsAndRetries()
+        {
+            var hostId = Guid.NewGuid();
+            var refreshStarted = NewSignal();
+            var releaseRefresh = NewSignal();
+            var retryStarted = NewSignal();
+            var handler = new RecordingMetadataRequestHandler(async (_, call) =>
+            {
+                if (call == 1)
+                {
+                    return ClientRouteRows(hostId, "127.0.0.10", 19042);
+                }
+                if (call == 2)
+                {
+                    refreshStarted.TrySetResult(true);
+                    await releaseRefresh.Task.ConfigureAwait(false);
+                    throw new InvalidQueryException("recoverable background route query failure");
+                }
+                retryStarted.TrySetResult(true);
+                return ClientRouteRows(hostId, "127.0.0.20", 29042);
+            });
+            var connections = new ConcurrentQueue<Mock<IConnection>>();
+            var cluster = new Mock<IInternalCluster>();
+            cluster.Setup(value => value.AnyOpenConnections(It.IsAny<Host>())).Returns(true);
+            var created = NewClientRoutesRecoveryInstance(
+                hostId, handler, CreateRecordingConnectionFactory(connections), cluster);
+
+            try
+            {
+                await created.ControlConnection.InitAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                await created.ControlConnection.Reconnect(null).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                await refreshStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                Assert.IsTrue(created.Config.ClientRoutesRuntime.IsLifecycleReady);
+                Assert.IsTrue(created.Config.ClientRoutesRuntime.TryGetRoutes(hostId, out var retained));
+                Assert.AreEqual("127.0.0.10", retained.Single().Address);
+                Assert.AreEqual(2, handler.QueryCount);
+
+                releaseRefresh.TrySetResult(true);
+                await retryStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                await TestHelper.WaitUntilAsync(() =>
+                    created.Config.ClientRoutesRuntime.TryGetRoutes(hostId, out var routes) &&
+                    routes.Single().Address == "127.0.0.20", 20, 250).ConfigureAwait(false);
+                Assert.IsTrue(created.Config.ClientRoutesRuntime.TryGetRoutes(hostId, out var refreshed));
+                Assert.AreEqual("127.0.0.20", refreshed.Single().Address);
+            }
+            finally
+            {
+                releaseRefresh.TrySetResult(true);
+                created.ControlConnection.Dispose();
+            }
+        }
+
+        [TestCase(false, false)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public async Task Should_NotRetryContactPointsAfterRoutedRecoveryFails(bool totalConnectivityLoss, bool hostDown)
+        {
+            var hostId = Guid.NewGuid();
+            var attempted = new ConcurrentQueue<IPEndPoint>();
+            var recoveryStarted = NewSignal();
+            var releaseRecovery = NewSignal();
+            var connectionFactory = new FakeConnectionFactory(endPoint =>
+            {
+                var connection = CreateClosableConnection(endPoint);
+                connection.Setup(value => value.Open()).Returns(async () =>
+                {
+                    attempted.Enqueue(endPoint.SocketIpEndPoint);
+                    if (attempted.Count > 1)
+                    {
+                        recoveryStarted.TrySetResult(true);
+                        await releaseRecovery.Task.ConfigureAwait(false);
+                        throw new SocketException((int)SocketError.ConnectionRefused);
+                    }
+                    return (Response)null;
+                });
+                return connection.Object;
+            });
+            var handler = new RecordingMetadataRequestHandler((_, __) =>
+                Task.FromResult(ClientRouteRows(hostId, "127.0.0.10", 19042)));
+            var cluster = new Mock<IInternalCluster>();
+            cluster.Setup(value => value.AnyOpenConnections(It.IsAny<Host>())).Returns(!totalConnectivityLoss);
+            var created = NewClientRoutesRecoveryInstance(hostId, handler, connectionFactory, cluster);
+
+            try
+            {
+                await created.ControlConnection.InitAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                if (hostDown)
+                {
+                    created.ControlConnection.Host.SetDown();
+                }
+                var recovery = created.ControlConnection.Reconnect(null);
+                await recoveryStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                releaseRecovery.TrySetResult(true);
+                await Assert.ThrowsAsync<NoHostAvailableException>(() => recovery.WaitToCompleteAsync(5000));
+
+                CollectionAssert.AreEqual(new[]
+                {
+                    _endpoint1,
+                    new IPEndPoint(IPAddress.Parse("127.0.0.10"), 19042)
+                }, attempted.ToArray());
+            }
+            finally
+            {
+                releaseRecovery.TrySetResult(true);
+                created.ControlConnection.Dispose();
+            }
+        }
+
+        [Test]
         public async Task Should_NotCompleteClientRoutesLifecycleAfterColdStartQueryFailure()
         {
             var hostId = Guid.NewGuid();
@@ -3543,6 +3653,34 @@ namespace Cassandra.Tests.Connections.Control
                     builder.MetadataRequestHandler = requestHandler;
                     builder.ServerEventsSubscriber = subscriber;
                 });
+        }
+
+        private ControlConnectionCreateResult NewClientRoutesRecoveryInstance(
+            Guid hostId,
+            IMetadataRequestHandler requestHandler,
+            FakeConnectionFactory connectionFactory,
+            Mock<IInternalCluster> cluster)
+        {
+            var policy = new TestHelper.CustomLoadBalancingPolicy();
+            var debouncer = new Mock<IProtocolEventDebouncer>();
+            debouncer.Setup(value => value.ScheduleEventAsync(It.IsAny<ProtocolEvent>(), It.IsAny<bool>()))
+                .Returns(Task.CompletedTask);
+            var created = NewInstance(
+                CreateHostRows(hostId),
+                cluster: cluster.Object,
+                eventDebouncer: debouncer.Object,
+                configBuilderAct: builder =>
+                {
+                    builder.ClientRoutesOptions = CreateClientRoutesOptions();
+                    builder.MetadataRequestHandler = requestHandler;
+                    builder.ServerEventsSubscriber = new RecordingServerEventsSubscriber();
+                    builder.ConnectionFactory = connectionFactory;
+                    builder.Policies = new Cassandra.Policies(policy, new ConstantReconnectionPolicy(int.MaxValue), new DefaultRetryPolicy());
+                });
+            cluster.Setup(value => value.AllHosts()).Returns(() => created.Metadata.AllHosts());
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            policy.Initialize(cluster.Object);
+            return created;
         }
 
         private sealed class RenegotiatingProtocolVersionNegotiator : IProtocolVersionNegotiator
