@@ -97,6 +97,7 @@ namespace Cassandra.Tests
                     Assert.AreEqual(1, attempts[address], "A retry must not supply the initial diagnostic.");
                     Assert.AreEqual(address.Equals(failedAddress) || allHostsFail ? 1 : 0,
                         listener.Messages.Values.Count(message =>
+                            message.Contains("#WARNING:") &&
                             message.Contains("Connection pool for host " + address) &&
                             message.Contains("initial warmup failure at " + address)));
                 }
@@ -939,6 +940,25 @@ namespace Cassandra.Tests
                 { "release_version", "2026.1" },
                 { "tokens", new string[0] }
             });
+        }
+
+        private sealed class ConsumedWarmupTraceListener : LoggingTests.TestTraceListener
+        {
+            private readonly bool _throwFromDiagnostic;
+
+            public ConsumedWarmupTraceListener(bool throwFromDiagnostic)
+            {
+                _throwFromDiagnostic = throwFromDiagnostic;
+            }
+
+            public override void WriteLine(string message)
+            {
+                base.WriteLine(message);
+                if (_throwFromDiagnostic && message.Contains("initial warmup failure at "))
+                {
+                    throw new InvalidOperationException("warmup diagnostic sink failed");
+                }
+            }
         }
 
         private static Session CreateWarmupSession(Configuration config, string sessionName)
