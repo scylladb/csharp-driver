@@ -468,7 +468,7 @@ namespace Cassandra.Requests
             }
             catch (HostConnectionPoolNotEligibleException ex)
             {
-                // The host became ineligible (down, ignored, or replaced) after it was selected.
+                // The host became ineligible (removed, ignored, or down) after it was selected.
                 triedHosts[host.Address] = ex;
                 return null;
             }
