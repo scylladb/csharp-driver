@@ -1121,7 +1121,7 @@ namespace Cassandra.Connections.Control
                 {
                     _reconnectWaitingForLifecycle = true;
                 }
-                if (trigger.IsForced || trigger.Matches(_connection, _host) ||
+                if ((trigger.IsForced && waitForLifecycle) || trigger.Matches(_connection, _host) ||
                     !IsConnectionOpen(_connection) || !(_host?.IsUp ?? false))
                 {
                     refreshConnection = _refreshConnection;
@@ -1196,6 +1196,7 @@ namespace Cassandra.Connections.Control
                 return;
             }
             var reconnect = false;
+            IConnection currentConnection = null;
             if (_clientRoutesCache != null)
             {
                 try
@@ -1210,7 +1211,6 @@ namespace Cassandra.Connections.Control
             }
             try
             {
-                IConnection currentConnection;
                 IConnectionEndPoint currentEndPoint;
                 lock (_connectionHandoffLock)
                 {
@@ -1307,7 +1307,7 @@ namespace Cassandra.Connections.Control
             }
             if (reconnect && !IsShutdown)
             {
-                await Reconnect(null).ConfigureAwait(false);
+                await Reconnect(currentConnection).ConfigureAwait(false);
             }
         }
 
@@ -1635,10 +1635,11 @@ namespace Cassandra.Connections.Control
         public async Task<Response> SendQueryRequestAsync(string cqlQuery, bool retry, QueryProtocolOptions queryProtocolOptions)
         {
             Response response;
+            var connection = _connection;
             try
             {
                 response = await _config.MetadataRequestHandler.SendMetadataRequestAsync(
-                    _connection, _serializer.GetCurrentSerializer(), cqlQuery, queryProtocolOptions).ConfigureAwait(false);
+                    connection, _serializer.GetCurrentSerializer(), cqlQuery, queryProtocolOptions).ConfigureAwait(false);
             }
             catch (SocketException)
             {
@@ -1648,7 +1649,7 @@ namespace Cassandra.Connections.Control
                 }
 
                 // Try reconnect
-                await Reconnect(null).ConfigureAwait(false);
+                await Reconnect(connection).ConfigureAwait(false);
 
                 // Query with retry set to false
                 return await SendQueryRequestAsync(cqlQuery, false, queryProtocolOptions).ConfigureAwait(false);
