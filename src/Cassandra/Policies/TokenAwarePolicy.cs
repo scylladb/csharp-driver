@@ -110,12 +110,13 @@ namespace Cassandra
                                : _cluster.Metadata.GetRoutingReplicas(keyspace, table, routingKey.RawRoutingKey))
                            ?? new HostShard[0];
 
-            var localReplicaSet = new HashSet<HostShard>();
+            // Keyed by host only: tablet replicas carry their shard while the child policy yields shard -1
+            var localReplicaSet = new HashSet<Host>();
             var localReplicaList = new List<HostShard>(replicas.Count());
             // We can't do it lazily as we need to balance the load between local replicas
             foreach (var localReplica in replicas.Where(hs => ChildPolicy.Distance(hs.Host) == HostDistance.Local))
             {
-                localReplicaSet.Add(localReplica);
+                localReplicaSet.Add(localReplica.Host);
                 localReplicaList.Add(localReplica);
             }
             // Return the local replicas first
@@ -139,7 +140,7 @@ namespace Cassandra
                 : ChildPolicy.NewQueryPlan(loggedKeyspace, query);
             foreach (var h in childIterator)
             {
-                if (localReplicaSet.Contains(h))
+                if (localReplicaSet.Contains(h.Host))
                 {
                     continue;
                 }

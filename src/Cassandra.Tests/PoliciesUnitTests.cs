@@ -510,6 +510,43 @@ namespace Cassandra.Tests
             clusterMock.Verify();
         }
 
+        [TestCase(-1, false, TestName = "TokenAwarePolicyDoesNotDuplicateReplicas_Vnodes")]
+        [TestCase(-1, true, TestName = "TokenAwarePolicyDoesNotDuplicateReplicas_Vnodes_Lwt")]
+        [TestCase(3, false, TestName = "TokenAwarePolicyDoesNotDuplicateReplicas_Tablets")]
+        [TestCase(3, true, TestName = "TokenAwarePolicyDoesNotDuplicateReplicas_Tablets_Lwt")]
+        public void TokenAwarePolicyDoesNotDuplicateReplicasFromChildPolicy(int replicaShard, bool routeAsLwt)
+        {
+            var hostList = new List<Host>
+            {
+                TestHelper.CreateHost("0.0.0.1", "dc1"),
+                TestHelper.CreateHost("0.0.0.2", "dc1"),
+                TestHelper.CreateHost("0.0.0.3", "dc1"),
+                TestHelper.CreateHost("0.0.0.4", "dc2")
+            };
+            var clusterMock = new Mock<IInternalCluster>(MockBehavior.Strict);
+            clusterMock
+                .Setup(c => c.AllHosts())
+                .Returns(hostList);
+            // Hosts 1 and 2 are replicas; for tablets they carry the shard that owns the tablet,
+            // while the child policy always yields hosts with shard -1
+            clusterMock
+                .Setup(c => c.GetRoutingReplicas(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<byte[]>()))
+                .Returns(new List<HostShard> { new HostShard(hostList[0], replicaShard), new HostShard(hostList[1], replicaShard) });
+
+            var policy = new TokenAwarePolicy(new DCAwareRoundRobinPolicy("dc1"));
+            policy.Initialize(clusterMock.Object);
+
+            var k = new RoutingKey { RawRoutingKey = new byte[] { 1 } };
+            var hosts = policy.NewQueryPlan(null, new SimpleStatement().SetRoutingKey(k), routeAsLwt).ToList();
+
+            // Each local host exactly once: the 2 replicas followed by the remaining local host
+            CollectionAssert.AreEquivalent(hostList.Take(3), hosts.Select(h => h.Host));
+            CollectionAssert.AreEquivalent(new[] { hostList[0], hostList[1] }, hosts.Take(2).Select(h => h.Host));
+            Assert.That(hosts.Take(2).Select(h => h.Shard), Is.All.EqualTo(replicaShard));
+            Assert.AreEqual(hostList[2], hosts[2].Host);
+            Assert.AreEqual(-1, hosts[2].Shard);
+        }
+
         [Test]
         public void TokenAwarePolicyUsesStatementKeyspaceAndTableToGetRoutingReplicas()
         {
