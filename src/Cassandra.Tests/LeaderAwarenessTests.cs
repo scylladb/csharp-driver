@@ -266,7 +266,7 @@ namespace Cassandra.Tests
             var body = stream.ToArray();
             var bytes = new byte[] { 0x84, (byte)HeaderFlags.CustomPayload, 0, 1, ResultResponse.OpCode }
                 .Concat(BeConverter.GetBytes(body.Length)).ToArray();
-            var header = FrameHeader.ParseResponseHeader(ProtocolVersion.V4, bytes, 0);
+            var header = FrameHeader.ParseResponseHeader(bytes, 0);
             return FrameParser.Parse(new Frame(header, new MemoryStream(body), Serializer, null, false, v2));
         }
 
