@@ -500,6 +500,46 @@ namespace Cassandra.Tests.Connections
 
         [Test]
         [NonParallelizable]
+        public async Task Should_NotLogSuccessfulOpenAsFailureWhenHostUpHandlerThrows()
+        {
+            var failure = new InvalidOperationException("host up handler failed");
+            var target = CreatePool(
+                coreConnections: 1,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            var hostUpCalls = 0;
+            _host.SetDown();
+            _host.Up += _ =>
+            {
+                hostUpCalls++;
+                throw failure;
+            };
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new LoggingTests.TestTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                Assert.AreEqual(1, hostUpCalls);
+                Assert.AreEqual(1, target.OpenConnections);
+                var connection = target.ConnectionsSnapshot.Single();
+                var borrowing = target.BorrowConnectionAsync();
+                await borrowing.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreSame(connection, await borrowing.ConfigureAwait(false));
+                Assert.IsFalse(listener.Messages.Values.Any(message => message.Contains("could not be created")),
+                    "A post-open callback failure must not be reported as a failed connection open.");
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [Test]
+        [NonParallelizable]
         public async Task Should_ScheduleRetryWhenConsumedFailureLoggerThrows()
         {
             var failure = new InvalidOperationException("background open failed");
