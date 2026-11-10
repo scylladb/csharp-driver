@@ -246,9 +246,9 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             }
         }
 
-        private void RecordFailure(Exception exception)
+        private void RecordFailure(Exception exception, RelayConnection connection = null)
         {
-            if (Volatile.Read(ref _disposed) == 0 && Volatile.Read(ref _forwardingEnabled) != 0)
+            if (Volatile.Read(ref _disposed) == 0 && (connection == null || !connection.IsDisposed))
             {
                 _failures.Enqueue(exception);
                 Trace.TraceError("Client-routes {0} relay to {1} failed: {2}", _mode, _target, exception);
@@ -304,7 +304,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             }
             catch (Exception ex) when (!Utils.IsFatalException(ex))
             {
-                RecordFailure(ex);
+                RecordFailure(ex, connection);
             }
             finally
             {
@@ -327,6 +327,17 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             }
 
             public TcpClient Client { get; }
+
+            public bool IsDisposed
+            {
+                get
+                {
+                    lock (_sync)
+                    {
+                        return _disposed;
+                    }
+                }
+            }
 
             public void SetClientStream(IDisposable clientStream)
             {

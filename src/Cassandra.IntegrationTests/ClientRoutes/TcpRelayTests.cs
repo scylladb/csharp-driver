@@ -76,6 +76,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                                 "The relay did not establish its upstream connection.")
                             .ConfigureAwait(false);
                         relay.DisableForwarding();
+                        relay.EnableForwarding();
                         await ClientRoutesTestSupport.WaitUntilAsync(
                                 () => relay.OpenConnectionCount == 0,
                                 TimeSpan.FromSeconds(5),
