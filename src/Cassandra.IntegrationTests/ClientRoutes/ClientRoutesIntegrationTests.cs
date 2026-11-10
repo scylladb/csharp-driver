@@ -377,11 +377,8 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                             "The control connection did not reconnect through a secondary Host-ID route.");
 
                         // Close any control or data connection that used the unchanged secondary route.
-                        // New connections must now use the reloaded primary route snapshot.
-                        foreach (var relay in replacementRelays.Values)
-                        {
-                            relay.ResetObservations();
-                        }
+                        // Primary pools may already have recovered after the route reload, so retain
+                        // their forwarding observations while requiring queries after secondary closure.
                         DisposeRelays(secondaryRelays);
                         await AssertEventuallyQueriesLandOnIntendedHosts(session, _nodes, replacementRelays)
                             .ConfigureAwait(false);
