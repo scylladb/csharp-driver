@@ -290,7 +290,14 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             _testCluster.Remove(nodeId);
             _testCluster.SwitchToThisCluster();
 
-            _testCluster.BootstrapNode(nodeId, start: false);
+            // Keep the replacement out of CCM's seed list; BootstrapNode adds -s.
+            TestClusterManager.Executor.ExecuteCcm(
+                string.Format(
+                    CultureInfo.InvariantCulture,
+                    "add node{0} -i {1} -j {2} -b --scylla",
+                    nodeId,
+                    address,
+                    7000 + 100 * nodeId));
             TestClusterManager.Executor.ExecuteCcm(
                 string.Format(
                     CultureInfo.InvariantCulture,
