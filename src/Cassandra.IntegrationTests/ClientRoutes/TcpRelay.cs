@@ -220,15 +220,38 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 {
                     return;
                 }
+                catch (Exception ex) when (!Utils.IsFatalException(ex))
+                {
+                    RecordFailure(ex);
+                    return;
+                }
 
-                var source = (IPEndPoint)client.Client.RemoteEndPoint;
-                _acceptedSourcePorts.Enqueue(source.Port);
-                Interlocked.Increment(ref _acceptedConnectionCount);
+                try
+                {
+                    var source = (IPEndPoint)client.Client.RemoteEndPoint;
+                    _acceptedSourcePorts.Enqueue(source.Port);
+                    Interlocked.Increment(ref _acceptedConnectionCount);
 
-                var connectionId = Interlocked.Increment(ref _connectionId);
-                var connection = new RelayConnection(client);
-                _connections[connectionId] = connection;
-                _ = Task.Run(() => RelayAsync(connectionId, connection));
+                    var connectionId = Interlocked.Increment(ref _connectionId);
+                    var connection = new RelayConnection(client);
+                    _connections[connectionId] = connection;
+                    _ = Task.Run(() => RelayAsync(connectionId, connection));
+                }
+                catch (Exception ex) when (!Utils.IsFatalException(ex))
+                {
+                    client.Dispose();
+                    RecordFailure(ex);
+                    return;
+                }
+            }
+        }
+
+        private void RecordFailure(Exception exception)
+        {
+            if (Volatile.Read(ref _disposed) == 0 && Volatile.Read(ref _forwardingEnabled) != 0)
+            {
+                _failures.Enqueue(exception);
+                Trace.TraceError("Client-routes {0} relay to {1} failed: {2}", _mode, _target, exception);
             }
         }
 
@@ -281,23 +304,20 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             }
             catch (Exception ex) when (!Utils.IsFatalException(ex))
             {
-                if (Volatile.Read(ref _disposed) == 0 && Volatile.Read(ref _forwardingEnabled) != 0)
-                {
-                    _failures.Enqueue(ex);
-                    Trace.TraceError("Client-routes {0} relay to {1} failed: {2}", _mode, _target, ex);
-                }
+                RecordFailure(ex);
             }
             finally
             {
+                connection.Dispose();
                 RelayConnection ignored;
                 _connections.TryRemove(connectionId, out ignored);
-                connection.Dispose();
             }
         }
 
         private sealed class RelayConnection : IDisposable
         {
-            private int _disposed;
+            private readonly object _sync = new object();
+            private bool _disposed;
             private IDisposable _clientStream;
             private TcpClient _upstream;
 
@@ -310,32 +330,42 @@ namespace Cassandra.IntegrationTests.ClientRoutes
 
             public void SetClientStream(IDisposable clientStream)
             {
-                _clientStream = clientStream;
-                if (Volatile.Read(ref _disposed) != 0)
+                lock (_sync)
                 {
-                    clientStream.Dispose();
+                    _clientStream = clientStream;
+                    if (_disposed)
+                    {
+                        clientStream.Dispose();
+                    }
                 }
             }
 
             public void SetUpstream(TcpClient upstream)
             {
-                _upstream = upstream;
-                if (Volatile.Read(ref _disposed) != 0)
+                lock (_sync)
                 {
-                    upstream.Dispose();
+                    _upstream = upstream;
+                    if (_disposed)
+                    {
+                        upstream.Dispose();
+                    }
                 }
             }
 
             public void Dispose()
             {
-                if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                lock (_sync)
                 {
-                    return;
-                }
+                    if (_disposed)
+                    {
+                        return;
+                    }
+                    _disposed = true;
 
-                _clientStream?.Dispose();
-                Client.Dispose();
-                _upstream?.Dispose();
+                    _clientStream?.Dispose();
+                    Client.Dispose();
+                    _upstream?.Dispose();
+                }
             }
         }
     }
