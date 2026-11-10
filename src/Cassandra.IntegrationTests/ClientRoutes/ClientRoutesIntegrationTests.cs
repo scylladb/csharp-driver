@@ -282,6 +282,10 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                             "A session created after the refresh did not use the new routes.");
                     }
 
+                    foreach (var relay in replacementRelays.Values)
+                    {
+                        relay.ResetObservations();
+                    }
                     DisposeRelays(originalRelays);
                     await AssertEventuallyQueriesLandOnIntendedHosts(session, _nodes, replacementRelays)
                         .ConfigureAwait(false);
@@ -671,7 +675,8 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                     return null;
                 }
 
-                var shardingInfos = pool.Value.ConnectionsSnapshot
+                var connections = pool.Value.ConnectionsSnapshot;
+                var shardingInfos = connections
                     .Select(connection => connection.ShardingInfo())
                     .Where(info => info != null)
                     .ToArray();
@@ -691,6 +696,18 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 if (Enumerable.Range(0, shardCount).Except(reportedShards).Any())
                 {
                     return null;
+                }
+
+                foreach (var connection in connections)
+                {
+                    var shardingInfo = connection.ShardingInfo();
+                    var localAddress = connection.LocalAddress;
+                    Assert.IsNotNull(localAddress, "A routed pool connection did not report its source port.");
+                    Assert.IsNotNull(shardingInfo, "A routed pool connection did not report its shard.");
+                    Assert.AreEqual(
+                        localAddress.Port % shardCount,
+                        shardingInfo.ScyllaShard,
+                        "The server-reported shard did not match the source port forwarded by the PROXY relay.");
                 }
 
                 shardCounts[host.HostId] = shardCount;
