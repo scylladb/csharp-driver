@@ -241,6 +241,159 @@ namespace Cassandra.Tests
             Assert.That(CreateConfig(port).NativeTransportPort, Is.EqualTo(port));
         }
 
+        [Test]
+        public void Should_RejectNullBuilderConfiguration()
+        {
+            Assert.That(
+                delegate { Cluster.Builder().WithClientRoutesConfig(null); },
+                Throws.TypeOf<ArgumentNullException>().With.Property("ParamName").EqualTo("config"));
+        }
+
+        [Test]
+        public void Should_RejectNullAddressTranslatorBeforeChangingBuilderConfiguration()
+        {
+            var builder = Cluster.Builder();
+
+            Assert.That(
+                delegate { builder.WithAddressTranslator(null); },
+                Throws.TypeOf<ArgumentNullException>().With.Property("ParamName").EqualTo("addressTranslator"));
+            Assert.That(builder.WithClientRoutesConfig(CreateConfig()), Is.SameAs(builder));
+            Assert.That(
+                delegate { builder.WithAddressTranslator(null); },
+                Throws.TypeOf<ArgumentNullException>().With.Property("ParamName").EqualTo("addressTranslator"));
+        }
+
+        [Test]
+        public void Should_UseLastClientRoutesConfiguration()
+        {
+            var builder = Cluster.Builder();
+            builder.WithClientRoutesConfig(CreateConfig());
+            var replacement = new ClientRoutesConfig(
+                new[] { new ClientRouteProxy("replacement") },
+                nativeTransportPort: 9142,
+                shardAwarenessEnabled: true);
+
+            Assert.That(builder.WithClientRoutesConfig(replacement), Is.SameAs(builder));
+            var options = builder.GetConfiguration().ClientRoutesRuntime.Options;
+            Assert.That(options.NativeTransportPort, Is.EqualTo(9142));
+            Assert.That(options.ShardAwarenessEnabled, Is.True);
+            Assert.That(options.Proxies, Has.Count.EqualTo(1));
+            Assert.That(options.Proxies[0], Is.SameAs(replacement.Proxies[0]));
+        }
+
+        [Test]
+        public void Should_RejectExplicitAddressTranslatorInEitherCallOrder()
+        {
+            var translator = Mock.Of<IAddressTranslator>();
+
+            Assert.That(
+                delegate
+                {
+                    Cluster.Builder()
+                           .WithAddressTranslator(translator)
+                           .WithClientRoutesConfig(CreateConfig());
+                },
+                Throws.TypeOf<InvalidOperationException>());
+            Assert.That(
+                delegate
+                {
+                    Cluster.Builder()
+                           .WithClientRoutesConfig(CreateConfig())
+                           .WithAddressTranslator(translator);
+                },
+                Throws.TypeOf<InvalidOperationException>());
+        }
+
+        [Test]
+        public void Should_StillRequireAnExplicitContactPoint()
+        {
+            Assert.That(
+                delegate { Cluster.Builder().WithClientRoutesConfig(CreateConfig()).Build(); },
+                Throws.TypeOf<ArgumentException>());
+            Assert.That(
+                delegate
+                {
+                    Cluster.Builder()
+                           .WithClientRoutesConfig(new ClientRoutesConfig(new[]
+                           {
+                               new ClientRouteProxy("connection-a", "proxy.example.com")
+                           }))
+                           .Build();
+                },
+                Throws.TypeOf<ArgumentException>());
+        }
+
+        [Test]
+        public void Should_PassConfigurationToClusterOptions()
+        {
+            var clientRoutesConfig = new ClientRoutesConfig(
+                new[] { new ClientRouteProxy("connection-a") },
+                nativeTransportPort: 19042,
+                shardAwarenessEnabled: true);
+            using (var cluster = Cluster.Builder()
+                                        .AddContactPoint(IPAddress.Loopback)
+                                        .WithClientRoutesConfig(clientRoutesConfig)
+                                        .Build())
+            {
+                var options = cluster.Configuration.ClientRoutesRuntime.Options;
+                Assert.That(options.NativeTransportPort, Is.EqualTo(19042));
+                Assert.That(options.ShardAwarenessEnabled, Is.True);
+                Assert.That(options.Proxies, Has.Count.EqualTo(1));
+                Assert.That(options.Proxies[0].ConnectionId, Is.EqualTo("connection-a"));
+                Assert.That(options.Proxies[0], Is.SameAs(clientRoutesConfig.Proxies[0]));
+            }
+        }
+
+        [Test]
+        public void Should_LeaveClientRoutesDisabledByDefault()
+        {
+            Assert.That(Cluster.Builder().GetConfiguration().ClientRoutesRuntime, Is.Null);
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_SelectTlsRoutePortRegardlessOfBuilderCallOrder(bool sslFirst)
+        {
+            var builder = Cluster.Builder();
+            if (sslFirst)
+            {
+                builder.WithSSL().WithClientRoutesConfig(CreateConfig());
+            }
+            else
+            {
+                builder.WithClientRoutesConfig(CreateConfig()).WithSSL();
+            }
+
+            var hostId = Guid.NewGuid();
+            var provider = new Mock<IMetadataQueryProvider>();
+            provider.Setup(value => value.QueryUnpagedAsync(It.IsAny<string>(), false))
+                    .ReturnsAsync(new[]
+                    {
+                        new TestHelper.DictionaryBasedRow(new Dictionary<string, object>
+                        {
+                            { "host_id", hostId },
+                            { "address", "route.example.com" },
+                            { "port", 9042 },
+                            { "tls_port", 9142 },
+                            { "connection_id", "connection-a" }
+                        })
+                    });
+            var runtime = builder.GetConfiguration().ClientRoutesRuntime;
+
+            try
+            {
+                await runtime.Bind(provider.Object).FullRefreshBarrierAsync(new[] { hostId })
+                             .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+                Assert.That(runtime.TryGetRoutes(hostId, out var routes), Is.True);
+                Assert.That(routes.Single().Port, Is.EqualTo(9142));
+            }
+            finally
+            {
+                runtime.Shutdown();
+            }
+        }
+
         private static ClientRoutesConfig CreateConfig(
             int nativeTransportPort = ClientRoutesConfig.DefaultNativeTransportPort)
         {
