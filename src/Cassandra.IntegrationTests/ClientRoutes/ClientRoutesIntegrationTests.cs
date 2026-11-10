@@ -348,7 +348,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                                       secondaryRelays.Values.Any(relay => relay.AcceptedConnectionCount > 0),
                                 TimeSpan.FromSeconds(5),
                                 TimeSpan.FromMilliseconds(100),
-                                "The control connection did not exhaust its cached Host-ID routes.")
+                                "The discovery relay did not drain or no secondary Host-ID route was attempted.")
                             .ConfigureAwait(false);
 
                         // Update only primary routes; recovery still needs the retained secondary routes.
@@ -378,6 +378,10 @@ namespace Cassandra.IntegrationTests.ClientRoutes
 
                         // Close any control or data connection that used the unchanged secondary route.
                         // New connections must now use the reloaded primary route snapshot.
+                        foreach (var relay in replacementRelays.Values)
+                        {
+                            relay.ResetObservations();
+                        }
                         DisposeRelays(secondaryRelays);
                         await AssertEventuallyQueriesLandOnIntendedHosts(session, _nodes, replacementRelays)
                             .ConfigureAwait(false);
@@ -569,34 +573,20 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             }
         }
 
-        private static async Task AssertEventuallyQueriesLandOnIntendedHosts(
+        private static Task AssertEventuallyQueriesLandOnIntendedHosts(
             ISession session,
             IEnumerable<ClientRoutesNode> nodes,
             IReadOnlyDictionary<Guid, TcpRelay> expectedRelays)
         {
-            Exception lastException = null;
-            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(45);
-            do
-            {
-                try
+            return ClientRoutesTestSupport.RetryAssertAsync(
+                () =>
                 {
                     AssertQueriesLandOnIntendedHosts(session, nodes);
-                    if (expectedRelays.Values.All(relay => relay.ForwardedConnectionCount > 0))
-                    {
-                        return;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    lastException = ex;
-                }
-
-                await Task.Delay(200).ConfigureAwait(false);
-            }
-            while (DateTime.UtcNow < deadline);
-
-            throw new AssertionException(
-                "Connections did not recover through the updated client routes. " + lastException);
+                    Assert.IsTrue(expectedRelays.Values.All(relay => relay.ForwardedConnectionCount > 0));
+                },
+                TimeSpan.FromSeconds(45),
+                TimeSpan.FromMilliseconds(200),
+                "Connections did not recover through the updated client routes.");
         }
 
         private static void AssertRelaySourcePortsCoverShardSet(TcpRelay relay, int shardCount)
@@ -678,9 +668,8 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 var connections = pool.Value.ConnectionsSnapshot;
                 var shardingInfos = connections
                     .Select(connection => connection.ShardingInfo())
-                    .Where(info => info != null)
                     .ToArray();
-                if (shardingInfos.Length == 0)
+                if (shardingInfos.Length == 0 || shardingInfos.Any(info => info == null))
                 {
                     return null;
                 }
@@ -702,8 +691,10 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 {
                     var shardingInfo = connection.ShardingInfo();
                     var localAddress = connection.LocalAddress;
-                    Assert.IsNotNull(localAddress, "A routed pool connection did not report its source port.");
-                    Assert.IsNotNull(shardingInfo, "A routed pool connection did not report its shard.");
+                    if (localAddress == null)
+                    {
+                        return null;
+                    }
                     Assert.AreEqual(
                         localAddress.Port % shardCount,
                         shardingInfo.ScyllaShard,

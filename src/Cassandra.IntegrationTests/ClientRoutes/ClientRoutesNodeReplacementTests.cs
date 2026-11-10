@@ -25,6 +25,7 @@ using System.Threading.Tasks;
 
 using Cassandra.IntegrationTests.TestBase;
 using Cassandra.IntegrationTests.TestClusterManagement;
+using Cassandra.SessionManagement;
 using Cassandra.Tests;
 
 using NUnit.Framework;
@@ -120,6 +121,8 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                     {
                         AssertQueryLandsOnHost(session, replacedNode.HostId);
                         var originalHost = cluster.AllHosts().Single(host => host.HostId == replacedNode.HostId);
+                        var originalPool = ((IInternalSession)session).GetPools()
+                            .Single(pool => pool.Key.Equals(originalHost.Address)).Value;
 
                         await RecreateNodeAtSameAddressAsync(3, replacedNode.Address, replacedNode.HostId)
                             .ConfigureAwait(false);
@@ -163,16 +166,21 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                         Assert.AreEqual(originalHost.Address, replacementHost.Address);
                         Assert.AreNotSame(originalHost, replacementHost);
 
-                        await AssertEventuallyAsync(
+                        await ClientRoutesTestSupport.RetryAssertAsync(
                                 () =>
                                 {
                                     AssertQueryLandsOnHost(session, replacementHostId);
+                                    var replacementPool = ((IInternalSession)session).GetPools()
+                                        .Single(pool => pool.Key.Equals(replacementHost.Address)).Value;
+                                    Assert.AreNotSame(originalPool, replacementPool);
                                     Assert.Greater(
                                         relays[replacedNode.HostId].ForwardedConnectionCount,
                                         0,
                                         "The replacement host did not open a new routed pool connection.");
                                 },
-                                TimeSpan.FromSeconds(60))
+                                TimeSpan.FromSeconds(60),
+                                TimeSpan.FromMilliseconds(250),
+                                "The replacement host never became queryable with a new pool.")
                             .ConfigureAwait(false);
                     }
                 }
@@ -219,28 +227,6 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 .SetHost(host);
             var actualHostId = session.Execute(statement).Single().GetValue<Guid>("host_id");
             Assert.AreEqual(expectedHostId, actualHostId);
-        }
-
-        private static async Task AssertEventuallyAsync(Action assertion, TimeSpan timeout)
-        {
-            var deadline = DateTime.UtcNow + timeout;
-            Exception lastException = null;
-            do
-            {
-                try
-                {
-                    assertion();
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    lastException = ex;
-                }
-                await Task.Delay(250).ConfigureAwait(false);
-            }
-            while (DateTime.UtcNow < deadline);
-
-            throw new AssertionException("The replacement host never became queryable. " + lastException);
         }
 
         private static Dictionary<Guid, TcpRelay> StartRelays(IEnumerable<ClientRoutesNode> nodes)
@@ -309,16 +295,15 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 false);
             if (output.ExitCode != 0)
             {
-                var configDirectory = Environment.GetEnvironmentVariable("CCM_CONFIG_DIR");
-                var logPath = configDirectory == null
-                    ? null
-                    : Path.Combine(
-                        configDirectory,
-                        _testCluster.Name,
-                        "node" + nodeId.ToString(CultureInfo.InvariantCulture),
-                        "logs",
-                        "system.log");
-                var logTail = logPath != null && File.Exists(logPath)
+                var configDirectory = Environment.GetEnvironmentVariable("CCM_CONFIG_DIR") ??
+                                      Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ccm");
+                var logPath = Path.Combine(
+                    configDirectory,
+                    _testCluster.Name,
+                    "node" + nodeId.ToString(CultureInfo.InvariantCulture),
+                    "logs",
+                    "system.log");
+                var logTail = File.Exists(logPath)
                     ? string.Join(Environment.NewLine, File.ReadLines(logPath).Reverse().Take(80).Reverse())
                     : "The replacement node log could not be found.";
                 throw new TestInfrastructureException(
