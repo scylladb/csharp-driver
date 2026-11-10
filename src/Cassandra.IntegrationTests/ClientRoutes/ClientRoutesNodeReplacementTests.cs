@@ -283,7 +283,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                     "add node{0} -i {1} -j {2} -b --scylla",
                     nodeId,
                     address,
-                    7000 + 100 * nodeId));
+                    7000 + (100 * nodeId)));
             TestClusterManager.Executor.ExecuteCcm(
                 string.Format(
                     CultureInfo.InvariantCulture,
@@ -357,6 +357,5 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             throw new AssertionException(
                 "The replacement node did not advertise a new Host ID. " + lastException);
         }
-
     }
 }

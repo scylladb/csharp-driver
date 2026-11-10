@@ -212,6 +212,5 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 }
             }
         }
-
     }
 }

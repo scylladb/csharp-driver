@@ -752,6 +752,5 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             }
             return builder.Build();
         }
-
     }
 }
