@@ -6,7 +6,7 @@ The load balancing policy interface consists of three methods:
 
 - `Distance(Host)`: determines the distance to the specified host. The values are `HostDistance.Ignored`, `Local` and `Remote`.
 - `Initialize(Cluster)`: initializes the policy. The driver calls this method only once and before any other method calls are made.
-- `NewQueryPlan()`: returns the hosts to use for a query. Each new query calls this method.
+- `NewQueryPlan(RoutingInfo, ClusterState)`: returns the nodes, and optionally their shards, to use for a request. Each new request calls this method. `RoutingInfo` describes the request: its keyspace, table, routing key and whether it should be routed as a lightweight transaction. `ClusterState` gives the nodes of the cluster and the replicas of the request.
 
 The driver includes these implementations:
 

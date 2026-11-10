@@ -251,7 +251,9 @@ namespace Cassandra.Connections.Control
             bool refreshContactPoints,
             bool refreshEndpoints)
         {
-            foreach (var target in _config.DefaultRequestOptions.LoadBalancingPolicy.NewQueryPlan(null, null).TakeWhileHostIsSet())
+            var plan = _config.DefaultRequestOptions.LoadBalancingPolicy.NewQueryPlan(
+                RoutingInfo.ForKeyspace(null), new ClusterState(_cluster));
+            foreach (var target in plan.TakeWhileHostIsSet())
             {
                 if (attempt.AttemptedHosts.TryAdd(target.Host, null))
                 {

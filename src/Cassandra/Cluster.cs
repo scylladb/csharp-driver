@@ -751,7 +751,7 @@ namespace Cassandra
                 return await handler.Prepare(
                     request,
                     session,
-                    lbp.NewQueryPlan(effectiveKeyspace, null).TakeWhileHostIsSet().GetEnumerator(),
+                    lbp.NewQueryPlan(RoutingInfo.ForKeyspace(effectiveKeyspace), new ClusterState(this)).TakeWhileHostIsSet().GetEnumerator(),
                     sessionKeyspace,
                     effectiveKeyspace).ConfigureAwait(false);
             }

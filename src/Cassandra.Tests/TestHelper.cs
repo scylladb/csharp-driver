@@ -696,6 +696,27 @@ namespace Cassandra.Tests
         }
 
         /// <summary>
+        /// Builds a query plan the way the driver does for a statement executed with <paramref name="keyspace"/> as
+        /// the session keyspace. <paramref name="routeAsLwt"/> overrides the statement's own LWT routing.
+        /// </summary>
+        internal static IEnumerable<RoutingTarget> NewQueryPlan(
+            this ILoadBalancingPolicy policy, ICluster cluster, string keyspace, IStatement statement, bool? routeAsLwt = null)
+        {
+            var routing = statement == null
+                ? new RoutingInfo { Keyspace = keyspace, ShouldRouteAsLwt = routeAsLwt == true }
+                : new RoutingInfo
+                {
+                    Keyspace = statement.Keyspace ?? keyspace,
+                    Table = statement.TableName,
+                    RoutingKey = statement.RoutingKey,
+                    IsConfirmedLwt = statement.IsLwt(),
+                    ShouldRouteAsLwt = routeAsLwt ?? statement.ShouldRouteAsLwt(),
+                    Statement = statement
+                };
+            return policy.NewQueryPlan(routing, new ClusterState(cluster));
+        }
+
+        /// <summary>
         /// Policy ONLY suitable for testing, it creates a fixed query plan containing nodes always in the same order.
         /// </summary>
         internal class OrderedLoadBalancingPolicy : ILoadBalancingPolicy
@@ -732,9 +753,9 @@ namespace Cassandra.Tests
                 return _childPolicy.Distance(host);
             }
 
-            public IEnumerable<RoutingTarget> NewQueryPlan(string keyspace, IStatement query)
+            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
             {
-                return !_useRoundRobin ? _hosts.Select(h => new RoutingTarget(h, null)) : _childPolicy.NewQueryPlan(keyspace, query);
+                return !_useRoundRobin ? _hosts.Select(h => new RoutingTarget(h, null)) : _childPolicy.NewQueryPlan(routing, cluster);
             }
         }
 
@@ -766,9 +787,9 @@ namespace Cassandra.Tests
                 return _distanceHandler(_cluster, host);
             }
 
-            public IEnumerable<RoutingTarget> NewQueryPlan(string keyspace, IStatement query)
+            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
             {
-                return _queryPlanHandler(_cluster, keyspace, query).Select(h => new RoutingTarget(h, null));
+                return _queryPlanHandler(_cluster, routing?.Keyspace, routing?.Statement).Select(h => new RoutingTarget(h, null));
             }
         }
     }

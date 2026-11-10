@@ -30,7 +30,7 @@ namespace Cassandra
     /// returned for other workloads.
     /// </para>
     /// </summary>
-    public class DefaultLoadBalancingPolicy : IExtendedLoadBalancingPolicy
+    public class DefaultLoadBalancingPolicy : ILoadBalancingPolicy
     {
         private volatile Host _lastPreferredHost;
 
@@ -87,38 +87,21 @@ namespace Cassandra
         /// <summary>
         /// Returns the hosts to used for a query.
         /// </summary>
-        public IEnumerable<RoutingTarget> NewQueryPlan(string keyspace, IStatement statement)
+        public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
         {
-            if (statement is TargettedSimpleStatement targetedStatement && targetedStatement.PreferredHost != null)
+            if (routing?.Statement is TargettedSimpleStatement targetedStatement && targetedStatement.PreferredHost != null)
             {
                 _lastPreferredHost = targetedStatement.PreferredHost;
-                return YieldPreferred(keyspace, targetedStatement);
+                return YieldPreferred(targetedStatement.PreferredHost, routing, cluster);
             }
 
-            return ChildPolicy.NewQueryPlan(keyspace, statement);
+            return ChildPolicy.NewQueryPlan(routing, cluster);
         }
 
-        /// <inheritdoc />
-        public IEnumerable<RoutingTarget> NewQueryPlan(string keyspace, IStatement statement, bool routeAsLwt)
+        private IEnumerable<RoutingTarget> YieldPreferred(Host preferredHost, RoutingInfo routing, ClusterState cluster)
         {
-            if (statement is TargettedSimpleStatement targetedStatement && targetedStatement.PreferredHost != null)
-            {
-                _lastPreferredHost = targetedStatement.PreferredHost;
-                return YieldPreferred(keyspace, targetedStatement);
-            }
-
-            if (ChildPolicy is IExtendedLoadBalancingPolicy extendedChild)
-            {
-                return extendedChild.NewQueryPlan(keyspace, statement, routeAsLwt);
-            }
-
-            return ChildPolicy.NewQueryPlan(keyspace, statement);
-        }
-
-        private IEnumerable<RoutingTarget> YieldPreferred(string keyspace, TargettedSimpleStatement statement)
-        {
-            yield return new RoutingTarget(statement.PreferredHost, null);
-            foreach (var h in ChildPolicy.NewQueryPlan(keyspace, statement))
+            yield return new RoutingTarget(preferredHost, null);
+            foreach (var h in ChildPolicy.NewQueryPlan(routing, cluster))
             {
                 yield return h;
             }

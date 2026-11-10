@@ -117,19 +117,21 @@ namespace Cassandra.Requests
                 return Enumerable.Repeat(new RoutingTarget(host, null), 1);
             }
 
-            // Determine whether to route as LWT: either the statement itself says so,
-            // or the effective CL from requestOptions/execution profile is serial.
-            var routeAsLwt = statement?.ShouldRouteAsLwt() == true
-                || (statement is Statement stmt
-                    && stmt.ConsistencyLevel == null
-                    && requestOptions.ConsistencyLevel.IsSerialConsistencyLevel());
+            return GetPolicyQueryPlan(session, statement, lbp, requestOptions);
+        }
 
-            if (lbp is IExtendedLoadBalancingPolicy extendedLbp)
+        /// <summary>
+        /// Gets the query plan of the load balancing policy. It is an iterator, so the statement, for instance its
+        /// routing key, is only read when the first host is requested, under the error handling of the request
+        /// execution.
+        /// </summary>
+        private static IEnumerable<RoutingTarget> GetPolicyQueryPlan(ISession session, IStatement statement, ILoadBalancingPolicy lbp, IRequestOptions requestOptions)
+        {
+            var routing = RoutingInfo.ForStatement(statement, session.Keyspace, requestOptions);
+            foreach (var target in lbp.NewQueryPlan(routing, new ClusterState(session.Cluster)).TakeWhileHostIsSet())
             {
-                return extendedLbp.NewQueryPlan(session.Keyspace, statement, routeAsLwt).TakeWhileHostIsSet();
+                yield return target;
             }
-
-            return lbp.NewQueryPlan(session.Keyspace, statement).TakeWhileHostIsSet();
         }
 
         /// <inheritdoc />

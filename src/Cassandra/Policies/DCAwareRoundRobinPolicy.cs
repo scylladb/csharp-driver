@@ -30,7 +30,7 @@ namespace Cassandra
     /// semantics, which the driver doesn't know.
     /// </para>
     /// </summary>
-    public class DCAwareRoundRobinPolicy : IExtendedLoadBalancingPolicy
+    public class DCAwareRoundRobinPolicy : ILoadBalancingPolicy
     {
         private static readonly Logger Logger = new Logger(typeof(DCAwareRoundRobinPolicy));
 
@@ -165,18 +165,13 @@ namespace Cassandra
         ///  known host in the local datacenter, in an order that follows a Round-robin
         ///  algorithm.</p>
         /// </summary>
-        /// <param name="keyspace">Keyspace on which the query is going to be executed</param>
-        /// <param name="query"> the query for which to build the plan. </param>
+        /// <param name="routing">The routing information of the request.</param>
+        /// <param name="cluster">The view of the cluster.</param>
         /// <returns>a new query plan, i.e. an iterator indicating which host to try
         ///  first for querying, which one to use as failover, etc...</returns>
-        public IEnumerable<RoutingTarget> NewQueryPlan(string keyspace, IStatement query)
+        public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
         {
-            return NewQueryPlan(keyspace, query, query?.ShouldRouteAsLwt() == true);
-        }
-
-        /// <inheritdoc />
-        public IEnumerable<RoutingTarget> NewQueryPlan(string keyspace, IStatement query, bool routeAsLwt)
-        {
+            var routeAsLwt = routing?.ShouldRouteAsLwt == true;
             var startIndex = 0;
             if (!routeAsLwt)
             {

@@ -481,8 +481,7 @@ of `Diagnostics.CassandraTraceSwitch`.
 ### `RoutingTarget` replaces `HostShard`
 
 Query plans and replica lookups return `RoutingTarget` values instead of `HostShard`
-objects: `ILoadBalancingPolicy.NewQueryPlan()`,
-`IExtendedLoadBalancingPolicy.NewQueryPlan()`, `Metadata.GetReplicas()` and
+objects: `ILoadBalancingPolicy.NewQueryPlan()`, `Metadata.GetReplicas()` and
 `ICluster.GetReplicas()`. `RoutingTarget` is a `readonly record struct` with the same
 `Host` and `Shard` properties, but `Shard` is an `int?`: `null` replaces `-1`, which
 meant "let the connection pool choose the shard".
@@ -496,6 +495,35 @@ meant "let the connection pool choose the shard".
 
 Two targets are equal when their host and shard are equal, as with `HostShard`. A
 query plan that yields `default(RoutingTarget)` ends there, as a `null` element did.
+
+### `ILoadBalancingPolicy.NewQueryPlan` takes the routing information
+
+`ILoadBalancingPolicy.NewQueryPlan(string keyspace, IStatement query)` is replaced by
+`NewQueryPlan(RoutingInfo routing, ClusterState cluster)`, and
+`IExtendedLoadBalancingPolicy` is removed. Its `routeAsLwt` parameter is now
+`RoutingInfo.ShouldRouteAsLwt`, so every policy gets it, and a policy wrapping another
+one passes `routing` and `cluster` on.
+
+| 3.x | 4.0 |
+|---|---|
+| `keyspace` parameter | `routing.Keyspace`, which is now the statement's keyspace, or else the session's |
+| `query.RoutingKey`, `query.TableName` | `routing.RoutingKey`, `routing.Table` |
+| `query.ShouldRouteAsLwt()`, `routeAsLwt` | `routing.ShouldRouteAsLwt`, which also covers a serial consistency level set only in the execution profile |
+| `query` | `routing.Statement`, still `null` for requests issued by the driver |
+| `cluster.Metadata.GetReplicas(keyspace, routingKey)` | `cluster.GetReplicas(routing)`, which returns the replicas the driver routes to: from the cached tablet owning the partition when tablets of the table are cached (none when no cached tablet owns it), and from the token map otherwise |
+| `cluster.AllHosts()`, kept from `Initialize()` | `cluster.Hosts` |
+| `class MyPolicy : IExtendedLoadBalancingPolicy` | `class MyPolicy : ILoadBalancingPolicy` |
+
+New routing inputs are added to `RoutingInfo` as properties, without changing the
+method's signature again.
+
+To call `NewQueryPlan` yourself, for instance to test a policy or to see where a
+request would be routed, create both arguments:
+
+```csharp
+var routing = new RoutingInfo { Keyspace = "ks", Table = "tbl", RoutingKey = routingKey };
+var plan = policy.NewQueryPlan(routing, new ClusterState(cluster));
+```
 
 ## 3.13.0 - Unified driver
 

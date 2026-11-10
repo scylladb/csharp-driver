@@ -79,7 +79,7 @@ namespace Cassandra.Tests
                 return _distance;
             }
 
-            public IEnumerable<RoutingTarget> NewQueryPlan(string keyspace, IStatement query)
+            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
             {
                 return new[]
                 {

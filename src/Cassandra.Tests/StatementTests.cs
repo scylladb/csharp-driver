@@ -326,7 +326,7 @@ namespace Cassandra.Tests
             s1Mock.Setup(s => s.Keyspace).Returns("ks1");
             var batch = new BatchStatement().Add(s1Mock.Object);
 
-            var _ = lbp.NewQueryPlan("ks2", batch).ToList();
+            var _ = lbp.NewQueryPlan(clusterMock, "ks2", batch).ToList();
 
             Mock.Get(clusterMock).Verify(c => c.GetRoutingReplicas("ks1", null, rawRoutingKey), Times.Once);
         }

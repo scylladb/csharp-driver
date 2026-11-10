@@ -231,7 +231,7 @@ namespace Cassandra.Tests
             var serializerManager = new SerializerManager(ProtocolVersion.V5);
             var loadBalancingPolicy = new Mock<ILoadBalancingPolicy>();
             loadBalancingPolicy
-                .Setup(policy => policy.NewQueryPlan(It.IsAny<string>(), It.IsAny<IStatement>()))
+                .Setup(policy => policy.NewQueryPlan(It.IsAny<RoutingInfo>(), It.IsAny<ClusterState>()))
                 .Returns(Enumerable.Empty<RoutingTarget>());
             var handlerMock = new Mock<IPrepareHandler>();
             handlerMock
@@ -254,7 +254,7 @@ namespace Cassandra.Tests
 
                 Assert.AreEqual(requestKeyspace, preparedStatement.Keyspace);
                 loadBalancingPolicy.Verify(
-                    policy => policy.NewQueryPlan(requestKeyspace, null), Times.Once);
+                    policy => policy.NewQueryPlan(It.Is<RoutingInfo>(r => r.Keyspace == requestKeyspace && r.Statement == null), It.IsAny<ClusterState>()), Times.Once);
                 handlerMock.Verify(handler => handler.Prepare(
                     It.Is<InternalPrepareRequest>(request => request.Keyspace == requestKeyspace),
                     session,
@@ -1499,7 +1499,7 @@ namespace Cassandra.Tests
             {
                 var loadBalancingPolicyMock = new Mock<ILoadBalancingPolicy>();
                 loadBalancingPolicyMock
-                    .Setup(policy => policy.NewQueryPlan(It.IsAny<string>(), It.IsAny<IStatement>()))
+                    .Setup(policy => policy.NewQueryPlan(It.IsAny<RoutingInfo>(), It.IsAny<ClusterState>()))
                     .Returns(Enumerable.Empty<RoutingTarget>());
                 loadBalancingPolicy = loadBalancingPolicyMock.Object;
             }

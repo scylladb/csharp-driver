@@ -52,17 +52,17 @@ namespace Cassandra
         HostDistance Distance(Host host);
 
         /// <summary>
-        ///  Returns the hosts to use for a new query. <p> Each new query will call this
-        ///  method. The first host in the result will then be used to perform the query.
-        ///  In the event of a connection problem (the queried host is down or appear to
-        ///  be so), the next host will be used. If all hosts of the returned
-        ///  <c>Iterator</c> are down, the query will fail.</p>
+        ///  Returns the nodes, and optionally their shards, to use for a new request. <p> Each new request calls
+        ///  this method. The request is sent to the first target; when it can't be, or when the retry policy
+        ///  decides to try the next node, the next target is used. If no target can be used, the request fails
+        ///  with a <see cref="NoHostAvailableException"/>.</p>
+        ///  <p>The plan is enumerated lazily, and usually only its first elements are. A target without a host, such
+        ///  as <c>default(RoutingTarget)</c>, ends the plan.</p>
         /// </summary>
-        /// <param name="query">The query for which to build a plan, it can be null.</param>
-        /// <param name="keyspace">Keyspace on which the query is going to be executed, it can be null.</param>
-        /// <returns>An iterator of Host. The query is tried against the hosts returned
-        ///  by this iterator in order, until the query has been sent successfully to one
-        ///  of the host.</returns>
-        IEnumerable<RoutingTarget> NewQueryPlan(string keyspace, IStatement query);
+        /// <param name="routing">What is known about the request: its keyspace, table, routing key and whether
+        ///  it should be routed as a lightweight transaction.</param>
+        /// <param name="cluster">The view of the cluster, which gives the replicas of the request.</param>
+        /// <returns>The targets to try, in order.</returns>
+        IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster);
     }
 }

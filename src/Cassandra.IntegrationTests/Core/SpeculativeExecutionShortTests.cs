@@ -275,7 +275,7 @@ namespace Cassandra.IntegrationTests.Core
                 return HostDistance.Local;
             }
 
-            public IEnumerable<RoutingTarget> NewQueryPlan(string keyspace, IStatement query)
+            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
             {
                 var hosts = _cluster.AllHosts().ToArray();
                 foreach (var addr in _addresses)

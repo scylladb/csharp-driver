@@ -15,6 +15,7 @@
 //
 using System.Linq;
 using System.Net;
+using Moq;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 using CollectionAssert = NUnit.Framework.CollectionAssert;
@@ -29,7 +30,7 @@ namespace Cassandra.Tests.Policies
             var lbp = new DefaultLoadBalancingPolicy(new TestLoadBalancingPolicy());
             var statement = new TargettedSimpleStatement("Q");
             statement.PreferredHost = new Host(new IPEndPoint(201, 9042), ReconnectionPolicy);
-            var hosts = lbp.NewQueryPlan(null, statement);
+            var hosts = lbp.NewQueryPlan(Mock.Of<ICluster>(), null, statement);
             CollectionAssert.AreEqual(
                 new[] { "201.0.0.0:9042", "101.0.0.0:9042", "102.0.0.0:9042" },
                 hosts.Select(h => h.Host.Address.ToString()));
@@ -40,7 +41,7 @@ namespace Cassandra.Tests.Policies
         {
             var lbp = new DefaultLoadBalancingPolicy(new TestLoadBalancingPolicy());
             var statement = new TargettedSimpleStatement("Q");
-            var hosts = lbp.NewQueryPlan(null, statement);
+            var hosts = lbp.NewQueryPlan(Mock.Of<ICluster>(), null, statement);
             CollectionAssert.AreEqual(
                 new[] { "101.0.0.0:9042", "102.0.0.0:9042" },
                 hosts.Select(h => h.Host.Address.ToString()));
@@ -54,7 +55,7 @@ namespace Cassandra.Tests.Policies
             var statement = new TargettedSimpleStatement("Q");
             // Use 201 as preferred
             statement.PreferredHost = new Host(new IPEndPoint(201L, 9042), ReconnectionPolicy);
-            lbp.NewQueryPlan(null, statement);
+            lbp.NewQueryPlan(Mock.Of<ICluster>(), null, statement);
             Assert.AreEqual(HostDistance.Local, lbp.Distance(statement.PreferredHost));
         }
     }
