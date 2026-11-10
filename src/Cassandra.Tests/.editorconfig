@@ -25,3 +25,8 @@ dotnet_diagnostic.SA1600.severity = silent
 
 # Preserve this new file's ScyllaDB attribution instead of the legacy DataStax template.
 dotnet_diagnostic.SA1636.severity = none
+
+[ClientRoutes/*.cs]
+
+# Preserve ScyllaDB attribution instead of the inherited DataStax header template.
+dotnet_diagnostic.SA1636.severity = none
