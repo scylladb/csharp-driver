@@ -241,7 +241,6 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 {
                     client.Dispose();
                     RecordFailure(ex);
-                    return;
                 }
             }
         }
