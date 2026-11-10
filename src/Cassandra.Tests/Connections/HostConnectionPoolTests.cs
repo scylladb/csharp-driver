@@ -823,12 +823,18 @@ namespace Cassandra.Tests.Connections
             finally
             {
                 releaseOpen.TrySetResult(true);
-                await Task.WhenAll(first ?? Task.CompletedTask, second ?? Task.CompletedTask)
-                    .ContinueWith(completed => _ = completed.Exception, TaskScheduler.Default)
-                    .WaitToCompleteAsync(5000).ConfigureAwait(false);
-                Trace.Listeners.Remove(listener);
-                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
-                DisposePoolAndTimer(target);
+                try
+                {
+                    await Task.WhenAll(first ?? Task.CompletedTask, second ?? Task.CompletedTask)
+                        .ContinueWith(completed => _ = completed.Exception, TaskScheduler.Default)
+                        .WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+                finally
+                {
+                    Trace.Listeners.Remove(listener);
+                    Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                    DisposePoolAndTimer(target);
+                }
             }
         }
 
@@ -1462,7 +1468,7 @@ namespace Cassandra.Tests.Connections
             try
             {
                 await Assert.ThrowsAsync<SocketException>(async () =>
-                    await InvokeCreateOpenConnection(target).ConfigureAwait(false));
+                    await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false));
                 Assert.AreEqual(1, Volatile.Read(ref closingRaised));
                 Assert.AreEqual(0, target.OpenConnections);
                 Assert.IsEmpty(target.ConnectionsSnapshot);
@@ -1470,7 +1476,9 @@ namespace Cassandra.Tests.Connections
                 Assert.AreEqual(1, GetExpectedConnectionLength(target));
                 connection.Verify(value => value.Dispose(), Times.AtLeastOnce);
 
-                var recovered = await InvokeCreateOpenConnection(target).ConfigureAwait(false);
+                var recovery = InvokeCreateOpenConnection(target);
+                await recovery.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                var recovered = await recovery.ConfigureAwait(false);
                 Assert.AreSame(recoveredConnection.Object, recovered);
                 Assert.AreSame(recoveryInfo, GetShardingInfo(target));
                 Assert.AreEqual(8, GetExpectedConnectionLength(target));
@@ -1517,14 +1525,14 @@ namespace Cassandra.Tests.Connections
                     .ReturnsAsync(() => new[] { endPoint });
             try
             {
-                await InvokeCreateOpenConnection(target).ConfigureAwait(false);
+                await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
                 Assert.AreSame(shardingInfo, GetShardingInfo(target));
                 Assert.AreEqual(4, GetExpectedConnectionLength(target));
 
                 endPoint = new ClientRouteConnectionEndPoint(new IPEndPoint(IPAddress.Parse("198.51.100.59"), 9042),
                     _host.Address, "route.proxy", "route-a");
                 await Assert.ThrowsAsync<SocketException>(async () =>
-                    await InvokeCreateOpenConnection(target).ConfigureAwait(false));
+                    await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false));
 
                 Assert.AreEqual(1, target.OpenConnections);
                 Assert.AreSame(shardingInfo, GetShardingInfo(target));
@@ -1912,7 +1920,7 @@ namespace Cassandra.Tests.Connections
 
             try
             {
-                await target.Warmup().ConfigureAwait(false);
+                await target.Warmup().WaitToCompleteAsync(5000).ConfigureAwait(false);
                 Assert.AreEqual(4, target.OpenConnections);
 
                 var routedEndPoint = new ClientRouteConnectionEndPoint(
@@ -1928,7 +1936,7 @@ namespace Cassandra.Tests.Connections
                                 It.IsAny<Host>(), false, 19042))
                             .ReturnsAsync(new IConnectionEndPoint[] { routedEndPoint });
                     target.OnConnectionClosing(target.ConnectionsSnapshot[0]);
-                    InvokeCreateOpenConnection(target).GetAwaiter().GetResult();
+                    InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).GetAwaiter().GetResult();
                 };
 
                 var borrowed = target.BorrowExistingConnection(new RoutingKey(new byte[] { 1 }));
