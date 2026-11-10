@@ -117,7 +117,8 @@ namespace Cassandra.Connections
 
             internal bool TryObserveConsumedFailure()
             {
-                return Interlocked.CompareExchange(ref _failureObserved, 1, 0) == 0;
+                return Completion.Task.IsFaulted &&
+                       Interlocked.CompareExchange(ref _failureObserved, 1, 0) == 0;
             }
 
             internal void MarkFailureObservedByCaller()
