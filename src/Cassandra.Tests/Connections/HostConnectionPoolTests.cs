@@ -1849,6 +1849,7 @@ namespace Cassandra.Tests.Connections
             HostConnectionPool target = null;
             var distanceChanged = false;
             Task resize = null;
+            Thread resizeThread = null;
             var resizeStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var factory = new FakeConnectionFactory(endPoint =>
             {
@@ -1869,13 +1870,17 @@ namespace Cassandra.Tests.Connections
                             distanceChanged = true;
                             if (resizeDuringPublication)
                             {
-                                resize = Task.Run(() =>
+                                resize = Task.Factory.StartNew(() =>
                                 {
+                                    resizeThread = Thread.CurrentThread;
                                     resizeStarted.TrySetResult(true);
                                     target.ConsiderResizingPool(int.MaxValue);
-                                });
+                                }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
                                 Assert.IsTrue(resizeStarted.Task.Wait(5000));
-                                Assert.IsFalse(resize.Wait(100), "Resizing must wait for shard-state publication.");
+                                Assert.IsTrue(SpinWait.SpinUntil(() => resize.IsCompleted ||
+                                    (resizeThread.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0, 5000));
+                                Assert.IsFalse(resize.IsCompleted, "Resizing must wait for shard-state publication.");
+                                Assert.AreEqual(4, GetExpectedConnectionLength(target));
                             }
                             target.SetDistance(HostDistance.Remote);
                         }
