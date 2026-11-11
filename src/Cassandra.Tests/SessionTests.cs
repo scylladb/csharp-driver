@@ -421,6 +421,7 @@ namespace Cassandra.Tests
                 pool.Verify(value => value.Warmup(), Times.Never);
                 pool.Verify(value => value.Dispose(), Times.Once);
                 Assert.IsEmpty(((IInternalSession)session).GetPools());
+                Assert.IsEmpty(session.GetMetrics().NodeMetrics);
             }
         }
 
@@ -477,6 +478,72 @@ namespace Cassandra.Tests
                     await ((IInternalSession)session).Init().ConfigureAwait(false));
 
                 Assert.AreSame(failure, ex);
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void Should_AllowCustomHostMissingFromMetadataOnlyWithoutClientRoutes(bool clientRoutesEnabled)
+        {
+            var pool = Mock.Of<IHostConnectionPool>();
+            var factory = new Mock<IHostConnectionPoolFactory>();
+            factory.Setup(value => value.Create(
+                It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>())).Returns(pool);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = factory.Object,
+                ClientRoutesOptions = clientRoutesEnabled
+                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    : null
+            }.Build();
+            using var metadata = new Metadata(config);
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), new ConstantReconnectionPolicy(1000));
+            using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "custom-host-test");
+            var internalSession = (IInternalSession)session;
+            if (clientRoutesEnabled)
+            {
+                Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
+                    internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+                Assert.IsEmpty(internalSession.GetPools());
+            }
+            else
+            {
+                Assert.AreSame(pool, internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+                Assert.AreSame(pool, internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+                Assert.AreEqual(1, internalSession.GetPools().Count());
+            }
+            factory.Verify(value => value.Create(
+                It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>()),
+                clientRoutesEnabled ? Times.Never() : Times.Once());
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void Should_RemoveMetricsWithoutPoolUnlessTheyBelongToReplacement(bool replacementExists)
+        {
+            var config = new TestConfigurationBuilder().Build();
+            using var metadata = new Metadata(config);
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            var host = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
+            using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "removed-metrics-test");
+            var internalSession = (IInternalSession)session;
+            metadata.RemoveHost(host.Address);
+            var metricsHost = replacementExists ? metadata.AddHost(host.Address) : host;
+            internalSession.MetricsManager.GetOrCreateNodeMetrics(metricsHost);
+            var registry = session.GetMetrics().NodeMetrics[metricsHost];
+            Assert.IsEmpty(internalSession.GetPools());
+
+            cluster.Raise(value => value.HostRemoved += null, host);
+
+            Assert.AreEqual(replacementExists ? 1 : 0, session.GetMetrics().NodeMetrics.Count);
+            if (replacementExists)
+            {
+                Assert.AreSame(registry, session.GetMetrics().NodeMetrics[metricsHost]);
             }
         }
 
