@@ -395,13 +395,14 @@ namespace Cassandra
             var clientRoutesEnabled = Configuration.ClientRoutesRuntime != null;
 
             var currentHost = _cluster.Metadata.GetHost(host.Address);
-            if (currentHost == null && !clientRoutesEnabled && !host.IsRemoved)
+            var customHost = currentHost == null && !clientRoutesEnabled && !host.IsRemoved;
+            if (customHost)
             {
                 currentHost = host;
             }
             if (!IsDisposed && currentHost != null &&
                 _connectionPool.TryGetValue(host.Address, out var entry) &&
-                ReferenceEquals(entry.Host, currentHost) &&
+                (ReferenceEquals(entry.Host, currentHost) || (customHost && !entry.Host.IsRemoved)) &&
                 (!clientRoutesEnabled ||
                  ((allowDownHost || currentHost.IsUp) &&
                   _cluster.RetrieveAndSetDistance(currentHost) != HostDistance.Ignored)))
@@ -417,7 +418,8 @@ namespace Cassandra
                 }
 
                 currentHost = _cluster.Metadata.GetHost(host.Address);
-                if (currentHost == null && !clientRoutesEnabled && !host.IsRemoved)
+                customHost = currentHost == null && !clientRoutesEnabled && !host.IsRemoved;
+                if (customHost)
                 {
                     currentHost = host;
                 }
@@ -443,8 +445,10 @@ namespace Cassandra
 
                 if (_connectionPool.TryGetValue(host.Address, out var existingEntry))
                 {
-                    if (ReferenceEquals(existingEntry.Host, host))
+                    if (ReferenceEquals(existingEntry.Host, host) || (customHost && !existingEntry.Host.IsRemoved))
                     {
+                        // Custom policies can supply a fresh Host per query plan. Retain the
+                        // original pool owner while metadata supplies no replacement identity.
                         return existingEntry.Pool;
                     }
                     _connectionPool.Remove(host.Address);
