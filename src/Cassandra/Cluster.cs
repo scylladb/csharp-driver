@@ -433,7 +433,10 @@ namespace Cassandra
             {
                 Cluster.Logger.Info("Cluster Connected using binary protocol version: [" + protocolVersion + "]");
             }
-            catch (Exception diagnosticException) when (!Utils.IsFatalException(diagnosticException))
+            catch (Exception diagnosticException) when (
+                !Utils.IsFatalException(diagnosticException) &&
+                !(diagnosticException is AggregateException aggregateException &&
+                  aggregateException.Flatten().InnerExceptions.Any(Utils.IsFatalException)))
             {
                 // Logging callbacks run after publication and outside its lock. An ordinary
                 // sink failure must not invalidate ready setup or transfer its cleanup ownership.

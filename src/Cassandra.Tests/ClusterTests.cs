@@ -377,13 +377,20 @@ namespace Cassandra.Tests
             }
         }
 
-        [TestCase(false)]
-        [TestCase(true)]
-        public void ClientRoutesConnectedDiagnosticFailurePreservesPublishedInitialization(bool fatal)
+        [TestCase(false, false)]
+        [TestCase(true, false)]
+        [TestCase(false, true)]
+        [TestCase(true, true)]
+        public void ClientRoutesConnectedDiagnosticFailurePreservesPublishedInitialization(bool fatal, bool wrapped)
         {
-            Exception diagnosticFailure = fatal
+            Exception diagnosticCause = fatal
                 ? new OutOfMemoryException("fatal diagnostic sink failure")
                 : new InvalidOperationException("connected diagnostic sink failed");
+            // The logging framework aggregates provider failures, including providers that
+            // throw their own aggregates.
+            var diagnosticFailure = wrapped
+                ? new AggregateException(new InvalidOperationException("another provider"), new AggregateException(diagnosticCause))
+                : diagnosticCause;
             var controlConnection = new Mock<IControlConnection>();
             controlConnection.Setup(c => c.InitAsync()).Returns(Task.CompletedTask);
             controlConnection.SetupGet(c => c.Serializer).Returns(new SerializerManager(ProtocolVersion.V3));
@@ -405,8 +412,16 @@ namespace Cassandra.Tests
                 {
                     if (fatal)
                     {
-                        var first = Assert.Throws<OutOfMemoryException>(() => _ = cluster.Metadata);
-                        Assert.AreSame(diagnosticFailure, first);
+                        var first = Assert.Catch<Exception>(() => _ = cluster.Metadata);
+                        if (wrapped)
+                        {
+                            Assert.IsInstanceOf<AggregateException>(first);
+                            CollectionAssert.Contains(((AggregateException)first).Flatten().InnerExceptions, diagnosticCause);
+                        }
+                        else
+                        {
+                            Assert.AreSame(diagnosticFailure, first);
+                        }
                     }
                     else
                     {
