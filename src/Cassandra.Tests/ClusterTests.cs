@@ -318,11 +318,15 @@ namespace Cassandra.Tests
             controlConnection.Verify(c => c.Dispose(), Times.Once);
         }
 
-        [TestCase(false, false)]
-        [TestCase(false, true)]
-        [TestCase(true, false)]
-        [TestCase(true, true)]
-        public async Task ClientRoutesPolicyFailuresAreTerminal(bool failSpeculativePolicy, bool noHostAvailable)
+        [TestCase(false, false, true)]
+        [TestCase(false, false, false)]
+        [TestCase(false, true, true)]
+        [TestCase(false, true, false)]
+        [TestCase(true, false, true)]
+        [TestCase(true, false, false)]
+        [TestCase(true, true, true)]
+        [TestCase(true, true, false)]
+        public async Task ClientRoutesPolicyFailuresAreTerminal(bool failSpeculativePolicy, bool noHostAvailable, bool callerTimesOut)
         {
             var initCompletion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var controlConnection = new Mock<IControlConnection>();
@@ -346,7 +350,16 @@ namespace Cassandra.Tests
             configuration.SocketOptions.SetConnectTimeoutMillis(1).SetMetadataAbortTimeout(10);
             using (var cluster = CreateCluster(configuration))
             {
-                Assert.Throws<TimeoutException>(() => _ = cluster.Metadata);
+                if (callerTimesOut)
+                {
+                    Assert.Throws<TimeoutException>(() => _ = cluster.Metadata);
+                }
+                else
+                {
+                    initCompletion.TrySetResult(true);
+                    var waitingCallerFailure = Assert.Throws<InitFatalErrorException>(() => _ = cluster.Metadata);
+                    Assert.AreSame(failure, waitingCallerFailure.InnerException);
+                }
                 var retainedSetup = (Task)typeof(Cluster)
                     .GetField("_clientRoutesInitTask", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cluster);
                 initCompletion.TrySetResult(true);

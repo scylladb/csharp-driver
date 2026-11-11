@@ -282,6 +282,13 @@ namespace Cassandra
                     {
                         await initTask.WaitToCompleteAsync(initialAbortTimeout).ConfigureAwait(false);
                     }
+                    catch (Exception ex) when (Configuration.ClientRoutesRuntime != null && _initException != null &&
+                                               (ex is TimeoutException || ex is NoHostAvailableException))
+                    {
+                        // Policy and later setup failures are terminal even when their exception
+                        // type also represents a recoverable control-connection failure.
+                        throw _initException;
+                    }
                     catch (TimeoutException ex)
                     {
                         var newEx = new TimeoutException(
@@ -399,7 +406,6 @@ namespace Cassandra
 
         private void PublishInitialization()
         {
-            Cluster.Logger.Info("Cluster Connected using binary protocol version: [" + _controlConnection.Serializer.CurrentProtocolVersion + "]");
             lock (_initializationCompletionLock)
             {
                 if (Configuration.ClientRoutesRuntime != null)
@@ -410,6 +416,7 @@ namespace Cassandra
                 _metadata.Hosts.Removed += OnHostRemoved;
                 _metadata.Hosts.Up += OnHostUp;
                 _initialized = true;
+                Cluster.Logger.Info("Cluster Connected using binary protocol version: [" + _controlConnection.Serializer.CurrentProtocolVersion + "]");
             }
         }
 
