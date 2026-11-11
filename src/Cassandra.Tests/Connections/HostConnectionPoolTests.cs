@@ -1839,14 +1839,17 @@ namespace Cassandra.Tests.Connections
             }
         }
 
-        [Test]
-        public async Task Should_UseCurrentDistanceWhenRouteAdmissionClearsShardState()
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_UseCurrentDistanceWhenRouteAdmissionClearsShardState(bool resizeDuringPublication)
         {
             var rows = new List<IRow>();
             var shardingInfo = ShardingInfo.Create("0", "4", "org.apache.cassandra.dht.Murmur3Partitioner",
                 "biased-token-round-robin", "12", "19042", "19142");
             HostConnectionPool target = null;
             var distanceChanged = false;
+            Task resize = null;
+            var resizeStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var factory = new FakeConnectionFactory(endPoint =>
             {
                 var connection = CreateConnection(endPoint, shardingInfo: shardingInfo);
@@ -1864,6 +1867,16 @@ namespace Cassandra.Tests.Connections
                         {
                             // Change distance between candidate metadata retrieval and publication.
                             distanceChanged = true;
+                            if (resizeDuringPublication)
+                            {
+                                resize = Task.Run(() =>
+                                {
+                                    resizeStarted.TrySetResult(true);
+                                    target.ConsiderResizingPool(int.MaxValue);
+                                });
+                                Assert.IsTrue(resizeStarted.Task.Wait(5000));
+                                Assert.IsFalse(resize.Wait(100), "Resizing must wait for shard-state publication.");
+                            }
                             target.SetDistance(HostDistance.Remote);
                         }
                         return false;
@@ -1877,20 +1890,35 @@ namespace Cassandra.Tests.Connections
                 clientRoutesOptions: new ClientRoutesOptions(new[] { new ClientRouteProxy("route-a") }, 9042, true),
                 clientRouteRowsFactory: _ => rows,
                 coreConnections: 4,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000),
                 clientRoutesCacheCreated: cache => routesCache = cache);
             var config = (Configuration)typeof(HostConnectionPool)
                 .GetField("_config", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(target);
             config.PoolingOptions.SetCoreConnectionsPerHost(HostDistance.Remote, 1)
                                  .SetMaxConnectionsPerHost(HostDistance.Remote, 1);
+            config.PoolingOptions.SetMaxConnectionsPerHost(HostDistance.Local, 8);
+            Mock.Get(_resolver)
+                .Setup(resolver => resolver.GetConnectionShardAwareEndPointsAsync(_host, false, 19042))
+                .ReturnsAsync(new IConnectionEndPoint[]
+                {
+                    new ConnectionEndPoint(new IPEndPoint(_host.Address.Address, 19042),
+                        Mock.Of<IServerNameResolver>(), null)
+                });
             try
             {
-                await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                await target.Warmup().WaitToCompleteAsync(5000).ConfigureAwait(false);
                 Assert.IsNotNull(GetShardingInfo(target));
                 Assert.AreEqual(4, GetExpectedConnectionLength(target));
                 rows.Add(ClientRouteRow(_host.HostId, "198.51.100.93", 9042, "route-a"));
                 await routesCache.FullRefreshBarrierAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
 
+                var previous = target.ConnectionsSnapshot.First();
+                Mock.Get(previous).Raise(connection => connection.Closing += null, previous);
                 await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                if (resize != null)
+                {
+                    await resize.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
 
                 Assert.IsTrue(distanceChanged);
                 Assert.IsNull(GetShardingInfo(target));
@@ -1898,7 +1926,17 @@ namespace Cassandra.Tests.Connections
             }
             finally
             {
-                DisposePoolAndTimer(target);
+                try
+                {
+                    if (resize != null)
+                    {
+                        await resize.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    }
+                }
+                finally
+                {
+                    DisposePoolAndTimer(target);
+                }
             }
         }
 
