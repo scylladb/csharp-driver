@@ -263,7 +263,20 @@ namespace Cassandra
 
                 for (var i = 0; i < hostWarmups.Length; i++)
                 {
-                    var failure = hostWarmups[i]?.Exception;
+                    var warmup = hostWarmups[i];
+                    Exception failure = warmup?.Exception;
+                    if (warmup?.IsCanceled == true)
+                    {
+                        try
+                        {
+                            await warmup.ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException cancellation)
+                        {
+                            // Canceled tasks have no Exception property; retain their original cause.
+                            failure = cancellation;
+                        }
+                    }
                     if (failure == null)
                     {
                         continue;
