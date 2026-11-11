@@ -377,10 +377,13 @@ namespace Cassandra.Tests
             }
         }
 
-        [Test]
-        public void ClientRoutesConnectedDiagnosticFailureCannotPublishInitialization()
+        [TestCase(false)]
+        [TestCase(true)]
+        public void ClientRoutesConnectedDiagnosticFailurePreservesPublishedInitialization(bool fatal)
         {
-            var diagnosticFailure = new InvalidOperationException("connected diagnostic sink failed");
+            Exception diagnosticFailure = fatal
+                ? new OutOfMemoryException("fatal diagnostic sink failure")
+                : new InvalidOperationException("connected diagnostic sink failed");
             var controlConnection = new Mock<IControlConnection>();
             controlConnection.Setup(c => c.InitAsync()).Returns(Task.CompletedTask);
             controlConnection.SetupGet(c => c.Serializer).Returns(new SerializerManager(ProtocolVersion.V3));
@@ -400,11 +403,17 @@ namespace Cassandra.Tests
             {
                 using (var cluster = CreateCluster(configuration))
                 {
-                    var first = Assert.Throws<InvalidOperationException>(() => _ = cluster.Metadata);
-                    Assert.AreSame(diagnosticFailure, first);
-                    var cached = Assert.Throws<InitFatalErrorException>(() => _ = cluster.Metadata);
-                    Assert.AreSame(diagnosticFailure, cached.InnerException);
-                    controlConnection.Verify(c => c.Dispose(), Times.Once);
+                    if (fatal)
+                    {
+                        var first = Assert.Throws<OutOfMemoryException>(() => _ = cluster.Metadata);
+                        Assert.AreSame(diagnosticFailure, first);
+                    }
+                    else
+                    {
+                        Assert.DoesNotThrow(() => _ = cluster.Metadata);
+                    }
+                    Assert.DoesNotThrow(() => _ = cluster.Metadata);
+                    controlConnection.Verify(c => c.Dispose(), Times.Never);
                 }
             }
             finally
@@ -412,6 +421,59 @@ namespace Cassandra.Tests
                 Trace.Listeners.Remove(listener.Object);
                 Diagnostics.CassandraTraceSwitch.Level = previousLevel;
                 listener.Object.Dispose();
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        [NonParallelizable]
+        public async Task ClientRoutesConnectedDiagnosticCanShutDownPublishedSetup(bool anotherThread)
+        {
+            var initCompletion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var controlConnection = new Mock<IControlConnection>();
+            controlConnection.Setup(c => c.InitAsync()).Returns(initCompletion.Task);
+            controlConnection.SetupGet(c => c.Serializer).Returns(new SerializerManager(ProtocolVersion.V3));
+            var speculativePolicy = new Mock<ISpeculativeExecutionPolicy>();
+            var configuration = CreateClientRoutesClusterConfiguration(
+                controlConnection.Object, _ => { }, speculativeExecutionPolicy: speculativePolicy.Object);
+            configuration.SocketOptions.SetConnectTimeoutMillis(1).SetMetadataAbortTimeout(10);
+            var handlerField = typeof(Logger).GetField("_loggerHandler", BindingFlags.Instance | BindingFlags.NonPublic);
+            var originalHandler = handlerField.GetValue(Cluster.Logger);
+            var handler = new Mock<Logger.ILoggerHandler>();
+            Task shutdown = Task.CompletedTask;
+            var initializedAtDiagnostic = false;
+            using (var cluster = CreateCluster(configuration))
+            {
+                handler.Setup(h => h.Info(It.IsAny<string>(), It.IsAny<object[]>()))
+                    .Callback<string, object[]>((message, args) =>
+                    {
+                        if (!message.StartsWith("Cluster Connected using binary protocol version", StringComparison.Ordinal))
+                        {
+                            return;
+                        }
+                        initializedAtDiagnostic = (bool)typeof(Cluster)
+                            .GetField("_initialized", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cluster);
+                        shutdown = anotherThread ? Task.Run(() => cluster.Shutdown()) : cluster.ShutdownAsync();
+                        shutdown.WaitAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
+                    });
+                handlerField.SetValue(Cluster.Logger, handler.Object);
+                try
+                {
+                    Assert.Throws<TimeoutException>(() => _ = cluster.Metadata);
+                    var retainedSetup = (Task)typeof(Cluster)
+                        .GetField("_clientRoutesInitTask", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cluster);
+                    initCompletion.TrySetResult(true);
+                    await retainedSetup.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+                    Assert.IsTrue(initializedAtDiagnostic, "The diagnostic must observe already-published setup.");
+                    speculativePolicy.Verify(policy => policy.Dispose(), Times.Once);
+                    controlConnection.Verify(c => c.Dispose(), Times.Once);
+                }
+                finally
+                {
+                    initCompletion.TrySetResult(true);
+                    handlerField.SetValue(Cluster.Logger, originalHandler);
+                    await shutdown.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                }
             }
         }
 

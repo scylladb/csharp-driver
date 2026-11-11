@@ -338,6 +338,12 @@ namespace Cassandra
                 }
                 catch (Exception ex)
                 {
+                    if (Configuration.ClientRoutesRuntime != null && _initialized)
+                    {
+                        // Fatal diagnostics still propagate, but successfully published setup
+                        // remains owned by the cluster rather than terminal-failure cleanup.
+                        throw;
+                    }
                     //There was an error that the driver is not able to recover from
                     //Store the exception for the following times
                     _initException = _initException ?? new InitFatalErrorException(ex);
@@ -350,7 +356,9 @@ namespace Cassandra
                 }
                 if (Configuration.ClientRoutesRuntime == null)
                 {
+                    var protocolVersion = _controlConnection.Serializer.CurrentProtocolVersion;
                     PublishInitialization();
+                    LogConnected(protocolVersion);
                 }
             }
             finally
@@ -412,13 +420,23 @@ namespace Cassandra
                 {
                     EnsureClientRoutesSetupIsActive();
                 }
-                // Keep diagnostics inside the shutdown guard, before publishing state that
-                // would otherwise survive an exception from the diagnostic sink.
-                Cluster.Logger.Info("Cluster Connected using binary protocol version: [" + _controlConnection.Serializer.CurrentProtocolVersion + "]");
                 _metadata.Hosts.Added += OnHostAdded;
                 _metadata.Hosts.Removed += OnHostRemoved;
                 _metadata.Hosts.Up += OnHostUp;
                 _initialized = true;
+            }
+        }
+
+        private static void LogConnected(ProtocolVersion protocolVersion)
+        {
+            try
+            {
+                Cluster.Logger.Info("Cluster Connected using binary protocol version: [" + protocolVersion + "]");
+            }
+            catch (Exception diagnosticException) when (!Utils.IsFatalException(diagnosticException))
+            {
+                // Logging callbacks run after publication and outside its lock. An ordinary
+                // sink failure must not invalidate ready setup or transfer its cleanup ownership.
             }
         }
 
@@ -429,6 +447,7 @@ namespace Cassandra
             var initializingSpeculativePolicies = new List<ISpeculativeExecutionPolicy>();
             var controlInitialized = false;
             var published = false;
+            ProtocolVersion protocolVersion;
             try
             {
                 await _controlConnection.InitAsync().ConfigureAwait(false);
@@ -438,6 +457,7 @@ namespace Cassandra
                 EnsureClientRoutesSetupIsActive();
                 InitializePoliciesAndMetadata(
                     loadBalancingPolicies, speculativeExecutionPolicies, initializingSpeculativePolicies);
+                protocolVersion = _controlConnection.Serializer.CurrentProtocolVersion;
                 PublishInitialization();
                 published = true;
             }
@@ -463,6 +483,7 @@ namespace Cassandra
                     }
                 }
             }
+            LogConnected(protocolVersion);
         }
 
         private void InitializeHostDistances()
