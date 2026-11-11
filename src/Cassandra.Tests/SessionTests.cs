@@ -1248,6 +1248,67 @@ namespace Cassandra.Tests
             }
         }
 
+        [NonParallelizable]
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public async Task Should_SkipRecoverableWarmupDiagnosticsAfterShutdown(
+            bool clientRoutesEnabled, bool fatalFailure)
+        {
+            var warmup = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Exception failure = fatalFailure
+                ? new OutOfMemoryException("shutdown warmup failure")
+                : new InvalidOperationException("shutdown warmup failure");
+            var pool = new Mock<IHostConnectionPool>();
+            pool.Setup(value => value.Warmup()).Returns(warmup.Task);
+            pool.Setup(value => value.Dispose()).Callback(() => warmup.TrySetException(failure));
+            var factory = new Mock<IHostConnectionPoolFactory>();
+            factory.Setup(value => value.Create(
+                It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>())).Returns(pool.Object);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = factory.Object,
+                ClientRoutesOptions = clientRoutesEnabled
+                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    : null
+            }.Build();
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new LoggingTests.TestTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                using var session = CreateWarmupSession(config, "shutdown-pending-warmup-test");
+                var initialization = ((IInternalSession)session).Init();
+                pool.Verify(value => value.Warmup(), Times.Once);
+                Assert.IsFalse(initialization.IsCompleted);
+
+                await session.ShutdownAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                if (fatalFailure)
+                {
+                    var actual = await Assert.ThrowsAsync<OutOfMemoryException>(() =>
+                        initialization.WaitToCompleteAsync(5000)).ConfigureAwait(false);
+                    Assert.AreSame(failure, actual);
+                }
+                else
+                {
+                    await initialization.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+                Assert.IsFalse(listener.Messages.Values.Any(message =>
+                    message.Contains("failed to warm up") || message.Contains("failed to be warmed up")));
+                pool.Verify(value => value.Dispose(), Times.Once);
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                config.Timer.Dispose();
+            }
+        }
+
         private static Mock<IDriverMetricsProvider> CreateMetricsProviderForRemovalTests()
         {
             var provider = new Mock<IDriverMetricsProvider>();

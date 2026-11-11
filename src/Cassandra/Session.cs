@@ -261,6 +261,12 @@ namespace Cassandra
                     ExceptionDispatchInfo.Capture(fatal).Throw();
                 }
 
+                if (IsDisposed)
+                {
+                    // Shutdown may close connections while initial warmup is still pending.
+                    return;
+                }
+
                 for (var i = 0; i < hostWarmups.Length; i++)
                 {
                     var warmup = hostWarmups[i];
