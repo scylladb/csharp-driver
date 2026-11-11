@@ -41,11 +41,16 @@ namespace Cassandra.Tests
     public class SessionTests
     {
         [NonParallelizable]
-        [TestCase(false, false)]
-        [TestCase(false, true)]
-        [TestCase(true, false)]
-        [TestCase(true, true)]
-        public async Task Should_LogInitialPoolFailuresConsumedByWarmup(bool allHostsFail, bool throwFromDiagnostic)
+        [TestCase(false, false, false)]
+        [TestCase(false, true, false)]
+        [TestCase(true, false, false)]
+        [TestCase(true, true, false)]
+        [TestCase(false, false, true)]
+        [TestCase(false, true, true)]
+        [TestCase(true, false, true)]
+        [TestCase(true, true, true)]
+        public async Task Should_LogInitialPoolFailuresConsumedByWarmup(
+            bool allHostsFail, bool throwFromDiagnostic, bool cancelOpen)
         {
             var failedAddress = new IPEndPoint(IPAddress.Parse("127.0.0.11"), 9042);
             var otherAddress = new IPEndPoint(IPAddress.Parse("127.0.0.12"), 9042);
@@ -58,8 +63,10 @@ namespace Cassandra.Tests
                 connection.SetupGet(value => value.EndPoint).Returns(endPoint);
                 if (address.Equals(failedAddress) || allHostsFail)
                 {
-                    connection.Setup(value => value.Open()).ThrowsAsync(
-                        new InvalidOperationException("initial warmup failure at " + address));
+                    Exception failure = cancelOpen
+                        ? new OperationCanceledException("initial warmup failure at " + address)
+                        : new InvalidOperationException("initial warmup failure at " + address);
+                    connection.Setup(value => value.Open()).ThrowsAsync(failure);
                 }
                 else
                 {
