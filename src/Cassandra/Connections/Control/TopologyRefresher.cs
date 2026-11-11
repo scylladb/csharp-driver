@@ -95,8 +95,12 @@ namespace Cassandra.Connections.Control
                 {
                     // The caller still owns its original connection. Resolve that node in
                     // current metadata without publishing the superseded local or peers rows.
-                    return _metadata.GetHost(GetLocalHostAddress(currentEndPoint, localRow))
-                        ?? throw new DriverInternalError("The refreshed control host is no longer in metadata.");
+                    var currentHost = _metadata.GetHost(GetLocalHostAddress(currentEndPoint, localRow));
+                    if (currentHost == null || HasDifferentHostId(currentHost, localRow, out _))
+                    {
+                        throw new DriverInternalError("The refreshed control host was removed or replaced.");
+                    }
+                    return currentHost;
                 }
                 var host = ApplyNodeList(currentEndPoint, localRow, localIsPeersV2, rsPeers);
                 _lastAppliedRefresh = refreshSequence;
