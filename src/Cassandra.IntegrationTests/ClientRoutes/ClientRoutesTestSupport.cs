@@ -47,6 +47,5 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 bytes[2],
                 bytes[3]);
         }
-
     }
 }
