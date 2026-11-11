@@ -1840,6 +1840,69 @@ namespace Cassandra.Tests.Connections
         }
 
         [Test]
+        public async Task Should_UseCurrentDistanceWhenRouteAdmissionClearsShardState()
+        {
+            var rows = new List<IRow>();
+            var shardingInfo = ShardingInfo.Create("0", "4", "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin", "12", "19042", "19142");
+            HostConnectionPool target = null;
+            var distanceChanged = false;
+            var factory = new FakeConnectionFactory(endPoint =>
+            {
+                var connection = CreateConnection(endPoint, shardingInfo: shardingInfo);
+                if (endPoint is ClientRouteConnectionEndPoint)
+                {
+                    var shardInfoRead = false;
+                    connection.Setup(value => value.ShardingInfo()).Returns(() =>
+                    {
+                        shardInfoRead = true;
+                        return null;
+                    });
+                    connection.SetupGet(value => value.IsClosed).Returns(() =>
+                    {
+                        if (shardInfoRead && !distanceChanged)
+                        {
+                            // Change distance between candidate metadata retrieval and publication.
+                            distanceChanged = true;
+                            target.SetDistance(HostDistance.Remote);
+                        }
+                        return false;
+                    });
+                }
+                return connection.Object;
+            });
+            ClientRoutesCache routesCache = null;
+            target = CreatePool(
+                connectionFactory: factory,
+                clientRoutesOptions: new ClientRoutesOptions(new[] { new ClientRouteProxy("route-a") }, 9042, true),
+                clientRouteRowsFactory: _ => rows,
+                coreConnections: 4,
+                clientRoutesCacheCreated: cache => routesCache = cache);
+            var config = (Configuration)typeof(HostConnectionPool)
+                .GetField("_config", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(target);
+            config.PoolingOptions.SetCoreConnectionsPerHost(HostDistance.Remote, 1)
+                                 .SetMaxConnectionsPerHost(HostDistance.Remote, 1);
+            try
+            {
+                await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.IsNotNull(GetShardingInfo(target));
+                Assert.AreEqual(4, GetExpectedConnectionLength(target));
+                rows.Add(ClientRouteRow(_host.HostId, "198.51.100.93", 9042, "route-a"));
+                await routesCache.FullRefreshBarrierAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                Assert.IsTrue(distanceChanged);
+                Assert.IsNull(GetShardingInfo(target));
+                Assert.AreEqual(1, GetExpectedConnectionLength(target));
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [Test]
         public async Task Should_ClearShardStateWhenRoutedConnectionOmitsShardingMetadata()
         {
             var shardingInfo = ShardingInfo.Create(
