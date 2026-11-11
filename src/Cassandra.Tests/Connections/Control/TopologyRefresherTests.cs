@@ -115,15 +115,16 @@ namespace Cassandra.Tests.Connections.Control
         [TestCase(true)]
         [TestCase(true, true)]
         [TestCase(true, true, false)]
+        [TestCase(true, false, true, true)]
         public async Task Should_RefreshReplacementConnectionWhileOldMetadataQueryIsPending(
-            bool clientRoutesEnabled, bool differentAddress = false, bool retainOldHost = true)
+            bool clientRoutesEnabled, bool differentAddress = false, bool retainOldHost = true, bool sameHostId = false)
         {
             var oldRequestStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var releaseOldRequest = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var oldConnection = Mock.Of<IConnection>();
             var newConnection = Mock.Of<IConnection>();
             var oldHostId = Guid.NewGuid();
-            var newHostId = Guid.NewGuid();
+            var newHostId = sameHostId ? oldHostId : Guid.NewGuid();
             var oldAddress = IPAddress.Parse("127.0.0.1");
             var newAddressText = differentAddress ? "127.0.0.3" : "127.0.0.1";
             var newAddress = IPAddress.Parse(newAddressText);
@@ -168,6 +169,7 @@ namespace Cassandra.Tests.Connections.Control
             var endpoint = new FakeConnectionEndPoint("127.0.0.1", 9042);
             var oldRefresh = refresher.RefreshNodeListAsync(endpoint, oldConnection, _serializer);
             Task<Host> replacementRefresh = null;
+            DriverInternalError oldRefreshFailure = null;
             try
             {
                 await oldRequestStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
@@ -179,17 +181,23 @@ namespace Cassandra.Tests.Connections.Control
             finally
             {
                 releaseOldRequest.TrySetResult(true);
-                if (differentAddress && !retainOldHost)
-                {
-                    await Assert.ThrowsAsync<DriverInternalError>(async () =>
-                        await oldRefresh.WaitToCompleteAsync(5000).ConfigureAwait(false));
-                }
-                else
+                try
                 {
                     await oldRefresh.WaitToCompleteAsync(5000).ConfigureAwait(false);
                 }
+                catch (DriverInternalError ex)
+                {
+                    oldRefreshFailure = ex;
+                }
                 await (replacementRefresh ?? Task.FromResult<Host>(null))
                           .WaitToCompleteAsync(5000).ConfigureAwait(false);
+            }
+            var shouldRejectStaleHost = clientRoutesEnabled &&
+                ((!differentAddress && !sameHostId) || (differentAddress && !retainOldHost));
+            Assert.AreEqual(shouldRejectStaleHost, oldRefreshFailure != null);
+            if (!shouldRejectStaleHost)
+            {
+                Assert.AreEqual(oldHostId, oldRefresh.Result.HostId);
             }
             Assert.AreEqual(newAddress, replacementRefresh.Result.Address.Address);
             Assert.AreEqual(clientRoutesEnabled ? newHostId : oldHostId, replacementRefresh.Result.HostId);
