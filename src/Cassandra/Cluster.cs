@@ -412,11 +412,13 @@ namespace Cassandra
                 {
                     EnsureClientRoutesSetupIsActive();
                 }
+                // Keep diagnostics inside the shutdown guard, before publishing state that
+                // would otherwise survive an exception from the diagnostic sink.
+                Cluster.Logger.Info("Cluster Connected using binary protocol version: [" + _controlConnection.Serializer.CurrentProtocolVersion + "]");
                 _metadata.Hosts.Added += OnHostAdded;
                 _metadata.Hosts.Removed += OnHostRemoved;
                 _metadata.Hosts.Up += OnHostUp;
                 _initialized = true;
-                Cluster.Logger.Info("Cluster Connected using binary protocol version: [" + _controlConnection.Serializer.CurrentProtocolVersion + "]");
             }
         }
 

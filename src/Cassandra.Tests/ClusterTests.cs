@@ -377,6 +377,44 @@ namespace Cassandra.Tests
             }
         }
 
+        [Test]
+        public void ClientRoutesConnectedDiagnosticFailureCannotPublishInitialization()
+        {
+            var diagnosticFailure = new InvalidOperationException("connected diagnostic sink failed");
+            var controlConnection = new Mock<IControlConnection>();
+            controlConnection.Setup(c => c.InitAsync()).Returns(Task.CompletedTask);
+            controlConnection.SetupGet(c => c.Serializer).Returns(new SerializerManager(ProtocolVersion.V3));
+            var configuration = CreateClientRoutesClusterConfiguration(controlConnection.Object, _ => { });
+            var listener = new Mock<TraceListener> { CallBase = true };
+            listener.Setup(value => value.WriteLine(It.IsAny<string>())).Callback<string>(message =>
+            {
+                if (message.Contains("Cluster Connected using binary protocol version"))
+                {
+                    throw diagnosticFailure;
+                }
+            });
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener.Object);
+            try
+            {
+                using (var cluster = CreateCluster(configuration))
+                {
+                    var first = Assert.Throws<InvalidOperationException>(() => _ = cluster.Metadata);
+                    Assert.AreSame(diagnosticFailure, first);
+                    var cached = Assert.Throws<InitFatalErrorException>(() => _ = cluster.Metadata);
+                    Assert.AreSame(diagnosticFailure, cached.InnerException);
+                    controlConnection.Verify(c => c.Dispose(), Times.Once);
+                }
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener.Object);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                listener.Object.Dispose();
+            }
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         public async Task ClientRoutesLateSetupForwardsTopologyChangesWithoutAnotherCaller(bool removeHost)
