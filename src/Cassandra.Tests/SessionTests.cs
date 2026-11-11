@@ -505,6 +505,68 @@ namespace Cassandra.Tests
             }
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public void Should_PreservePublishedPoolMetricsWhenOuterInitializationFails(bool clientRoutesEnabled)
+        {
+            Session session = null;
+            Host host = null;
+            var reentered = false;
+            object publishedMetrics = null;
+            var metricsProvider = new Mock<IDriverMetricsProvider>();
+            metricsProvider.Setup(value => value.Timer(It.IsAny<string>(), It.IsAny<IMetric>()))
+                           .Returns(Mock.Of<IDriverTimer>());
+            metricsProvider.Setup(value => value.Meter(It.IsAny<string>(), It.IsAny<IMetric>()))
+                           .Returns(Mock.Of<IDriverMeter>());
+            metricsProvider.Setup(value => value.Counter(It.IsAny<string>(), It.IsAny<IMetric>()))
+                           .Returns(Mock.Of<IDriverCounter>());
+            metricsProvider.Setup(value => value.Gauge(
+                               It.IsAny<string>(), It.IsAny<IMetric>(), It.IsAny<Func<double?>>()))
+                           .Returns((string _, IMetric metric, Func<double?> __) =>
+                           {
+                               if (metric is NodeMetric && !reentered)
+                               {
+                                   reentered = true;
+                                   ((IInternalSession)session).GetOrCreateConnectionPool(host, HostDistance.Local);
+                                   publishedMetrics = session.GetMetrics().NodeMetrics[host];
+                               }
+                               return Mock.Of<IDriverGauge>();
+                           });
+            var outerPool = new Mock<IHostConnectionPool>();
+            var publishedPool = new Mock<IHostConnectionPool>();
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.SetupSequence(value => value.Create(
+                It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>()))
+                       .Returns(outerPool.Object)
+                       .Returns(publishedPool.Object);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object,
+                MetricsProvider = metricsProvider.Object,
+                ClientRoutesOptions = clientRoutesEnabled
+                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    : null
+            }.Build();
+            using (session = CreateWarmupSession(config, "nested-metrics-initialization-test"))
+            {
+                var internalSession = (IInternalSession)session;
+                host = internalSession.InternalCluster.AllHosts().Single();
+
+                Assert.Throws<ArgumentException>(() =>
+                    internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+
+                Assert.IsTrue(reentered);
+                Assert.AreSame(publishedPool.Object, internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+                Assert.AreEqual(1, internalSession.GetPools().Count());
+                Assert.AreEqual(1, session.GetMetrics().NodeMetrics.Count);
+                Assert.AreSame(publishedMetrics, session.GetMetrics().NodeMetrics[host]);
+                outerPool.Verify(value => value.Dispose(), Times.Once);
+                publishedPool.Verify(value => value.Dispose(), Times.Never);
+            }
+            publishedPool.Verify(value => value.Dispose(), Times.Once);
+        }
+
         [Test]
         public async Task Should_PropagateSynchronousPoolWarmupException()
         {

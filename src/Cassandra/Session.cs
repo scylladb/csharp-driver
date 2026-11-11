@@ -472,7 +472,11 @@ namespace Cassandra
                     {
                         try
                         {
-                            _metricsManager.RemoveNodeMetrics(host);
+                            // A metrics callback may have published another pool at this address.
+                            if (!_connectionPool.ContainsKey(host.Address))
+                            {
+                                _metricsManager.RemoveNodeMetrics(host);
+                            }
                         }
                         catch (Exception cleanupFailure) when (!Utils.IsFatalException(cleanupFailure))
                         {
