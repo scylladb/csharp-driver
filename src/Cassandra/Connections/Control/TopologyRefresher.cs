@@ -251,25 +251,29 @@ namespace Cassandra.Connections.Control
             var host = _metadata.GetHost(address);
             if (_config.ClientRoutesRuntime != null &&
                 host != null &&
-                host.HostId != Guid.Empty &&
-                row.ContainsColumn("host_id"))
+                HasDifferentHostId(host, row, out var incomingHostId))
             {
-                var incomingHostId = row.GetValue<Guid?>("host_id");
-                if (incomingHostId.HasValue &&
-                    incomingHostId.Value != Guid.Empty &&
-                    incomingHostId.Value != host.HostId)
-                {
-                    ControlConnection.Logger.Verbose(
-                        "Replacing host {0}: its Host ID changed from {1} to {2}.",
-                        address,
-                        host.HostId,
-                        incomingHostId.Value);
-                    _metadata.RemoveHost(address);
-                    host = null;
-                }
+                ControlConnection.Logger.Verbose(
+                    "Replacing host {0}: its Host ID changed from {1} to {2}.",
+                    address,
+                    host.HostId,
+                    incomingHostId);
+                _metadata.RemoveHost(address);
+                host = null;
             }
 
             return host ?? _metadata.AddHost(address, contactPoint);
+        }
+
+        private static bool HasDifferentHostId(Host host, IRow row, out Guid incomingHostId)
+        {
+            incomingHostId = Guid.Empty;
+            if (host.HostId == Guid.Empty || !row.ContainsColumn("host_id"))
+            {
+                return false;
+            }
+            incomingHostId = row.GetValue<Guid?>("host_id") ?? Guid.Empty;
+            return incomingHostId != Guid.Empty && incomingHostId != host.HostId;
         }
 
         /// <summary>

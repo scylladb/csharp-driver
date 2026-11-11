@@ -125,7 +125,8 @@ namespace Cassandra.Tests.Connections.Control
             var oldHostId = Guid.NewGuid();
             var newHostId = Guid.NewGuid();
             var oldAddress = IPAddress.Parse("127.0.0.1");
-            var newAddress = differentAddress ? IPAddress.Parse("127.0.0.3") : oldAddress;
+            var newAddressText = differentAddress ? "127.0.0.3" : "127.0.0.1";
+            var newAddress = IPAddress.Parse(newAddressText);
             IRow LocalRow(Guid hostId, IPAddress address) => TestHelper.CreateRow(new Dictionary<string, object>
             {
                 { "cluster_name", "ut-cluster" }, { "rpc_address", address },
@@ -171,7 +172,7 @@ namespace Cassandra.Tests.Connections.Control
             {
                 await oldRequestStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
                 replacementRefresh = refresher.RefreshNodeListAsync(
-                    new FakeConnectionEndPoint(newAddress.ToString(), 9042), newConnection, _serializer);
+                    new FakeConnectionEndPoint(newAddressText, 9042), newConnection, _serializer);
                 await replacementRefresh.WaitToCompleteAsync(5000).ConfigureAwait(false);
                 Assert.IsFalse(oldRefresh.IsCompleted);
             }
