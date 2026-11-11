@@ -1357,14 +1357,14 @@ namespace Cassandra.Tests.Connections.Control
                 cluster.Setup(value => value.AnyOpenConnections(It.IsAny<Host>())).Returns(false);
                 cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
                 loadBalancingPolicy.Initialize(cluster.Object);
-                await controlConnection.InitAsync().ConfigureAwait(false);
+                await controlConnection.InitAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
 
                 var currentHost = createResult.Metadata.AllHosts().Single();
                 typeof(Host).GetField("_isUpNow", BindingFlags.Instance | BindingFlags.NonPublic)
                             .SetValue(currentHost, 0L);
                 createResult.ConnectionFactory.CreatedConnections.Clear();
 
-                await controlConnection.Reconnect(null).ConfigureAwait(false);
+                await controlConnection.Reconnect(null).WaitToCompleteAsync(5000).ConfigureAwait(false);
 
                 var reconnected = createResult.ConnectionFactory.CreatedConnections
                                               .SelectMany(item => item.Value)
@@ -1444,13 +1444,13 @@ namespace Cassandra.Tests.Connections.Control
                 cluster.Setup(value => value.AnyOpenConnections(It.IsAny<Host>())).Returns(false);
                 cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
                 loadBalancingPolicy.Initialize(cluster.Object);
-                await controlConnection.InitAsync().ConfigureAwait(false);
+                await controlConnection.InitAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
                 Volatile.Write(ref initialized, true);
 
                 contactPoint.Calls.Clear();
                 attemptedEndPoints.Clear();
 
-                await Assert.ThrowsAsync<NoHostAvailableException>(() => controlConnection.Reconnect(null));
+                await Assert.ThrowsAsync<NoHostAvailableException>(() => controlConnection.Reconnect(null).WaitToCompleteAsync(5000));
 
                 CollectionAssert.AreEqual(
                     new[] { primaryRouteEndPoint, backupRouteEndPoint },
@@ -1460,7 +1460,7 @@ namespace Cassandra.Tests.Connections.Control
 
                 attemptedEndPoints.Clear();
                 Volatile.Write(ref backupRouteEnabled, true);
-                await controlConnection.Reconnect(null).ConfigureAwait(false);
+                await controlConnection.Reconnect(null).WaitToCompleteAsync(5000).ConfigureAwait(false);
 
                 CollectionAssert.AreEqual(
                     new[] { primaryRouteEndPoint, backupRouteEndPoint },
@@ -1538,10 +1538,10 @@ namespace Cassandra.Tests.Connections.Control
                 cluster.Setup(value => value.AnyOpenConnections(It.IsAny<Host>())).Returns(false);
                 cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
                 loadBalancingPolicy.Initialize(cluster.Object);
-                await controlConnection.InitAsync().ConfigureAwait(false);
+                await controlConnection.InitAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
                 Volatile.Write(ref initialized, true);
 
-                var ex = await Assert.ThrowsAsync<NoHostAvailableException>(() => controlConnection.Reconnect(null));
+                var ex = await Assert.ThrowsAsync<NoHostAvailableException>(() => controlConnection.Reconnect(null).WaitToCompleteAsync(5000));
 
                 CollectionAssert.AreEqual(new[] { contactPointEndPoint }, ex.Errors.Keys.ToArray());
                 Assert.AreSame(socketFailure, ex.Errors[contactPointEndPoint]);
@@ -1607,10 +1607,10 @@ namespace Cassandra.Tests.Connections.Control
                 cluster.Setup(value => value.AnyOpenConnections(It.IsAny<Host>())).Returns(false);
                 cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
                 loadBalancingPolicy.Initialize(cluster.Object);
-                await controlConnection.InitAsync().ConfigureAwait(false);
+                await controlConnection.InitAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
                 Volatile.Write(ref initialized, true);
 
-                var ex = await Assert.ThrowsAsync<NoHostAvailableException>(() => controlConnection.Reconnect(null));
+                var ex = await Assert.ThrowsAsync<NoHostAvailableException>(() => controlConnection.Reconnect(null).WaitToCompleteAsync(5000));
 
                 Assert.AreSame(authenticationFailure, ex.Errors[advertisedEndPoint]);
                 Assert.AreSame(
@@ -1823,7 +1823,7 @@ namespace Cassandra.Tests.Connections.Control
                     cluster.Setup(value => value.AnyOpenConnections(It.IsAny<Host>())).Returns(true);
                     cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
                     loadBalancingPolicy.Initialize(cluster.Object);
-                    await controlConnection.InitAsync().ConfigureAwait(false);
+                    await controlConnection.InitAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
 
                     var reconnect = controlConnection.Reconnect(null);
                     var completed = await Task.WhenAny(reconnect, Task.Delay(5000)).ConfigureAwait(false);
@@ -1908,10 +1908,10 @@ namespace Cassandra.Tests.Connections.Control
                 cluster.Setup(value => value.AnyOpenConnections(It.IsAny<Host>())).Returns(true);
                 cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
                 loadBalancingPolicy.Initialize(cluster.Object);
-                await controlConnection.InitAsync().ConfigureAwait(false);
+                await controlConnection.InitAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
                 events.Clear();
 
-                await controlConnection.Reconnect(null).ConfigureAwait(false);
+                await controlConnection.Reconnect(null).WaitToCompleteAsync(5000).ConfigureAwait(false);
 
                 CollectionAssert.AreEqual(
                     new[]
