@@ -18,10 +18,6 @@ using System;
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
-using System.Threading.Tasks;
-
-using NUnit.Framework;
-using NUnit.Framework.Internal;
 
 namespace Cassandra.IntegrationTests.ClientRoutes
 {
@@ -52,54 +48,5 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 bytes[3]);
         }
 
-        public static async Task WaitUntilAsync(
-            Func<bool> predicate,
-            TimeSpan timeout,
-            TimeSpan interval,
-            string failureMessage)
-        {
-            var deadline = DateTime.UtcNow + timeout;
-            do
-            {
-                if (predicate())
-                {
-                    return;
-                }
-
-                await Task.Delay(interval).ConfigureAwait(false);
-            }
-            while (DateTime.UtcNow < deadline);
-
-            Assert.Fail(failureMessage);
-        }
-
-        public static async Task RetryAssertAsync(
-            Action assertion,
-            TimeSpan timeout,
-            TimeSpan interval,
-            string failureMessage)
-        {
-            var deadline = DateTime.UtcNow + timeout;
-            Exception lastException = null;
-            do
-            {
-                using (new TestExecutionContext.IsolatedContext())
-                {
-                    try
-                    {
-                        assertion();
-                        return;
-                    }
-                    catch (Exception ex) when (!Utils.IsFatalException(ex))
-                    {
-                        lastException = ex;
-                    }
-                }
-                await Task.Delay(interval).ConfigureAwait(false);
-            }
-            while (DateTime.UtcNow < deadline);
-
-            throw new AssertionException(failureMessage + " " + lastException);
-        }
     }
 }

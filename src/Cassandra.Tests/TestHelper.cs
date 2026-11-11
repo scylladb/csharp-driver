@@ -17,6 +17,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Reflection;
@@ -324,6 +325,56 @@ namespace Cassandra.Tests
                 await Task.Delay(intervals).ConfigureAwait(false);
             }
             return i;
+        }
+
+        public static async Task WaitUntilAsync(
+            Func<bool> condition,
+            TimeSpan timeout,
+            TimeSpan interval,
+            string failureMessage)
+        {
+            var elapsed = Stopwatch.StartNew();
+            while (!condition())
+            {
+                var remaining = timeout - elapsed.Elapsed;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    Assert.Fail(failureMessage);
+                }
+                await Task.Delay(interval < remaining ? interval : remaining).ConfigureAwait(false);
+            }
+        }
+
+        internal static async Task RetryAssertAsync(
+            Action assertion,
+            TimeSpan timeout,
+            TimeSpan interval,
+            string failureMessage,
+            Func<Exception, bool> exceptionFilter)
+        {
+            var elapsed = Stopwatch.StartNew();
+            while (true)
+            {
+                Exception lastException;
+                using (new TestExecutionContext.IsolatedContext())
+                {
+                    try
+                    {
+                        assertion();
+                        return;
+                    }
+                    catch (Exception ex) when (exceptionFilter(ex))
+                    {
+                        lastException = ex;
+                    }
+                }
+                var remaining = timeout - elapsed.Elapsed;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    throw new AssertionException(failureMessage + " " + lastException);
+                }
+                await Task.Delay(interval < remaining ? interval : remaining).ConfigureAwait(false);
+            }
         }
 
         public static void AssertPropertiesEqual(object actual, object expected)

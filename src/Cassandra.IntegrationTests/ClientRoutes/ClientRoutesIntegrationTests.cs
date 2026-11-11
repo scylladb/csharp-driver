@@ -261,7 +261,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                         .UpsertAsync(CreateEntries(PrimaryConnectionId, _nodes, replacementRelays, "127.0.0.1"))
                         .ConfigureAwait(false);
 
-                    await ClientRoutesTestSupport.WaitUntilAsync(
+                    await TestHelper.WaitUntilAsync(
                             () => RoutesPointToRelays(cluster, replacementRelays),
                             TimeSpan.FromSeconds(15),
                             TimeSpan.FromMilliseconds(100),
@@ -343,7 +343,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                         // route-table update through an event while all routed candidates are unavailable.
                         discoveryRelay.DisableForwarding();
                         DisposeRelays(originalRelays);
-                        await ClientRoutesTestSupport.WaitUntilAsync(
+                        await TestHelper.WaitUntilAsync(
                                 () => discoveryRelay.OpenConnectionCount == 0 &&
                                       secondaryRelays.Values.Any(relay => relay.AcceptedConnectionCount > 0),
                                 TimeSpan.FromSeconds(5),
@@ -366,7 +366,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                             relay.EnableForwarding();
                         }
 
-                        await ClientRoutesTestSupport.WaitUntilAsync(
+                        await TestHelper.WaitUntilAsync(
                                 () => RoutesPointToRelays(cluster, replacementRelays, PrimaryConnectionId),
                                 TimeSpan.FromSeconds(15),
                                 TimeSpan.FromMilliseconds(100),
@@ -426,7 +426,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                     }
 
                     IReadOnlyDictionary<Guid, int> shardCounts = null;
-                    await ClientRoutesTestSupport.WaitUntilAsync(
+                    await TestHelper.WaitUntilAsync(
                             () => (shardCounts = GetShardCountsWhenPoolsCoverServerReportedShardSets(session)) != null,
                             TimeSpan.FromSeconds(30),
                             TimeSpan.FromMilliseconds(100),
@@ -575,7 +575,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             IEnumerable<ClientRoutesNode> nodes,
             IReadOnlyDictionary<Guid, TcpRelay> expectedRelays)
         {
-            return ClientRoutesTestSupport.RetryAssertAsync(
+            return TestHelper.RetryAssertAsync(
                 () =>
                 {
                     AssertQueriesLandOnIntendedHosts(session, nodes);
@@ -583,7 +583,8 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 },
                 TimeSpan.FromSeconds(45),
                 TimeSpan.FromMilliseconds(200),
-                "Connections did not recover through the updated client routes.");
+                "Connections did not recover through the updated client routes.",
+                ex => !Utils.IsFatalException(ex));
         }
 
         private static void AssertRelaySourcePortsCoverShardSet(TcpRelay relay, int shardCount)

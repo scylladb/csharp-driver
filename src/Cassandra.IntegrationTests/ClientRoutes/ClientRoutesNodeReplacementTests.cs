@@ -143,7 +143,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                             .ConfigureAwait(false);
 
                         var replacementRoutePort = relays[replacedNode.HostId].ListenEndPoint.Port;
-                        await ClientRoutesTestSupport.WaitUntilAsync(
+                        await TestHelper.WaitUntilAsync(
                                 () => cluster.Configuration.ClientRoutesRuntime.TryGetRoutes(
                                           replacementHostId,
                                           out var routes) &&
@@ -154,7 +154,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                             .ConfigureAwait(false);
 
                         relays[replacedNode.HostId].ResetObservations();
-                        await ClientRoutesTestSupport.WaitUntilAsync(
+                        await TestHelper.WaitUntilAsync(
                                 () => cluster.AllHosts().Any(host => host.HostId == replacementHostId) &&
                                       cluster.AllHosts().All(host => host.HostId != replacedNode.HostId),
                                 TimeSpan.FromSeconds(90),
@@ -166,7 +166,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                         Assert.AreEqual(originalHost.Address, replacementHost.Address);
                         Assert.AreNotSame(originalHost, replacementHost);
 
-                        await ClientRoutesTestSupport.RetryAssertAsync(
+                        await TestHelper.RetryAssertAsync(
                                 () =>
                                 {
                                     AssertQueryLandsOnHost(session, replacementHostId);
@@ -180,7 +180,8 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                                 },
                                 TimeSpan.FromSeconds(60),
                                 TimeSpan.FromMilliseconds(250),
-                                "The replacement host never became queryable with a new pool.")
+                                "The replacement host never became queryable with a new pool.",
+                                ex => !Utils.IsFatalException(ex))
                             .ConfigureAwait(false);
                     }
                 }
@@ -267,7 +268,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 address,
                 "The replacement node must reuse its original CCM address.");
             _testCluster.StopForce(nodeId);
-            await ClientRoutesTestSupport.WaitUntilAsync(
+            await TestHelper.WaitUntilAsync(
                     () => IsNodeDownInNodetool(address),
                     TimeSpan.FromSeconds(90),
                     TimeSpan.FromMilliseconds(250),

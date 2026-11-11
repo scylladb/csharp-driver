@@ -34,22 +34,24 @@ namespace Cassandra.IntegrationTests.ClientRoutes
         public async Task SuccessfulRetryDoesNotRetainEarlierAssertionFailure()
         {
             var attempts = 0;
-            await ClientRoutesTestSupport.RetryAssertAsync(
+            await TestHelper.RetryAssertAsync(
                 () => Assert.AreEqual(2, ++attempts),
                 TimeSpan.FromSeconds(5),
                 TimeSpan.Zero,
-                "The second attempt should succeed.").ConfigureAwait(false);
+                "The second attempt should succeed.",
+                ex => !Utils.IsFatalException(ex)).ConfigureAwait(false);
             Assert.AreEqual(2, attempts);
         }
 
         [Test]
         public async Task ExhaustedRetryReportsTheLastFailure()
         {
-            var exception = await Assert.ThrowsAsync<AssertionException>(() => ClientRoutesTestSupport.RetryAssertAsync(
+            var exception = await Assert.ThrowsAsync<AssertionException>(() => TestHelper.RetryAssertAsync(
                 () => Assert.Fail("The condition was never satisfied."),
                 TimeSpan.Zero,
                 TimeSpan.Zero,
-                "Retry timed out.")).ConfigureAwait(false);
+                "Retry timed out.",
+                ex => !Utils.IsFatalException(ex))).ConfigureAwait(false);
             StringAssert.Contains("Retry timed out.", exception.Message);
             StringAssert.Contains("The condition was never satisfied.", exception.Message);
         }

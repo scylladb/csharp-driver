@@ -16,6 +16,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 
 using NUnit.Framework;
 
@@ -27,6 +28,50 @@ namespace Cassandra.Tests
     [TestFixture]
     public sealed class TestHelperTests
     {
+        [Test]
+        public async Task WaitUntilChecksConditionAfterTheFinalDelay()
+        {
+            var attempts = 0;
+            await TestHelper.WaitUntilAsync(
+                () => ++attempts == 2,
+                TimeSpan.FromMilliseconds(20),
+                TimeSpan.FromSeconds(1),
+                "The final condition check should succeed.").ConfigureAwait(false);
+            Assert.AreEqual(2, attempts);
+        }
+
+        [Test]
+        public async Task RetryAssertChecksAssertionAfterTheFinalDelay()
+        {
+            var attempts = 0;
+            await TestHelper.RetryAssertAsync(
+                () => Assert.AreEqual(2, ++attempts),
+                TimeSpan.FromMilliseconds(100),
+                TimeSpan.FromSeconds(1),
+                "The final assertion should succeed.",
+                ex => ex is AssertionException).ConfigureAwait(false);
+            Assert.AreEqual(2, attempts);
+        }
+
+        [Test]
+        public async Task RetryAssertDoesNotRetryExceptionsExcludedByTheFilter()
+        {
+            var failure = new InvalidOperationException("Do not retry");
+            var attempts = 0;
+            var observed = await Assert.ThrowsAsync<InvalidOperationException>(() => TestHelper.RetryAssertAsync(
+                () =>
+                {
+                    attempts++;
+                    throw failure;
+                },
+                TimeSpan.FromSeconds(1),
+                TimeSpan.Zero,
+                "Excluded exception",
+                ex => ex is AssertionException)).ConfigureAwait(false);
+            Assert.AreSame(failure, observed);
+            Assert.AreEqual(1, attempts);
+        }
+
         [Test]
         public void RunAllCleanupActionsExecutesEveryActionAndReportsEveryFailure()
         {
