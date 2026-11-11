@@ -233,8 +233,8 @@ namespace Cassandra
         /// <summary>
         /// Creates the required connections on all hosts in the local DC.
         /// Returns a Task that is marked as completed after all pools were warmed up.
-        /// Recoverable host pool warmup failures are logged at Warning, including partial failures.
-        /// If all host pool warmups fail, it also logs an error.
+        /// Unless the session is disposed, recoverable host pool warmup failures are logged at Warning,
+        /// including partial failures, with an additional error if all host pool warmups fail.
         /// Fatal errors propagate to the caller.
         /// </summary>
         private async Task Warmup()
