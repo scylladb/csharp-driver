@@ -15,10 +15,12 @@
 //
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Net;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -254,6 +256,7 @@ namespace Cassandra.Tests
                 controlConnection.Verify(c => c.InitAsync(), Times.Once);
                 controlConnection.Verify(c => c.Dispose(), Times.Never);
 
+                configuration.SocketOptions.SetMetadataAbortTimeout(5000);
                 initCompletion.TrySetResult(true);
                 Assert.DoesNotThrow(() => _ = cluster.Metadata);
                 controlConnection.Verify(c => c.InitAsync(), Times.Once);
@@ -263,7 +266,294 @@ namespace Cassandra.Tests
 
         [TestCase(false)]
         [TestCase(true)]
-        public void ClientRoutesInitializationCanRetryAfterTimedOutSetupFailsRecoverably(bool setupTimeout)
+        public async Task ClientRoutesLateSetupInitializesLoadBalancingWithoutAnotherCaller(bool failPolicyInitialization)
+        {
+            var initCompletion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var controlConnection = new Mock<IControlConnection>();
+            controlConnection.Setup(c => c.InitAsync()).Returns(initCompletion.Task);
+            controlConnection.SetupGet(c => c.Serializer).Returns(new SerializerManager(ProtocolVersion.V3));
+            var roundRobin = new RoundRobinPolicy();
+            var policy = new Mock<ILoadBalancingPolicy>();
+            var policyFailure = new InvalidOperationException("policy initialization failed");
+            policy.Setup(p => p.Initialize(It.IsAny<ICluster>())).Callback<ICluster>(cluster =>
+            {
+                if (failPolicyInitialization)
+                {
+                    throw policyFailure;
+                }
+                roundRobin.Initialize(cluster);
+            });
+            policy.Setup(p => p.Distance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            var configuration = CreateClientRoutesClusterConfiguration(controlConnection.Object, _ => { }, policy.Object);
+            configuration.SocketOptions.SetConnectTimeoutMillis(1).SetMetadataAbortTimeout(10);
+            using (var cluster = CreateCluster(configuration))
+            {
+                Assert.Throws<TimeoutException>(() => _ = cluster.Metadata);
+                var retainedSetup = (Task)typeof(Cluster)
+                    .GetField("_clientRoutesInitTask", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cluster);
+                policy.Verify(p => p.Initialize(It.IsAny<ICluster>()), Times.Never);
+                initCompletion.TrySetResult(true);
+
+                if (failPolicyInitialization)
+                {
+                    var failure = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                        retainedSetup.WaitAsync(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
+                    Assert.AreSame(policyFailure, failure);
+                    controlConnection.Verify(c => c.Dispose(), Times.Once);
+                    var cached = Assert.Throws<InitFatalErrorException>(() => _ = cluster.Metadata);
+                    Assert.AreSame(policyFailure, cached.InnerException);
+                }
+                else
+                {
+                    await retainedSetup.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    // Recovery must be able to enumerate the real policy before another init caller.
+                    Assert.DoesNotThrow(() => roundRobin.NewQueryPlan(null, null).ToArray());
+                    configuration.SocketOptions.SetMetadataAbortTimeout(5000);
+                    Assert.DoesNotThrow(() => _ = cluster.Metadata);
+                    controlConnection.Verify(c => c.Dispose(), Times.Never);
+                }
+                policy.Verify(p => p.Initialize(cluster), Times.Once);
+                controlConnection.Verify(c => c.InitAsync(), Times.Once);
+            }
+            controlConnection.Verify(c => c.Dispose(), Times.Once);
+        }
+
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public async Task ClientRoutesPolicyFailuresAreTerminal(bool failSpeculativePolicy, bool noHostAvailable)
+        {
+            var initCompletion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var controlConnection = new Mock<IControlConnection>();
+            controlConnection.Setup(c => c.InitAsync()).Returns(initCompletion.Task);
+            controlConnection.SetupGet(c => c.Serializer).Returns(new SerializerManager(ProtocolVersion.V3));
+            Exception failure = noHostAvailable
+                ? new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>())
+                : new TimeoutException("policy initialization failed");
+            var loadBalancingPolicy = new Mock<ILoadBalancingPolicy>();
+            loadBalancingPolicy.Setup(p => p.Initialize(It.IsAny<ICluster>())).Callback(() =>
+            {
+                if (!failSpeculativePolicy)
+                {
+                    throw failure;
+                }
+            });
+            var speculativePolicy = new Mock<ISpeculativeExecutionPolicy>();
+            speculativePolicy.Setup(p => p.Initialize(It.IsAny<ICluster>())).Throws(failure);
+            var configuration = CreateClientRoutesClusterConfiguration(
+                controlConnection.Object, _ => { }, loadBalancingPolicy.Object, speculativePolicy.Object);
+            configuration.SocketOptions.SetConnectTimeoutMillis(1).SetMetadataAbortTimeout(10);
+            using (var cluster = CreateCluster(configuration))
+            {
+                Assert.Throws<TimeoutException>(() => _ = cluster.Metadata);
+                var retainedSetup = (Task)typeof(Cluster)
+                    .GetField("_clientRoutesInitTask", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cluster);
+                initCompletion.TrySetResult(true);
+                var observed = await Assert.CatchAsync<Exception>(() =>
+                    retainedSetup.WaitAsync(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
+                Assert.AreSame(failure, observed);
+                // A completed policy failure must never start a second initialization attempt.
+                var cached = Assert.Throws<InitFatalErrorException>(() => _ = cluster.Metadata);
+                Assert.AreSame(failure, cached.InnerException);
+                loadBalancingPolicy.Verify(p => p.Initialize(cluster), Times.Once);
+                speculativePolicy.Verify(p => p.Initialize(cluster), failSpeculativePolicy ? Times.Once : Times.Never);
+                speculativePolicy.Verify(p => p.Dispose(), failSpeculativePolicy ? Times.Once : Times.Never);
+                controlConnection.Verify(c => c.InitAsync(), Times.Once);
+                controlConnection.Verify(c => c.Dispose(), Times.Once);
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task ClientRoutesLateSetupForwardsTopologyChangesWithoutAnotherCaller(bool removeHost)
+        {
+            var initCompletion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var controlConnection = new Mock<IControlConnection>();
+            controlConnection.Setup(c => c.InitAsync()).Returns(initCompletion.Task);
+            controlConnection.SetupGet(c => c.Serializer).Returns(new SerializerManager(ProtocolVersion.V3));
+            var policy = new DCAwareRoundRobinPolicy("dc1");
+            var configuration = CreateClientRoutesClusterConfiguration(controlConnection.Object, _ => { }, policy);
+            configuration.SocketOptions.SetConnectTimeoutMillis(1).SetMetadataAbortTimeout(10);
+            using (var cluster = CreateCluster(configuration))
+            {
+                var metadata = (Metadata)typeof(Cluster)
+                    .GetField("_metadata", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cluster);
+                var original = metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042));
+                original.Datacenter = "dc1";
+                Assert.Throws<TimeoutException>(() => _ = cluster.Metadata);
+                var retainedSetup = (Task)typeof(Cluster)
+                    .GetField("_clientRoutesInitTask", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cluster);
+                initCompletion.TrySetResult(true);
+                await retainedSetup.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+                // A recovery plan can populate the policy cache before another init caller.
+                Assert.AreSame(original, policy.NewQueryPlan(null, null).Single().Host);
+                Host[] expected;
+                if (removeHost)
+                {
+                    metadata.RemoveHost(original.Address);
+                    expected = Array.Empty<Host>();
+                }
+                else
+                {
+                    var added = metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042));
+                    added.Datacenter = "dc1";
+                    expected = new[] { original, added };
+                }
+                Assert.That(policy.NewQueryPlan(null, null).Select(host => host.Host), Is.EquivalentTo(expected));
+                Assert.DoesNotThrow(() => _ = cluster.Metadata);
+                controlConnection.Verify(c => c.InitAsync(), Times.Once);
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task ClientRoutesLateSetupCannotPublishAfterShutdown(bool shutdownFromPolicy)
+        {
+            var initCompletion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var policyStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var releasePolicy = new ManualResetEventSlim(false);
+            var liveResources = 0;
+            var controlConnection = new Mock<IControlConnection>();
+            controlConnection.Setup(c => c.InitAsync()).Returns(initCompletion.Task);
+            controlConnection.SetupGet(c => c.Serializer).Returns(new SerializerManager(ProtocolVersion.V3));
+            var policy = new Mock<ISpeculativeExecutionPolicy>();
+            policy.Setup(p => p.Initialize(It.IsAny<ICluster>())).Callback<ICluster>(cluster =>
+            {
+                policyStarted.TrySetResult(true);
+                if (shutdownFromPolicy)
+                {
+                    cluster.Shutdown(5000);
+                }
+                else if (!releasePolicy.Wait(TimeSpan.FromSeconds(5)))
+                {
+                    throw new TimeoutException("Policy initialization was not released.");
+                }
+                Interlocked.Increment(ref liveResources);
+            });
+            policy.Setup(p => p.Dispose()).Callback(() => Interlocked.Exchange(ref liveResources, 0));
+            var configuration = CreateClientRoutesClusterConfiguration(
+                controlConnection.Object, _ => { }, speculativeExecutionPolicy: policy.Object);
+            configuration.SocketOptions.SetConnectTimeoutMillis(1).SetMetadataAbortTimeout(10);
+            using (var cluster = CreateCluster(configuration))
+            {
+                Task retainedSetup = null;
+                try
+                {
+                    Assert.Throws<TimeoutException>(() => _ = cluster.Metadata);
+                    retainedSetup = (Task)typeof(Cluster)
+                        .GetField("_clientRoutesInitTask", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cluster);
+                    initCompletion.TrySetResult(true);
+                    await policyStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    if (!shutdownFromPolicy)
+                    {
+                        await cluster.ShutdownAsync(5000).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    }
+                    releasePolicy.Set();
+                    await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+                        retainedSetup.WaitAsync(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
+                    Assert.IsFalse((bool)typeof(Cluster)
+                        .GetField("_initialized", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cluster));
+                    Assert.AreEqual(0, Volatile.Read(ref liveResources));
+                    policy.Verify(p => p.Dispose(), Times.Once);
+                    controlConnection.Verify(c => c.Dispose(), Times.Once);
+                }
+                finally
+                {
+                    releasePolicy.Set();
+                    if (retainedSetup != null)
+                    {
+                        try
+                        {
+                            await retainedSetup.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                        }
+                        catch (Exception) when (retainedSetup.IsFaulted)
+                        {
+                            // Observe the retained failure even when an earlier assertion fails.
+                        }
+                    }
+                }
+            }
+            policy.Verify(p => p.Dispose(), Times.Once);
+        }
+
+        [Test]
+        public async Task ClientRoutesInitializationTimeoutKeepsTabletUpdatesSerialized()
+        {
+            var initCompletion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var firstStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var firstFinished = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var secondApplied = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var order = new ConcurrentQueue<int>();
+            var controlConnection = new Mock<IControlConnection>();
+            controlConnection.Setup(c => c.InitAsync()).Returns(initCompletion.Task);
+            controlConnection.SetupGet(c => c.Serializer).Returns(new SerializerManager(ProtocolVersion.V3));
+            var configuration = CreateClientRoutesClusterConfiguration(controlConnection.Object, _ => { });
+            configuration.SocketOptions.SetConnectTimeoutMillis(1).SetMetadataAbortTimeout(10);
+            using (var releaseFirst = new ManualResetEventSlim())
+            using (var cluster = CreateCluster(configuration))
+            {
+                var firstUpdate = new Mock<ITabletMapUpdateRequest>();
+                firstUpdate.Setup(value => value.Apply(It.IsAny<TabletMap>())).Callback(() =>
+                {
+                    firstStarted.TrySetResult(true);
+                    try
+                    {
+                        if (!releaseFirst.Wait(TimeSpan.FromSeconds(5)))
+                        {
+                            throw new TimeoutException("The first tablet update was not released.");
+                        }
+                        order.Enqueue(1);
+                    }
+                    finally
+                    {
+                        firstFinished.TrySetResult(true);
+                    }
+                });
+                var secondUpdate = new Mock<ITabletMapUpdateRequest>();
+                secondUpdate.Setup(value => value.Apply(It.IsAny<TabletMap>())).Callback(() =>
+                {
+                    order.Enqueue(2);
+                    secondApplied.TrySetResult(true);
+                });
+                var firstQueued = false;
+                try
+                {
+                    Assert.Throws<TimeoutException>(() => _ = cluster.Metadata);
+                    var metadata = (Metadata)typeof(Cluster).GetField(
+                        "_metadata", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cluster);
+                    metadata.TabletMap.OnTabletMapUpdate(firstUpdate.Object);
+                    firstQueued = true;
+                    await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    metadata.TabletMap.OnTabletMapUpdate(secondUpdate.Object);
+
+                    Assert.Throws<TimeoutException>(() => _ = cluster.Metadata);
+                    Assert.IsFalse(secondApplied.Task.IsCompleted);
+                    controlConnection.Verify(c => c.InitAsync(), Times.Once);
+
+                    releaseFirst.Set();
+                    await secondApplied.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    NUnit.Framework.CollectionAssert.AreEqual(new[] { 1, 2 }, order.ToArray());
+                    configuration.SocketOptions.SetMetadataAbortTimeout(5000);
+                    initCompletion.TrySetResult(true);
+                    Assert.DoesNotThrow(() => _ = cluster.Metadata);
+                }
+                finally
+                {
+                    releaseFirst.Set();
+                    initCompletion.TrySetResult(true);
+                    if (firstQueued)
+                    {
+                        await firstFinished.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    }
+                }
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task ClientRoutesInitializationCanRetryAfterTimedOutSetupFailsRecoverably(bool setupTimeout)
         {
             var initCompletion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var controlConnection = new Mock<IControlConnection>();
@@ -277,7 +567,12 @@ namespace Cassandra.Tests
                 Exception failure = setupTimeout
                     ? new TimeoutException("late setup timeout")
                     : new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>());
+                var retainedSetup = (Task)typeof(Cluster).GetField(
+                    "_clientRoutesInitTask", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cluster);
                 initCompletion.TrySetException(failure);
+                Assert.AreSame(failure, await Assert.ThrowsAsync(
+                    failure.GetType(),
+                    () => retainedSetup.WaitAsync(TimeSpan.FromSeconds(5))).ConfigureAwait(false));
                 controlConnection.Verify(c => c.Dispose(), Times.Never);
 
                 controlConnection.Setup(c => c.InitAsync()).Returns(Task.CompletedTask);
@@ -287,12 +582,16 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public void ClientRoutesInitializationRetainsTerminalFailureAfterCallerTimeout()
+        public async Task ClientRoutesInitializationRetainsTerminalFailureAfterCallerTimeout()
         {
             var initCompletion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var controlConnection = new Mock<IControlConnection>();
             controlConnection.Setup(c => c.InitAsync()).Returns(initCompletion.Task);
-            var configuration = CreateClientRoutesClusterConfiguration(controlConnection.Object, _ => { });
+            var disposed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            controlConnection.Setup(c => c.Dispose()).Callback(() => disposed.TrySetResult(true));
+            ClientRoutesCache routesCache = null;
+            var configuration = CreateClientRoutesClusterConfiguration(
+                controlConnection.Object, runtime => routesCache = runtime.Bind(controlConnection.Object));
             configuration.SocketOptions.SetConnectTimeoutMillis(1).SetMetadataAbortTimeout(10);
             using (var cluster = CreateCluster(configuration))
             {
@@ -300,7 +599,9 @@ namespace Cassandra.Tests
                 var failure = new InvalidOperationException("terminal setup failure");
                 initCompletion.TrySetException(failure);
 
-                Assert.AreSame(failure, Assert.Throws<InvalidOperationException>(() => _ = cluster.Metadata));
+                // Cleanup must happen without another caller re-entering initialization.
+                await disposed.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await Assert.ThrowsAsync<ObjectDisposedException>(() => routesCache.RefreshAsync()).ConfigureAwait(false);
                 var cached = Assert.Throws<InitFatalErrorException>(() => _ = cluster.Metadata);
                 Assert.AreSame(failure, cached.InnerException);
                 controlConnection.Verify(c => c.InitAsync(), Times.Once);
@@ -545,7 +846,9 @@ namespace Cassandra.Tests
 
         private static Configuration CreateClientRoutesClusterConfiguration(
             IControlConnection controlConnection,
-            Action<ClientRoutesRuntime> initializeRuntime)
+            Action<ClientRoutesRuntime> initializeRuntime,
+            ILoadBalancingPolicy loadBalancingPolicy = null,
+            ISpeculativeExecutionPolicy speculativeExecutionPolicy = null)
         {
             return new TestConfigurationBuilder
             {
@@ -553,10 +856,10 @@ namespace Cassandra.Tests
                     controlConnection,
                     initializeRuntime),
                 Policies = new Cassandra.Policies(
-                    new RoundRobinPolicy(),
+                    loadBalancingPolicy ?? new RoundRobinPolicy(),
                     new ConstantReconnectionPolicy(50),
                     new DefaultRetryPolicy(),
-                    NoSpeculativeExecutionPolicy.Instance,
+                    speculativeExecutionPolicy ?? NoSpeculativeExecutionPolicy.Instance,
                     new AtomicMonotonicTimestampGenerator(),
                     null),
                 ClientRoutesOptions = new ClientRoutesOptions(

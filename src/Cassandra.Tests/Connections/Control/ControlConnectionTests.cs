@@ -2340,20 +2340,47 @@ namespace Cassandra.Tests.Connections.Control
             }
         }
 
-        [Test]
-        public async Task Should_RejectInitialRouteCandidateWhenHostGoesDownBeforeRouteQuery()
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_RejectInitialRouteCandidateWhenHostGoesDownBeforeRouteQuery(bool beforeSubscription)
         {
             var hostId = Guid.NewGuid();
             var connections = new ConcurrentQueue<Mock<IConnection>>();
             var requestHandler = new RecordingMetadataRequestHandler((_, __) => Task.FromResult(
                 ClientRouteRows(hostId, "127.0.0.10", 19042)));
             ControlConnection control = null;
+            var topologyFactory = new Mock<ITopologyRefresherFactory>();
+            topologyFactory.Setup(value => value.Create(It.IsAny<Metadata>(), It.IsAny<Configuration>()))
+                .Returns<Metadata, Configuration>((metadata, config) =>
+                {
+                    var inner = new FakeTopologyRefresher(metadata, config, CreateHostRows(hostId));
+                    var topology = new Mock<ITopologyRefresher>();
+                    topology.Setup(value => value.RefreshNodeListAsync(
+                            It.IsAny<IConnectionEndPoint>(), It.IsAny<IConnection>(), It.IsAny<ISerializer>()))
+                        .Returns<IConnectionEndPoint, IConnection, ISerializer>(async (endpoint, connection, serializer) =>
+                        {
+                            var host = await inner.RefreshNodeListAsync(endpoint, connection, serializer).ConfigureAwait(false);
+                            if (beforeSubscription)
+                            {
+                                host.SetDown();
+                            }
+                            return host;
+                        });
+                    return topology.Object;
+                });
             var created = NewInstance(CreateHostRows(hostId), configBuilderAct: builder =>
             {
                 builder.ConnectionFactory = CreateRecordingConnectionFactory(connections);
                 builder.ClientRoutesOptions = CreateClientRoutesOptions();
                 builder.MetadataRequestHandler = requestHandler;
-                builder.ServerEventsSubscriber = new RecordingServerEventsSubscriber(() => control.Host.SetDown());
+                builder.TopologyRefresherFactory = topologyFactory.Object;
+                builder.ServerEventsSubscriber = new RecordingServerEventsSubscriber(() =>
+                {
+                    if (!beforeSubscription)
+                    {
+                        control.Host.SetDown();
+                    }
+                });
             });
             control = created.ControlConnection;
             try
@@ -2370,6 +2397,84 @@ namespace Cassandra.Tests.Connections.Control
                 control.Dispose();
                 created.Metadata.Dispose();
                 created.Config.Timer.Dispose();
+            }
+        }
+
+        [Test]
+        public async Task Should_AwaitInitialLifecycleAfterCandidateLoadedSnapshotButFailed()
+        {
+            var hostId = Guid.NewGuid();
+            var retryQueryStarted = NewSignal();
+            var releaseRetryQuery = NewSignal();
+            var eventQueryStarted = NewSignal();
+            var releaseEventQuery = NewSignal();
+            var subscriber = new RecordingServerEventsSubscriber();
+            Metadata metadata = null;
+            var requestHandler = new RecordingMetadataRequestHandler(async (_, call) =>
+            {
+                if (call == 1)
+                {
+                    // Fail token-map construction after the first complete snapshot is published.
+                    metadata.Partitioner = null;
+                }
+                else if (call == 2)
+                {
+                    subscriber.Raise(new ClientRoutesChangeEventArgs
+                    {
+                        ConnectionIds = new[] { "connection-a" },
+                        HostIds = new[] { hostId }
+                    });
+                    retryQueryStarted.TrySetResult(true);
+                    await releaseRetryQuery.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+                else
+                {
+                    eventQueryStarted.TrySetResult(true);
+                    await releaseEventQuery.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+                return ClientRouteRows(hostId, "127.0.0.10", 19042);
+            });
+            var created = NewClientRoutesInstance(hostId, requestHandler, subscriber);
+            metadata = created.Metadata;
+            var runtime = created.Config.ClientRoutesRuntime;
+            Task initialization = null;
+            try
+            {
+                await Assert.ThrowsAsync<NoHostAvailableException>(() =>
+                    created.ControlConnection.InitAsync().WaitToCompleteAsync(5000)).ConfigureAwait(false);
+                Assert.IsTrue(runtime.HasCompleteSnapshot);
+                Assert.IsFalse(runtime.HasCompletedLifecyclePass);
+
+                initialization = created.ControlConnection.InitAsync();
+                await retryQueryStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.IsFalse(initialization.IsCompleted);
+                Assert.IsFalse(runtime.IsLifecycleReady);
+
+                releaseRetryQuery.TrySetResult(true);
+                await eventQueryStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.IsFalse(initialization.IsCompleted);
+                Assert.IsFalse(runtime.IsLifecycleReady);
+                releaseEventQuery.TrySetResult(true);
+                await initialization.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.IsTrue(runtime.IsLifecycleReady);
+            }
+            finally
+            {
+                releaseRetryQuery.TrySetResult(true);
+                releaseEventQuery.TrySetResult(true);
+                created.ControlConnection.Dispose();
+                try
+                {
+                    if (initialization != null)
+                    {
+                        await initialization.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    }
+                }
+                finally
+                {
+                    metadata.Dispose();
+                    created.Config.Timer.Dispose();
+                }
             }
         }
 

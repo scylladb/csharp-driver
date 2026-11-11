@@ -541,15 +541,13 @@ namespace Cassandra.Connections.Control
                                 _serializer.CurrentProtocolVersion.ToString("D"));
 
                             await _config.ServerEventsSubscriber.SubscribeToServerEvents(connection, OnConnectionCassandraEvent).ConfigureAwait(false);
-                            var waitForInitialClientRoutesSnapshot = false;
-                            if (_clientRoutesCache != null)
-                            {
-                                waitForInitialClientRoutesSnapshot = !_clientRoutesCache.HasCompleteSnapshot;
-                                if (waitForInitialClientRoutesSnapshot)
+                            var refreshClientRoutesTask = RefreshClientRoutesAndTokenMapAsync(
+                                topologyHostIds,
+                                () =>
                                 {
                                     lock (_connectionHandoffLock)
                                     {
-                                        if (_reconnectWaitingForLifecycle && !currentHost.IsUp)
+                                        if (!currentHost.IsUp)
                                         {
                                             throw new SocketException((int)SocketError.NotConnected);
                                         }
@@ -557,32 +555,17 @@ namespace Cassandra.Connections.Control
                                         // Let recovery interrupt the initial route query before taking the lifecycle gate.
                                         _refreshConnection = connection;
                                     }
-                                }
-                                var routeRefresh = _clientRoutesCache.FullRefreshBarrierAsync(
-                                    topologyHostIds,
-                                    confirmIgnoredEmptyResults: true);
-                                if (waitForInitialClientRoutesSnapshot)
+                                },
+                                () =>
                                 {
-                                    await routeRefresh.ConfigureAwait(false);
-                                }
-                                else
-                                {
-                                    // Keep the completed snapshot usable during recovery. The cache
-                                    // schedules a full retry if this background refresh fails.
-                                    routeRefresh.Forget();
-                                }
-                                if (connection.IsDisposed ||
-                                    connection.IsClosed ||
-                                    ReferenceEquals(_observedClosingConnection, connection))
-                                {
-                                    throw new SocketException((int)SocketError.NotConnected);
-                                }
-                            }
-                            await _metadata.RebuildTokenMapAsync(false, _config.MetadataSyncOptions.MetadataSyncEnabled).ConfigureAwait(false);
-                            if (_clientRoutesCache != null && waitForInitialClientRoutesSnapshot)
-                            {
-                                await _clientRoutesCache.QueuedRefreshBarrierAsync().ConfigureAwait(false);
-                            }
+                                    if (connection.IsDisposed ||
+                                        connection.IsClosed ||
+                                        ReferenceEquals(_observedClosingConnection, connection))
+                                    {
+                                        throw new SocketException((int)SocketError.NotConnected);
+                                    }
+                                });
+                            await refreshClientRoutesTask.ConfigureAwait(false);
                             if (_clientRoutesCache != null)
                             {
                                 // Validate the candidate again before publishing client-routes readiness.
@@ -1188,6 +1171,43 @@ namespace Cassandra.Connections.Control
             return retry;
         }
 
+        private async Task RefreshClientRoutesAndTokenMapAsync(
+            IReadOnlyCollection<Guid> topologyHostIds,
+            Action beforeInitialRouteRefresh = null,
+            Action afterRouteRefresh = null)
+        {
+            // A snapshot can survive a failed candidate. Only the first successful lifecycle
+            // waits for full and queued route work around token-map construction.
+            var waitForInitialLifecycle = _clientRoutesCache != null &&
+                                          !_config.ClientRoutesRuntime.HasCompletedLifecyclePass;
+            if (_clientRoutesCache != null)
+            {
+                if (waitForInitialLifecycle)
+                {
+                    beforeInitialRouteRefresh?.Invoke();
+                }
+                var routeRefresh = _clientRoutesCache.FullRefreshBarrierAsync(
+                    topologyHostIds,
+                    confirmIgnoredEmptyResults: true);
+                if (waitForInitialLifecycle)
+                {
+                    await routeRefresh.ConfigureAwait(false);
+                }
+                else
+                {
+                    // Keep the completed snapshot usable during recovery. The cache
+                    // schedules a full retry if this background refresh fails.
+                    routeRefresh.Forget();
+                }
+                afterRouteRefresh?.Invoke();
+            }
+            await _metadata.RebuildTokenMapAsync(false, _config.MetadataSyncOptions.MetadataSyncEnabled).ConfigureAwait(false);
+            if (waitForInitialLifecycle)
+            {
+                await _clientRoutesCache.QueuedRefreshBarrierAsync().ConfigureAwait(false);
+            }
+        }
+
         private async Task Refresh()
         {
             if (Interlocked.CompareExchange(ref _refreshFlag, 1, 0) != 0)
@@ -1238,28 +1258,10 @@ namespace Cassandra.Connections.Control
                     }
                 }
 
-                var waitForInitialClientRoutesSnapshot = false;
-                if (_clientRoutesCache != null)
-                {
-                    var topologyHostIds = _metadata.AllHosts().Select(host => host.HostId).ToArray();
-                    waitForInitialClientRoutesSnapshot = !_clientRoutesCache.HasCompleteSnapshot;
-                    var routeRefresh = _clientRoutesCache.FullRefreshBarrierAsync(
-                        topologyHostIds,
-                        confirmIgnoredEmptyResults: true);
-                    if (waitForInitialClientRoutesSnapshot)
-                    {
-                        await routeRefresh.ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        routeRefresh.Forget();
-                    }
-                }
-                await _metadata.RebuildTokenMapAsync(false, _config.MetadataSyncOptions.MetadataSyncEnabled).ConfigureAwait(false);
-                if (_clientRoutesCache != null && waitForInitialClientRoutesSnapshot)
-                {
-                    await _clientRoutesCache.QueuedRefreshBarrierAsync().ConfigureAwait(false);
-                }
+                var topologyHostIds = _clientRoutesCache == null
+                    ? null
+                    : _metadata.AllHosts().Select(host => host.HostId).ToArray();
+                await RefreshClientRoutesAndTokenMapAsync(topologyHostIds).ConfigureAwait(false);
                 lock (_connectionHandoffLock)
                 {
                     if (_clientRoutesCache != null && IsShutdown)

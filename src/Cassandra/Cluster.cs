@@ -64,9 +64,12 @@ namespace Cassandra
         private volatile bool _initialized;
         private volatile Exception _initException;
         private readonly SemaphoreSlim _initLock = new SemaphoreSlim(1, 1);
+        private readonly Lock _initializationCompletionLock = new Lock();
+        private volatile bool _shutdownStarted;
 
         // Retain routed setup across caller timeouts; _initLock serializes access.
         private Task _clientRoutesInitTask;
+        private bool _clientRoutesMetadataInitialized;
         private int _controlConnectionDisposed;
         private long _sessionCounter = -1;
 
@@ -245,7 +248,11 @@ namespace Cassandra
                 Cluster.Logger.Info("Connecting to cluster using {0}", GetAssemblyInfoString());
                 try
                 {
-                    await _metadata.Init().ConfigureAwait(false);
+                    if (Configuration.ClientRoutesRuntime == null || !_clientRoutesMetadataInitialized)
+                    {
+                        await _metadata.Init().ConfigureAwait(false);
+                        _clientRoutesMetadataInitialized = true;
+                    }
                     // Collect all policies in collections
                     var loadBalancingPolicies = new HashSet<ILoadBalancingPolicy>(new ReferenceEqualityComparer<ILoadBalancingPolicy>());
                     var speculativeExecutionPolicies = new HashSet<ISpeculativeExecutionPolicy>(new ReferenceEqualityComparer<ISpeculativeExecutionPolicy>());
@@ -270,7 +277,7 @@ namespace Cassandra
                     }
                     var initTask = Configuration.ClientRoutesRuntime == null
                         ? _controlConnection.InitAsync()
-                        : _clientRoutesInitTask ?? (_clientRoutesInitTask = _controlConnection.InitAsync());
+                        : _clientRoutesInitTask ?? (_clientRoutesInitTask = InitClientRoutesAsync(loadBalancingPolicies, speculativeExecutionPolicies));
                     try
                     {
                         await initTask.WaitToCompleteAsync(initialAbortTimeout).ConfigureAwait(false);
@@ -307,21 +314,10 @@ namespace Cassandra
                         throw newEx;
                     }
 
-                    // Initialize policies
-                    foreach (var lbp in loadBalancingPolicies)
+                    if (Configuration.ClientRoutesRuntime == null)
                     {
-                        lbp.Initialize(this);
+                        InitializePoliciesAndMetadata(loadBalancingPolicies, speculativeExecutionPolicies);
                     }
-
-                    foreach (var sep in speculativeExecutionPolicies)
-                    {
-                        sep.Initialize(this);
-                    }
-
-                    InitializeHostDistances();
-
-                    // Set metadata dependent options
-                    SetMetadataDependentOptions();
                 }
                 catch (NoHostAvailableException)
                 {
@@ -337,7 +333,7 @@ namespace Cassandra
                 {
                     //There was an error that the driver is not able to recover from
                     //Store the exception for the following times
-                    _initException = new InitFatalErrorException(ex);
+                    _initException = _initException ?? new InitFatalErrorException(ex);
                     if (Configuration.ClientRoutesRuntime != null)
                     {
                         DisposeControlConnectionAfterInitFailure();
@@ -345,11 +341,10 @@ namespace Cassandra
                     //Throw the actual exception for the first time
                     throw;
                 }
-                Cluster.Logger.Info("Cluster Connected using binary protocol version: [" + _controlConnection.Serializer.CurrentProtocolVersion + "]");
-                _initialized = true;
-                _metadata.Hosts.Added += OnHostAdded;
-                _metadata.Hosts.Removed += OnHostRemoved;
-                _metadata.Hosts.Up += OnHostUp;
+                if (Configuration.ClientRoutesRuntime == null)
+                {
+                    PublishInitialization();
+                }
             }
             finally
             {
@@ -358,6 +353,107 @@ namespace Cassandra
 
             Cluster.Logger.Info("Cluster #{0} [{1}] has been initialized.", GetHashCode(), Metadata.ClusterName);
             return;
+        }
+
+        private void InitializePoliciesAndMetadata(
+            IEnumerable<ILoadBalancingPolicy> loadBalancingPolicies,
+            IEnumerable<ISpeculativeExecutionPolicy> speculativeExecutionPolicies,
+            ICollection<ISpeculativeExecutionPolicy> initializingSpeculativePolicies = null)
+        {
+            foreach (var policy in loadBalancingPolicies)
+            {
+                if (initializingSpeculativePolicies != null)
+                {
+                    EnsureClientRoutesSetupIsActive();
+                }
+                policy.Initialize(this);
+            }
+            foreach (var policy in speculativeExecutionPolicies)
+            {
+                if (initializingSpeculativePolicies != null)
+                {
+                    EnsureClientRoutesSetupIsActive();
+                    initializingSpeculativePolicies.Add(policy);
+                }
+                policy.Initialize(this);
+            }
+            if (initializingSpeculativePolicies != null)
+            {
+                EnsureClientRoutesSetupIsActive();
+            }
+            InitializeHostDistances();
+            if (initializingSpeculativePolicies != null)
+            {
+                EnsureClientRoutesSetupIsActive();
+            }
+            SetMetadataDependentOptions();
+        }
+
+        private void EnsureClientRoutesSetupIsActive()
+        {
+            if (_shutdownStarted)
+            {
+                throw new ObjectDisposedException(nameof(Cluster));
+            }
+        }
+
+        private void PublishInitialization()
+        {
+            Cluster.Logger.Info("Cluster Connected using binary protocol version: [" + _controlConnection.Serializer.CurrentProtocolVersion + "]");
+            lock (_initializationCompletionLock)
+            {
+                if (Configuration.ClientRoutesRuntime != null)
+                {
+                    EnsureClientRoutesSetupIsActive();
+                }
+                _metadata.Hosts.Added += OnHostAdded;
+                _metadata.Hosts.Removed += OnHostRemoved;
+                _metadata.Hosts.Up += OnHostUp;
+                _initialized = true;
+            }
+        }
+
+        private async Task InitClientRoutesAsync(
+            IEnumerable<ILoadBalancingPolicy> loadBalancingPolicies,
+            IEnumerable<ISpeculativeExecutionPolicy> speculativeExecutionPolicies)
+        {
+            var initializingSpeculativePolicies = new List<ISpeculativeExecutionPolicy>();
+            var controlInitialized = false;
+            var published = false;
+            try
+            {
+                await _controlConnection.InitAsync().ConfigureAwait(false);
+                controlInitialized = true;
+                // Retained setup can finish without another caller returning after a timeout.
+                // Publish initialized state only after policies and topology forwarding are ready.
+                EnsureClientRoutesSetupIsActive();
+                InitializePoliciesAndMetadata(
+                    loadBalancingPolicies, speculativeExecutionPolicies, initializingSpeculativePolicies);
+                PublishInitialization();
+                published = true;
+            }
+            catch (Exception ex) when (controlInitialized ||
+                                       (!(ex is NoHostAvailableException) && !(ex is TimeoutException)))
+            {
+                // Setup can outlive a caller's wait. Preserve terminal failure and stop route
+                // retries even when no caller returns to observe the retained task. Only control
+                // initialization can recover; policy initialization must never be repeated.
+                _initException = new InitFatalErrorException(ex);
+                DisposeControlConnectionAfterInitFailure();
+                throw;
+            }
+            finally
+            {
+                // Shutdown can return while a policy callback is still running. An unpublished
+                // attempt retains cleanup ownership until that callback finishes.
+                if (!published && (_shutdownStarted || _initException != null))
+                {
+                    foreach (var policy in initializingSpeculativePolicies)
+                    {
+                        DisposeAfterInitFailure(policy.Dispose, "a speculative policy");
+                    }
+                }
+            }
         }
 
         private void InitializeHostDistances()
@@ -589,7 +685,13 @@ namespace Cassandra
         /// <inheritdoc />
         public async Task ShutdownAsync(int timeoutMs = Timeout.Infinite)
         {
-            if (!_initialized)
+            bool initialized;
+            lock (_initializationCompletionLock)
+            {
+                _shutdownStarted = true;
+                initialized = _initialized;
+            }
+            if (!initialized)
             {
                 _preparedStatementCache.Clear();
                 _unstartedPreparedStatementCacheEntries.Clear();
@@ -645,9 +747,14 @@ namespace Cassandra
 
         private void DisposeControlConnectionAfterInitFailure()
         {
+            DisposeAfterInitFailure(DisposeControlConnectionOnce, "the control connection");
+        }
+
+        private void DisposeAfterInitFailure(Action dispose, string resource)
+        {
             try
             {
-                DisposeControlConnectionOnce();
+                dispose();
             }
             catch (Exception disposeException) when (!Utils.IsFatalException(disposeException))
             {
@@ -656,8 +763,7 @@ namespace Cassandra
                 try
                 {
                     Cluster.Logger.Error(
-                        "An exception was thrown while disposing the control connection after cluster " +
-                        "initialization failed.",
+                        "An exception was thrown while disposing " + resource + " after cluster initialization failed.",
                         disposeException);
                 }
                 catch (Exception diagnosticException) when (!Utils.IsFatalException(diagnosticException))
