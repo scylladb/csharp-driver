@@ -382,6 +382,10 @@ namespace Cassandra
             var clientRoutesEnabled = Configuration.ClientRoutesRuntime != null;
 
             var currentHost = _cluster.Metadata.GetHost(host.Address);
+            if (currentHost == null && !clientRoutesEnabled && !host.IsRemoved)
+            {
+                currentHost = host;
+            }
             if (!IsDisposed && currentHost != null &&
                 _connectionPool.TryGetValue(host.Address, out var entry) &&
                 ReferenceEquals(entry.Host, currentHost) &&
@@ -400,6 +404,10 @@ namespace Cassandra
                 }
 
                 currentHost = _cluster.Metadata.GetHost(host.Address);
+                if (currentHost == null && !clientRoutesEnabled && !host.IsRemoved)
+                {
+                    currentHost = host;
+                }
                 if (currentHost == null)
                 {
                     throw new HostConnectionPoolNotEligibleException();
@@ -444,6 +452,7 @@ namespace Cassandra
                 catch
                 {
                     newPool.Dispose();
+                    _metricsManager.RemoveNodeMetrics(host);
                     throw;
                 }
                 return newPool;
@@ -602,6 +611,14 @@ namespace Cassandra
                     _metricsManager.RemoveNodeMetrics(host);
                     entry.Pool.OnHostRemoved();
                     entry.Pool.Dispose();
+                }
+                else if (!_connectionPool.ContainsKey(host.Address))
+                {
+                    var currentHost = _cluster.Metadata.GetHost(host.Address);
+                    if (currentHost == null || ReferenceEquals(currentHost, host))
+                    {
+                        _metricsManager.RemoveNodeMetrics(host);
+                    }
                 }
             }
         }

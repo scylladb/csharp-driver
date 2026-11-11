@@ -63,6 +63,8 @@ namespace Cassandra
             get { return Interlocked.Read(ref _isUpNow) == 1L; }
         }
 
+        internal bool IsRemoved => Interlocked.Read(ref _isUpNow) == -1;
+
         /// <summary>
         /// This property is going to be removed in future versions, use <see cref="IsUp"/> instead.
         /// Used to determines if the host can be considered as UP
