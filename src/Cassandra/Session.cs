@@ -447,12 +447,38 @@ namespace Cassandra
                     newPool.AllConnectionClosed += InternalRef.OnAllConnectionClosed;
                     newPool.SetDistance(distance);
                     _metricsManager.GetOrCreateNodeMetrics(host).InitializePoolGauges(newPool);
+                    // User metrics callbacks can synchronously shut down the session or remove the host.
+                    if (IsDisposed)
+                    {
+                        throw new ObjectDisposedException(nameof(Session));
+                    }
+                    if (host.IsRemoved)
+                    {
+                        throw new HostConnectionPoolNotEligibleException();
+                    }
                     _connectionPool.Add(host.Address, new HostPool(host, newPool));
                 }
                 catch
                 {
-                    newPool.Dispose();
-                    _metricsManager.RemoveNodeMetrics(host);
+                    try
+                    {
+                        newPool.Dispose();
+                    }
+                    catch (Exception cleanupFailure) when (!Utils.IsFatalException(cleanupFailure))
+                    {
+                        // Preserve the initialization failure if pool cleanup also fails.
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            _metricsManager.RemoveNodeMetrics(host);
+                        }
+                        catch (Exception cleanupFailure) when (!Utils.IsFatalException(cleanupFailure))
+                        {
+                            // Keep the primary failure when metrics cleanup fails nonfatally.
+                        }
+                    }
                     throw;
                 }
                 return newPool;
