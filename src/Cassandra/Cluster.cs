@@ -222,9 +222,6 @@ namespace Cassandra
             _metadata.ControlConnection = _controlConnection;
         }
 
-        /// <summary>
-        /// Initializes once (Thread-safe) the control connection and metadata associated with the Cluster instance
-        /// </summary>
         private static void LogInitializationDiagnostic(string message, params object[] args)
         {
             try
@@ -241,6 +238,9 @@ namespace Cassandra
             }
         }
 
+        /// <summary>
+        /// Initializes once (Thread-safe) the control connection and metadata associated with the Cluster instance
+        /// </summary>
         private async Task Init()
         {
             if (_initialized)

@@ -395,6 +395,7 @@ namespace Cassandra.Tests
             Exception diagnosticCause = fatal
                 ? new OutOfMemoryException("fatal diagnostic sink failure")
                 : new InvalidOperationException("connected diagnostic sink failed");
+
             // The logging framework aggregates provider failures, including providers that
             // throw their own aggregates.
             var diagnosticFailure = wrapped
