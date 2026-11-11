@@ -1633,7 +1633,7 @@ namespace Cassandra.Tests.Connections
 
             try
             {
-                await target.Warmup().ConfigureAwait(false);
+                await target.Warmup().WaitToCompleteAsync(5000).ConfigureAwait(false);
 
                 Assert.AreEqual(2, target.OpenConnections);
                 foreach (var connection in connections)
@@ -1714,7 +1714,7 @@ namespace Cassandra.Tests.Connections
 
             try
             {
-                await target.Warmup().ConfigureAwait(false);
+                await target.Warmup().WaitToCompleteAsync(5000).ConfigureAwait(false);
 
                 Assert.AreEqual(4, target.OpenConnections);
                 resolver.Verify(r => r.GetConnectionEndPointsAsync(_host, false), Times.Once);
@@ -2203,7 +2203,7 @@ namespace Cassandra.Tests.Connections
             bool failShardPublication, bool failDisposal, bool failDiagnostic)
         {
             var shardingReadStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            using var releaseShardingRead = new ManualResetEventSlim(false);
+            var releaseShardingRead = new ManualResetEventSlim(false);
             var fatalFailure = new OutOfMemoryException("rejected connection disposal failed");
             var attempts = 0;
             Mock<IConnection> rejectedConnection = null;
@@ -2289,15 +2289,34 @@ namespace Cassandra.Tests.Connections
             finally
             {
                 releaseShardingRead.Set();
-                Trace.Listeners.Remove(listener.Object);
-                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
-                listener.Object.Dispose();
-                DisposePoolAndTimer(target);
-
-                // A broken gate can leave a joiner pending; observe completed tasks without extending cleanup indefinitely.
-                foreach (var waiter in new[] { opening, joining }.Where(task => task != null && task.IsCompleted))
+                try
                 {
-                    _ = waiter.Exception;
+                    Trace.Listeners.Remove(listener.Object);
+                    Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                    listener.Object.Dispose();
+                    // Synthetic fatal disposal is part of the assertion path, not fixture cleanup.
+                    rejectedConnection?.Setup(value => value.Dispose()).Callback(() => { });
+                    DisposePoolAndTimer(target);
+                }
+                finally
+                {
+                    var inFlight = Task.WhenAll(opening ?? Task.CompletedTask, joining ?? Task.CompletedTask);
+                    try
+                    {
+                        await inFlight.ContinueWith(completed => _ = completed.Exception, TaskScheduler.Default)
+                            .WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        if (opening == null || opening.IsCompleted)
+                        {
+                            releaseShardingRead.Dispose();
+                        }
+                        else
+                        {
+                            _ = opening.ContinueWith(_ => releaseShardingRead.Dispose(), TaskScheduler.Default);
+                        }
+                    }
                 }
             }
         }
