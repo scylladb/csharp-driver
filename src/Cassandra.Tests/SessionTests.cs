@@ -374,10 +374,15 @@ namespace Cassandra.Tests
             }
         }
 
-        [Test]
-        public async Task Should_PropagateMetricsExceptionDuringWarmup()
+        [TestCase(false, false)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public async Task Should_PropagateMetricsExceptionDuringWarmup(bool cleanupThrows, bool fatalCleanup)
         {
             var failure = new InvalidOperationException("node metrics initialization failed");
+            Exception cleanupFailure = fatalCleanup
+                ? new BadImageFormatException("fatal pool cleanup failed")
+                : new InvalidOperationException("pool cleanup failed");
             var metricsProvider = new Mock<IDriverMetricsProvider>();
             metricsProvider.Setup(value => value.Timer(It.IsAny<string>(), It.IsAny<IMetric>()))
                            .Returns(Mock.Of<IDriverTimer>());
@@ -398,6 +403,10 @@ namespace Cassandra.Tests
                                return Mock.Of<IDriverGauge>();
                            });
             var pool = new Mock<IHostConnectionPool>();
+            if (cleanupThrows)
+            {
+                pool.Setup(value => value.Dispose()).Throws(cleanupFailure);
+            }
             var poolFactory = new Mock<IHostConnectionPoolFactory>();
             poolFactory.Setup(value => value.Create(
                            It.IsAny<Host>(),
@@ -414,14 +423,85 @@ namespace Cassandra.Tests
 
             using (var session = CreateWarmupSession(config, "metrics-failure-test"))
             {
-                var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                var expectedFailure = cleanupThrows && fatalCleanup ? cleanupFailure : failure;
+                var ex = await Assert.ThrowsAsync(expectedFailure.GetType(), async () =>
                     await ((IInternalSession)session).Init().ConfigureAwait(false));
 
-                Assert.AreSame(failure, ex);
+                Assert.AreSame(expectedFailure, ex);
                 pool.Verify(value => value.Warmup(), Times.Never);
                 pool.Verify(value => value.Dispose(), Times.Once);
                 Assert.IsEmpty(((IInternalSession)session).GetPools());
                 Assert.IsEmpty(session.GetMetrics().NodeMetrics);
+            }
+        }
+
+        [TestCase(false, false, false)]
+        [TestCase(false, false, true)]
+        [TestCase(false, true, false)]
+        [TestCase(false, true, true)]
+        [TestCase(true, false, false)]
+        [TestCase(true, false, true)]
+        [TestCase(true, true, false)]
+        [TestCase(true, true, true)]
+        public void Should_RejectPoolPublicationWhenMetricsCallbackEndsHostLifetime(
+            bool clientRoutesEnabled, bool shutdown, bool metricsCleanupThrows)
+        {
+            Session session = null;
+            Host host = null;
+            var metricsProvider = new Mock<IDriverMetricsProvider>();
+            metricsProvider.Setup(value => value.Timer(It.IsAny<string>(), It.IsAny<IMetric>()))
+                           .Returns(Mock.Of<IDriverTimer>());
+            metricsProvider.Setup(value => value.Meter(It.IsAny<string>(), It.IsAny<IMetric>()))
+                           .Returns(Mock.Of<IDriverMeter>());
+            metricsProvider.Setup(value => value.Counter(It.IsAny<string>(), It.IsAny<IMetric>()))
+                           .Returns(Mock.Of<IDriverCounter>());
+            metricsProvider.Setup(value => value.Gauge(
+                               It.IsAny<string>(), It.IsAny<IMetric>(), It.IsAny<Func<double?>>()))
+                           .Returns((string _, IMetric metric, Func<double?> __) =>
+                           {
+                               if (metric is NodeMetric)
+                               {
+                                   if (shutdown)
+                                   {
+                                       session.ShutdownAsync().GetAwaiter().GetResult();
+                                   }
+                                   else
+                                   {
+                                       ((IInternalSession)session).InternalCluster.Metadata.RemoveHost(host.Address);
+                                   }
+                               }
+                               return Mock.Of<IDriverGauge>();
+                           });
+            if (metricsCleanupThrows)
+            {
+                metricsProvider.Setup(value => value.ShutdownMetricsBucket(It.Is<string>(bucket => bucket.Contains(".nodes."))))
+                               .Throws(new InvalidOperationException("node metrics cleanup failed"));
+            }
+            var pool = new Mock<IHostConnectionPool>();
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>())).Returns(pool.Object);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object,
+                MetricsProvider = metricsProvider.Object,
+                ClientRoutesOptions = clientRoutesEnabled
+                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    : null
+            }.Build();
+            using (session = CreateWarmupSession(config, "metrics-callback-shutdown-test"))
+            {
+                var internalSession = (IInternalSession)session;
+                host = internalSession.InternalCluster.AllHosts().Single();
+
+                Assert.Throws(shutdown ? typeof(ObjectDisposedException) : typeof(HostConnectionPoolNotEligibleException), () =>
+                    internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+
+                Assert.AreEqual(shutdown, session.IsDisposed);
+                Assert.IsEmpty(internalSession.GetPools());
+                Assert.IsEmpty(session.GetMetrics().NodeMetrics);
+                pool.Verify(value => value.Dispose(), Times.Once);
             }
         }
 
