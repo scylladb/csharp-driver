@@ -1850,7 +1850,6 @@ namespace Cassandra.Tests.Connections
             var distanceChanged = false;
             Task resize = null;
             Thread resizeThread = null;
-            var resizeStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var factory = new FakeConnectionFactory(endPoint =>
             {
                 var connection = CreateConnection(endPoint, shardingInfo: shardingInfo);
@@ -1870,15 +1869,19 @@ namespace Cassandra.Tests.Connections
                             distanceChanged = true;
                             if (resizeDuringPublication)
                             {
+                                // Exercise the entry point before observing the worker's managed wait.
+                                target.ConsiderResizingPool(0);
                                 resize = Task.Factory.StartNew(() =>
                                 {
-                                    resizeThread = Thread.CurrentThread;
-                                    resizeStarted.TrySetResult(true);
+                                    Volatile.Write(ref resizeThread, Thread.CurrentThread);
                                     target.ConsiderResizingPool(int.MaxValue);
                                 }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
-                                Assert.IsTrue(resizeStarted.Task.Wait(5000));
-                                Assert.IsTrue(SpinWait.SpinUntil(() => resize.IsCompleted ||
-                                    (resizeThread.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0, 5000));
+                                Assert.IsTrue(SpinWait.SpinUntil(() =>
+                                {
+                                    var worker = Volatile.Read(ref resizeThread);
+                                    return resize.IsCompleted || (worker != null &&
+                                        (worker.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0);
+                                }, 5000));
                                 Assert.IsFalse(resize.IsCompleted, "Resizing must wait for shard-state publication.");
                                 Assert.AreEqual(4, GetExpectedConnectionLength(target));
                             }
