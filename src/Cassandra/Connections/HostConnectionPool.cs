@@ -364,32 +364,40 @@ namespace Cassandra.Connections
         {
             if (inFlight < _maxInflightThresholdToConsiderResizing)
             {
-                // The requests in-flight are normal
                 return;
             }
-            if (_expectedConnectionLength >= _maxConnectionLength)
+            int expectedConnectionLength;
+            lock (_connectionHandoffLock)
             {
-                // We can not add more connections
-                return;
+                if (inFlight < _maxInflightThresholdToConsiderResizing)
+                {
+                    // The requests in-flight are normal
+                    return;
+                }
+                if (_expectedConnectionLength >= _maxConnectionLength)
+                {
+                    // We can not add more connections
+                    return;
+                }
+                if (_connections.Count < _expectedConnectionLength)
+                {
+                    // The pool is still trying to acquire the correct size
+                    return;
+                }
+                var canResize = Interlocked.Exchange(ref _poolResizing, 1) == 0;
+                if (!canResize)
+                {
+                    // There is already another thread resizing the pool
+                    return;
+                }
+                if (IsClosing)
+                {
+                    return;
+                }
+                expectedConnectionLength = ++_expectedConnectionLength;
             }
-            if (_connections.Count < _expectedConnectionLength)
-            {
-                // The pool is still trying to acquire the correct size
-                return;
-            }
-            var canResize = Interlocked.Exchange(ref _poolResizing, 1) == 0;
-            if (!canResize)
-            {
-                // There is already another thread resizing the pool
-                return;
-            }
-            if (IsClosing)
-            {
-                return;
-            }
-            _expectedConnectionLength++;
             HostConnectionPool.Logger.Info("Increasing pool #{0} size to {1}, as in-flight requests are above threshold ({2})",
-                GetHashCode(), _expectedConnectionLength, _maxInflightThresholdToConsiderResizing);
+                GetHashCode(), expectedConnectionLength, _maxInflightThresholdToConsiderResizing);
             StartCreatingConnection(null);
             _resizingEndTimeout = _timer.NewTimeout(_ => Interlocked.Exchange(ref _poolResizing, 0), null,
                 HostConnectionPool.BetweenResizeDelay);
