@@ -630,9 +630,12 @@ namespace Cassandra.Tests
             }
         }
 
-        [TestCase(false)]
-        [TestCase(true)]
-        public void Should_AllowCustomHostMissingFromMetadataOnlyWithoutClientRoutes(bool clientRoutesEnabled)
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public void Should_AllowCustomHostMissingFromMetadataOnlyWithoutClientRoutes(
+            bool clientRoutesEnabled, bool distinctHostInstance)
         {
             var pool = Mock.Of<IHostConnectionPool>();
             var factory = new Mock<IHostConnectionPoolFactory>();
@@ -650,19 +653,28 @@ namespace Cassandra.Tests
             var cluster = new Mock<IInternalCluster>();
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), new ConstantReconnectionPolicy(1000));
+            var nextHost = distinctHostInstance
+                ? new Host(host.Address, new ConstantReconnectionPolicy(1000))
+                : host;
             using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "custom-host-test");
             var internalSession = (IInternalSession)session;
             if (clientRoutesEnabled)
             {
                 Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
                     internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+                Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
+                    internalSession.GetOrCreateConnectionPool(nextHost, HostDistance.Local));
                 Assert.IsEmpty(internalSession.GetPools());
             }
             else
             {
                 Assert.AreSame(pool, internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
-                Assert.AreSame(pool, internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+                var metrics = session.GetMetrics().NodeMetrics[host];
+                Assert.AreSame(pool, internalSession.GetOrCreateConnectionPool(nextHost, HostDistance.Local));
                 Assert.AreEqual(1, internalSession.GetPools().Count());
+                Assert.AreSame(metrics, session.GetMetrics().NodeMetrics[host]);
+                Mock.Get(pool).Verify(value => value.OnHostRemoved(), Times.Never);
+                Mock.Get(pool).Verify(value => value.Dispose(), Times.Never);
             }
             factory.Verify(value => value.Create(
                 It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
