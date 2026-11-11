@@ -377,11 +377,20 @@ namespace Cassandra.Tests
             }
         }
 
-        [TestCase(false, false)]
-        [TestCase(true, false)]
-        [TestCase(false, true)]
-        [TestCase(true, true)]
-        public void ClientRoutesConnectedDiagnosticFailurePreservesPublishedInitialization(bool fatal, bool wrapped)
+        [TestCase(false, false, "connected")]
+        [TestCase(true, false, "connected")]
+        [TestCase(false, true, "connected")]
+        [TestCase(true, true, "connected")]
+        [TestCase(false, false, "completed")]
+        [TestCase(true, false, "completed")]
+        [TestCase(false, true, "completed")]
+        [TestCase(true, true, "completed")]
+        [TestCase(false, false, "both")]
+        [TestCase(true, false, "both")]
+        [TestCase(false, true, "both")]
+        [TestCase(true, true, "both")]
+        public void ClientRoutesInitializationDiagnosticFailurePreservesPublishedInitialization(
+            bool fatal, bool wrapped, string failingDiagnostic)
         {
             Exception diagnosticCause = fatal
                 ? new OutOfMemoryException("fatal diagnostic sink failure")
@@ -398,7 +407,8 @@ namespace Cassandra.Tests
             var listener = new Mock<TraceListener> { CallBase = true };
             listener.Setup(value => value.WriteLine(It.IsAny<string>())).Callback<string>(message =>
             {
-                if (message.Contains("Cluster Connected using binary protocol version"))
+                if ((failingDiagnostic != "completed" && message.Contains("Cluster Connected using binary protocol version")) ||
+                    (failingDiagnostic != "connected" && message.Contains("has been initialized.")))
                 {
                     throw diagnosticFailure;
                 }

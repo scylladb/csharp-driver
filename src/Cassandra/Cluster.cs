@@ -225,11 +225,11 @@ namespace Cassandra
         /// <summary>
         /// Initializes once (Thread-safe) the control connection and metadata associated with the Cluster instance
         /// </summary>
-        private static void LogConnected(ProtocolVersion protocolVersion)
+        private static void LogInitializationDiagnostic(string message, params object[] args)
         {
             try
             {
-                Cluster.Logger.Info("Cluster Connected using binary protocol version: [" + protocolVersion + "]");
+                Cluster.Logger.Info(message, args);
             }
             catch (Exception diagnosticException) when (
                 !Utils.IsFatalException(diagnosticException) &&
@@ -375,7 +375,7 @@ namespace Cassandra
                 {
                     var protocolVersion = _controlConnection.Serializer.CurrentProtocolVersion;
                     PublishInitialization();
-                    LogConnected(protocolVersion);
+                    LogInitializationDiagnostic("Cluster Connected using binary protocol version: [" + protocolVersion + "]");
                 }
             }
             finally
@@ -383,7 +383,7 @@ namespace Cassandra
                 _initLock.Release();
             }
 
-            Cluster.Logger.Info("Cluster #{0} [{1}] has been initialized.", GetHashCode(), Metadata.ClusterName);
+            LogInitializationDiagnostic("Cluster #{0} [{1}] has been initialized.", GetHashCode(), Metadata.ClusterName);
             return;
         }
 
@@ -487,7 +487,7 @@ namespace Cassandra
                     }
                 }
             }
-            LogConnected(protocolVersion);
+            LogInitializationDiagnostic("Cluster Connected using binary protocol version: [" + protocolVersion + "]");
         }
 
         private void InitializeHostDistances()
