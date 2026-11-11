@@ -12,7 +12,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Cassandra\Cassandra.csproj" />
     <ProjectReference Include="..\Extensions\Cassandra.AppMetrics\Cassandra.AppMetrics.csproj" />
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.11.1" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.12.0" />
     <PackageReference Include="coverlet.collector" Version="10.1.0">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
