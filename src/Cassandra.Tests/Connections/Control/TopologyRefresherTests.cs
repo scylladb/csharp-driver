@@ -113,7 +113,10 @@ namespace Cassandra.Tests.Connections.Control
 
         [TestCase(false)]
         [TestCase(true)]
-        public async Task Should_RefreshReplacementConnectionWhileOldMetadataQueryIsPending(bool clientRoutesEnabled)
+        [TestCase(true, true)]
+        [TestCase(true, true, false)]
+        public async Task Should_RefreshReplacementConnectionWhileOldMetadataQueryIsPending(
+            bool clientRoutesEnabled, bool differentAddress = false, bool retainOldHost = true)
         {
             var oldRequestStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var releaseOldRequest = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -121,15 +124,19 @@ namespace Cassandra.Tests.Connections.Control
             var newConnection = Mock.Of<IConnection>();
             var oldHostId = Guid.NewGuid();
             var newHostId = Guid.NewGuid();
-            IRow LocalRow(Guid hostId) => TestHelper.CreateRow(new Dictionary<string, object>
+            var oldAddress = IPAddress.Parse("127.0.0.1");
+            var newAddress = differentAddress ? IPAddress.Parse("127.0.0.3") : oldAddress;
+            IRow LocalRow(Guid hostId, IPAddress address) => TestHelper.CreateRow(new Dictionary<string, object>
             {
-                { "cluster_name", "ut-cluster" }, { "rpc_address", IPAddress.Parse("127.0.0.1") },
+                { "cluster_name", "ut-cluster" }, { "rpc_address", address },
                 { "data_center", "ut-dc" }, { "rack", "ut-rack" }, { "tokens", null },
                 { "release_version", "2026.1" }, { "partitioner", "Murmur3Partitioner" },
                 { "host_id", hostId }
             });
-            var oldHandler = CreateFakeMetadataRequestHandler(LocalRow(oldHostId));
-            var fakeHandler = CreateFakeMetadataRequestHandler(LocalRow(newHostId));
+            var oldHandler = CreateFakeMetadataRequestHandler(LocalRow(oldHostId, oldAddress));
+            var fakeHandler = CreateFakeMetadataRequestHandler(
+                LocalRow(newHostId, newAddress),
+                differentAddress && retainOldHost ? new[] { LocalRow(oldHostId, oldAddress) } : null);
             var responses = new System.Collections.Concurrent.ConcurrentDictionary<Cassandra.Responses.Response, IEnumerable<IRow>>();
             var handler = new Mock<IMetadataRequestHandler>();
             handler.Setup(value => value.SendMetadataRequestAsync(
@@ -163,18 +170,90 @@ namespace Cassandra.Tests.Connections.Control
             try
             {
                 await oldRequestStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
-                replacementRefresh = refresher.RefreshNodeListAsync(endpoint, newConnection, _serializer);
+                replacementRefresh = refresher.RefreshNodeListAsync(
+                    new FakeConnectionEndPoint(newAddress.ToString(), 9042), newConnection, _serializer);
                 await replacementRefresh.WaitToCompleteAsync(5000).ConfigureAwait(false);
                 Assert.IsFalse(oldRefresh.IsCompleted);
             }
             finally
             {
                 releaseOldRequest.TrySetResult(true);
-                await Task.WhenAll(oldRefresh, replacementRefresh ?? Task.FromResult<Host>(null))
+                if (differentAddress && !retainOldHost)
+                {
+                    await Assert.ThrowsAsync<DriverInternalError>(async () =>
+                        await oldRefresh.WaitToCompleteAsync(5000).ConfigureAwait(false));
+                }
+                else
+                {
+                    await oldRefresh.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+                await (replacementRefresh ?? Task.FromResult<Host>(null))
                           .WaitToCompleteAsync(5000).ConfigureAwait(false);
             }
-            Assert.AreEqual(clientRoutesEnabled ? newHostId : oldHostId,
-                _metadata.GetHost(new IPEndPoint(IPAddress.Loopback, 9042)).HostId);
+            Assert.AreEqual(newAddress, replacementRefresh.Result.Address.Address);
+            Assert.AreEqual(clientRoutesEnabled ? newHostId : oldHostId, replacementRefresh.Result.HostId);
+            if (differentAddress)
+            {
+                if (retainOldHost)
+                {
+                    Assert.AreSame(_metadata.GetHost(new IPEndPoint(oldAddress, 9042)), oldRefresh.Result);
+                    Assert.AreEqual(oldHostId, oldRefresh.Result.HostId);
+                }
+                else
+                {
+                    Assert.IsNull(_metadata.GetHost(new IPEndPoint(oldAddress, 9042)));
+                }
+            }
+            else
+            {
+                Assert.AreEqual(clientRoutesEnabled ? newHostId : oldHostId,
+                    _metadata.GetHost(new IPEndPoint(IPAddress.Loopback, 9042)).HostId);
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_KeepFirstIdentityAtEachAdvertisedAddress(bool duplicatesLocalAddress)
+        {
+            var localAddress = IPAddress.Parse("127.0.0.1");
+            var peerAddress = IPAddress.Parse("127.0.0.2");
+            var localId = Guid.NewGuid();
+            var firstPeerId = Guid.NewGuid();
+            IRow Row(IPAddress address, Guid id) => TestHelper.CreateRow(new Dictionary<string, object>
+            {
+                { "cluster_name", "ut-cluster" }, { "rpc_address", address },
+                { "data_center", "ut-dc" }, { "rack", "ut-rack" }, { "tokens", null },
+                { "release_version", "2026.1" }, { "partitioner", "Murmur3Partitioner" },
+                { "host_id", id }
+            });
+            var peers = new[]
+            {
+                Row(peerAddress, firstPeerId),
+                Row(duplicatesLocalAddress ? localAddress : peerAddress, Guid.NewGuid())
+            };
+            var config = new TestConfigurationBuilder
+            {
+                ClientRoutesOptions = new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false),
+                MetadataRequestHandler = CreateFakeMetadataRequestHandler(Row(localAddress, localId), peers)
+            }.Build();
+            _metadata = new Metadata(config);
+            var removed = new List<Host>();
+            _metadata.Hosts.Removed += removed.Add;
+            var refresher = new TopologyRefresher(_metadata, config);
+            var endpoint = new FakeConnectionEndPoint("127.0.0.100", 29042);
+            var firstLocal = await refresher.RefreshNodeListAsync(endpoint, Mock.Of<IConnection>(), _serializer)
+                                            .ConfigureAwait(false);
+            var firstPeer = _metadata.GetHost(new IPEndPoint(peerAddress, 9042));
+            var secondLocal = await refresher.RefreshNodeListAsync(endpoint, Mock.Of<IConnection>(), _serializer)
+                                             .ConfigureAwait(false);
+
+            Assert.AreSame(firstLocal, secondLocal);
+            Assert.AreSame(firstLocal, _metadata.GetHost(new IPEndPoint(localAddress, 9042)));
+            Assert.AreSame(firstPeer, _metadata.GetHost(firstPeer.Address));
+            Assert.AreEqual(localId, firstLocal.HostId);
+            Assert.AreEqual(firstPeerId, firstPeer.HostId);
+            Assert.IsEmpty(removed);
+            Assert.AreEqual(2, _metadata.AllHosts().Count);
         }
 
         [Test]
