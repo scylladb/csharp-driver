@@ -374,6 +374,34 @@ namespace Cassandra.Tests.Connections.Control
         }
 
         [Test]
+        public async Task Should_UsePeerAddressWhenSystemPeersRpcIsIPv6BindAll()
+        {
+            var ipv6Any = new IPAddress(new byte[16]);
+            var peerAddress = IPAddress.Parse("2001:db8::12");
+            var peerRows = TestHelper.CreateRows(new List<Dictionary<string, object>>
+            {
+                new Dictionary<string, object>
+                {
+                    { "rpc_address", ipv6Any },
+                    { "peer", peerAddress },
+                    { "data_center", "ut-dc" },
+                    { "rack", "ut-rack" },
+                    { "tokens", null },
+                    { "release_version", "2.2.1" }
+                }
+            });
+            var topologyRefresher = CreateTopologyRefresher(peersRows: peerRows);
+
+            await topologyRefresher.RefreshNodeListAsync(
+                new FakeConnectionEndPoint("127.0.0.1", 9042),
+                Mock.Of<IConnection>(),
+                _serializer).ConfigureAwait(false);
+
+            Assert.NotNull(_metadata.GetHost(new IPEndPoint(peerAddress, ProtocolOptions.DefaultPort)));
+            Assert.IsNull(_metadata.GetHost(new IPEndPoint(ipv6Any, ProtocolOptions.DefaultPort)));
+        }
+
+        [Test]
         public async Task UpdatePeersInfoUsesAddressTranslator()
         {
             var invokedEndPoints = new List<IPEndPoint>();
@@ -412,34 +440,6 @@ namespace Cassandra.Tests.Connections.Control
             Assert.AreEqual(portNumber, invokedEndPoints[0].Port);
             Assert.AreEqual(hostAddress3, invokedEndPoints[1].Address);
             Assert.AreEqual(portNumber, invokedEndPoints[1].Port);
-        }
-
-        [Test]
-        public async Task Should_UsePeerAddressWhenSystemPeersRpcIsIPv6BindAll()
-        {
-            var ipv6Any = new IPAddress(new byte[16]);
-            var peerAddress = IPAddress.Parse("2001:db8::12");
-            var peerRows = TestHelper.CreateRows(new List<Dictionary<string, object>>
-            {
-                new Dictionary<string, object>
-                {
-                    { "rpc_address", ipv6Any },
-                    { "peer", peerAddress },
-                    { "data_center", "ut-dc" },
-                    { "rack", "ut-rack" },
-                    { "tokens", null },
-                    { "release_version", "2.2.1" }
-                }
-            });
-            var topologyRefresher = CreateTopologyRefresher(peersRows: peerRows);
-
-            await topologyRefresher.RefreshNodeListAsync(
-                new FakeConnectionEndPoint("127.0.0.1", 9042),
-                Mock.Of<IConnection>(),
-                _serializer).ConfigureAwait(false);
-
-            Assert.NotNull(_metadata.GetHost(new IPEndPoint(peerAddress, ProtocolOptions.DefaultPort)));
-            Assert.IsNull(_metadata.GetHost(new IPEndPoint(ipv6Any, ProtocolOptions.DefaultPort)));
         }
     }
 }
