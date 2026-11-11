@@ -637,10 +637,16 @@ namespace Cassandra
                 if (_connectionPool.TryGetValue(host.Address, out var entry) &&
                     ReferenceEquals(entry.Host, host))
                 {
-                    _connectionPool.Remove(host.Address);
+                    // Keep the pool reachable for shutdown if metrics teardown throws.
                     _metricsManager.RemoveNodeMetrics(host);
-                    entry.Pool.OnHostRemoved();
-                    entry.Pool.Dispose();
+                    // A metrics callback may have already retired it and published a replacement.
+                    if (_connectionPool.TryGetValue(host.Address, out var currentEntry) &&
+                        ReferenceEquals(currentEntry, entry))
+                    {
+                        _connectionPool.Remove(host.Address);
+                        entry.Pool.OnHostRemoved();
+                        entry.Pool.Dispose();
+                    }
                 }
                 else if (!_connectionPool.ContainsKey(host.Address))
                 {

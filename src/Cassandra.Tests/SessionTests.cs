@@ -1075,6 +1075,96 @@ namespace Cassandra.Tests
 
         [TestCase(false)]
         [TestCase(true)]
+        public async Task Should_DisposeRemovedPoolAtShutdownWhenMetricsTeardownThrows(bool clientRoutesEnabled)
+        {
+            var failure = new InvalidOperationException("node metrics teardown failed");
+            var metricsProvider = CreateMetricsProviderForRemovalTests();
+            metricsProvider.Setup(value => value.ShutdownMetricsBucket(It.Is<string>(bucket => bucket.Contains(".nodes."))))
+                           .Throws(failure);
+            var pool = new Mock<IHostConnectionPool>();
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>())).Returns(pool.Object);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object,
+                MetricsProvider = metricsProvider.Object,
+                ClientRoutesOptions = clientRoutesEnabled
+                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    : null
+            }.Build();
+            using (var session = CreateWarmupSession(config, "removal-metrics-failure-test"))
+            {
+                var internalSession = (IInternalSession)session;
+                var host = internalSession.InternalCluster.AllHosts().Single();
+                internalSession.GetOrCreateConnectionPool(host, HostDistance.Local);
+                internalSession.InternalCluster.Metadata.RemoveHost(host.Address);
+
+                var ex = Assert.Throws<InvalidOperationException>(() =>
+                    Mock.Get(internalSession.InternalCluster).Raise(value => value.HostRemoved += null, host));
+                Assert.AreSame(failure, ex);
+
+                await session.ShutdownAsync().ConfigureAwait(false);
+                pool.Verify(value => value.Dispose(), Times.Once);
+                Assert.IsEmpty(internalSession.GetPools());
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void Should_PreservePoolPublishedDuringRemovalMetricsCallback(bool clientRoutesEnabled)
+        {
+            var metricsProvider = CreateMetricsProviderForRemovalTests();
+            var oldPool = new Mock<IHostConnectionPool>();
+            var replacementPool = new Mock<IHostConnectionPool>();
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.SetupSequence(value => value.Create(
+                It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>()))
+                       .Returns(oldPool.Object)
+                       .Returns(replacementPool.Object);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object,
+                MetricsProvider = metricsProvider.Object,
+                ClientRoutesOptions = clientRoutesEnabled
+                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    : null
+            }.Build();
+            using (var session = CreateWarmupSession(config, "removal-metrics-replacement-test"))
+            {
+                var internalSession = (IInternalSession)session;
+                var host = internalSession.InternalCluster.AllHosts().Single();
+                internalSession.GetOrCreateConnectionPool(host, HostDistance.Local);
+                internalSession.InternalCluster.Metadata.RemoveHost(host.Address);
+                var replacement = internalSession.InternalCluster.Metadata.AddHost(host.Address);
+                replacement.SetInfo(CreateHostInfo(Guid.NewGuid()));
+                var callbackRan = false;
+                metricsProvider.Setup(value => value.ShutdownMetricsBucket(It.Is<string>(bucket => bucket.Contains(".nodes."))))
+                               .Callback(() =>
+                               {
+                                   if (!callbackRan)
+                                   {
+                                       callbackRan = true;
+                                       internalSession.GetOrCreateConnectionPool(replacement, HostDistance.Local);
+                                   }
+                               });
+
+                Mock.Get(internalSession.InternalCluster).Raise(value => value.HostRemoved += null, host);
+
+                Assert.IsTrue(callbackRan);
+                Assert.AreSame(replacementPool.Object, internalSession.GetOrCreateConnectionPool(replacement, HostDistance.Local));
+                Assert.AreEqual(1, internalSession.GetPools().Count());
+                Assert.IsTrue(session.GetMetrics().NodeMetrics.ContainsKey(replacement));
+                oldPool.Verify(value => value.Dispose(), Times.Once);
+                replacementPool.Verify(value => value.Dispose(), Times.Never);
+            }
+            replacementPool.Verify(value => value.Dispose(), Times.Once);
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
         public async Task Should_RejectPoolLookupAfterShutdown(bool clientRoutesEnabled)
         {
             var pool = Mock.Of<IHostConnectionPool>();
@@ -1137,6 +1227,17 @@ namespace Cassandra.Tests
                 Assert.IsEmpty(((IInternalSession)session).GetPools());
                 poolFactory.VerifyNoOtherCalls();
             }
+        }
+
+        private static Mock<IDriverMetricsProvider> CreateMetricsProviderForRemovalTests()
+        {
+            var provider = new Mock<IDriverMetricsProvider>();
+            provider.Setup(value => value.Timer(It.IsAny<string>(), It.IsAny<IMetric>())).Returns(Mock.Of<IDriverTimer>());
+            provider.Setup(value => value.Meter(It.IsAny<string>(), It.IsAny<IMetric>())).Returns(Mock.Of<IDriverMeter>());
+            provider.Setup(value => value.Counter(It.IsAny<string>(), It.IsAny<IMetric>())).Returns(Mock.Of<IDriverCounter>());
+            provider.Setup(value => value.Gauge(It.IsAny<string>(), It.IsAny<IMetric>(), It.IsAny<Func<double?>>()))
+                    .Returns(Mock.Of<IDriverGauge>());
+            return provider;
         }
 
         private static IRow CreateHostInfo(Guid hostId)
