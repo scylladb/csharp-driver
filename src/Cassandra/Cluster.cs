@@ -225,6 +225,22 @@ namespace Cassandra
         /// <summary>
         /// Initializes once (Thread-safe) the control connection and metadata associated with the Cluster instance
         /// </summary>
+        private static void LogConnected(ProtocolVersion protocolVersion)
+        {
+            try
+            {
+                Cluster.Logger.Info("Cluster Connected using binary protocol version: [" + protocolVersion + "]");
+            }
+            catch (Exception diagnosticException) when (
+                !Utils.IsFatalException(diagnosticException) &&
+                !(diagnosticException is AggregateException aggregateException &&
+                  aggregateException.Flatten().InnerExceptions.Any(Utils.IsFatalException)))
+            {
+                // Logging callbacks run after publication and outside its lock. An ordinary
+                // sink failure must not invalidate ready setup or transfer its cleanup ownership.
+            }
+        }
+
         private async Task Init()
         {
             if (_initialized)
@@ -344,6 +360,7 @@ namespace Cassandra
                         // remains owned by the cluster rather than terminal-failure cleanup.
                         throw;
                     }
+
                     //There was an error that the driver is not able to recover from
                     //Store the exception for the following times
                     _initException = _initException ?? new InitFatalErrorException(ex);
@@ -424,22 +441,6 @@ namespace Cassandra
                 _metadata.Hosts.Removed += OnHostRemoved;
                 _metadata.Hosts.Up += OnHostUp;
                 _initialized = true;
-            }
-        }
-
-        private static void LogConnected(ProtocolVersion protocolVersion)
-        {
-            try
-            {
-                Cluster.Logger.Info("Cluster Connected using binary protocol version: [" + protocolVersion + "]");
-            }
-            catch (Exception diagnosticException) when (
-                !Utils.IsFatalException(diagnosticException) &&
-                !(diagnosticException is AggregateException aggregateException &&
-                  aggregateException.Flatten().InnerExceptions.Any(Utils.IsFatalException)))
-            {
-                // Logging callbacks run after publication and outside its lock. An ordinary
-                // sink failure must not invalidate ready setup or transfer its cleanup ownership.
             }
         }
 

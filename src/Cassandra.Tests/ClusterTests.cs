@@ -427,6 +427,7 @@ namespace Cassandra.Tests
                     {
                         Assert.DoesNotThrow(() => _ = cluster.Metadata);
                     }
+
                     Assert.DoesNotThrow(() => _ = cluster.Metadata);
                     controlConnection.Verify(c => c.Dispose(), Times.Never);
                 }
@@ -466,6 +467,7 @@ namespace Cassandra.Tests
                         {
                             return;
                         }
+
                         initializedAtDiagnostic = (bool)typeof(Cluster)
                             .GetField("_initialized", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cluster);
                         shutdown = anotherThread ? Task.Run(() => cluster.Shutdown()) : cluster.ShutdownAsync();
