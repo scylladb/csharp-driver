@@ -473,7 +473,7 @@ namespace Cassandra.Requests
             }
             catch (HostConnectionPoolNotEligibleException ex)
             {
-                // The host became ineligible (removed, ignored, or down) after it was selected.
+                // The selected host is removed, ignored, down, or absent from routed metadata.
                 triedHosts[host.Address] = ex;
                 return null;
             }
