@@ -233,7 +233,7 @@ namespace Cassandra
         /// <summary>
         /// Creates the required connections on all hosts in the local DC.
         /// Returns a Task that is marked as completed after all pools were warmed up.
-        /// Unless the session is disposed, recoverable host pool warmup failures are logged at Warning,
+        /// Unless the session is disposed, recoverable host pool warmup failures are logged at Verbose,
         /// including partial failures, with an additional error if all host pool warmups fail.
         /// Fatal errors propagate to the caller.
         /// </summary>
@@ -289,7 +289,7 @@ namespace Cassandra
                     }
                     try
                     {
-                        Session.Logger.Warning("Connection pool for host {0} failed to warm up: {1}", hosts[i].Address, failure);
+                        Session.Logger.Verbose("Connection pool for host {0} failed to warm up: {1}", hosts[i].Address, failure);
                     }
                     catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
                     {

@@ -42,16 +42,12 @@ namespace Cassandra.Tests
     public class SessionTests
     {
         [NonParallelizable]
-        [TestCase(false, false, false)]
-        [TestCase(false, true, false)]
-        [TestCase(true, false, false)]
-        [TestCase(true, true, false)]
-        [TestCase(false, false, true)]
-        [TestCase(false, true, true)]
-        [TestCase(true, false, true)]
-        [TestCase(true, true, true)]
+        [Test, Combinatorial]
         public async Task Should_LogInitialPoolFailuresConsumedByWarmup(
-            bool allHostsFail, bool throwFromDiagnostic, bool cancelOpen)
+            [Values(false, true)] bool allHostsFail,
+            [Values(false, true)] bool throwFromDiagnostic,
+            [Values(false, true)] bool cancelOpen,
+            [Values(false, true)] bool verbose)
         {
             var failedAddress = new IPEndPoint(IPAddress.Parse("127.0.0.11"), 9042);
             var otherAddress = new IPEndPoint(IPAddress.Parse("127.0.0.12"), 9042);
@@ -93,7 +89,7 @@ namespace Cassandra.Tests
             cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
             using var listener = new ConsumedWarmupTraceListener(throwFromDiagnostic);
-            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Diagnostics.CassandraTraceSwitch.Level = verbose ? TraceLevel.Verbose : TraceLevel.Info;
             Trace.Listeners.Add(listener);
             try
             {
@@ -103,12 +99,13 @@ namespace Cassandra.Tests
                 foreach (var address in new[] { failedAddress, otherAddress })
                 {
                     Assert.AreEqual(1, attempts[address], "A retry must not supply the initial diagnostic.");
-                    Assert.AreEqual(address.Equals(failedAddress) || allHostsFail ? 1 : 0,
+                    Assert.AreEqual(verbose && (address.Equals(failedAddress) || allHostsFail) ? 1 : 0,
                         listener.Messages.Values.Count(message =>
-                            message.Contains("#WARNING:") &&
                             message.Contains("Connection pool for host " + address) &&
                             message.Contains("initial warmup failure at " + address)));
                 }
+                Assert.IsFalse(listener.Messages.Values.Any(message =>
+                    message.Contains("#WARNING:") && message.Contains("Connection pool for host")));
                 Assert.AreEqual(allHostsFail, listener.Messages.Values.Any(message =>
                     message.Contains("Connection pools for 2 host(s) failed to be warmed up")));
             }
