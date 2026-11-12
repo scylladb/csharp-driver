@@ -99,7 +99,7 @@ namespace Cassandra.Tests
                 foreach (var address in new[] { failedAddress, otherAddress })
                 {
                     Assert.AreEqual(1, attempts[address], "A retry must not supply the initial diagnostic.");
-                    Assert.AreEqual(verbose && (address.Equals(failedAddress) || allHostsFail) ? 1 : 0,
+                    Assert.AreEqual(address.Equals(failedAddress) || allHostsFail ? 1 : 0,
                         listener.Messages.Values.Count(message =>
                             message.Contains("Connection pool for host " + address) &&
                             message.Contains("initial warmup failure at " + address)));
