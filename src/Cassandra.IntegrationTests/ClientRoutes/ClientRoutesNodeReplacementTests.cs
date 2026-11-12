@@ -276,42 +276,31 @@ namespace Cassandra.IntegrationTests.ClientRoutes
 
         private async Task<Guid> WaitForReplacementHostIdAsync(string address, Guid originalHostId)
         {
-            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(120);
-            Exception lastException = null;
-            do
-            {
-                try
+            var replacementHostId = Guid.Empty;
+            await TestHelper.RetryAssertAsync(
+                () =>
                 {
-                    using (var cluster = ClusterBuilder()
-                                         .AddContactPoint(_testCluster.InitialContactPoint)
-                                         .WithSocketOptions(new SocketOptions().SetConnectTimeoutMillis(2000))
-                                         .Build())
-                    using (cluster.Connect())
-                    {
-                        var replacement = cluster.AllHosts().FirstOrDefault(
-                            host => string.Equals(
-                                ClientRoutesTestSupport.FormatAddress(host.Address.Address),
-                                address,
-                                StringComparison.Ordinal));
-                        if (replacement != null &&
-                            replacement.HostId != Guid.Empty &&
-                            replacement.HostId != originalHostId)
-                        {
-                            return replacement.HostId;
-                        }
-                    }
-                }
-                catch (Exception ex) when (ex is NoHostAvailableException || ex is TimeoutException || ex is SocketException)
-                {
-                    lastException = ex;
-                }
-
-                await Task.Delay(500).ConfigureAwait(false);
-            }
-            while (DateTime.UtcNow < deadline);
-
-            throw new AssertionException(
-                "The replacement node did not advertise a new Host ID. " + lastException);
+                    using var cluster = ClusterBuilder()
+                        .AddContactPoint(_testCluster.InitialContactPoint)
+                        .WithSocketOptions(new SocketOptions().SetConnectTimeoutMillis(2000))
+                        .Build();
+                    using var session = cluster.Connect();
+                    var replacement = cluster.AllHosts().FirstOrDefault(
+                        host => string.Equals(
+                            ClientRoutesTestSupport.FormatAddress(host.Address.Address),
+                            address,
+                            StringComparison.Ordinal));
+                    Assert.IsNotNull(replacement);
+                    Assert.AreNotEqual(Guid.Empty, replacement.HostId);
+                    Assert.AreNotEqual(originalHostId, replacement.HostId);
+                    replacementHostId = replacement.HostId;
+                },
+                TimeSpan.FromSeconds(120),
+                TimeSpan.FromMilliseconds(500),
+                "The replacement node did not advertise a new Host ID.",
+                ex => ex is NoHostAvailableException || ex is TimeoutException ||
+                      ex is SocketException || ex is AssertionException).ConfigureAwait(false);
+            return replacementHostId;
         }
     }
 }
