@@ -39,7 +39,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
         public async Task SuccessfulRetryDoesNotRetainEarlierAssertionFailure()
         {
             var attempts = 0;
-            await TestHelper.RetryAssertAsync(
+            await TestHelper.RetryAssertUntilAsync(
                 () => Assert.AreEqual(2, ++attempts),
                 TimeSpan.FromSeconds(5),
                 TimeSpan.Zero,
@@ -51,7 +51,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
         [Test]
         public async Task ExhaustedRetryReportsTheLastFailure()
         {
-            var exception = await Assert.ThrowsAsync<AssertionException>(() => TestHelper.RetryAssertAsync(
+            var exception = await Assert.ThrowsAsync<AssertionException>(() => TestHelper.RetryAssertUntilAsync(
                 () => Assert.Fail("The condition was never satisfied."),
                 TimeSpan.Zero,
                 TimeSpan.Zero,

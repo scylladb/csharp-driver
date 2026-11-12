@@ -35,7 +35,7 @@ namespace Cassandra.Tests
             var attempts = 0;
             var elapsed = Stopwatch.StartNew();
             var interval = TimeSpan.FromSeconds(30);
-            await TestHelper.WaitUntilAsync(
+            await TestHelper.WaitUntilOrFailAsync(
                 () => ++attempts == 2,
                 TimeSpan.FromSeconds(2),
                 interval,
@@ -50,7 +50,7 @@ namespace Cassandra.Tests
             var attempts = 0;
             var elapsed = Stopwatch.StartNew();
             var interval = TimeSpan.FromSeconds(30);
-            await TestHelper.RetryAssertAsync(
+            await TestHelper.RetryAssertUntilAsync(
                 () => Assert.AreEqual(2, ++attempts),
                 TimeSpan.FromSeconds(2),
                 interval,
@@ -65,7 +65,7 @@ namespace Cassandra.Tests
         {
             var failure = new InvalidOperationException("Do not retry");
             var attempts = 0;
-            var observed = await Assert.ThrowsAsync<InvalidOperationException>(() => TestHelper.RetryAssertAsync(
+            var observed = await Assert.ThrowsAsync<InvalidOperationException>(() => TestHelper.RetryAssertUntilAsync(
                 () =>
                 {
                     attempts++;
