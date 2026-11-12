@@ -108,25 +108,6 @@ namespace Cassandra.Connections
             internal ExceptionDispatchInfo Exception { get; }
         }
 
-        private sealed class ConnectionOpenOperation
-        {
-            private int _failureObserved;
-
-            internal TaskCompletionSource<IConnection> Completion { get; } =
-                new TaskCompletionSource<IConnection>();
-
-            internal bool TryObserveConsumedFailure()
-            {
-                return Completion.Task.IsFaulted &&
-                       Interlocked.CompareExchange(ref _failureObserved, 1, 0) == 0;
-            }
-
-            internal void MarkFailureObservedByCaller()
-            {
-                Interlocked.Exchange(ref _failureObserved, 1);
-            }
-        }
-
         public event Action<Host, HostConnectionPool> AllConnectionClosed;
 
         /// <inheritdoc />
@@ -1657,6 +1638,25 @@ namespace Cassandra.Connections
                     OnConnectionClosing();
                     break;
                 }
+            }
+        }
+
+        private sealed class ConnectionOpenOperation
+        {
+            private int _failureObserved;
+
+            internal TaskCompletionSource<IConnection> Completion { get; } =
+                new TaskCompletionSource<IConnection>();
+
+            internal bool TryObserveConsumedFailure()
+            {
+                return Completion.Task.IsFaulted &&
+                       Interlocked.CompareExchange(ref _failureObserved, 1, 0) == 0;
+            }
+
+            internal void MarkFailureObservedByCaller()
+            {
+                Interlocked.Exchange(ref _failureObserved, 1);
             }
         }
     }
