@@ -400,18 +400,11 @@ namespace Cassandra
         {
             var clientRoutesEnabled = Configuration.ClientRoutesRuntime != null;
 
-            var currentHost = _cluster.Metadata.GetHost(host.Address);
-            var customHost = currentHost == null && !clientRoutesEnabled && !host.IsRemoved;
-            if (customHost)
-            {
-                currentHost = host;
-            }
+            var currentHost = ResolvePoolHost(host, clientRoutesEnabled, out var customHost);
             if (!IsDisposed && currentHost != null &&
                 _connectionPool.TryGetValue(host.Address, out var entry) &&
-                (ReferenceEquals(entry.Host, currentHost) || (customHost && !entry.Host.IsRemoved)) &&
-                (!clientRoutesEnabled ||
-                 ((allowDownHost || currentHost.IsUp) &&
-                  _cluster.RetrieveAndSetDistance(currentHost) != HostDistance.Ignored)))
+                CanReusePool(entry, currentHost, customHost) &&
+                IsPoolHostEligible(currentHost, clientRoutesEnabled, allowDownHost, ref distance))
             {
                 return entry.Pool;
             }
@@ -423,35 +416,24 @@ namespace Cassandra
                     throw new ObjectDisposedException(nameof(Session));
                 }
 
-                currentHost = _cluster.Metadata.GetHost(host.Address);
-                customHost = currentHost == null && !clientRoutesEnabled && !host.IsRemoved;
-                if (customHost)
-                {
-                    currentHost = host;
-                }
+                currentHost = ResolvePoolHost(host, clientRoutesEnabled, out customHost);
                 if (currentHost == null)
                 {
                     throw new HostConnectionPoolNotEligibleException();
                 }
                 host = currentHost;
-                if (clientRoutesEnabled)
+                if (!IsPoolHostEligible(host, clientRoutesEnabled, allowDownHost, ref distance))
                 {
-                    // Policy may change after selection even when the Host ID is unchanged.
-                    distance = _cluster.RetrieveAndSetDistance(host);
-                    if (distance == HostDistance.Ignored || (!allowDownHost && !host.IsUp))
-                    {
-                        // Only warmup may create a down host's recovery pool. Requests
-                        // skip ineligible hosts through HostConnectionPoolNotEligibleException.
-                        Session.Logger.Verbose(
-                            "Not creating a connection pool for host {0}: it is {1}.",
-                            host.Address, distance == HostDistance.Ignored ? "ignored" : "down");
-                        throw new HostConnectionPoolNotEligibleException();
-                    }
+                    // Only warmup may create a down host's recovery pool.
+                    Session.Logger.Verbose(
+                        "Not creating a connection pool for host {0}: it is {1}.",
+                        host.Address, distance == HostDistance.Ignored ? "ignored" : "down");
+                    throw new HostConnectionPoolNotEligibleException();
                 }
 
                 if (_connectionPool.TryGetValue(host.Address, out var existingEntry))
                 {
-                    if (ReferenceEquals(existingEntry.Host, host) || (customHost && !existingEntry.Host.IsRemoved))
+                    if (CanReusePool(existingEntry, host, customHost))
                     {
                         // Custom policies can supply a fresh Host per query plan. Retain the
                         // original pool owner while metadata supplies no replacement identity.
@@ -510,6 +492,31 @@ namespace Cassandra
                 }
                 return newPool;
             }
+        }
+
+        private Host ResolvePoolHost(Host selectedHost, bool clientRoutesEnabled, out bool customHost)
+        {
+            var currentHost = _cluster.Metadata.GetHost(selectedHost.Address);
+            customHost = currentHost == null && !clientRoutesEnabled && !selectedHost.IsRemoved;
+            return customHost ? selectedHost : currentHost;
+        }
+
+        private static bool CanReusePool(HostPool entry, Host currentHost, bool customHost)
+        {
+            return ReferenceEquals(entry.Host, currentHost) || (customHost && !entry.Host.IsRemoved);
+        }
+
+        private bool IsPoolHostEligible(Host host, bool clientRoutesEnabled, bool allowDownHost, ref HostDistance distance)
+        {
+            if (!clientRoutesEnabled)
+            {
+                return true;
+            }
+
+            // Both lookup paths evaluate the same policy; the locked path revalidates
+            // after selection because Host identity and policy distance may have changed.
+            distance = _cluster.RetrieveAndSetDistance(host);
+            return distance != HostDistance.Ignored && (allowDownHost || host.IsUp);
         }
 
         private sealed class HostPool
