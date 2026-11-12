@@ -70,11 +70,19 @@ namespace Cassandra
         }
 
         /// <summary>
-        /// Returns the hosts to used for a query.
+        /// Returns the first target of the child policy.
         /// </summary>
-        public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, MetadataSnapshot metadata)
+        public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot metadata)
         {
-            return ChildPolicy.NewQueryPlan(routing, metadata);
+            return ChildPolicy.Pick(routing, metadata);
+        }
+
+        /// <summary>
+        /// Returns the fallback targets of the child policy.
+        /// </summary>
+        public IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot metadata)
+        {
+            return ChildPolicy.Fallback(routing, metadata);
         }
     }
 }

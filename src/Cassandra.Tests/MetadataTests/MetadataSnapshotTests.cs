@@ -177,12 +177,17 @@ namespace Cassandra.Tests.MetadataTests
 
             _metadata.GetSnapshot().GetReplicas(routing);
 
-            // The token map lookup went through the token cache of the routing information
+            // The token map lookup went through the token cache of the routing information, and the replica cache
+            // shares its copy of the key
             var tokenCache = PrivateField(routing, "_token");
+            var replicaCache = PrivateField(routing, "_replicas");
             Assert.IsNotNull(tokenCache);
             Assert.AreEqual(
                 ((TokenMap)_metadata.TokenToReplicasMap).Factory.Hash(routing.RoutingKey.RawRoutingKey),
                 tokenCache.GetType().GetProperty("Token").GetValue(tokenCache));
+            Assert.AreSame(
+                tokenCache.GetType().GetProperty("Key").GetValue(tokenCache),
+                replicaCache.GetType().GetProperty("Key").GetValue(replicaCache));
         }
 
         [Test]
@@ -218,6 +223,64 @@ namespace Cassandra.Tests.MetadataTests
             var token = routing.GetToken(factory);
 
             Assert.AreEqual(factory.Hash(new[] { (byte)'a' }), token);
+        }
+
+        [Test]
+        public void GetReplicas_Should_Look_Up_The_Replicas_Once_Per_Routing_Information_And_Snapshot()
+        {
+            var lookups = 0;
+            var snapshot = new MetadataSnapshot(_hosts, _ =>
+            {
+                lookups++;
+                return new[] { new RoutingTarget(_hosts[0], null) };
+            });
+            var routing = Routing();
+
+            Assert.AreSame(snapshot.GetReplicas(routing), snapshot.GetReplicas(routing));
+            Assert.AreEqual(1, lookups);
+
+            snapshot.GetReplicas(Routing());
+            Assert.AreEqual(2, lookups);
+        }
+
+        [Test]
+        public void GetReplicas_Should_Look_Up_The_Replicas_Again_When_The_Routing_Key_Changes()
+        {
+            var lookups = 0;
+            var snapshot = new MetadataSnapshot(_hosts, r =>
+            {
+                lookups++;
+                return new[] { new RoutingTarget(_hosts[r.RoutingKey.RawRoutingKey[3] % _hosts.Length], null) };
+            });
+            var routing = Routing();
+            var first = snapshot.GetReplicas(routing);
+
+            // Changed in place, then replaced, in the same snapshot
+            routing.RoutingKey.RawRoutingKey[3] = 2;
+            var changed = snapshot.GetReplicas(routing);
+            routing.RoutingKey.RawRoutingKey = new byte[] { 0, 0, 0, 0 };
+            var replaced = snapshot.GetReplicas(routing);
+
+            Assert.AreEqual(3, lookups);
+            Assert.AreEqual(_hosts[1], first[0].Host);
+            Assert.AreEqual(_hosts[2], changed[0].Host);
+            Assert.AreEqual(_hosts[0], replaced[0].Host);
+            Assert.AreSame(replaced, snapshot.GetReplicas(routing));
+        }
+
+        [Test]
+        public void GetReplicas_Should_Look_Up_The_Replicas_Again_In_Another_Snapshot()
+        {
+            var routing = Routing();
+            var snapshot = _metadata.GetSnapshot();
+            var replicas = snapshot.GetReplicas(routing);
+
+            _metadata.TabletMap.AddTablet(
+                Keyspace, Table, new Tablet(long.MinValue, long.MaxValue, new List<HostShardPair> { new HostShardPair(_hosts[1].HostId, 5) }));
+
+            Assert.AreSame(replicas, snapshot.GetReplicas(routing));
+            CollectionAssert.AreEqual(
+                new[] { (_hosts[1], (int?)5) }, _metadata.GetSnapshot().GetReplicas(routing).Select(r => (r.Host, r.Shard)));
         }
 
         [Test]
@@ -292,26 +355,40 @@ namespace Cassandra.Tests.MetadataTests
         }
 
         [Test]
-        public void GetReplicas_Should_Copy_The_Replicas_Of_The_Lookup()
+        public void GetReplicas_Should_Copy_The_Replicas_Of_The_Lookup_Once()
         {
+            var lookups = 0;
             var owned = new List<RoutingTarget> { new RoutingTarget(_hosts[0], null), new RoutingTarget(_hosts[1], 2) };
-            var snapshot = new MetadataSnapshot(_hosts, _ => owned);
+            var snapshot = new MetadataSnapshot(_hosts, _ =>
+            {
+                lookups++;
+                return owned;
+            });
+            var routing = Routing();
 
-            var replicas = snapshot.GetReplicas(Routing());
+            var replicas = snapshot.GetReplicas(routing);
             owned.Clear();
             owned.Add(new RoutingTarget(_hosts[2], null));
 
             CollectionAssert.AreEqual(new[] { (_hosts[0], (int?)null), (_hosts[1], 2) }, replicas.Select(r => (r.Host, r.Shard)));
             AssertReadOnly(replicas);
+
+            // Pick and Fallback get the same protected list, without another lookup
+            Assert.AreSame(replicas, snapshot.GetReplicas(routing));
+            Assert.AreEqual(1, lookups);
         }
 
         [Test]
         public void GetReplicas_Should_Return_Read_Only_Replicas_From_The_Token_Map()
         {
-            var replicas = _metadata.GetSnapshot().GetReplicas(Routing());
+            var snapshot = _metadata.GetSnapshot();
+            var routing = Routing();
+
+            var replicas = snapshot.GetReplicas(routing);
 
             CollectionAssert.AreEquivalent(_hosts, replicas.Select(r => r.Host));
             AssertReadOnly(replicas);
+            Assert.AreSame(replicas, snapshot.GetReplicas(routing));
         }
 
         [Test]
@@ -319,10 +396,14 @@ namespace Cassandra.Tests.MetadataTests
         {
             _metadata.TabletMap.AddTablet(
                 Keyspace, Table, new Tablet(long.MinValue, long.MaxValue, new List<HostShardPair> { new HostShardPair(_hosts[1].HostId, 5) }));
-            var replicas = _metadata.GetSnapshot().GetReplicas(Routing());
+            var snapshot = _metadata.GetSnapshot();
+            var routing = Routing();
+
+            var replicas = snapshot.GetReplicas(routing);
 
             CollectionAssert.AreEqual(new[] { (_hosts[1], (int?)5) }, replicas.Select(r => (r.Host, r.Shard)));
             AssertReadOnly(replicas);
+            Assert.AreSame(replicas, snapshot.GetReplicas(routing));
         }
 
         /// <summary>

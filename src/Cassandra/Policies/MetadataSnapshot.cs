@@ -42,7 +42,7 @@ namespace Cassandra
 
         /// <summary>
         /// Takes a snapshot of the current metadata of <paramref name="cluster"/>, for instance to call
-        /// <see cref="ILoadBalancingPolicy.NewQueryPlan(RoutingInfo, MetadataSnapshot)"/> to test a policy or to see
+        /// <see cref="ILoadBalancingPolicy.Pick"/> or <see cref="ILoadBalancingPolicy.Fallback"/> to test a policy or to see
         /// where a request would be routed.
         /// </summary>
         /// <param name="cluster">The cluster, which must be connected to know its nodes and replicas.</param>
@@ -122,8 +122,13 @@ namespace Cassandra
         /// when it returns null. The lookup isn't called for a request without a routing key.
         /// </para>
         /// <para>
-        /// The token of the routing key is computed once per <paramref name="routing"/>, so calling this method again,
-        /// for instance from a wrapped policy, doesn't hash the routing key again.
+        /// <paramref name="routing"/> keeps the replicas last looked up and the snapshot they come from. Calling this
+        /// method again on the same snapshot, for instance from <see cref="ILoadBalancingPolicy.Fallback"/> after
+        /// <see cref="ILoadBalancingPolicy.Pick"/> or from a wrapped policy, returns the same list without looking it up
+        /// again, unless another snapshot looked up the replicas of <paramref name="routing"/> in between or the bytes
+        /// of its routing key changed. Likewise, <paramref name="routing"/> keeps the token of its routing key last
+        /// computed and its partitioner, so the token isn't computed again while neither the partitioner nor the
+        /// routing key changes.
         /// </para>
         /// </summary>
         public IReadOnlyList<RoutingTarget> GetReplicas(RoutingInfo routing)
@@ -133,28 +138,14 @@ namespace Cassandra
                 return NoReplicas;
             }
 
-            if (_replicaLookup != null)
+            var replicas = routing.GetCachedReplicas(this);
+            if (replicas == null)
             {
-                // The lookup's caller can still change the list it returned: the snapshot keeps a copy
-                return AsReadOnly(_replicaLookup(routing)?.ToArray());
+                replicas = LookUpReplicas(routing);
+                routing.CacheReplicas(this, replicas);
             }
 
-            var tokenMap = _tokenMap;
-            if (tokenMap == null)
-            {
-                return NoReplicas;
-            }
-
-            var token = routing.GetToken(tokenMap.Factory);
-            if (!string.IsNullOrEmpty(routing.Keyspace)
-                && !string.IsNullOrEmpty(routing.Table)
-                && _tablets != null
-                && TabletMap.TryGetReplicas(_tablets, GetHost, routing.Keyspace, routing.Table, token, out var tabletReplicas))
-            {
-                return AsReadOnly(tabletReplicas);
-            }
-
-            return AsReadOnly(tokenMap.GetReplicas(routing.Keyspace, token));
+            return replicas;
         }
 
         /// <summary>
@@ -185,6 +176,32 @@ namespace Cassandra
             return replicas == null || replicas.Count == 0
                 ? NoReplicas
                 : new ReadOnlyCollection<RoutingTarget>(replicas as IList<RoutingTarget> ?? replicas.ToList());
+        }
+
+        private IReadOnlyList<RoutingTarget> LookUpReplicas(RoutingInfo routing)
+        {
+            if (_replicaLookup != null)
+            {
+                // The lookup's caller can still change the list it returned: the snapshot keeps a copy
+                return AsReadOnly(_replicaLookup(routing)?.ToArray());
+            }
+
+            var tokenMap = _tokenMap;
+            if (tokenMap == null)
+            {
+                return NoReplicas;
+            }
+
+            var token = routing.GetToken(tokenMap.Factory);
+            if (!string.IsNullOrEmpty(routing.Keyspace)
+                && !string.IsNullOrEmpty(routing.Table)
+                && _tablets != null
+                && TabletMap.TryGetReplicas(_tablets, GetHost, routing.Keyspace, routing.Table, token, out var tabletReplicas))
+            {
+                return AsReadOnly(tabletReplicas);
+            }
+
+            return AsReadOnly(tokenMap.GetReplicas(routing.Keyspace, token));
         }
 
         private Host GetHost(Guid hostId)

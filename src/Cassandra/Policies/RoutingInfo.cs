@@ -14,6 +14,7 @@
 //   limitations under the License.
 //
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using Cassandra.ExecutionProfiles;
 
@@ -23,12 +24,13 @@ namespace Cassandra
     /// What a load balancing policy knows about a request when it builds its query plan.
     /// <para>
     /// New routing inputs are added as properties, so that adding one doesn't change the signature of
-    /// <see cref="ILoadBalancingPolicy.NewQueryPlan"/>.
+    /// <see cref="ILoadBalancingPolicy.Pick"/> and <see cref="ILoadBalancingPolicy.Fallback"/>.
     /// </para>
     /// </summary>
     public sealed class RoutingInfo
     {
         private TokenCache _token;
+        private ReplicaCache _replicas;
 
         /// <summary>
         /// Gets the keyspace of the request: the statement's keyspace, or else the session's. It can be null.
@@ -136,10 +138,55 @@ namespace Cassandra
             return token;
         }
 
+        /// <summary>
+        /// Gets the replicas cached by <see cref="CacheReplicas"/> for <paramref name="metadata"/> and the current
+        /// bytes of the routing key, or null.
+        /// </summary>
+        internal IReadOnlyList<RoutingTarget> GetCachedReplicas(MetadataSnapshot metadata)
+        {
+            var cached = Volatile.Read(ref _replicas);
+            return cached != null
+                && ReferenceEquals(cached.Metadata, metadata)
+                && HasSameBytes(cached.Key, RoutingKey?.RawRoutingKey)
+                ? cached.Replicas
+                : null;
+        }
+
+        /// <summary>
+        /// Caches the replicas of the request in <paramref name="metadata"/>, so that the policies of the request,
+        /// such as <see cref="ILoadBalancingPolicy.Pick"/> and then <see cref="ILoadBalancingPolicy.Fallback"/>, look
+        /// them up once.
+        /// </summary>
+        internal void CacheReplicas(MetadataSnapshot metadata, IReadOnlyList<RoutingTarget> replicas)
+        {
+            var key = RoutingKey?.RawRoutingKey;
+
+            // Shares the copy of the key kept with the token when it has the same bytes: a request copies its key once
+            var token = Volatile.Read(ref _token);
+            var keyCopy = token != null && HasSameBytes(token.Key, key) ? token.Key : CopyOf(key);
+            Volatile.Write(ref _replicas, new ReplicaCache(metadata, keyCopy, replicas));
+        }
+
         private static byte[] CopyOf(byte[] key) => (byte[])key?.Clone();
 
         private static bool HasSameBytes(byte[] cached, byte[] key) =>
             cached == null ? key == null : key != null && cached.AsSpan().SequenceEqual(key);
+
+        private sealed class ReplicaCache
+        {
+            public ReplicaCache(MetadataSnapshot metadata, byte[] key, IReadOnlyList<RoutingTarget> replicas)
+            {
+                Metadata = metadata;
+                Key = key;
+                Replicas = replicas;
+            }
+
+            public MetadataSnapshot Metadata { get; }
+
+            public byte[] Key { get; }
+
+            public IReadOnlyList<RoutingTarget> Replicas { get; }
+        }
 
         private sealed class TokenCache
         {

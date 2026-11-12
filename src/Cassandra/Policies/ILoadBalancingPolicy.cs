@@ -40,7 +40,7 @@ namespace Cassandra
         ///  distance of an host influence how much connections are kept to the node (see
         ///  <link>HostDistance</link>). A policy should assign a <c>* LOCAL</c>
         ///  distance to nodes that are susceptible to be returned first by
-        ///  <c>newQueryPlan</c> and it is useless for <c>newQueryPlan</c> to
+        ///  <see cref="Pick"/> or <see cref="Fallback"/>, and it is useless for them to
         ///  return hosts to which it assigns an <c>IGNORED</c> distance. </p><p> The
         ///  host distance is primarily used to prevent keeping too many connections to
         ///  host in remote datacenters when the policy itself always picks host in the
@@ -52,19 +52,36 @@ namespace Cassandra
         HostDistance Distance(Host host);
 
         /// <summary>
-        ///  Returns the nodes, and optionally their shards, to use for a new request. <p> Each new request calls
-        ///  this method. The request is sent to the first target; when it can't be, or when the retry policy
-        ///  decides to try the next node, the next target is used. If no target can be used, the request fails
-        ///  with a <see cref="NoHostAvailableException"/>.</p>
-        ///  <p>The plan is enumerated lazily, and usually only its first elements are. A target without a host, such
-        ///  as <c>default(RoutingTarget)</c>, ends the plan.</p>
+        ///  Returns the node, and optionally its shard, to send a new request to first, or null when the policy has
+        ///  none. Each new request calls this method once. It should choose the target without building the rest of
+        ///  the plan.
         /// </summary>
-        /// <param name="routing">What is known about the request: its keyspace, table, routing key and whether
-        ///  it should be routed as a lightweight transaction.</param>
-        /// <param name="metadata">The snapshot of the cluster metadata for this plan: the nodes and the replicas of the
-        ///  request. A policy should read the nodes from it rather than from the cluster it was initialized with, so
-        ///  that the whole plan is built from the same metadata.</param>
+        /// <param name="routing">What is known about the request: its keyspace, table, routing key, consistency
+        ///  levels and whether it should be routed as a lightweight transaction.</param>
+        /// <param name="metadata">The snapshot of the cluster metadata for this request: the nodes and the replicas of
+        ///  the request. A policy should read the nodes from it rather than from the cluster it was initialized with,
+        ///  so that the whole plan is built from the same metadata.</param>
+        /// <returns>The first target, or null to use the targets of <see cref="Fallback"/> only.</returns>
+        RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot metadata);
+
+        /// <summary>
+        ///  Returns the nodes, and optionally their shards, to try in order when the request can't be sent to the
+        ///  target of <see cref="Pick"/>, when the retry policy decides to try the next node, for speculative
+        ///  executions, or when <see cref="Pick"/> returns null. If no target can be used, the request fails with a
+        ///  <see cref="NoHostAvailableException"/>.
+        ///  <p>It should return every target the request can use, including the target of <see cref="Pick"/>: the
+        ///  driver skips that node, and a policy wrapping this one, such as <see cref="TokenAwarePolicy"/>, can pick
+        ///  another node instead and then take the other nodes from this method only. The driver calls it at
+        ///  most once per request, only when the plan goes past the target of <see cref="Pick"/>, and enumerates it
+        ///  lazily. A policy that rotates through nodes should use a separate rotation for each method: if it
+        ///  advanced the rotation of <see cref="Pick"/>, requests that need their fallback targets would skew the
+        ///  first targets of the next requests, and if it only read it, its order wouldn't rotate when
+        ///  <see cref="Pick"/> isn't called, for instance by a wrapping policy that picks a replica. Every target must
+        ///  have a node; the driver skips the ones that don't.</p>
+        /// </summary>
+        /// <param name="routing">The same routing information as for <see cref="Pick"/>.</param>
+        /// <param name="metadata">The same metadata snapshot as for <see cref="Pick"/>.</param>
         /// <returns>The targets to try, in order.</returns>
-        IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, MetadataSnapshot metadata);
+        IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot metadata);
     }
 }
