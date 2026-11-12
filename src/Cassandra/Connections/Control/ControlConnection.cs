@@ -334,7 +334,7 @@ namespace Cassandra.Connections.Control
             {
                 ControlConnection.Logger.Verbose("Control Connection {0} reconnecting.", GetHashCode());
             }
-            // lazy iterator of endpoints to try for the control connection
+            // Lazy iterator of resolution plans to try for the control connection.
             IEnumerable<ConnectionEndPointResolutionPlan> endPointResolutionPlansLazyIterator =
                 Enumerable.Empty<ConnectionEndPointResolutionPlan>();
 
@@ -1645,6 +1645,11 @@ namespace Cassandra.Connections.Control
         {
             Response response;
             var connection = _connection;
+            if (connection == null && _clientRoutesCache != null)
+            {
+                // A failed cold-start candidate can leave route retries without a connection.
+                throw new SocketException((int)SocketError.NotConnected);
+            }
             try
             {
                 response = await _config.MetadataRequestHandler.SendMetadataRequestAsync(
