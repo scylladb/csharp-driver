@@ -540,3 +540,8 @@ dotnet_diagnostic.CA1849.severity = warning
 # System.Threading.Lock (.NET 9+); IDE rules are checked by `make check`
 csharp_prefer_system_threading_lock = true
 dotnet_diagnostic.IDE0330.severity = warning
+
+[Cassandra/Connections/HostConnectionPoolNotEligibleException.cs]
+
+# Keep the new file's ScyllaDB attribution exempt from legacy header matching, including IDE suggestions.
+dotnet_diagnostic.SA1636.severity = none

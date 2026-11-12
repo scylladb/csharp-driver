@@ -31,6 +31,7 @@ using Moq;
 
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
+using StringAssert = NUnit.Framework.StringAssert;
 using CollectionAssert = NUnit.Framework.CollectionAssert;
 
 using PrepareFlags = Cassandra.Requests.InternalPrepareRequest.PrepareFlags;
@@ -58,6 +59,8 @@ namespace Cassandra.Tests
 
             Assert.IsNull(connection);
             Assert.AreSame(rejection, triedHosts[host.Address]);
+            Assert.IsNotInstanceOf<SocketException>(triedHosts[host.Address]);
+            StringAssert.Contains("not eligible for a connection pool", triedHosts[host.Address].Message);
         }
 
         [Test]
