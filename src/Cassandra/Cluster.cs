@@ -70,6 +70,7 @@ namespace Cassandra
         // Retain routed setup across caller timeouts; _initLock serializes access.
         private Task _clientRoutesInitTask;
         private bool _clientRoutesMetadataInitialized;
+        // Interlocked guards disposal independently of the initialization locks.
         private int _controlConnectionDisposed;
         private long _sessionCounter = -1;
 
@@ -833,11 +834,11 @@ namespace Cassandra
             // Stop it explicitly so a terminal initialization failure cannot leave route retries alive.
             try
             {
-                Configuration.ClientRoutesRuntime?.Shutdown();
+                _controlConnection.Dispose();
             }
             finally
             {
-                _controlConnection.Dispose();
+                Configuration.ClientRoutesRuntime?.Shutdown();
             }
         }
 

@@ -926,6 +926,27 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public async Task ClientRoutesShutdownDisposesControlBeforeStoppingTheRuntime()
+        {
+            var control = new Mock<IControlConnection>();
+            var configuration = CreateClientRoutesClusterConfiguration(control.Object, _ => { });
+            var runtimeWasActive = false;
+            control.Setup(value => value.Dispose()).Callback(() =>
+            {
+                configuration.ClientRoutesRuntime.BeginLifecyclePass();
+                runtimeWasActive = true;
+            });
+            using (var cluster = CreateCluster(configuration))
+            {
+                await cluster.ShutdownAsync().ConfigureAwait(false);
+                Assert.IsTrue(runtimeWasActive);
+                await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+                    configuration.ClientRoutesRuntime.WaitForLifecycleReadyAsync()).ConfigureAwait(false);
+            }
+            control.Verify(value => value.Dispose(), Times.Once);
+        }
+
+        [Test]
         public void ClientRoutesInitializationCanRetryWhenSetupItselfThrowsTimeout()
         {
             var failure = new TimeoutException("setup timed out");
