@@ -233,7 +233,7 @@ namespace Cassandra
         /// <summary>
         /// Creates the required connections on all hosts in the local DC.
         /// Returns a Task that is marked as completed after all pools were warmed up.
-        /// Unless the session is disposed, recoverable host pool warmup failures are logged at Verbose,
+        /// Unless the session is disposed, recoverable host pool warmup failures are logged at Info,
         /// including partial failures, with an additional error if all host pool warmups fail.
         /// Fatal errors propagate to the caller.
         /// </summary>
