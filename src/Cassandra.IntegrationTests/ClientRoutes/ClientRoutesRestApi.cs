@@ -178,7 +178,6 @@ namespace Cassandra.IntegrationTests.ClientRoutes
 
                     if (allNodesMatch)
                     {
-                        deadline.Token.ThrowIfCancellationRequested();
                         return;
                     }
 
