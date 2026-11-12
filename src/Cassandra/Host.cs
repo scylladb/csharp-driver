@@ -63,6 +63,8 @@ namespace Cassandra
             get { return Interlocked.Read(ref _isUpNow) == 1L; }
         }
 
+        internal bool IsRemoved => Interlocked.Read(ref _isUpNow) == -1;
+
         /// <summary>
         /// This property is going to be removed in future versions, use <see cref="IsUp"/> instead.
         /// Used to determines if the host can be considered as UP
@@ -151,8 +153,8 @@ namespace Cassandra
         /// </summary>
         public bool BringUpIfDown()
         {
-            var wasUp = Interlocked.CompareExchange(ref _isUpNow, 1, 0) == 1;
-            if (wasUp)
+            var wasDown = Interlocked.CompareExchange(ref _isUpNow, 1, 0) == 0;
+            if (!wasDown)
             {
                 return false;
             }
@@ -163,8 +165,11 @@ namespace Cassandra
 
         public void SetAsRemoved()
         {
+            if (Interlocked.Exchange(ref _isUpNow, -1) == -1)
+            {
+                return;
+            }
             Logger.Info("Decommissioning node {0}", Address);
-            Interlocked.Exchange(ref _isUpNow, 0);
             Remove?.Invoke();
         }
 
