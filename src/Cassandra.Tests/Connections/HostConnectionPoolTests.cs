@@ -2179,6 +2179,177 @@ namespace Cassandra.Tests.Connections
             }
         }
 
+        [TestCase(0, false)]
+        [TestCase(-1, false)]
+        [TestCase(0, true)]
+        [TestCase(-1, true)]
+        public async Task Should_KeepConnectionsWithoutShardRouting_WhenShardCountRemainsInvalid(int shardCount, bool routed)
+        {
+            var connections = new List<Mock<IConnection>>();
+            var factory = new FakeConnectionFactory(endPoint =>
+            {
+                var info = ShardingInfo.Create("0", shardCount.ToString(),
+                    "org.apache.cassandra.dht.Murmur3Partitioner", "biased-token-round-robin", "12", "19042", "19142");
+                var connection = CreateConnection(endPoint, shardingInfo: info);
+                connections.Add(connection);
+                return connection.Object;
+            });
+            var options = routed ? new ClientRoutesOptions(new[] { new ClientRouteProxy("route-a") }, 9042, true) : null;
+            var target = CreatePool(connectionFactory: factory, clientRoutesOptions: options);
+            try
+            {
+                await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreEqual(2, target.OpenConnections);
+                Assert.AreEqual(2, GetExpectedConnectionLength(target));
+                Assert.IsNull(GetShardingInfo(target));
+                Assert.IsNull(GetConnectionOpenOperation(target));
+                foreach (var connection in connections)
+                {
+                    connection.Verify(value => value.Dispose(), Times.Never);
+                }
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [NonParallelizable]
+        [TestCase(true, false, false)]
+        [TestCase(false, false, false)]
+        [TestCase(false, true, false)]
+        [TestCase(false, true, true)]
+        public async Task Should_ReportOpenSuccessOnlyAfterShardPublication(bool failMetadata, bool failDiagnostic, bool fatal)
+        {
+            var info = ShardingInfo.Create("0", "4", "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin", "12", "19042", "19142");
+            var target = CreatePool(connectionFactory: new FakeConnectionFactory(endPoint =>
+            {
+                var connection = CreateConnection(endPoint, shardingInfo: info);
+                if (failMetadata)
+                {
+                    connection.Setup(value => value.ShardingInfo()).Throws(new InvalidOperationException("metadata failed"));
+                }
+                return connection.Object;
+            }), coreConnections: 1, reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            var successMessages = 0;
+            var publicationWasComplete = false;
+            Exception sinkFailure = fatal ? new OutOfMemoryException("diagnostic failed") : new InvalidOperationException("diagnostic failed");
+            var listener = new Mock<TraceListener> { CallBase = true };
+            listener.Setup(value => value.WriteLine(It.Is<string>(message => message.Contains("opened successfully, pool"))))
+                .Callback<string>(message =>
+                {
+                    successMessages++;
+                    publicationWasComplete = GetShardingInfo(target) != null && GetConnectionOpenOperation(target) == null;
+                    if (failDiagnostic)
+                    {
+                        throw sinkFailure;
+                    }
+                });
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener.Object);
+            try
+            {
+                var opening = InvokeCreateOpenConnection(target);
+                if (failMetadata)
+                {
+                    await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                        await opening.WaitToCompleteAsync(5000).ConfigureAwait(false));
+                    Assert.AreEqual(0, successMessages);
+                    Assert.AreEqual(0, target.OpenConnections);
+                }
+                else
+                {
+                    if (fatal)
+                    {
+                        var observed = await Assert.ThrowsAsync<OutOfMemoryException>(async () =>
+                            await opening.WaitToCompleteAsync(5000).ConfigureAwait(false));
+                        Assert.AreSame(sinkFailure, observed);
+                    }
+                    else
+                    {
+                        await opening.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    }
+                    Assert.AreEqual(1, successMessages);
+                    Assert.IsTrue(publicationWasComplete);
+                    Assert.AreEqual(1, target.OpenConnections);
+                }
+                Assert.IsNull(GetConnectionOpenOperation(target));
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener.Object);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                listener.Object.Dispose();
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [NonParallelizable]
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_SuppressRecoverablePoolWarmupWarningAfterDisposal(bool fatal)
+        {
+            var secondOpenStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var secondOpen = new TaskCompletionSource<Cassandra.Responses.Response>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var attempts = 0;
+            var target = CreatePool(connectionFactory: new FakeConnectionFactory(endPoint =>
+            {
+                var connection = CreateConnection(endPoint);
+                if (++attempts == 2)
+                {
+                    connection.Setup(value => value.Open()).Returns(() =>
+                    {
+                        secondOpenStarted.TrySetResult(true);
+                        return secondOpen.Task;
+                    });
+                }
+                return connection.Object;
+            }), coreConnections: 2, reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            var listener = new Mock<TraceListener> { CallBase = true };
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Warning;
+            Trace.Listeners.Add(listener.Object);
+            Task warmup = null;
+            try
+            {
+                warmup = target.Warmup();
+                await secondOpenStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreEqual(1, target.OpenConnections);
+                target.Dispose();
+                secondOpen.TrySetException(fatal ? new OutOfMemoryException("open failed") : new SocketException((int)SocketError.NotConnected));
+                if (fatal)
+                {
+                    await Assert.ThrowsAsync<OutOfMemoryException>(async () =>
+                        await warmup.WaitToCompleteAsync(5000).ConfigureAwait(false));
+                }
+                else
+                {
+                    await warmup.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+                listener.Verify(value => value.WriteLine(It.Is<string>(message =>
+                    message.Contains("failed to open a warmup connection"))), Times.Never);
+            }
+            finally
+            {
+                secondOpen.TrySetException(new SocketException((int)SocketError.NotConnected));
+                try
+                {
+                    await (warmup ?? Task.CompletedTask).ContinueWith(
+                        completed => _ = completed.Exception, TaskScheduler.Default).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+                finally
+                {
+                    Trace.Listeners.Remove(listener.Object);
+                    Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                    listener.Object.Dispose();
+                    DisposePoolAndTimer(target);
+                }
+            }
+        }
+
         [NonParallelizable]
         [TestCase(false)]
         [TestCase(true)]
@@ -2190,13 +2361,17 @@ namespace Cassandra.Tests.Connections
             {
                 var shardingInfo = ShardingInfo.Create(
                     "0",
-                    failShardPublication ? "0" : "4",
+                    "4",
                     "org.apache.cassandra.dht.Murmur3Partitioner",
                     "biased-token-round-robin",
                     "12",
                     "19042",
                     "19142");
                 var connection = CreateConnection(endPoint, shardingInfo: shardingInfo);
+                if (failShardPublication)
+                {
+                    connection.Setup(value => value.ShardingInfo()).Throws(new InvalidOperationException("metadata failed"));
+                }
                 if (failShardPublication && failCleanupDiagnostic)
                 {
                     connection.Setup(value => value.Dispose()).Throws(new InvalidOperationException("dispose failed"));
@@ -2211,7 +2386,7 @@ namespace Cassandra.Tests.Connections
             Trace.Listeners.Add(listener);
             try
             {
-                await Assert.ThrowsAsync<DivideByZeroException>(async () =>
+                await Assert.ThrowsAsync<InvalidOperationException>(async () =>
                     await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false));
 
                 Assert.IsNull(GetConnectionOpenOperation(target));
@@ -2267,10 +2442,11 @@ namespace Cassandra.Tests.Connections
                             shardingReadStarted.TrySetResult(true);
                             releaseShardingRead.Wait();
                             closed = !failShardPublication;
-                            return failShardPublication
-                                ? ShardingInfo.Create("0", "0", "org.apache.cassandra.dht.Murmur3Partitioner",
-                                    "biased-token-round-robin", "12", "19042", "19142")
-                                : null;
+                            if (failShardPublication)
+                            {
+                                throw new InvalidOperationException("metadata failed");
+                            }
+                            return null;
                         });
                         if (failDisposal)
                         {
