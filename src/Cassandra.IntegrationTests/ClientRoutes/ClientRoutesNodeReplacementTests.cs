@@ -144,7 +144,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                             .ConfigureAwait(false);
 
                         var replacementRoutePort = relays[replacedNode.HostId].ListenEndPoint.Port;
-                        await TestHelper.WaitUntilAsync(
+                        await TestHelper.WaitUntilOrFailAsync(
                                 () => cluster.Configuration.ClientRoutesRuntime.TryGetRoutes(
                                           replacementHostId,
                                           out var routes) &&
@@ -155,7 +155,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                             .ConfigureAwait(false);
 
                         relays[replacedNode.HostId].ResetObservations();
-                        await TestHelper.WaitUntilAsync(
+                        await TestHelper.WaitUntilOrFailAsync(
                                 () => cluster.AllHosts().Any(host => host.HostId == replacementHostId) &&
                                       cluster.AllHosts().All(host => host.HostId != replacedNode.HostId),
                                 TimeSpan.FromSeconds(90),
@@ -167,7 +167,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                         Assert.AreEqual(originalHost.Address, replacementHost.Address);
                         Assert.AreNotSame(originalHost, replacementHost);
 
-                        await TestHelper.RetryAssertAsync(
+                        await TestHelper.RetryAssertUntilAsync(
                                 () =>
                                 {
                                     ClientRoutesTestSupport.AssertQueryLandsOnHost(session, replacementHostId);
@@ -223,7 +223,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 address,
                 "The replacement node must reuse its original CCM address.");
             _testCluster.StopForce(nodeId);
-            await TestHelper.WaitUntilAsync(
+            await TestHelper.WaitUntilOrFailAsync(
                     () => IsNodeDownInNodetool(address),
                     TimeSpan.FromSeconds(90),
                     TimeSpan.FromMilliseconds(250),
@@ -277,7 +277,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
         private async Task<Guid> WaitForReplacementHostIdAsync(string address, Guid originalHostId)
         {
             var replacementHostId = Guid.Empty;
-            await TestHelper.RetryAssertAsync(
+            await TestHelper.RetryAssertUntilAsync(
                 () =>
                 {
                     using var cluster = ClusterBuilder()

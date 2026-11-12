@@ -261,7 +261,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                         .UpsertAsync(CreateEntries(PrimaryConnectionId, _nodes, replacementRelays, "127.0.0.1"))
                         .ConfigureAwait(false);
 
-                    await TestHelper.WaitUntilAsync(
+                    await TestHelper.WaitUntilOrFailAsync(
                             () => RoutesPointToRelays(cluster, replacementRelays),
                             TimeSpan.FromSeconds(15),
                             TimeSpan.FromMilliseconds(100),
@@ -343,7 +343,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                         // route-table update through an event while all routed candidates are unavailable.
                         discoveryRelay.DisableForwarding();
                         ClientRoutesTestSupport.DisposeRelays(originalRelays);
-                        await TestHelper.WaitUntilAsync(
+                        await TestHelper.WaitUntilOrFailAsync(
                                 () => discoveryRelay.OpenConnectionCount == 0 &&
                                       secondaryRelays.Values.Any(relay => relay.AcceptedConnectionCount > 0),
                                 TimeSpan.FromSeconds(5),
@@ -366,7 +366,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                             relay.EnableForwarding();
                         }
 
-                        await TestHelper.WaitUntilAsync(
+                        await TestHelper.WaitUntilOrFailAsync(
                                 () => RoutesPointToRelays(cluster, replacementRelays, PrimaryConnectionId),
                                 TimeSpan.FromSeconds(15),
                                 TimeSpan.FromMilliseconds(100),
@@ -426,7 +426,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                     }
 
                     IReadOnlyDictionary<Guid, int> shardCounts = null;
-                    await TestHelper.WaitUntilAsync(
+                    await TestHelper.WaitUntilOrFailAsync(
                             () => (shardCounts = GetShardCountsWhenPoolsCoverServerReportedShardSets(session)) != null,
                             TimeSpan.FromSeconds(30),
                             TimeSpan.FromMilliseconds(100),
@@ -568,7 +568,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             IEnumerable<ClientRoutesNode> nodes,
             IReadOnlyDictionary<Guid, TcpRelay> expectedRelays)
         {
-            return TestHelper.RetryAssertAsync(
+            return TestHelper.RetryAssertUntilAsync(
                 () =>
                 {
                     AssertQueriesLandOnIntendedHosts(session, nodes);

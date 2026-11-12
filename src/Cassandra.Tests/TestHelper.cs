@@ -327,7 +327,7 @@ namespace Cassandra.Tests
             return i;
         }
 
-        public static async Task WaitUntilAsync(
+        public static async Task WaitUntilOrFailAsync(
             Func<bool> condition,
             TimeSpan timeout,
             TimeSpan interval,
@@ -345,7 +345,7 @@ namespace Cassandra.Tests
             }
         }
 
-        internal static async Task RetryAssertAsync(
+        internal static async Task RetryAssertUntilAsync(
             Action assertion,
             TimeSpan timeout,
             TimeSpan interval,
