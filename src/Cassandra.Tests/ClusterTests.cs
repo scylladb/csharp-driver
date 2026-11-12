@@ -462,7 +462,10 @@ namespace Cassandra.Tests
             var retainedSetup = (Task)typeof(Cluster).GetField(
                 "_clientRoutesInitTask", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cluster);
             var listener = new Mock<TraceListener> { CallBase = true };
+            listener.SetupGet(value => value.IsThreadSafe).Returns(true);
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            var previousGlobalLock = Trace.UseGlobalLock;
+            control.Setup(value => value.Dispose()).Callback(() => Trace.WriteLine("Retained control cleanup"));
             listener.Setup(value => value.WriteLine(It.Is<string>(message => message.Contains("Connecting to cluster using"))))
                 .Callback<string>(_ =>
                 {
@@ -481,6 +484,8 @@ namespace Cassandra.Tests
                 controlReady.TrySetResult(true);
                 await policyStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
                 Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+                // This listener deliberately waits for a worker that can itself emit diagnostics.
+                Trace.UseGlobalLock = false;
                 Trace.Listeners.Add(listener.Object);
                 var observed = Assert.Throws<InitFatalErrorException>(() => _ = cluster.Metadata);
                 Assert.AreSame(failure, observed.InnerException);
@@ -494,10 +499,17 @@ namespace Cassandra.Tests
             {
                 releasePolicy.Set();
                 Trace.Listeners.Remove(listener.Object);
-                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
-                await retainedSetup.ContinueWith(completed => _ = completed.Exception, TaskScheduler.Default)
-                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-                listener.Object.Dispose();
+                try
+                {
+                    await retainedSetup.ContinueWith(completed => _ = completed.Exception, TaskScheduler.Default)
+                        .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                }
+                finally
+                {
+                    Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                    Trace.UseGlobalLock = previousGlobalLock;
+                    listener.Object.Dispose();
+                }
             }
         }
 
