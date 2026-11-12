@@ -75,6 +75,32 @@ namespace Cassandra.Tests.Connections.Control
             return provider.Object;
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task QueryWithoutAControlConnectionReportsNotConnected(bool retry)
+        {
+            var handler = new Mock<IMetadataRequestHandler>();
+            var created = NewInstance(configBuilderAct: builder =>
+            {
+                builder.MetadataRequestHandler = handler.Object;
+                builder.ClientRoutesOptions = CreateClientRoutesOptions();
+            });
+            try
+            {
+                var failure = await Assert.ThrowsAsync<SocketException>(() =>
+                    created.ControlConnection.SendQueryRequestAsync("SELECT * FROM system.client_routes", retry, QueryProtocolOptions.Default))
+                    .ConfigureAwait(false);
+                Assert.AreEqual(SocketError.NotConnected, failure.SocketErrorCode);
+                handler.Verify(value => value.SendMetadataRequestAsync(
+                    It.IsAny<IConnection>(), It.IsAny<ISerializer>(), It.IsAny<string>(), It.IsAny<QueryProtocolOptions>()), Times.Never);
+            }
+            finally
+            {
+                created.ControlConnection.Dispose();
+                created.Metadata.Dispose();
+            }
+        }
+
         private static TaskCompletionSource<bool> NewSignal()
         {
             return new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
