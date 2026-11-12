@@ -20,6 +20,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Sockets;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
@@ -300,7 +301,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                         }
                     }
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is NoHostAvailableException || ex is TimeoutException || ex is SocketException)
                 {
                     lastException = ex;
                 }
