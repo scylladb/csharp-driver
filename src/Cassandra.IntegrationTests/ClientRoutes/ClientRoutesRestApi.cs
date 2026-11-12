@@ -17,8 +17,10 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 using Cassandra.Tests.ClientRoutes;
@@ -36,8 +38,9 @@ namespace Cassandra.IntegrationTests.ClientRoutes
 
         private readonly HttpClient _httpClient;
         private readonly Uri[] _nodeUris;
+        private readonly TimeSpan _propagationTimeout;
 
-        public ClientRoutesRestApi(IEnumerable<string> nodeAddresses)
+        public ClientRoutesRestApi(IEnumerable<string> nodeAddresses, HttpClient httpClient = null, TimeSpan? propagationTimeout = null)
         {
             if (nodeAddresses == null)
             {
@@ -52,10 +55,11 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 throw new ArgumentException("At least one REST API node address is required.", nameof(nodeAddresses));
             }
 
-            _httpClient = new HttpClient
+            _httpClient = httpClient ?? new HttpClient
             {
                 Timeout = TimeSpan.FromSeconds(30)
             };
+            _propagationTimeout = propagationTimeout ?? PropagationTimeout;
         }
 
         public async Task ReplaceAsync(IReadOnlyCollection<ClientRouteApiEntry> entries)
@@ -138,54 +142,70 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             IReadOnlyCollection<ClientRouteApiEntry> expectedEntries,
             bool requireExactMatch = true)
         {
-            var deadline = DateTime.UtcNow + PropagationTimeout;
+            using var deadline = new CancellationTokenSource(_propagationTimeout);
             Exception lastException = null;
-            do
+            try
             {
-                var allNodesMatch = true;
-                foreach (var nodeUri in _nodeUris)
+                while (true)
                 {
-                    try
+                    var allNodesMatch = true;
+                    foreach (var nodeUri in _nodeUris)
                     {
-                        var actualEntries = await GetAsync(nodeUri).ConfigureAwait(false);
-                        if (!EntriesMatch(actualEntries, expectedEntries, requireExactMatch))
+                        deadline.Token.ThrowIfCancellationRequested();
+                        try
                         {
+                            var actualEntries = await GetAsync(nodeUri, deadline.Token).ConfigureAwait(false);
+                            if (!EntriesMatch(actualEntries, expectedEntries, requireExactMatch))
+                            {
+                                allNodesMatch = false;
+                                break;
+                            }
+                        }
+                        catch (Exception ex) when (
+                            (ex is HttpRequestException requestFailure &&
+                             (!requestFailure.StatusCode.HasValue ||
+                              requestFailure.StatusCode == HttpStatusCode.RequestTimeout ||
+                              requestFailure.StatusCode == HttpStatusCode.TooManyRequests ||
+                              (int)requestFailure.StatusCode.Value >= 500)) ||
+                            (ex is TaskCanceledException && !deadline.IsCancellationRequested))
+                        {
+                            lastException = ex;
                             allNodesMatch = false;
                             break;
                         }
                     }
-                    catch (Exception ex) when (ex is HttpRequestException || ex is TaskCanceledException)
+
+                    if (allNodesMatch)
                     {
-                        lastException = ex;
-                        allNodesMatch = false;
-                        break;
+                        deadline.Token.ThrowIfCancellationRequested();
+                        return;
                     }
-                }
 
-                if (allNodesMatch)
-                {
-                    return;
+                    await Task.Delay(200, deadline.Token).ConfigureAwait(false);
                 }
-
-                await Task.Delay(200).ConfigureAwait(false);
             }
-            while (DateTime.UtcNow < deadline);
+            catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+            {
+                // One deadline covers every node request and retry delay.
+            }
 
             throw new TimeoutException(
                 "Not every ScyllaDB node observed the expected client routes before the timeout.",
                 lastException);
         }
 
-        private async Task<List<ClientRouteApiEntry>> GetAsync(Uri nodeUri)
+        private async Task<List<ClientRouteApiEntry>> GetAsync(Uri nodeUri, CancellationToken cancellationToken = default)
         {
             using (var request = new HttpRequestMessage(HttpMethod.Get, new Uri(nodeUri, "v2/client-routes")))
-            using (var response = await _httpClient.SendAsync(request).ConfigureAwait(false))
+            using (var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false))
             {
-                var responseBody = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
                     throw new HttpRequestException(
-                        $"GET {request.RequestUri} returned {(int)response.StatusCode}: {responseBody}");
+                        $"GET {request.RequestUri} returned {(int)response.StatusCode}: {responseBody}",
+                        null,
+                        response.StatusCode);
                 }
 
                 return JsonConvert.DeserializeObject<List<ClientRouteApiEntry>>(responseBody) ??
