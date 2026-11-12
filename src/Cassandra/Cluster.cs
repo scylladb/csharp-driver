@@ -284,6 +284,13 @@ namespace Cassandra
                         (_clientRoutesInitTask.Exception.InnerException is NoHostAvailableException ||
                          _clientRoutesInitTask.Exception.InnerException is TimeoutException))
                     {
+                        // Retained setup runs outside this lock. Observing its fault also
+                        // observes any terminal failure recorded before task completion.
+                        if (_initException != null)
+                        {
+                            throw _initException;
+                        }
+
                         // A previous caller may have stopped waiting before this recoverable failure.
                         // Start a fresh attempt for this caller rather than replaying that failure.
                         _clientRoutesInitTask = null;
@@ -304,12 +311,23 @@ namespace Cassandra
                     }
                     catch (TimeoutException ex)
                     {
-                        var newEx = new TimeoutException(
+                        var routedSetupTimedOut = Configuration.ClientRoutesRuntime != null &&
+                                                  initTask.IsFaulted && initTask.Exception.InnerExceptions.Contains(ex);
+                        var message = Configuration.ClientRoutesRuntime != null
+                            ? routedSetupTimedOut
+                                ? "Client-routes control initialization timed out. A later caller can start a fresh setup attempt."
+                                : "Timed out waiting for client-routes cluster initialization. This caller wait does not cancel setup;" +
+                                  " a later caller can observe the retained setup attempt. The wait is twice" +
+                                  " SocketOptions.ConnectTimeoutMillis per discovered host, subject to an internal minimum" +
+                                  " of five minutes by default. Increasing the socket timeout changes this wait only when" +
+                                  " the host-count term exceeds that minimum."
+                            :
                             "Cluster initialization was aborted after timing out. This mechanism is put in place to" +
                             " avoid blocking the calling thread forever. This usually caused by a networking issue" +
                             " between the client driver instance and the cluster. You can increase this timeout via " +
                             "the SocketOptions.ConnectTimeoutMillis config setting. This can also be related to deadlocks " +
-                            "caused by mixing synchronous and asynchronous code.", ex);
+                            "caused by mixing synchronous and asynchronous code.";
+                        var newEx = new TimeoutException(message, ex);
                         if (Configuration.ClientRoutesRuntime == null)
                         {
                             _initException = new InitFatalErrorException(newEx);
@@ -325,7 +343,7 @@ namespace Cassandra
                         {
                             // Only a timeout thrown by setup itself completes that attempt. A caller's
                             // wait timeout can race a late success or terminal failure, which must be retained.
-                            if (initTask.IsFaulted && initTask.Exception.InnerExceptions.Contains(ex))
+                            if (routedSetupTimedOut)
                             {
                                 _clientRoutesInitTask = null;
                             }
