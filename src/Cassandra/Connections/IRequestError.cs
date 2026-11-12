@@ -38,5 +38,14 @@ namespace Cassandra.Connections
         /// the request to the socket.
         /// </summary>
         bool Unsent { get; }
+
+        /// <summary>
+        /// For a timeout, whether the connection's writer had claimed the request when it expired, after which the
+        /// writer serializes the frame and sends it without waiting: a timeout that expired while the request waited
+        /// in the write queue isn't written, although it isn't <see cref="Unsent"/> either. For any other error, the
+        /// opposite of <see cref="Unsent"/>, which doesn't record a claim: a request whose serialization failed after
+        /// the writer claimed it is <see cref="Unsent"/>, and a queued request failed when its connection closed isn't.
+        /// </summary>
+        bool Written { get; }
     }
 }
