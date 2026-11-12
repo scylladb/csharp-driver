@@ -54,8 +54,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
         public bool HasSameRoute(ClientRouteApiEntry other)
         {
             return other != null &&
-                   string.Equals(ConnectionId, other.ConnectionId, StringComparison.Ordinal) &&
-                   HostId == other.HostId &&
+                   Key.Equals(other.Key) &&
                    string.Equals(Address, other.Address, StringComparison.Ordinal) &&
                    Port == other.Port &&
                    TlsPort == other.TlsPort;
