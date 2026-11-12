@@ -15,13 +15,19 @@
 //
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net;
+using System.Net.Sockets;
 using System.Text;
+using System.Threading.Tasks;
 using Cassandra.Connections;
 using Cassandra.ExecutionProfiles;
 using Cassandra.Requests;
 using Cassandra.Serialization;
+using Cassandra.SessionManagement;
+using Moq;
 
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
@@ -37,6 +43,42 @@ namespace Cassandra.Tests
     {
         private static readonly ISerializerManager SerializerManager = new SerializerManager(ProtocolVersion.MaxSupported);
         private static readonly ISerializer Serializer = new SerializerManager(ProtocolVersion.MaxSupported).GetCurrentSerializer();
+
+        [Test]
+        public async Task GetConnectionFromHostAsync_Should_ReturnNullAndRecordHost_When_PoolLookupRejectsHost()
+        {
+            var host = new Host(new IPEndPoint(IPAddress.Parse("127.0.0.11"), 9042), contactPoint: null);
+            var session = new Mock<IInternalSession>(MockBehavior.Strict);
+            var rejection = new HostConnectionPoolNotEligibleException();
+            session.Setup(value => value.GetOrCreateConnectionPool(host, HostDistance.Local)).Throws(rejection);
+            var triedHosts = new Dictionary<IPEndPoint, Exception>();
+
+            var connection = await RequestHandler.GetConnectionFromHostAsync(
+                host, HostDistance.Local, session.Object, triedHosts).ConfigureAwait(false);
+
+            Assert.IsNull(connection);
+            Assert.AreSame(rejection, triedHosts[host.Address]);
+        }
+
+        [Test]
+        public async Task GetConnectionFromHostAsync_Should_PropagateUnrelatedSocketError_ForFallthroughRetryPolicy()
+        {
+            var host = new Host(new IPEndPoint(IPAddress.Parse("127.0.0.11"), 9042), contactPoint: null);
+            var session = new Mock<IInternalSession>(MockBehavior.Strict);
+            var failure = new SocketException((int)SocketError.NotConnected);
+            session.Setup(value => value.GetOrCreateConnectionPool(host, HostDistance.Local)).Throws(failure);
+            var triedHosts = new Dictionary<IPEndPoint, Exception>();
+
+            var exception = await Assert.ThrowsAsync<SocketException>(async () =>
+                await RequestHandler.GetConnectionFromHostAsync(
+                    host, HostDistance.Local, session.Object, triedHosts).ConfigureAwait(false));
+
+            Assert.AreSame(failure, exception);
+            Assert.IsEmpty(triedHosts);
+            var decision = GetRetryDecisionFromClientError(
+                exception, FallthroughRetryPolicy.Instance, new SimpleStatement("SELECT WILL FAIL"), GetConfig(), 0);
+            Assert.AreEqual(RetryDecision.RetryDecisionType.Rethrow, decision.DecisionType);
+        }
 
         /// <summary>
         /// How a connection that did not negotiate <c>SCYLLA_USE_METADATA_ID</c> resolves
