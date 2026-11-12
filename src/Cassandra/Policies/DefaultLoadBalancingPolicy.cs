@@ -22,18 +22,11 @@ namespace Cassandra
     /// <summary>
     /// A load balancing policy designed to run against Apache Cassandra clusters.
     /// <para>
-    ///  For most workloads, the query plan will be determined in a similar way to TokenAwarePolicy(DCAwareRoundRobinPolicy).
-    /// </para>
-    /// <para>
-    ///  For graph analytics queries, this policy sets the preferred analytics graph server
-    ///  previously obtained by driver as the first host in the query plan. After this host, the query plan is the same as the one
-    /// returned for other workloads.
+    ///  The query plan is determined in the same way as TokenAwarePolicy(DCAwareRoundRobinPolicy).
     /// </para>
     /// </summary>
     public class DefaultLoadBalancingPolicy : ILoadBalancingPolicy
     {
-        private volatile Host _lastPreferredHost;
-
         /// <summary>
         /// Creates a new instance of <see cref="DefaultLoadBalancingPolicy"/> wrapping the provided child policy.
         /// </summary>
@@ -65,14 +58,6 @@ namespace Cassandra
         /// <returns>the HostDistance to <c>host</c>.</returns>
         public HostDistance Distance(Host host)
         {
-            var lastPreferredHost = _lastPreferredHost;
-            if (lastPreferredHost != null && host == lastPreferredHost)
-            {
-                // Set the last preferred host as local.
-                // It's somewhat "hacky" but ensures that the pool for the graph analytics host has the appropriate size
-                return HostDistance.Local;
-            }
-
             return ChildPolicy.Distance(host);
         }
 
@@ -89,22 +74,7 @@ namespace Cassandra
         /// </summary>
         public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
         {
-            if (routing?.Statement is TargettedSimpleStatement targetedStatement && targetedStatement.PreferredHost != null)
-            {
-                _lastPreferredHost = targetedStatement.PreferredHost;
-                return YieldPreferred(targetedStatement.PreferredHost, routing, cluster);
-            }
-
             return ChildPolicy.NewQueryPlan(routing, cluster);
-        }
-
-        private IEnumerable<RoutingTarget> YieldPreferred(Host preferredHost, RoutingInfo routing, ClusterState cluster)
-        {
-            yield return new RoutingTarget(preferredHost, null);
-            foreach (var h in ChildPolicy.NewQueryPlan(routing, cluster))
-            {
-                yield return h;
-            }
         }
     }
 }
