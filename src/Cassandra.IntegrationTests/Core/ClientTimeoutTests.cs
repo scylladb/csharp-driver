@@ -343,10 +343,7 @@ namespace Cassandra.IntegrationTests.Core
 
                     tasks = null;
 
-                    GC.Collect();
-                    Thread.Sleep(1000);
-
-                    decimal initialMemory = GC.GetTotalMemory(true);
+                    decimal initialMemory = GetSettledMemory();
 
                     const int length = 100;
 
@@ -377,9 +374,7 @@ namespace Cassandra.IntegrationTests.Core
 
                     tasks = null;
 
-                    GC.Collect();
-                    Thread.Sleep(1000);
-                    Assert.Less(GC.GetTotalMemory(true) / initialMemory, 1.5M,
+                    Assert.Less(GetSettledMemory() / initialMemory, 1.5M,
                         "Should not exceed a 50% (1.5) more than was previously allocated");
 
                 }
@@ -398,6 +393,35 @@ namespace Cassandra.IntegrationTests.Core
                     Trace.Listeners.Add(l);
                 }
             }
+        }
+
+        private static long GetSettledMemory()
+        {
+            long previous = 0;
+            var stableSamples = 0;
+            for (var sample = 0; sample < 30; sample++)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                var current = GC.GetTotalMemory(true);
+                if (Math.Abs(current - previous) <= Math.Max(4096, current / 1000))
+                {
+                    if (++stableSamples == 3)
+                    {
+                        return current;
+                    }
+                }
+                else
+                {
+                    stableSamples = 0;
+                }
+
+                previous = current;
+                Thread.Sleep(100);
+            }
+
+            Assert.Fail("The managed heap did not settle before measuring retained memory.");
+            return 0;
         }
 
         /// <summary>
