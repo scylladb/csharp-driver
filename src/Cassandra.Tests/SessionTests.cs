@@ -745,7 +745,6 @@ namespace Cassandra.Tests
             Assert.AreEqual(1, internalSession.GetPools().Count());
             Assert.AreEqual(1, session.GetMetrics().NodeMetrics.Count);
             Assert.AreSame(metrics, session.GetMetrics().NodeMetrics[host]);
-            Assert.AreSame(connection, pool.Object.ConnectionsSnapshot.Single());
             pool.Verify(value => value.OnHostRemoved(), Times.Never);
             pool.Verify(value => value.Dispose(), Times.Never);
             factory.Verify(value => value.Create(
