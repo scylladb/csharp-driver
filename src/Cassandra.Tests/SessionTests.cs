@@ -685,9 +685,7 @@ namespace Cassandra.Tests
         {
             using var creatingPool = new ManualResetEventSlim();
             using var publishPool = new ManualResetEventSlim();
-            var connection = Mock.Of<IConnection>();
             var pool = new Mock<IHostConnectionPool>();
-            pool.SetupGet(value => value.ConnectionsSnapshot).Returns(new[] { connection });
             var factory = new Mock<IHostConnectionPoolFactory>();
             factory.Setup(value => value.Create(
                     It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
