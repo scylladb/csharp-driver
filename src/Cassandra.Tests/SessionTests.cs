@@ -682,6 +682,77 @@ namespace Cassandra.Tests
                 clientRoutesEnabled ? Times.Never() : Times.Once());
         }
 
+        [Test]
+        public async Task Should_ReuseCustomHostPoolWhenConcurrentLookupWaitsForPublication()
+        {
+            using var creatingPool = new ManualResetEventSlim();
+            using var publishPool = new ManualResetEventSlim();
+            var connection = Mock.Of<IConnection>();
+            var pool = new Mock<IHostConnectionPool>();
+            pool.SetupGet(value => value.ConnectionsSnapshot).Returns(new[] { connection });
+            var factory = new Mock<IHostConnectionPoolFactory>();
+            factory.Setup(value => value.Create(
+                    It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>()))
+                .Returns(() =>
+                {
+                    creatingPool.Set();
+                    Assert.IsTrue(publishPool.Wait(5000), "Pool publication was not released.");
+                    return pool.Object;
+                });
+            var config = new TestConfigurationBuilder { HostConnectionPoolFactory = factory.Object }.Build();
+            using var metadata = new Metadata(config);
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), new ConstantReconnectionPolicy(1000));
+            var nextHost = new Host(host.Address, new ConstantReconnectionPolicy(1000));
+            using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "concurrent-custom-host-test");
+            var internalSession = (IInternalSession)session;
+            internalSession.MetricsManager.GetOrCreateNodeMetrics(host);
+            var metrics = session.GetMetrics().NodeMetrics[host];
+            Thread lookupThread = null;
+            var firstLookup = Task.Run(() => internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+            Task<IHostConnectionPool> secondLookup = null;
+            try
+            {
+                Assert.IsTrue(creatingPool.Wait(5000), "The first lookup did not enter the pool factory.");
+                secondLookup = Task.Factory.StartNew(() =>
+                {
+                    Volatile.Write(ref lookupThread, Thread.CurrentThread);
+                    return internalSession.GetOrCreateConnectionPool(nextHost, HostDistance.Local);
+                }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+
+                // No pool is published until the factory is released. The second lookup
+                // must miss the fast path and wait for the lifecycle lock held by the first.
+                Assert.IsTrue(SpinWait.SpinUntil(() =>
+                {
+                    var worker = Volatile.Read(ref lookupThread);
+                    return secondLookup.IsCompleted || (worker != null &&
+                        (worker.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0);
+                }, 5000), "The second lookup did not reach the publication wait.");
+                Assert.IsFalse(secondLookup.IsCompleted);
+                Assert.IsEmpty(internalSession.GetPools());
+            }
+            finally
+            {
+                publishPool.Set();
+                var lookups = secondLookup == null ? new[] { firstLookup } : new[] { firstLookup, secondLookup };
+                await Task.WhenAll(lookups).WaitToCompleteAsync(5000).ConfigureAwait(false);
+            }
+
+            Assert.AreSame(pool.Object, firstLookup.Result);
+            Assert.AreSame(pool.Object, secondLookup.Result);
+            Assert.AreEqual(1, internalSession.GetPools().Count());
+            Assert.AreEqual(1, session.GetMetrics().NodeMetrics.Count);
+            Assert.AreSame(metrics, session.GetMetrics().NodeMetrics[host]);
+            Assert.AreSame(connection, pool.Object.ConnectionsSnapshot.Single());
+            pool.Verify(value => value.OnHostRemoved(), Times.Never);
+            pool.Verify(value => value.Dispose(), Times.Never);
+            factory.Verify(value => value.Create(
+                It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>()), Times.Once);
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         public void Should_RemoveMetricsWithoutPoolUnlessTheyBelongToReplacement(bool replacementExists)
