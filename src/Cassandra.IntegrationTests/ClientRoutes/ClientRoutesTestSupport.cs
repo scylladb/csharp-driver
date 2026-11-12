@@ -15,9 +15,16 @@
 //
 
 using System;
+using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography.X509Certificates;
+
+using Cassandra.Tests;
+
+using Assert = NUnit.Framework.Legacy.ClassicAssert;
 
 namespace Cassandra.IntegrationTests.ClientRoutes
 {
@@ -46,6 +53,53 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 bytes[1],
                 bytes[2],
                 bytes[3]);
+        }
+
+        public static void DisposeRelays(params IEnumerable<KeyValuePair<Guid, TcpRelay>>[] relaySets)
+        {
+            TestHelper.RunAllCleanupActions(
+                relaySets.Where(relays => relays != null)
+                         .SelectMany(relays => relays)
+                         .Select(item => new Action(item.Value.Dispose)).ToArray());
+        }
+
+        public static Dictionary<Guid, TcpRelay> StartRelays(
+            IEnumerable<ClientRoutesNode> nodes,
+            int targetPort,
+            TcpRelayMode mode = TcpRelayMode.Plaintext,
+            X509Certificate2 serverCertificate = null)
+        {
+            var relays = new Dictionary<Guid, TcpRelay>();
+            try
+            {
+                foreach (var node in nodes)
+                {
+                    relays.Add(node.HostId, new TcpRelay(
+                        new IPEndPoint(IPAddress.Parse(node.Address), targetPort), mode, serverCertificate));
+                }
+                return relays;
+            }
+            catch (Exception creationException)
+            {
+                try
+                {
+                    DisposeRelays(relays);
+                }
+                catch (Exception cleanupException)
+                {
+                    throw new AggregateException(
+                        "Relay construction and partial relay cleanup both failed.", creationException, cleanupException);
+                }
+                throw;
+            }
+        }
+
+        public static void AssertQueryLandsOnHost(ISession session, Guid expectedHostId)
+        {
+            var host = session.Cluster.AllHosts().Single(candidate => candidate.HostId == expectedHostId);
+            var statement = new SimpleStatement("SELECT host_id FROM system.local WHERE key = 'local'").SetHost(host);
+            var actualHostId = session.Execute(statement).Single().GetValue<Guid>("host_id");
+            Assert.AreEqual(expectedHostId, actualHostId, $"Route for advertised host {expectedHostId} landed on {actualHostId}.");
         }
     }
 }
