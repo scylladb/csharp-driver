@@ -43,7 +43,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 using (var client = new TcpClient())
                 {
                     await client.ConnectAsync(relay.ListenEndPoint).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-                    await TestHelper.WaitUntilAsync(
+                    await TestHelper.WaitUntilOrFailAsync(
                             () => relay.Failures.Count != 0,
                             TimeSpan.FromSeconds(5),
                             TimeSpan.FromMilliseconds(10),
@@ -68,7 +68,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                     await client.ConnectAsync(relay.ListenEndPoint).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
                     using (await upstreamListener.AcceptTcpClientAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false))
                     {
-                        await TestHelper.WaitUntilAsync(
+                        await TestHelper.WaitUntilOrFailAsync(
                                 () => relay.ForwardedConnectionCount != 0,
                                 TimeSpan.FromSeconds(5),
                                 TimeSpan.FromMilliseconds(10),
@@ -76,7 +76,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                             .ConfigureAwait(false);
                         relay.DisableForwarding();
                         relay.EnableForwarding();
-                        await TestHelper.WaitUntilAsync(
+                        await TestHelper.WaitUntilOrFailAsync(
                                 () => relay.OpenConnectionCount == 0,
                                 TimeSpan.FromSeconds(5),
                                 TimeSpan.FromMilliseconds(10),
