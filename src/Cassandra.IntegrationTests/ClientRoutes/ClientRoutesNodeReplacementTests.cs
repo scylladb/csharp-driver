@@ -99,7 +99,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             Assert.AreEqual(3, originalNodes.Length);
 
             var replacedNode = originalNodes.Last();
-            var relays = StartRelays(originalNodes);
+            var relays = ClientRoutesTestSupport.StartRelays(originalNodes, DefaultCassandraPort);
             try
             {
                 using (var restApi = new ClientRoutesRestApi(originalNodes.Select(node => node.Address)))
@@ -119,7 +119,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                                          .Build())
                     using (var session = cluster.Connect())
                     {
-                        AssertQueryLandsOnHost(session, replacedNode.HostId);
+                        ClientRoutesTestSupport.AssertQueryLandsOnHost(session, replacedNode.HostId);
                         var originalHost = cluster.AllHosts().Single(host => host.HostId == replacedNode.HostId);
                         var originalPool = ((IInternalSession)session).GetPools()
                             .Single(pool => pool.Key.Equals(originalHost.Address)).Value;
@@ -169,7 +169,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                         await TestHelper.RetryAssertAsync(
                                 () =>
                                 {
-                                    AssertQueryLandsOnHost(session, replacementHostId);
+                                    ClientRoutesTestSupport.AssertQueryLandsOnHost(session, replacementHostId);
                                     var replacementPool = ((IInternalSession)session).GetPools()
                                         .Single(pool => pool.Key.Equals(replacementHost.Address)).Value;
                                     Assert.AreNotSame(originalPool, replacementPool);
@@ -188,7 +188,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             }
             finally
             {
-                DisposeRelays(relays);
+                ClientRoutesTestSupport.DisposeRelays(relays);
             }
         }
 
@@ -199,12 +199,6 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 output.StdOut,
                 "^DN\\s+" + Regex.Escape(address) + "(?:\\s|$)",
                 RegexOptions.Multiline | RegexOptions.CultureInvariant);
-        }
-
-        private static void DisposeRelays(IEnumerable<KeyValuePair<Guid, TcpRelay>> relays)
-        {
-            TestHelper.RunAllCleanupActions(
-                relays.Select(item => new Action(item.Value.Dispose)).ToArray());
         }
 
         private static ClientRouteApiEntry[] CreateEntries(
@@ -219,46 +213,6 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 var port = relays[relayKey].ListenEndPoint.Port;
                 return new ClientRouteApiEntry(ConnectionId, node.HostId, "127.0.0.1", port, port);
             }).ToArray();
-        }
-
-        private static void AssertQueryLandsOnHost(ISession session, Guid expectedHostId)
-        {
-            var host = session.Cluster.AllHosts().Single(candidate => candidate.HostId == expectedHostId);
-            var statement = new SimpleStatement("SELECT host_id FROM system.local WHERE key = 'local'")
-                .SetHost(host);
-            var actualHostId = session.Execute(statement).Single().GetValue<Guid>("host_id");
-            Assert.AreEqual(expectedHostId, actualHostId);
-        }
-
-        private static Dictionary<Guid, TcpRelay> StartRelays(IEnumerable<ClientRoutesNode> nodes)
-        {
-            var relays = new Dictionary<Guid, TcpRelay>();
-            try
-            {
-                foreach (var node in nodes)
-                {
-                    relays.Add(
-                        node.HostId,
-                        new TcpRelay(
-                            new IPEndPoint(IPAddress.Parse(node.Address), DefaultCassandraPort)));
-                }
-                return relays;
-            }
-            catch (Exception creationException)
-            {
-                try
-                {
-                    DisposeRelays(relays);
-                }
-                catch (Exception cleanupException)
-                {
-                    throw new AggregateException(
-                        "Relay construction and partial relay cleanup both failed.",
-                        creationException,
-                        cleanupException);
-                }
-                throw;
-            }
         }
 
         private async Task RecreateNodeAtSameAddressAsync(int nodeId, string address, Guid replacedHostId)

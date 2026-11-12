@@ -125,7 +125,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
         public async Task HostnameAddressOverrideRoutesMappedHostsAndLeavesUnmappedHostsDirect()
         {
             var routedNodes = _nodes.Take(2).ToArray();
-            var relays = StartRelays(routedNodes, DefaultCassandraPort, TcpRelayMode.Plaintext);
+            var relays = ClientRoutesTestSupport.StartRelays(routedNodes, DefaultCassandraPort, TcpRelayMode.Plaintext);
             try
             {
                 var entries = CreateEntries(
@@ -159,14 +159,14 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             }
             finally
             {
-                DisposeRelays(relays);
+                ClientRoutesTestSupport.DisposeRelays(relays);
             }
         }
 
         [Test]
         public async Task UnresolvableFirstProxyFallsThroughToHostnameBackedSecondProxy()
         {
-            var relays = StartRelays(_nodes, DefaultCassandraPort, TcpRelayMode.Plaintext);
+            var relays = ClientRoutesTestSupport.StartRelays(_nodes, DefaultCassandraPort, TcpRelayMode.Plaintext);
             try
             {
                 var unavailableEntries = _nodes
@@ -195,7 +195,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             }
             finally
             {
-                DisposeRelays(relays);
+                ClientRoutesTestSupport.DisposeRelays(relays);
             }
         }
 
@@ -206,8 +206,8 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             Dictionary<Guid, TcpRelay> liveRelays = null;
             try
             {
-                failingRelays = StartRelays(_nodes, UnreachableRoutePort, TcpRelayMode.Plaintext);
-                liveRelays = StartRelays(_nodes, DefaultCassandraPort, TcpRelayMode.Plaintext);
+                failingRelays = ClientRoutesTestSupport.StartRelays(_nodes, UnreachableRoutePort, TcpRelayMode.Plaintext);
+                liveRelays = ClientRoutesTestSupport.StartRelays(_nodes, DefaultCassandraPort, TcpRelayMode.Plaintext);
                 var failingEntries = CreateEntries(PrimaryConnectionId, _nodes, failingRelays, "localhost");
                 var liveEntries = CreateEntries(SecondaryConnectionId, _nodes, liveRelays, "localhost");
                 await _restApi
@@ -233,7 +233,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             }
             finally
             {
-                DisposeRelays(failingRelays, liveRelays);
+                ClientRoutesTestSupport.DisposeRelays(failingRelays, liveRelays);
             }
         }
 
@@ -244,8 +244,8 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             Dictionary<Guid, TcpRelay> replacementRelays = null;
             try
             {
-                originalRelays = StartRelays(_nodes, DefaultCassandraPort, TcpRelayMode.Plaintext);
-                replacementRelays = StartRelays(_nodes, DefaultCassandraPort, TcpRelayMode.Plaintext);
+                originalRelays = ClientRoutesTestSupport.StartRelays(_nodes, DefaultCassandraPort, TcpRelayMode.Plaintext);
+                replacementRelays = ClientRoutesTestSupport.StartRelays(_nodes, DefaultCassandraPort, TcpRelayMode.Plaintext);
                 await _restApi
                     .ReplaceAsync(CreateEntries(PrimaryConnectionId, _nodes, originalRelays, "127.0.0.1"))
                     .ConfigureAwait(false);
@@ -286,14 +286,14 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                     {
                         relay.ResetObservations();
                     }
-                    DisposeRelays(originalRelays);
+                    ClientRoutesTestSupport.DisposeRelays(originalRelays);
                     await AssertEventuallyQueriesLandOnIntendedHosts(session, _nodes, replacementRelays)
                         .ConfigureAwait(false);
                 }
             }
             finally
             {
-                DisposeRelays(originalRelays, replacementRelays);
+                ClientRoutesTestSupport.DisposeRelays(originalRelays, replacementRelays);
             }
         }
 
@@ -305,9 +305,9 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             Dictionary<Guid, TcpRelay> replacementRelays = null;
             try
             {
-                originalRelays = StartRelays(_nodes, DefaultCassandraPort, TcpRelayMode.Plaintext);
-                secondaryRelays = StartRelays(_nodes, DefaultCassandraPort, TcpRelayMode.Plaintext);
-                replacementRelays = StartRelays(_nodes, DefaultCassandraPort, TcpRelayMode.Plaintext);
+                originalRelays = ClientRoutesTestSupport.StartRelays(_nodes, DefaultCassandraPort, TcpRelayMode.Plaintext);
+                secondaryRelays = ClientRoutesTestSupport.StartRelays(_nodes, DefaultCassandraPort, TcpRelayMode.Plaintext);
+                replacementRelays = ClientRoutesTestSupport.StartRelays(_nodes, DefaultCassandraPort, TcpRelayMode.Plaintext);
                 foreach (var relay in secondaryRelays.Values)
                 {
                     relay.DisableForwarding();
@@ -342,7 +342,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                         // temporarily disabled secondary Host-ID routes. The driver cannot observe the
                         // route-table update through an event while all routed candidates are unavailable.
                         discoveryRelay.DisableForwarding();
-                        DisposeRelays(originalRelays);
+                        ClientRoutesTestSupport.DisposeRelays(originalRelays);
                         await TestHelper.WaitUntilAsync(
                                 () => discoveryRelay.OpenConnectionCount == 0 &&
                                       secondaryRelays.Values.Any(relay => relay.AcceptedConnectionCount > 0),
@@ -379,7 +379,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                         // Close any control or data connection that used the unchanged secondary route.
                         // Primary pools may already have recovered after the route reload, so retain
                         // their forwarding observations while requiring queries after secondary closure.
-                        DisposeRelays(secondaryRelays);
+                        ClientRoutesTestSupport.DisposeRelays(secondaryRelays);
                         await AssertEventuallyQueriesLandOnIntendedHosts(session, _nodes, replacementRelays)
                             .ConfigureAwait(false);
                         Assert.AreEqual(
@@ -391,7 +391,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             }
             finally
             {
-                DisposeRelays(originalRelays, secondaryRelays, replacementRelays);
+                ClientRoutesTestSupport.DisposeRelays(originalRelays, secondaryRelays, replacementRelays);
             }
         }
 
@@ -399,7 +399,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
         [TestCase(true, ShardAwareProxyProtocolPort)]
         public async Task ProxyProtocolRelayUsesListenerForShardAwarenessMode(bool shardAwarenessEnabled, int targetPort)
         {
-            var relays = StartRelays(
+            var relays = ClientRoutesTestSupport.StartRelays(
                 _nodes,
                 targetPort,
                 TcpRelayMode.ProxyProtocolV2);
@@ -440,7 +440,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             }
             finally
             {
-                DisposeRelays(relays);
+                ClientRoutesTestSupport.DisposeRelays(relays);
             }
         }
 
@@ -453,7 +453,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                        TcpRelayMode.TlsTerminate,
                        certificate))
             {
-                var routeRelays = StartRelays(
+                var routeRelays = ClientRoutesTestSupport.StartRelays(
                     _nodes,
                     DefaultCassandraPort,
                     TcpRelayMode.TlsTerminate,
@@ -499,7 +499,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 }
                 finally
                 {
-                    DisposeRelays(routeRelays);
+                    ClientRoutesTestSupport.DisposeRelays(routeRelays);
                 }
             }
         }
@@ -557,16 +557,9 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             ISession session,
             IEnumerable<ClientRoutesNode> nodes)
         {
-            var hostsById = session.Cluster.AllHosts().ToDictionary(host => host.HostId);
             foreach (var node in nodes)
             {
-                var statement = new SimpleStatement("SELECT host_id FROM system.local WHERE key = 'local'")
-                    .SetHost(hostsById[node.HostId]);
-                var actualHostId = session.Execute(statement).Single().GetValue<Guid>("host_id");
-                Assert.AreEqual(
-                    node.HostId,
-                    actualHostId,
-                    $"Route for advertised host {node.HostId} landed on {actualHostId}.");
+                ClientRoutesTestSupport.AssertQueryLandsOnHost(session, node.HostId);
             }
         }
 
@@ -614,41 +607,6 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 }
             }
             return true;
-        }
-
-        private static void DisposeRelays(params IEnumerable<KeyValuePair<Guid, TcpRelay>>[] relaySets)
-        {
-            TestHelper.RunAllCleanupActions(
-                relaySets.Where(relays => relays != null)
-                         .SelectMany(relays => relays)
-                         .Select(item => new Action(item.Value.Dispose)).ToArray());
-        }
-
-        private static Dictionary<Guid, TcpRelay> StartRelays(
-            IEnumerable<ClientRoutesNode> nodes,
-            int targetPort,
-            TcpRelayMode mode,
-            X509Certificate2 serverCertificate = null)
-        {
-            var relays = new Dictionary<Guid, TcpRelay>();
-            try
-            {
-                foreach (var node in nodes)
-                {
-                    relays.Add(
-                        node.HostId,
-                        new TcpRelay(
-                            new IPEndPoint(IPAddress.Parse(node.Address), targetPort),
-                            mode,
-                            serverCertificate));
-                }
-                return relays;
-            }
-            catch
-            {
-                DisposeRelays(relays);
-                throw;
-            }
         }
 
         private static IReadOnlyDictionary<Guid, int> GetShardCountsWhenPoolsCoverServerReportedShardSets(
