@@ -16,6 +16,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading.Tasks;
 
 using NUnit.Framework;
@@ -32,25 +33,31 @@ namespace Cassandra.Tests
         public async Task WaitUntilChecksConditionAfterTheFinalDelay()
         {
             var attempts = 0;
+            var elapsed = Stopwatch.StartNew();
+            var interval = TimeSpan.FromSeconds(30);
             await TestHelper.WaitUntilAsync(
                 () => ++attempts == 2,
-                TimeSpan.FromMilliseconds(20),
-                TimeSpan.FromSeconds(1),
+                TimeSpan.FromSeconds(2),
+                interval,
                 "The final condition check should succeed.").ConfigureAwait(false);
             Assert.AreEqual(2, attempts);
+            Assert.Less(elapsed.Elapsed, interval, "The delay must be capped by the remaining deadline.");
         }
 
         [Test]
         public async Task RetryAssertChecksAssertionAfterTheFinalDelay()
         {
             var attempts = 0;
+            var elapsed = Stopwatch.StartNew();
+            var interval = TimeSpan.FromSeconds(30);
             await TestHelper.RetryAssertAsync(
                 () => Assert.AreEqual(2, ++attempts),
-                TimeSpan.FromMilliseconds(100),
-                TimeSpan.FromSeconds(1),
+                TimeSpan.FromSeconds(2),
+                interval,
                 "The final assertion should succeed.",
                 ex => ex is AssertionException).ConfigureAwait(false);
             Assert.AreEqual(2, attempts);
+            Assert.Less(elapsed.Elapsed, interval, "The delay must be capped by the remaining deadline.");
         }
 
         [Test]
