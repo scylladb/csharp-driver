@@ -289,7 +289,7 @@ namespace Cassandra
                     }
                     try
                     {
-                        Session.Logger.Verbose("Connection pool for host {0} failed to warm up: {1}", hosts[i].Address, failure);
+                        Session.Logger.Info("Connection pool for host {0} failed to warm up: {1}", hosts[i].Address, failure);
                     }
                     catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
                     {

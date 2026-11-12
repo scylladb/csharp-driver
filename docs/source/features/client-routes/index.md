@@ -68,7 +68,7 @@ A failure while reading or checking a row rejects the entire returned refresh sc
 
 Route-change events refresh the endpoints used for future connections. Connections that are already healthy remain open and are replaced through the normal connection-pool lifecycle; a route update does not forcibly recycle them.
 
-Routed sessions re-evaluate the load-balancing policy distance when looking up a pool, including an existing pool. This keeps removed, down or newly ignored hosts out of request execution; custom policies should keep `Distance()` inexpensive. Recoverable per-host warmup failures are logged at Verbose, while failure to warm any pool also produces an Error summary.
+Routed sessions re-evaluate the load-balancing policy distance when looking up a pool, including an existing pool. This keeps removed, down or newly ignored hosts out of request execution; custom policies should keep `Distance()` inexpensive. Recoverable per-host warmup failure causes are logged once at Info, while failure to warm any pool also produces an Error summary.
 
 In client-routes mode, non-route server events wait for control-connection lifecycle readiness. Events from a retired control connection are discarded before waiting and checked again before application. Notifications can therefore be lost when their source is retired. Events from the current connection still run concurrently, without an ordering guarantee; events already waiting remain retained until the lifecycle wait completes, including during an outage.
 
