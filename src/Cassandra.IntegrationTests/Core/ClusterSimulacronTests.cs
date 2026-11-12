@@ -285,7 +285,7 @@ namespace Cassandra.IntegrationTests.Core
         [Test]
         public void RepeatedClusterConnectCallsAfterNoHostErrorDontThrowCachedInitErrorException()
         {
-            TestCluster.DisableConnectionListener(type: "reject_startup");
+            TaskHelper.WaitToComplete(TestCluster.DisableConnectionListener(type: "reject_startup"), 5000);
             using (var cluster = CreateClusterAndWaitUntilConnectException(
                 b => b.WithSocketOptions(new SocketOptions().SetConnectTimeoutMillis(1).SetReadTimeoutMillis(1)),
                 out _))
@@ -315,7 +315,7 @@ namespace Cassandra.IntegrationTests.Core
                         cluster.Dispose();
                         SetupNewTestCluster();
                         Interlocked.MemoryBarrier();
-                        TestCluster.DisableConnectionListener(type: "reject_startup");
+                        TaskHelper.WaitToComplete(TestCluster.DisableConnectionListener(type: "reject_startup"), 5000);
                         throw;
                     }
                 }, 500, 20);
