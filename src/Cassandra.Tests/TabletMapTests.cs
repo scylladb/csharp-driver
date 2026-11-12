@@ -40,17 +40,18 @@ namespace Cassandra.Tests
         [TestCase(true)]
         public void Init_Reuses_Initialization_When_Called_Repeatedly(bool concurrent)
         {
+            var tabletMap = _tabletMap;
             Task[] initializations;
             if (concurrent)
             {
                 var calls = Enumerable.Range(0, 1000)
-                    .Select(_ => Task.Factory.StartNew(() => _tabletMap.Init())).ToArray();
+                    .Select(_ => Task.Factory.StartNew(() => tabletMap.Init())).ToArray();
                 Assert.IsTrue(Task.WaitAll(calls, 5000), "Concurrent initialization calls must finish.");
                 initializations = calls.Select(call => call.Result).ToArray();
             }
             else
             {
-                initializations = Enumerable.Range(0, 1000).Select(_ => _tabletMap.Init()).ToArray();
+                initializations = Enumerable.Range(0, 1000).Select(_ => tabletMap.Init()).ToArray();
             }
 
             Assert.IsTrue(Task.WaitAll(initializations, 5000), "Tablet map initialization must finish.");
@@ -59,11 +60,11 @@ namespace Cassandra.Tests
 
             var applied = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var request = new Mock<ITabletMapUpdateRequest>();
-            request.Setup(update => update.Apply(_tabletMap)).Callback(() => applied.TrySetResult(true));
-            _tabletMap.OnTabletMapUpdate(request.Object);
+            request.Setup(update => update.Apply(tabletMap)).Callback(() => applied.TrySetResult(true));
+            tabletMap.OnTabletMapUpdate(request.Object);
             Assert.IsTrue(applied.Task.Wait(5000),
                 "The single tablet update reader must still process queued updates.");
-            request.Verify(update => update.Apply(_tabletMap), Times.Once);
+            request.Verify(update => update.Apply(tabletMap), Times.Once);
         }
 
         private Tablet CreateTablet(long firstToken, long lastToken, Guid hostId)
