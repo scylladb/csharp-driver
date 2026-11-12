@@ -531,7 +531,7 @@ namespace Cassandra.Connections
                         if (c != null)
                         {
                             // A failed candidate is local to this open operation. Do not let disposing it
-                            // schedule a pool reconnection before the remaining resolution plans are tried.
+                            // schedule a pool reconnection before the remaining endpoints are tried.
                             c.Closing -= OnConnectionClosing;
                             lock (_connectionHandoffLock)
                             {
