@@ -25,38 +25,20 @@ namespace Cassandra.Tests.Policies
     public class DefaultLoadBalancingTests : BaseUnitTest
     {
         [Test]
-        public void Should_Yield_Preferred_Host_First()
+        public void Should_Yield_The_Hosts_Of_The_Child_Policy()
         {
             var lbp = new DefaultLoadBalancingPolicy(new TestLoadBalancingPolicy());
-            var statement = new TargettedSimpleStatement("Q");
-            statement.PreferredHost = new Host(new IPEndPoint(201, 9042), ReconnectionPolicy);
-            var hosts = lbp.NewQueryPlan(Mock.Of<ICluster>(), null, statement);
-            CollectionAssert.AreEqual(
-                new[] { "201.0.0.0:9042", "101.0.0.0:9042", "102.0.0.0:9042" },
-                hosts.Select(h => h.Host.Address.ToString()));
-        }
-
-        [Test]
-        public void Should_Yield_Child_Hosts_When_No_Preferred_Host_Defined()
-        {
-            var lbp = new DefaultLoadBalancingPolicy(new TestLoadBalancingPolicy());
-            var statement = new TargettedSimpleStatement("Q");
-            var hosts = lbp.NewQueryPlan(Mock.Of<ICluster>(), null, statement);
+            var hosts = lbp.NewQueryPlan(Mock.Of<ICluster>(), null, new SimpleStatement("Q"));
             CollectionAssert.AreEqual(
                 new[] { "101.0.0.0:9042", "102.0.0.0:9042" },
                 hosts.Select(h => h.Host.Address.ToString()));
         }
 
         [Test]
-        public void Should_Set_Distance_For_Preferred_Host_To_Local()
+        public void Should_Use_The_Distance_Of_The_Child_Policy()
         {
             var lbp = new DefaultLoadBalancingPolicy(new TestLoadBalancingPolicy(HostDistance.Ignored));
             Assert.AreEqual(HostDistance.Ignored, lbp.Distance(new Host(new IPEndPoint(200L, 9042), ReconnectionPolicy)));
-            var statement = new TargettedSimpleStatement("Q");
-            // Use 201 as preferred
-            statement.PreferredHost = new Host(new IPEndPoint(201L, 9042), ReconnectionPolicy);
-            lbp.NewQueryPlan(Mock.Of<ICluster>(), null, statement);
-            Assert.AreEqual(HostDistance.Local, lbp.Distance(statement.PreferredHost));
         }
     }
 }
