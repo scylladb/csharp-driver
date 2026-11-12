@@ -154,7 +154,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                             break;
                         }
                     }
-                    catch (Exception ex)
+                    catch (Exception ex) when (ex is HttpRequestException || ex is TaskCanceledException)
                     {
                         lastException = ex;
                         allNodesMatch = false;
