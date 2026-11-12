@@ -14,17 +14,15 @@
 //   limitations under the License.
 //
 
-using System;
-
 namespace Cassandra.Connections
 {
     /// <summary>
     /// Signals that a host is not eligible for a connection pool, including hosts absent from metadata.
     /// </summary>
-    internal sealed class HostConnectionPoolNotEligibleException : Exception
+    internal sealed class HostConnectionPoolNotEligibleException : DriverException
     {
-        internal HostConnectionPoolNotEligibleException()
-            : base("The host is not eligible for a connection pool: it is removed, down, ignored, or absent from metadata.")
+        internal HostConnectionPoolNotEligibleException(string reason)
+            : base("The host is not eligible for a connection pool: " + reason + ".")
         {
         }
     }

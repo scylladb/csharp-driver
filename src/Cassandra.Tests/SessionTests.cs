@@ -913,8 +913,10 @@ namespace Cassandra.Tests
                     host.SetDown();
                 }
 
-                Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
+                var rejection = Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
                     internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+                Assert.IsInstanceOf<DriverException>(rejection);
+                StringAssert.Contains(currentDistance == HostDistance.Ignored ? "ignored" : "down", rejection.Message);
 
                 poolFactory.Verify(value => value.Create(
                     It.IsAny<Host>(),
@@ -1196,6 +1198,44 @@ namespace Cassandra.Tests
                 pool.Verify(value => value.Dispose(), Times.Once);
                 Assert.IsEmpty(internalSession.GetPools());
             }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_RetainReplacedPoolForShutdownWhenMetricsTeardownThrows(bool clientRoutesEnabled)
+        {
+            var failure = new InvalidOperationException("replacement metrics teardown failed");
+            var metricsProvider = CreateMetricsProviderForRemovalTests();
+            var pool = new Mock<IHostConnectionPool>();
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>())).Returns(pool.Object);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object,
+                MetricsProvider = metricsProvider.Object,
+                ClientRoutesOptions = clientRoutesEnabled
+                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    : null
+            }.Build();
+            using var session = CreateWarmupSession(config, "replacement-metrics-failure-test");
+            var internalSession = (IInternalSession)session;
+            var host = internalSession.InternalCluster.AllHosts().Single();
+            internalSession.GetOrCreateConnectionPool(host, HostDistance.Local);
+            internalSession.InternalCluster.Metadata.RemoveHost(host.Address);
+            var replacement = internalSession.InternalCluster.Metadata.AddHost(host.Address);
+            replacement.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            metricsProvider.Setup(value => value.ShutdownMetricsBucket(It.Is<string>(bucket => bucket.Contains(".nodes."))))
+                           .Throws(failure);
+
+            Assert.AreSame(failure, Assert.Throws<InvalidOperationException>(() =>
+                internalSession.GetOrCreateConnectionPool(replacement, HostDistance.Local)));
+            pool.Verify(value => value.Dispose(), Times.Never);
+            Assert.AreSame(pool.Object, internalSession.GetExistingPool(host.Address));
+
+            await session.ShutdownAsync().ConfigureAwait(false);
+            pool.Verify(value => value.Dispose(), Times.Once);
         }
 
         [TestCase(false)]

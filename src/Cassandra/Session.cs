@@ -419,7 +419,7 @@ namespace Cassandra
                 currentHost = ResolvePoolHost(host, clientRoutesEnabled, out customHost);
                 if (currentHost == null)
                 {
-                    throw new HostConnectionPoolNotEligibleException();
+                    throw new HostConnectionPoolNotEligibleException("it is absent from metadata");
                 }
                 host = currentHost;
                 if (!IsPoolHostEligible(host, clientRoutesEnabled, allowDownHost, ref distance))
@@ -428,7 +428,8 @@ namespace Cassandra
                     Session.Logger.Verbose(
                         "Not creating a connection pool for host {0}: it is {1}.",
                         host.Address, distance == HostDistance.Ignored ? "ignored" : "down");
-                    throw new HostConnectionPoolNotEligibleException();
+                    throw new HostConnectionPoolNotEligibleException(
+                        distance == HostDistance.Ignored ? "its policy distance is ignored" : "it is down");
                 }
 
                 if (_connectionPool.TryGetValue(host.Address, out var existingEntry))
@@ -439,10 +440,13 @@ namespace Cassandra
                         // original pool owner while metadata supplies no replacement identity.
                         return existingEntry.Pool;
                     }
-                    _connectionPool.Remove(host.Address);
-                    existingEntry.Pool.OnHostRemoved();
-                    existingEntry.Pool.Dispose();
-                    _metricsManager.RemoveNodeMetrics(existingEntry.Host);
+                    // Use the same metrics-first retirement as a topology removal. A metrics
+                    // callback may publish a replacement, so resolve the owner again afterwards.
+                    OnHostRemoved(existingEntry.Host);
+                    if (_connectionPool.ContainsKey(host.Address))
+                    {
+                        return GetOrCreateConnectionPool(host, distance, allowDownHost);
+                    }
                 }
 
                 var newPool = Configuration.HostConnectionPoolFactory.Create(
@@ -459,7 +463,7 @@ namespace Cassandra
                     }
                     if (host.IsRemoved)
                     {
-                        throw new HostConnectionPoolNotEligibleException();
+                        throw new HostConnectionPoolNotEligibleException("it was removed during pool creation");
                     }
                     _connectionPool.Add(host.Address, new HostPool(host, newPool));
                 }
@@ -688,5 +692,6 @@ namespace Cassandra
                 }
             }
         }
+
     }
 }
