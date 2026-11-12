@@ -523,18 +523,6 @@ namespace Cassandra
             return distance != HostDistance.Ignored && (allowDownHost || host.IsUp);
         }
 
-        private sealed class HostPool
-        {
-            public Host Host { get; }
-            public IHostConnectionPool Pool { get; }
-
-            public HostPool(Host host, IHostConnectionPool pool)
-            {
-                Host = host;
-                Pool = pool;
-            }
-        }
-
         /// <inheritdoc />
         IEnumerable<KeyValuePair<IPEndPoint, IHostConnectionPool>> IInternalSession.GetPools()
         {
@@ -693,5 +681,16 @@ namespace Cassandra
             }
         }
 
+        private sealed class HostPool
+        {
+            public Host Host { get; }
+            public IHostConnectionPool Pool { get; }
+
+            public HostPool(Host host, IHostConnectionPool pool)
+            {
+                Host = host;
+                Pool = pool;
+            }
+        }
     }
 }
