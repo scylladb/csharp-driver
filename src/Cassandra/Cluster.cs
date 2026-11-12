@@ -228,10 +228,7 @@ namespace Cassandra
             {
                 Cluster.Logger.Info(message, args);
             }
-            catch (Exception diagnosticException) when (
-                !Utils.IsFatalException(diagnosticException) &&
-                !(diagnosticException is AggregateException aggregateException &&
-                  aggregateException.Flatten().InnerExceptions.Any(Utils.IsFatalException)))
+            catch (Exception diagnosticException) when (!Utils.IsFatalException(diagnosticException))
             {
                 // Logging callbacks run after publication and outside its lock. An ordinary
                 // sink failure must not invalidate ready setup or transfer its cleanup ownership.
@@ -356,8 +353,8 @@ namespace Cassandra
                 {
                     if (Configuration.ClientRoutesRuntime != null && _initialized)
                     {
-                        // Fatal diagnostics still propagate, but successfully published setup
-                        // remains owned by the cluster rather than terminal-failure cleanup.
+                        // Fatal diagnostics propagate to a waiting caller. When no caller is waiting,
+                        // Forget observes the retained task's fault; the cluster still owns published setup.
                         throw;
                     }
 

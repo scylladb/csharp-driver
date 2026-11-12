@@ -240,6 +240,52 @@ namespace Cassandra.Tests
             Assert.AreEqual(1, disposeCount);
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        [NonParallelizable]
+        public void TerminalInitializationFailureDoesNotSuppressFatalCleanupDiagnostic(bool wrapped)
+        {
+            var terminalFailure = new InvalidOperationException("terminal initialization failure");
+            Exception diagnosticFailure = new OutOfMemoryException("fatal cleanup diagnostic");
+            if (wrapped)
+            {
+                diagnosticFailure = new AggregateException(new InvalidOperationException(), new AggregateException(diagnosticFailure));
+            }
+            var controlConnection = new Mock<IControlConnection>();
+            controlConnection.Setup(c => c.InitAsync()).Returns(Task.FromException(terminalFailure));
+            controlConnection.Setup(c => c.Dispose()).Throws(new InvalidOperationException("cleanup failure"));
+            var configuration = CreateClientRoutesClusterConfiguration(controlConnection.Object, _ => { });
+            var handlerField = typeof(Logger).GetField("_loggerHandler", BindingFlags.Instance | BindingFlags.NonPublic);
+            var originalHandler = handlerField.GetValue(Cluster.Logger);
+            var handler = new Mock<Logger.ILoggerHandler>();
+            handler.Setup(h => h.Error(It.IsAny<string>(), It.IsAny<Exception>())).Throws(diagnosticFailure);
+            using (var cluster = CreateCluster(configuration))
+            {
+                handlerField.SetValue(Cluster.Logger, handler.Object);
+                try
+                {
+                    var observed = Assert.Catch<Exception>(() => _ = cluster.Metadata);
+                    if (wrapped)
+                    {
+                        CollectionAssert.AreEquivalent(
+                            ((AggregateException)diagnosticFailure).Flatten().InnerExceptions,
+                            ((AggregateException)observed).Flatten().InnerExceptions);
+                    }
+                    else
+                    {
+                        Assert.AreSame(diagnosticFailure, observed);
+                    }
+                    var cached = Assert.Throws<InitFatalErrorException>(() => _ = cluster.Metadata);
+                    Assert.AreSame(terminalFailure, cached.InnerException);
+                    controlConnection.Verify(c => c.Dispose(), Times.Once);
+                }
+                finally
+                {
+                    handlerField.SetValue(Cluster.Logger, originalHandler);
+                }
+            }
+        }
+
         [Test]
         public void ClientRoutesInitializationTimeoutAllowsLaterCallerToFinishTheSameSetup()
         {
@@ -377,20 +423,12 @@ namespace Cassandra.Tests
             }
         }
 
-        [TestCase(false, false, "connected")]
-        [TestCase(true, false, "connected")]
-        [TestCase(false, true, "connected")]
-        [TestCase(true, true, "connected")]
-        [TestCase(false, false, "completed")]
-        [TestCase(true, false, "completed")]
-        [TestCase(false, true, "completed")]
-        [TestCase(true, true, "completed")]
-        [TestCase(false, false, "both")]
-        [TestCase(true, false, "both")]
-        [TestCase(false, true, "both")]
-        [TestCase(true, true, "both")]
-        public void ClientRoutesInitializationDiagnosticFailurePreservesPublishedInitialization(
-            bool fatal, bool wrapped, string failingDiagnostic)
+        [Test, Combinatorial]
+        public void InitializationDiagnosticFailurePreservesPublishedInitialization(
+            [Values(false, true)] bool clientRoutes,
+            [Values(false, true)] bool fatal,
+            [Values(false, true)] bool wrapped,
+            [Values("connected", "completed", "both")] string failingDiagnostic)
         {
             Exception diagnosticCause = fatal
                 ? new OutOfMemoryException("fatal diagnostic sink failure")
@@ -404,7 +442,19 @@ namespace Cassandra.Tests
             var controlConnection = new Mock<IControlConnection>();
             controlConnection.Setup(c => c.InitAsync()).Returns(Task.CompletedTask);
             controlConnection.SetupGet(c => c.Serializer).Returns(new SerializerManager(ProtocolVersion.V3));
-            var configuration = CreateClientRoutesClusterConfiguration(controlConnection.Object, _ => { });
+            var configuration = clientRoutes
+                ? CreateClientRoutesClusterConfiguration(controlConnection.Object, _ => { })
+                : new TestConfigurationBuilder
+                {
+                    ControlConnectionFactory = CreateControlConnectionFactory(controlConnection.Object),
+                    Policies = new Cassandra.Policies(
+                        new RoundRobinPolicy(),
+                        new ConstantReconnectionPolicy(50),
+                        new DefaultRetryPolicy(),
+                        NoSpeculativeExecutionPolicy.Instance,
+                        new AtomicMonotonicTimestampGenerator(),
+                        null)
+                }.Build();
             var listener = new Mock<TraceListener> { CallBase = true };
             listener.Setup(value => value.WriteLine(It.IsAny<string>())).Callback<string>(message =>
             {
@@ -449,6 +499,52 @@ namespace Cassandra.Tests
                 Diagnostics.CassandraTraceSwitch.Level = previousLevel;
                 listener.Object.Dispose();
             }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        [NonParallelizable]
+        public async Task ClientRoutesLateFatalDiagnosticFaultsRetainedTaskWithoutInvalidatingPublishedSetup(bool wrapped)
+        {
+            var initCompletion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var controlConnection = new Mock<IControlConnection>();
+            controlConnection.Setup(c => c.InitAsync()).Returns(initCompletion.Task);
+            controlConnection.SetupGet(c => c.Serializer).Returns(new SerializerManager(ProtocolVersion.V3));
+            var configuration = CreateClientRoutesClusterConfiguration(controlConnection.Object, _ => { });
+            configuration.SocketOptions.SetConnectTimeoutMillis(1).SetMetadataAbortTimeout(10);
+            var handlerField = typeof(Logger).GetField("_loggerHandler", BindingFlags.Instance | BindingFlags.NonPublic);
+            var originalHandler = handlerField.GetValue(Cluster.Logger);
+            var handler = new Mock<Logger.ILoggerHandler>();
+            Exception failure = new OutOfMemoryException("late diagnostic failure");
+            if (wrapped)
+            {
+                failure = new AggregateException(new InvalidOperationException(), new AggregateException(failure));
+            }
+            handler.Setup(h => h.Info(It.Is<string>(message => message.StartsWith("Cluster Connected")), It.IsAny<object[]>()))
+                .Throws(failure);
+            using (var cluster = CreateCluster(configuration))
+            {
+                handlerField.SetValue(Cluster.Logger, handler.Object);
+                try
+                {
+                    Assert.Throws<TimeoutException>(() => _ = cluster.Metadata);
+                    var retainedSetup = (Task)typeof(Cluster)
+                        .GetField("_clientRoutesInitTask", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cluster);
+                    initCompletion.TrySetResult(true);
+                    var observed = await Assert.CatchAsync<Exception>(() =>
+                        retainedSetup.WaitAsync(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
+                    Assert.AreSame(failure, observed);
+                    Assert.DoesNotThrow(() => _ = cluster.Metadata);
+                    controlConnection.Verify(c => c.InitAsync(), Times.Once);
+                    controlConnection.Verify(c => c.Dispose(), Times.Never);
+                }
+                finally
+                {
+                    initCompletion.TrySetResult(true);
+                    handlerField.SetValue(Cluster.Logger, originalHandler);
+                }
+            }
+            controlConnection.Verify(c => c.Dispose(), Times.Once);
         }
 
         [TestCase(false)]

@@ -31,7 +31,7 @@ namespace Cassandra
     internal static class Utils
     {
         /// <summary>
-        /// Determines whether an exception indicates a process-level failure that must not be swallowed.
+        /// Determines whether an exception, including an aggregate, contains a process-level failure that must not be swallowed.
         /// </summary>
         public static bool IsFatalException(Exception ex)
         {
@@ -40,7 +40,9 @@ namespace Cassandra
                    ex is ThreadAbortException ||
                    ex is AccessViolationException ||
                    ex is AppDomainUnloadedException ||
-                   ex is BadImageFormatException;
+                   ex is BadImageFormatException ||
+                   (ex is AggregateException aggregateException &&
+                    aggregateException.Flatten().InnerExceptions.Any(IsFatalException));
         }
 
         public static string ConvertToCqlMap(IDictionary<string, string> source)
