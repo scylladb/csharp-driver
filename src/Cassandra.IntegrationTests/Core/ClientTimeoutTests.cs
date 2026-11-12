@@ -393,35 +393,6 @@ namespace Cassandra.IntegrationTests.Core
             }
         }
 
-        private static long GetSettledMemory()
-        {
-            long previous = 0;
-            var stableSamples = 0;
-            for (var sample = 0; sample < 30; sample++)
-            {
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
-                var current = GC.GetTotalMemory(true);
-                if (Math.Abs(current - previous) <= Math.Max(4096, current / 1000))
-                {
-                    if (++stableSamples == 3)
-                    {
-                        return current;
-                    }
-                }
-                else
-                {
-                    stableSamples = 0;
-                }
-
-                previous = current;
-                Thread.Sleep(100);
-            }
-
-            Assert.Fail("The managed heap did not settle before measuring retained memory.");
-            return 0;
-        }
-
         /// <summary>
         /// CSHARP-958
         /// </summary>
@@ -568,5 +539,34 @@ namespace Cassandra.IntegrationTests.Core
                 }
             }
         }
+        private static long GetSettledMemory()
+        {
+            long previous = 0;
+            var stableSamples = 0;
+            for (var sample = 0; sample < 30; sample++)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                var current = GC.GetTotalMemory(true);
+                if (Math.Abs(current - previous) <= Math.Max(4096, current / 1000))
+                {
+                    if (++stableSamples == 3)
+                    {
+                        return current;
+                    }
+                }
+                else
+                {
+                    stableSamples = 0;
+                }
+
+                previous = current;
+                Thread.Sleep(100);
+            }
+
+            Assert.Fail("The managed heap did not settle before measuring retained memory.");
+            return 0;
+        }
+
     }
 }

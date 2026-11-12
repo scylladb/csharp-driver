@@ -45,12 +45,6 @@ namespace Cassandra
             return _initTask.Value;
         }
 
-        private async Task InitializeAsync()
-        {
-            await Task.Yield(); // Ensure the method is asynchronous
-            _ = UpdatesQueueReader();
-        }
-
         public void Shutdown()
         {
             _disposed = true;
@@ -203,6 +197,12 @@ namespace Cassandra
                 updated = updated.Add(t);
                 return updated;
             });
+        }
+
+        private async Task InitializeAsync()
+        {
+            await Task.Yield(); // Ensure the method is asynchronous
+            _ = UpdatesQueueReader();
         }
 
         public class KeyspaceTableNamePair : IEquatable<KeyspaceTableNamePair>
