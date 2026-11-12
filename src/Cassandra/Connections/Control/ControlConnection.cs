@@ -643,6 +643,11 @@ namespace Cassandra.Connections.Control
             throw attempt.CreateNoHostAvailableException();
         }
 
+        private void BeginClientRoutesLifecyclePass()
+        {
+            _config.ClientRoutesRuntime?.BeginLifecyclePass();
+        }
+
         /// <summary>
         /// Owns all mutable state for one control-connection attempt so candidate preference,
         /// supplemental failures, and recovered diagnostics cannot drift between resolution paths.
@@ -1791,11 +1796,6 @@ namespace Cassandra.Connections.Control
             public Task<ReconnectResult> OwnerTask { get; }
 
             public System.Threading.ITimer Timer { get; set; }
-        }
-
-        private void BeginClientRoutesLifecyclePass()
-        {
-            _config.ClientRoutesRuntime?.BeginLifecyclePass();
         }
     }
 }

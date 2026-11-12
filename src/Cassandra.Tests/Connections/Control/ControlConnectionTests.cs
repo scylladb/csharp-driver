@@ -5496,6 +5496,81 @@ namespace Cassandra.Tests.Connections.Control
             }
         }
 
+        private ControlConnectionCreateResult NewClientRoutesInstance(
+            Guid hostId,
+            IMetadataRequestHandler requestHandler,
+            IServerEventsSubscriber subscriber)
+        {
+            return NewInstance(
+                CreateHostRows(hostId),
+                configBuilderAct: builder =>
+                {
+                    builder.ClientRoutesOptions = CreateClientRoutesOptions();
+                    builder.MetadataRequestHandler = requestHandler;
+                    builder.ServerEventsSubscriber = subscriber;
+                });
+        }
+
+        private ControlConnectionCreateResult NewClientRoutesRecoveryInstance(
+            Guid hostId,
+            IMetadataRequestHandler requestHandler,
+            FakeConnectionFactory connectionFactory,
+            Mock<IInternalCluster> cluster)
+        {
+            var policy = new TestHelper.CustomLoadBalancingPolicy();
+            var debouncer = new Mock<IProtocolEventDebouncer>();
+            debouncer.Setup(value => value.ScheduleEventAsync(It.IsAny<ProtocolEvent>(), It.IsAny<bool>()))
+                .Returns(Task.CompletedTask);
+            var created = NewInstance(
+                CreateHostRows(hostId),
+                cluster: cluster.Object,
+                eventDebouncer: debouncer.Object,
+                configBuilderAct: builder =>
+                {
+                    builder.ClientRoutesOptions = CreateClientRoutesOptions();
+                    builder.MetadataRequestHandler = requestHandler;
+                    builder.ServerEventsSubscriber = new RecordingServerEventsSubscriber();
+                    builder.ConnectionFactory = connectionFactory;
+                    builder.Policies = new Cassandra.Policies(policy, new ConstantReconnectionPolicy(int.MaxValue), new DefaultRetryPolicy());
+                });
+            cluster.Setup(value => value.AllHosts()).Returns(() => created.Metadata.AllHosts());
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            policy.Initialize(cluster.Object);
+            return created;
+        }
+
+        private ControlConnectionCreateResult NewReconnectingClientRoutesInstance(
+            Guid hostId,
+            FakeConnectionFactory connectionFactory,
+            IMetadataRequestHandler requestHandler,
+            IServerEventsSubscriber subscriber,
+            bool clientRoutesEnabled = true,
+            IProtocolEventDebouncer eventDebouncer = null)
+        {
+            var cluster = new Mock<IInternalCluster>();
+            var loadBalancingPolicy = new TestHelper.CustomLoadBalancingPolicy();
+            var createResult = NewInstance(
+                CreateHostRows(hostId),
+                cluster.Object,
+                eventDebouncer: eventDebouncer,
+                configBuilderAct: builder =>
+                {
+                    builder.ConnectionFactory = connectionFactory;
+                    builder.ClientRoutesOptions = clientRoutesEnabled ? CreateClientRoutesOptions() : null;
+                    builder.MetadataRequestHandler = requestHandler;
+                    builder.ServerEventsSubscriber = subscriber;
+                    builder.Policies = new Cassandra.Policies(
+                        loadBalancingPolicy,
+                        new ConstantReconnectionPolicy(1000),
+                        new DefaultRetryPolicy());
+                });
+            cluster.Setup(value => value.AllHosts()).Returns(() => createResult.Metadata.AllHosts());
+            cluster.Setup(value => value.AnyOpenConnections(It.IsAny<Host>())).Returns(true);
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            loadBalancingPolicy.Initialize(cluster.Object);
+            return createResult;
+        }
+
         private sealed class StartupReconnectScenario
         {
             private readonly ControlConnectionCreateResult _created;
@@ -5792,81 +5867,6 @@ namespace Cassandra.Tests.Connections.Control
             public FakeConnectionFactory ConnectionFactory { get; set; }
 
             public IInternalCluster Cluster { get; set; }
-        }
-
-        private ControlConnectionCreateResult NewClientRoutesInstance(
-            Guid hostId,
-            IMetadataRequestHandler requestHandler,
-            IServerEventsSubscriber subscriber)
-        {
-            return NewInstance(
-                CreateHostRows(hostId),
-                configBuilderAct: builder =>
-                {
-                    builder.ClientRoutesOptions = CreateClientRoutesOptions();
-                    builder.MetadataRequestHandler = requestHandler;
-                    builder.ServerEventsSubscriber = subscriber;
-                });
-        }
-
-        private ControlConnectionCreateResult NewClientRoutesRecoveryInstance(
-            Guid hostId,
-            IMetadataRequestHandler requestHandler,
-            FakeConnectionFactory connectionFactory,
-            Mock<IInternalCluster> cluster)
-        {
-            var policy = new TestHelper.CustomLoadBalancingPolicy();
-            var debouncer = new Mock<IProtocolEventDebouncer>();
-            debouncer.Setup(value => value.ScheduleEventAsync(It.IsAny<ProtocolEvent>(), It.IsAny<bool>()))
-                .Returns(Task.CompletedTask);
-            var created = NewInstance(
-                CreateHostRows(hostId),
-                cluster: cluster.Object,
-                eventDebouncer: debouncer.Object,
-                configBuilderAct: builder =>
-                {
-                    builder.ClientRoutesOptions = CreateClientRoutesOptions();
-                    builder.MetadataRequestHandler = requestHandler;
-                    builder.ServerEventsSubscriber = new RecordingServerEventsSubscriber();
-                    builder.ConnectionFactory = connectionFactory;
-                    builder.Policies = new Cassandra.Policies(policy, new ConstantReconnectionPolicy(int.MaxValue), new DefaultRetryPolicy());
-                });
-            cluster.Setup(value => value.AllHosts()).Returns(() => created.Metadata.AllHosts());
-            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
-            policy.Initialize(cluster.Object);
-            return created;
-        }
-
-        private ControlConnectionCreateResult NewReconnectingClientRoutesInstance(
-            Guid hostId,
-            FakeConnectionFactory connectionFactory,
-            IMetadataRequestHandler requestHandler,
-            IServerEventsSubscriber subscriber,
-            bool clientRoutesEnabled = true,
-            IProtocolEventDebouncer eventDebouncer = null)
-        {
-            var cluster = new Mock<IInternalCluster>();
-            var loadBalancingPolicy = new TestHelper.CustomLoadBalancingPolicy();
-            var createResult = NewInstance(
-                CreateHostRows(hostId),
-                cluster.Object,
-                eventDebouncer: eventDebouncer,
-                configBuilderAct: builder =>
-                {
-                    builder.ConnectionFactory = connectionFactory;
-                    builder.ClientRoutesOptions = clientRoutesEnabled ? CreateClientRoutesOptions() : null;
-                    builder.MetadataRequestHandler = requestHandler;
-                    builder.ServerEventsSubscriber = subscriber;
-                    builder.Policies = new Cassandra.Policies(
-                        loadBalancingPolicy,
-                        new ConstantReconnectionPolicy(1000),
-                        new DefaultRetryPolicy());
-                });
-            cluster.Setup(value => value.AllHosts()).Returns(() => createResult.Metadata.AllHosts());
-            cluster.Setup(value => value.AnyOpenConnections(It.IsAny<Host>())).Returns(true);
-            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
-            loadBalancingPolicy.Initialize(cluster.Object);
-            return createResult;
         }
 
         private sealed class RenegotiatingProtocolVersionNegotiator : IProtocolVersionNegotiator
