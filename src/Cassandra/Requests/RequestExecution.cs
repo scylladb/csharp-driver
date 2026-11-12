@@ -296,9 +296,9 @@ namespace Cassandra.Requests
             if (response.Tablet != null)
             {
                 var metadata = _session.Cluster.Metadata;
-                var keyspace = _parent.Statement?.Keyspace ?? _session.Keyspace;
+                var keyspace = _parent.Statement?.Keyspace ?? _sessionRequestInfo.SessionKeyspace;
                 var table = _parent.Statement?.TableName;
-                if (table != null)
+                if (keyspace != null && table != null)
                 {
                     metadata.TabletMap.OnTabletMapUpdate?.Invoke(new AddTabletRequest(keyspace, table, response.Tablet));
                 }

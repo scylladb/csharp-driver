@@ -61,13 +61,16 @@ namespace Cassandra
             return buffer;
         }
 
-        public FrameWriter(MemoryStream stream, ISerializer serializer, bool useMetadataId)
+        internal bool UseTabletsRoutingV2 { get; }
+
+        public FrameWriter(MemoryStream stream, ISerializer serializer, bool useMetadataId, bool useTabletsRoutingV2 = false)
         {
             _stream = stream;
             _serializer = serializer;
             _offset = stream.Position;
             _version = serializer.ProtocolVersion;
             UseMetadataId = useMetadataId;
+            UseTabletsRoutingV2 = useTabletsRoutingV2;
         }
 
         public void WriteByte(byte value)
