@@ -144,8 +144,8 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                     canceled = token.IsCancellationRequested;
                 }
             }));
-            using var api = new ClientRoutesRestApi(new[] { "127.0.0.1", "127.0.0.2" }, client, TimeSpan.FromMilliseconds(100));
-            await Assert.ThrowsAsync<TimeoutException>(() => api.UpsertAsync(entries).WaitAsync(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
+            using var api = new ClientRoutesRestApi(new[] { "127.0.0.1", "127.0.0.2" }, client, TimeSpan.FromSeconds(2));
+            await Assert.ThrowsAsync<TimeoutException>(() => api.UpsertAsync(entries).WaitAsync(TimeSpan.FromSeconds(10))).ConfigureAwait(false);
             Assert.AreEqual(2, getAttempts);
             Assert.IsTrue(canceled);
         }
@@ -167,6 +167,65 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             using var api = new ClientRoutesRestApi(new[] { "127.0.0.1" }, client);
             await Assert.ThrowsAsync<JsonReaderException>(() => api.UpsertAsync(Entries())).ConfigureAwait(false);
             Assert.AreEqual(1, getAttempts);
+        }
+
+        [Test]
+        public async Task PropagationMismatchTimeoutDoesNotRetainARecoveredTransportFailure()
+        {
+            var getAttempts = 0;
+            using var client = new HttpClient(new CallbackHandler((request, _) =>
+            {
+                if (request.Method == HttpMethod.Post)
+                {
+                    return Task.FromResult(Response(HttpStatusCode.OK, ""));
+                }
+
+                if (++getAttempts == 1)
+                {
+                    throw new HttpRequestException("temporary transport failure");
+                }
+
+                return Task.FromResult(Response(HttpStatusCode.OK, "[]"));
+            }));
+            using var api = new ClientRoutesRestApi(new[] { "127.0.0.1" }, client, TimeSpan.FromSeconds(1));
+            var failure = await Assert.ThrowsAsync<TimeoutException>(() =>
+                api.UpsertAsync(Entries()).WaitAsync(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
+            Assert.GreaterOrEqual(getAttempts, 2);
+            Assert.IsNull(failure.InnerException);
+        }
+
+        [Test]
+        public async Task HttpClientTimeoutIsRetriedWhilePropagationDeadlineRemainsLive()
+        {
+            var entries = Entries();
+            var getAttempts = 0;
+            var requestCanceled = false;
+            using var client = new HttpClient(new CallbackHandler(async (request, token) =>
+            {
+                if (request.Method == HttpMethod.Post)
+                {
+                    return Response(HttpStatusCode.OK, "");
+                }
+
+                if (++getAttempts == 1)
+                {
+                    try
+                    {
+                        await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        requestCanceled = token.IsCancellationRequested;
+                    }
+                }
+
+                return Response(HttpStatusCode.OK, JsonConvert.SerializeObject(entries));
+            }))
+            { Timeout = TimeSpan.FromSeconds(1) };
+            using var api = new ClientRoutesRestApi(new[] { "127.0.0.1" }, client, TimeSpan.FromSeconds(10));
+            await api.UpsertAsync(entries).WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+            Assert.AreEqual(2, getAttempts);
+            Assert.IsTrue(requestCanceled);
         }
 
         private static ClientRouteApiEntry[] Entries()

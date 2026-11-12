@@ -155,6 +155,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                         try
                         {
                             var actualEntries = await GetAsync(nodeUri, deadline.Token).ConfigureAwait(false);
+                            lastException = null;
                             if (!EntriesMatch(actualEntries, expectedEntries, requireExactMatch))
                             {
                                 allNodesMatch = false;
