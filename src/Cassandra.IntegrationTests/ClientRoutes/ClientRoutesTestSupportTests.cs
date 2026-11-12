@@ -194,6 +194,41 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             Assert.IsNull(failure.InnerException);
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task SuccessfulNodeDoesNotClearAnotherNodesUnrecoveredFailure(bool failedNodeRecovers)
+        {
+            var entries = Entries();
+            var secondNodeAttempts = 0;
+            var transportFailure = new HttpRequestException("second node transport failure");
+            using var client = new HttpClient(new CallbackHandler(async (request, token) =>
+            {
+                if (request.Method == HttpMethod.Post)
+                {
+                    return Response(HttpStatusCode.OK, "");
+                }
+                if (request.RequestUri.Host == "127.0.0.1")
+                {
+                    return Response(HttpStatusCode.OK, JsonConvert.SerializeObject(entries));
+                }
+                if (++secondNodeAttempts == 1)
+                {
+                    throw transportFailure;
+                }
+                if (failedNodeRecovers)
+                {
+                    return Response(HttpStatusCode.OK, "[]");
+                }
+                await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
+                throw new InvalidOperationException("The request must be canceled.");
+            }));
+            using var api = new ClientRoutesRestApi(new[] { "127.0.0.1", "127.0.0.2" }, client, TimeSpan.FromSeconds(2));
+            var failure = await Assert.ThrowsAsync<TimeoutException>(() =>
+                api.UpsertAsync(entries).WaitAsync(TimeSpan.FromSeconds(10))).ConfigureAwait(false);
+            Assert.GreaterOrEqual(secondNodeAttempts, 2);
+            Assert.AreSame(failedNodeRecovers ? null : transportFailure, failure.InnerException);
+        }
+
         [Test]
         public async Task HttpClientTimeoutIsRetriedWhilePropagationDeadlineRemainsLive()
         {

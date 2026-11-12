@@ -143,7 +143,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             bool requireExactMatch = true)
         {
             using var deadline = new CancellationTokenSource(_propagationTimeout);
-            Exception lastException = null;
+            var failuresByNode = new Dictionary<Uri, Exception>();
             try
             {
                 while (true)
@@ -155,7 +155,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                         try
                         {
                             var actualEntries = await GetAsync(nodeUri, deadline.Token).ConfigureAwait(false);
-                            lastException = null;
+                            failuresByNode.Remove(nodeUri);
                             if (!EntriesMatch(actualEntries, expectedEntries, requireExactMatch))
                             {
                                 allNodesMatch = false;
@@ -170,7 +170,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                               (int)requestFailure.StatusCode.Value >= 500)) ||
                             (ex is TaskCanceledException && !deadline.IsCancellationRequested))
                         {
-                            lastException = ex;
+                            failuresByNode[nodeUri] = ex;
                             allNodesMatch = false;
                             break;
                         }
@@ -189,9 +189,11 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 // One deadline covers every node request and retry delay.
             }
 
+            var failure = failuresByNode.Count == 1 ? failuresByNode.Values.Single() :
+                failuresByNode.Count > 1 ? new AggregateException(failuresByNode.Values) : null;
             throw new TimeoutException(
                 "Not every ScyllaDB node observed the expected client routes before the timeout.",
-                lastException);
+                failure);
         }
 
         private async Task<List<ClientRouteApiEntry>> GetAsync(Uri nodeUri, CancellationToken cancellationToken = default)
