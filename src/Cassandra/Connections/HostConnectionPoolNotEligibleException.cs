@@ -1,5 +1,5 @@
 //
-//      Copyright (C) DataStax Inc.
+//      Copyright (C) ScyllaDB
 //
 //   Licensed under the Apache License, Version 2.0 (the "License");
 //   you may not use this file except in compliance with the License.
@@ -14,17 +14,17 @@
 //   limitations under the License.
 //
 
-using System.Net.Sockets;
+using System;
 
 namespace Cassandra.Connections
 {
     /// <summary>
-    /// Signals that a host became ineligible between selection and connection-pool lookup.
+    /// Signals that a host is not eligible for a connection pool, including hosts absent from metadata.
     /// </summary>
-    internal sealed class HostConnectionPoolNotEligibleException : SocketException
+    internal sealed class HostConnectionPoolNotEligibleException : Exception
     {
         internal HostConnectionPoolNotEligibleException()
-            : base((int)SocketError.NotConnected)
+            : base("The host is not eligible for a connection pool: it is removed, down, ignored, or absent from metadata.")
         {
         }
     }

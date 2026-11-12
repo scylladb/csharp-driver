@@ -34,6 +34,7 @@ using Cassandra.Tests.Connections.TestHelpers;
 using Moq;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
+using StringAssert = NUnit.Framework.StringAssert;
 
 namespace Cassandra.Tests
 {
@@ -1047,7 +1048,7 @@ namespace Cassandra.Tests
 
                 var ex = Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
                     internalSession.GetOrCreateConnectionPool(oldHost, HostDistance.Local));
-                Assert.AreEqual(SocketError.NotConnected, ex.SocketErrorCode);
+                StringAssert.Contains("not eligible for a connection pool", ex.Message);
 
                 cluster.Verify(value => value.RetrieveAndSetDistance(It.Is<Host>(host => ReferenceEquals(host, replacementHost))), Times.Once);
                 poolFactory.Verify(value => value.Create(
@@ -1108,7 +1109,7 @@ namespace Cassandra.Tests
 
                 var ex = Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
                     internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
-                Assert.AreEqual(SocketError.NotConnected, ex.SocketErrorCode);
+                StringAssert.Contains("not eligible for a connection pool", ex.Message);
 
                 poolFactory.Verify(value => value.Create(
                     host,
