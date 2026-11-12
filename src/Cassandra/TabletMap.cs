@@ -15,6 +15,7 @@ namespace Cassandra
 
         private readonly ConcurrentDictionary<KeyspaceTableNamePair, TabletSet> _mapping;
         private readonly Metadata _metadata;
+        private readonly Lazy<Task> _initTask;
 
         public readonly Action<ITabletMapUpdateRequest> OnTabletMapUpdate;
         private readonly ConcurrentQueue<ITabletMapUpdateRequest> _updateQueue = new ConcurrentQueue<ITabletMapUpdateRequest>();
@@ -24,6 +25,7 @@ namespace Cassandra
         public TabletMap(Metadata metadata, ConcurrentDictionary<KeyspaceTableNamePair, TabletSet> mapping, Hosts hosts)
         {
             _metadata = metadata;
+            _initTask = new Lazy<Task>(InitializeAsync);
             _metadata.SchemaChangedEvent += SchemaCHangedEventHandler;
             _mapping = mapping;
             OnTabletMapUpdate = request =>
@@ -37,10 +39,10 @@ namespace Cassandra
             }
         }
 
-        public async Task Init()
+        public Task Init()
         {
-            await Task.Yield(); // Ensure the method is asynchronous
-            _ = UpdatesQueueReader();
+            // Cluster initialization can be retried after a connection failure. Keep one reader per map.
+            return _initTask.Value;
         }
 
         public void Shutdown()
@@ -206,6 +208,12 @@ namespace Cassandra
                 updated = updated.Add(t);
                 return updated;
             });
+        }
+
+        private async Task InitializeAsync()
+        {
+            await Task.Yield(); // Ensure the method is asynchronous
+            _ = UpdatesQueueReader();
         }
 
         public class KeyspaceTableNamePair : IEquatable<KeyspaceTableNamePair>

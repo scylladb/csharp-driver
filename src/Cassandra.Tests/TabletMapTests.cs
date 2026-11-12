@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
 using Cassandra.Tests.TestHelpers;
 using Moq;
 using NUnit.Framework;
@@ -26,6 +28,43 @@ namespace Cassandra.Tests
             _tabletMap = new TabletMap(metadata, new ConcurrentDictionary<TabletMap.KeyspaceTableNamePair, TabletMap.TabletSet>(), new Hosts());
             _hostId1 = Guid.NewGuid();
             _hostId2 = Guid.NewGuid();
+        }
+
+        [TearDown]
+        public void TearDown()
+        {
+            _tabletMap.Shutdown();
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void Init_Reuses_Initialization_When_Called_Repeatedly(bool concurrent)
+        {
+            var tabletMap = _tabletMap;
+            Task[] initializations;
+            if (concurrent)
+            {
+                var calls = Enumerable.Range(0, 1000)
+                    .Select(_ => Task.Factory.StartNew(() => tabletMap.Init())).ToArray();
+                Assert.IsTrue(Task.WaitAll(calls, 5000), "Concurrent initialization calls must finish.");
+                initializations = calls.Select(call => call.Result).ToArray();
+            }
+            else
+            {
+                initializations = Enumerable.Range(0, 1000).Select(_ => tabletMap.Init()).ToArray();
+            }
+
+            Assert.IsTrue(Task.WaitAll(initializations, 5000), "Tablet map initialization must finish.");
+            Assert.IsTrue(initializations.All(task => ReferenceEquals(initializations[0], task)),
+                "Retries must share initialization instead of starting additional tablet update readers.");
+
+            var applied = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var request = new Mock<ITabletMapUpdateRequest>();
+            request.Setup(update => update.Apply(tabletMap)).Callback(() => applied.TrySetResult(true));
+            tabletMap.OnTabletMapUpdate(request.Object);
+            Assert.IsTrue(applied.Task.Wait(5000),
+                "The single tablet update reader must still process queued updates.");
+            request.Verify(update => update.Apply(tabletMap), Times.Once);
         }
 
         private Tablet CreateTablet(long firstToken, long lastToken, Guid hostId)
