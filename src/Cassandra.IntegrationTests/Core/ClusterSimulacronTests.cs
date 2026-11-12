@@ -232,7 +232,6 @@ namespace Cassandra.IntegrationTests.Core
         [Test]
         public void RepeatedClusterConnectCallsAfterTimeoutErrorThrowCachedInitErrorException()
         {
-            TestCluster.DisableConnectionListener(type: "reject_startup");
             var timeoutMessage = "Cluster initialization was aborted after timing out. This mechanism is put in place to" +
                                  " avoid blocking the calling thread forever. This usually caused by a networking issue" +
                                  " between the client driver instance and the cluster. You can increase this timeout via " +
@@ -261,7 +260,6 @@ namespace Cassandra.IntegrationTests.Core
         [Test]
         public void RepeatedClusterConnectCallsAfterTimeoutErrorEventuallyThrowNoHostException()
         {
-            TestCluster.DisableConnectionListener(type: "reject_startup");
             using (var cluster = CreateClusterAndWaitUntilConnectException(
                 b => b
                        .WithSocketOptions(
@@ -285,7 +283,6 @@ namespace Cassandra.IntegrationTests.Core
         [Test]
         public void RepeatedClusterConnectCallsAfterNoHostErrorDontThrowCachedInitErrorException()
         {
-            TaskHelper.WaitToComplete(TestCluster.DisableConnectionListener(type: "reject_startup"), 5000);
             using (var cluster = CreateClusterAndWaitUntilConnectException(
                 b => b.WithSocketOptions(new SocketOptions().SetConnectTimeoutMillis(1).SetReadTimeoutMillis(1)),
                 out _))
@@ -303,6 +300,9 @@ namespace Cassandra.IntegrationTests.Core
             TestHelper.RetryAssert(
                 () =>
                 {
+                    Assert.DoesNotThrow(
+                        () => TaskHelper.WaitToComplete(TestCluster.DisableConnectionListener(type: "reject_startup"), 5000),
+                        "Connection listener setup must complete before connecting.");
                     var builder = ClusterBuilder().AddContactPoints(TestCluster.ContactPoints);
                     b(builder);
                     cluster = builder.Build();
@@ -315,7 +315,6 @@ namespace Cassandra.IntegrationTests.Core
                         cluster.Dispose();
                         SetupNewTestCluster();
                         Interlocked.MemoryBarrier();
-                        TaskHelper.WaitToComplete(TestCluster.DisableConnectionListener(type: "reject_startup"), 5000);
                         throw;
                     }
                 }, 500, 20);
