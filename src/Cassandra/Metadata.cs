@@ -292,12 +292,12 @@ namespace Cassandra
         /// <item>for any other keyspace, the replicas from the token map.</item>
         /// </list>
         /// </returns>
-        public ICollection<HostShard> GetReplicas(string keyspaceName, string tableName, byte[] partitionKey)
+        public ICollection<RoutingTarget> GetReplicas(string keyspaceName, string tableName, byte[] partitionKey)
         {
             if (_tokenMap == null)
             {
                 Metadata.Logger.Warning("Metadata.GetReplicas was called but there was no token map.");
-                return new HostShard[0];
+                return new RoutingTarget[0];
             }
 
             var token = _tokenMap.Factory.Hash(partitionKey);
@@ -313,7 +313,7 @@ namespace Cassandra
             {
                 Metadata.Logger.Verbose(
                     "Metadata.GetReplicas returned no replicas for keyspace {0}: {1}.", keyspaceName, tokenMapUnusableReason);
-                return new HostShard[0];
+                return new RoutingTarget[0];
             }
 
             return _tokenMap.GetReplicas(keyspaceName, token);
@@ -328,13 +328,13 @@ namespace Cassandra
         /// <see cref="GetReplicas(string, string, byte[])"/>.
         /// </remarks>
         [Obsolete("Use GetReplicas(string keyspaceName, string tableName, byte[] partitionKey) for tablet-aware replica resolution.")]
-        public ICollection<HostShard> GetReplicas(string keyspaceName, byte[] partitionKey)
+        public ICollection<RoutingTarget> GetReplicas(string keyspaceName, byte[] partitionKey)
         {
             return GetReplicas(keyspaceName, null, partitionKey);
         }
 
         [Obsolete("Use GetReplicas(string keyspaceName, string tableName, byte[] partitionKey) for tablet-aware replica resolution.")]
-        public ICollection<HostShard> GetReplicas(byte[] partitionKey)
+        public ICollection<RoutingTarget> GetReplicas(byte[] partitionKey)
         {
             return GetReplicas(null, null, partitionKey);
         }
@@ -345,11 +345,11 @@ namespace Cassandra
         /// to a non-replica with the tablet owning the partition key, which makes the following queries routed
         /// correctly.
         /// </summary>
-        internal ICollection<HostShard> GetRoutingReplicas(string keyspaceName, string tableName, byte[] partitionKey)
+        internal ICollection<RoutingTarget> GetRoutingReplicas(string keyspaceName, string tableName, byte[] partitionKey)
         {
             if (_tokenMap == null)
             {
-                return new HostShard[0];
+                return new RoutingTarget[0];
             }
 
             var token = _tokenMap.Factory.Hash(partitionKey);
@@ -388,7 +388,7 @@ namespace Cassandra
             }
         }
 
-        private bool TryGetTabletReplicas(string keyspaceName, string tableName, IToken token, out ICollection<HostShard> replicas)
+        private bool TryGetTabletReplicas(string keyspaceName, string tableName, IToken token, out ICollection<RoutingTarget> replicas)
         {
             replicas = null;
             return !string.IsNullOrEmpty(keyspaceName)

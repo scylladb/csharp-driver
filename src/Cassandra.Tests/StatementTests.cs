@@ -316,7 +316,7 @@ namespace Cassandra.Tests
             var lbp = new TokenAwarePolicy(new ClusterTests.FakeLoadBalancingPolicy());
             var clusterMock = Mock.Of<IInternalCluster>();
             Mock.Get(clusterMock).Setup(c => c.GetRoutingReplicas(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<byte[]>()))
-                .Returns(new List<HostShard>());
+                .Returns(new List<RoutingTarget>());
             Mock.Get(clusterMock).Setup(c => c.AllHosts())
                 .Returns(new List<Host>());
             lbp.Initialize(clusterMock);
@@ -326,7 +326,7 @@ namespace Cassandra.Tests
             s1Mock.Setup(s => s.Keyspace).Returns("ks1");
             var batch = new BatchStatement().Add(s1Mock.Object);
 
-            var _ = lbp.NewQueryPlan("ks2", batch).ToList();
+            var _ = lbp.NewQueryPlan(clusterMock, "ks2", batch).ToList();
 
             Mock.Get(clusterMock).Verify(c => c.GetRoutingReplicas("ks1", null, rawRoutingKey), Times.Once);
         }

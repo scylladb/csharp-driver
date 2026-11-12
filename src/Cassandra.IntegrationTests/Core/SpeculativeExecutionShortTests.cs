@@ -275,14 +275,14 @@ namespace Cassandra.IntegrationTests.Core
                 return HostDistance.Local;
             }
 
-            public IEnumerable<HostShard> NewQueryPlan(string keyspace, IStatement query)
+            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
             {
                 var hosts = _cluster.AllHosts().ToArray();
                 foreach (var addr in _addresses)
                 {
                     var host = hosts.Single(h => h.Address.Address.ToString() == addr);
                     Interlocked.Increment(ref _hostYielded);
-                    yield return new HostShard(host, -1);
+                    yield return new RoutingTarget(host, null);
                 }
             }
         }

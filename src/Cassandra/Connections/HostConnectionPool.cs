@@ -181,7 +181,7 @@ namespace Cassandra.Connections
                         shardID = shardingInfo.ShardID(token);
                     }
                 }
-                else
+                else if (shardID == -1)
                 {
                     shardID = rand.Next(shardingInfo.ScyllaNrShards);
                 }

@@ -107,7 +107,7 @@ namespace Cassandra.Tests.MetadataTests
             var replicas = _metadata.GetReplicas(Keyspace, Table, PartitionKey);
 
             Assert.IsEmpty(replicas);
-            Assert.Throws<NotSupportedException>(() => replicas.Add(new HostShard(_hosts[0], 0)));
+            Assert.Throws<NotSupportedException>(() => replicas.Add(new RoutingTarget(_hosts[0], 0)));
         }
 
         [Test]
@@ -317,10 +317,10 @@ namespace Cassandra.Tests.MetadataTests
             _metadata.TabletMap.AddTablet(keyspace, table, new Tablet(long.MinValue, long.MaxValue, replicas.ToList()));
         }
 
-        private void AssertTokenMapReplicas(ICollection<HostShard> replicas)
+        private void AssertTokenMapReplicas(ICollection<RoutingTarget> replicas)
         {
             CollectionAssert.AreEquivalent(_hosts, replicas.Select(r => r.Host));
-            Assert.That(replicas.Select(r => r.Shard), Is.All.EqualTo(-1));
+            Assert.That(replicas.Select(r => r.Shard), Is.All.Null);
         }
     }
 }

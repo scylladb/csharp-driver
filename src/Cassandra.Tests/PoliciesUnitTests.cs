@@ -48,7 +48,7 @@ namespace Cassandra.Tests
             //Initialize the balancing policy
             var policy = new RoundRobinPolicy();
             policy.Initialize(clusterMock.Object);
-            var balancedHosts = policy.NewQueryPlan(null, new SimpleStatement());
+            var balancedHosts = policy.NewQueryPlan(clusterMock.Object, null, new SimpleStatement());
 
             //Take a list of hosts of 4, it should get 1 of every one in a cyclic order.
             var firstRound = balancedHosts.ToList();
@@ -60,10 +60,10 @@ namespace Cassandra.Tests
             }
 
             //test the same but in the following times
-            var followingRounds = new List<HostShard>();
+            var followingRounds = new List<RoutingTarget>();
             for (var i = 0; i < 10; i++)
             {
-                followingRounds.AddRange(policy.NewQueryPlan(null, new SimpleStatement()));
+                followingRounds.AddRange(policy.NewQueryPlan(clusterMock.Object, null, new SimpleStatement()));
             }
             Assert.AreEqual(10 * hostLength, followingRounds.Count);
 
@@ -97,7 +97,7 @@ namespace Cassandra.Tests
             Action action = () =>
             {
                 var resultingHosts = new List<Host>();
-                var hostEnumerator = policy.NewQueryPlan(null, new SimpleStatement());
+                var hostEnumerator = policy.NewQueryPlan(clusterMock.Object, null, new SimpleStatement());
                 foreach (var h in hostEnumerator)
                 {
                     //Slow down to try to execute it at the same time
@@ -143,7 +143,7 @@ namespace Cassandra.Tests
             //0 used nodes per remote dc
             var policy = new DCAwareRoundRobinPolicy("local");
             policy.Initialize(clusterMock.Object);
-            var balancedHosts = policy.NewQueryPlan(null, new SimpleStatement());
+            var balancedHosts = policy.NewQueryPlan(clusterMock.Object, null, new SimpleStatement());
             var firstRound = balancedHosts.ToList();
 
             //Returns only local hosts
@@ -151,10 +151,10 @@ namespace Cassandra.Tests
             Assert.AreEqual(0, firstRound.Count(h => h.Host.Datacenter != "local"));
 
             //following rounds: test it multiple times
-            var followingRounds = new List<HostShard>();
+            var followingRounds = new List<RoutingTarget>();
             for (var i = 0; i < 10; i++)
             {
-                followingRounds.AddRange(policy.NewQueryPlan(null, new SimpleStatement()).ToList());
+                followingRounds.AddRange(policy.NewQueryPlan(clusterMock.Object, null, new SimpleStatement()).ToList());
             }
             Assert.AreEqual(10 * (hostLength - 2), followingRounds.Count);
 
@@ -229,7 +229,7 @@ namespace Cassandra.Tests
             var firstHosts = new ConcurrentBag<Host>();
             Action action = () =>
             {
-                var hosts = policy.NewQueryPlan(null, null).ToList();
+                var hosts = policy.NewQueryPlan(clusterMock.Object, null, null).ToList();
                 //Check that the value is not repeated
                 Assert.AreEqual(0, hosts.GroupBy(x => x)
                     .Where(g => g.Count() > 1)
@@ -330,7 +330,7 @@ namespace Cassandra.Tests
             policy.Initialize(clusterMock.Object);
 
             var hostYielded = new ConcurrentBag<IEnumerable<Host>>();
-            Action action = () => hostYielded.Add(policy.NewQueryPlan(null, null).ToList().Select(h => h.Host));
+            Action action = () => hostYielded.Add(policy.NewQueryPlan(clusterMock.Object, null, null).ToList().Select(h => h.Host));
 
             //Invoke without nodes changing
             TestHelper.ParallelInvoke(action, 100);
@@ -422,7 +422,7 @@ namespace Cassandra.Tests
                         //The host at with address == k || address == k + n
                         var address = TestHelper.GetLastAddressByte(h);
                         return address == i || address == i + n;
-                    }).Select(h => new HostShard(h, -1)).ToList();
+                    }).Select(h => new RoutingTarget(h, null)).ToList();
                 })
                 .Verifiable();
 
@@ -431,7 +431,7 @@ namespace Cassandra.Tests
 
             //key for host :::1 and :::3
             var k = new RoutingKey { RawRoutingKey = new byte[] { 1 } };
-            var hosts = policy.NewQueryPlan(null, new SimpleStatement().SetRoutingKey(k)).ToList();
+            var hosts = policy.NewQueryPlan(clusterMock.Object, null, new SimpleStatement().SetRoutingKey(k)).ToList();
             // 5 local hosts
             Assert.AreEqual(5, hosts.Count);
             //local replica first
@@ -441,7 +441,7 @@ namespace Cassandra.Tests
             //key for host :::2 and :::5
             k = new RoutingKey { RawRoutingKey = new byte[] { 2 } };
             n = 3;
-            hosts = policy.NewQueryPlan(null, new SimpleStatement().SetRoutingKey(k)).ToList();
+            hosts = policy.NewQueryPlan(clusterMock.Object, null, new SimpleStatement().SetRoutingKey(k)).ToList();
             Assert.AreEqual(5, hosts.Count);
             //local replicas first
             CollectionAssert.AreEquivalent(new[] { 2, 5 }, hosts.Take(2).Select(h => TestHelper.GetLastAddressByte(h.Host)));
@@ -483,7 +483,7 @@ namespace Cassandra.Tests
                         //The host at with address == k and the next one
                         var address = TestHelper.GetLastAddressByte(h);
                         return address == i || address == i + 1;
-                    }).Select(h => new HostShard(h, -1)).ToList();
+                    }).Select(h => new RoutingTarget(h, null)).ToList();
                 })
                 .Verifiable();
 
@@ -496,7 +496,7 @@ namespace Cassandra.Tests
             const int times = 10000;
             Action action = () =>
             {
-                var h = policy.NewQueryPlan(null, new SimpleStatement().SetRoutingKey(k)).First();
+                var h = policy.NewQueryPlan(clusterMock.Object, null, new SimpleStatement().SetRoutingKey(k)).First();
                 firstHosts.Add(h.Host);
             };
             TestHelper.ParallelInvoke(action, times);
@@ -510,6 +510,66 @@ namespace Cassandra.Tests
             clusterMock.Verify();
         }
 
+        [TestCase(null, false, TestName = "TokenAwarePolicyDoesNotDuplicateReplicas_Vnodes")]
+        [TestCase(null, true, TestName = "TokenAwarePolicyDoesNotDuplicateReplicas_Vnodes_Lwt")]
+        [TestCase(3, false, TestName = "TokenAwarePolicyDoesNotDuplicateReplicas_Tablets")]
+        [TestCase(3, true, TestName = "TokenAwarePolicyDoesNotDuplicateReplicas_Tablets_Lwt")]
+        public void TokenAwarePolicyDoesNotDuplicateReplicasFromChildPolicy(int? replicaShard, bool routeAsLwt)
+        {
+            var hostList = new List<Host>
+            {
+                TestHelper.CreateHost("0.0.0.1", "dc1"),
+                TestHelper.CreateHost("0.0.0.2", "dc1"),
+                TestHelper.CreateHost("0.0.0.3", "dc1"),
+                TestHelper.CreateHost("0.0.0.4", "dc2")
+            };
+            var clusterMock = new Mock<IInternalCluster>(MockBehavior.Strict);
+            clusterMock
+                .Setup(c => c.AllHosts())
+                .Returns(hostList);
+            // Hosts 1 and 2 are replicas; for tablets they carry the shard that owns the tablet,
+            // while the child policy always yields hosts without a shard
+            clusterMock
+                .Setup(c => c.GetRoutingReplicas(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<byte[]>()))
+                .Returns(new List<RoutingTarget> { new RoutingTarget(hostList[0], replicaShard), new RoutingTarget(hostList[1], replicaShard) });
+
+            var policy = new TokenAwarePolicy(new DCAwareRoundRobinPolicy("dc1"));
+            policy.Initialize(clusterMock.Object);
+
+            var k = new RoutingKey { RawRoutingKey = new byte[] { 1 } };
+            var hosts = policy.NewQueryPlan(clusterMock.Object, null, new SimpleStatement().SetRoutingKey(k), routeAsLwt).ToList();
+
+            // Each local host exactly once: the 2 replicas followed by the remaining local host
+            CollectionAssert.AreEquivalent(hostList.Take(3), hosts.Select(h => h.Host));
+            CollectionAssert.AreEquivalent(new[] { hostList[0], hostList[1] }, hosts.Take(2).Select(h => h.Host));
+            Assert.That(hosts.Take(2).Select(h => h.Shard), Is.All.EqualTo(replicaShard));
+            Assert.AreEqual(hostList[2], hosts[2].Host);
+            Assert.IsNull(hosts[2].Shard);
+        }
+
+        private static IEnumerable<TestCaseData> BuiltInPolicies()
+        {
+            yield return new TestCaseData((Func<ILoadBalancingPolicy>)(() => new RoundRobinPolicy())).SetName("RoundRobinPolicy");
+            yield return new TestCaseData((Func<ILoadBalancingPolicy>)(() => new DCAwareRoundRobinPolicy("dc1"))).SetName("DCAwareRoundRobinPolicy");
+            yield return new TestCaseData((Func<ILoadBalancingPolicy>)(() => new TokenAwarePolicy(new RoundRobinPolicy()))).SetName("TokenAwarePolicy");
+            yield return new TestCaseData((Func<ILoadBalancingPolicy>)(() => new DefaultLoadBalancingPolicy("dc1"))).SetName("DefaultLoadBalancingPolicy");
+        }
+
+        [TestCaseSource(nameof(BuiltInPolicies))]
+        public void BuiltInPoliciesReturnAPlanWithoutRoutingInformation(Func<ILoadBalancingPolicy> createPolicy)
+        {
+            var hosts = new List<Host> { TestHelper.CreateHost("0.0.0.1", "dc1"), TestHelper.CreateHost("0.0.0.2", "dc1") };
+            var cluster = new Mock<IInternalCluster>();
+            cluster.Setup(c => c.AllHosts()).Returns(hosts);
+            var policy = createPolicy();
+            policy.Initialize(cluster.Object);
+
+            var plan = policy.NewQueryPlan(null, new ClusterState(cluster.Object)).ToList();
+
+            CollectionAssert.AreEquivalent(hosts, plan.Select(t => t.Host));
+            Assert.That(plan.Select(t => t.Shard), Is.All.Null);
+        }
+
         [Test]
         public void TokenAwarePolicyUsesStatementKeyspaceAndTableToGetRoutingReplicas()
         {
@@ -520,11 +580,11 @@ namespace Cassandra.Tests
                 .Returns(new List<Host>());
             clusterMock
                 .Setup(c => c.GetRoutingReplicas(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<byte[]>()))
-                .Returns(new List<HostShard>());
+                .Returns(new List<RoutingTarget>());
             var policy = new TokenAwarePolicy(new RoundRobinPolicy());
             policy.Initialize(clusterMock.Object);
 
-            var _ = policy.NewQueryPlan("ks2", CreateStatement("ks1", "tbl1", rawRoutingKey)).ToList();
+            var _ = policy.NewQueryPlan(clusterMock.Object, "ks2", CreateStatement("ks1", "tbl1", rawRoutingKey)).ToList();
 
             clusterMock.Verify(c => c.GetRoutingReplicas("ks1", "tbl1", rawRoutingKey), Times.Once);
         }
@@ -563,7 +623,7 @@ namespace Cassandra.Tests
             var policy = new TokenAwarePolicy(new RoundRobinPolicy());
             policy.Initialize(clusterMock.Object);
 
-            var firstHost = policy.NewQueryPlan("ks2", CreateStatement("ks1", "tbl1", rawRoutingKey)).First();
+            var firstHost = policy.NewQueryPlan(clusterMock.Object, "ks2", CreateStatement("ks1", "tbl1", rawRoutingKey)).First();
 
             Assert.AreSame(hosts[1], firstHost.Host);
             Assert.AreEqual(3, firstHost.Shard);
@@ -597,14 +657,14 @@ namespace Cassandra.Tests
             var policy = new TokenAwarePolicy(new DCAwareRoundRobinPolicy("dc1"));
             policy.Initialize(clusterMock.Object);
             //No routing key
-            var hosts = policy.NewQueryPlan(null, new SimpleStatement()).ToList();
+            var hosts = policy.NewQueryPlan(clusterMock.Object, null, new SimpleStatement()).ToList();
             //2 localhosts
             Assert.AreEqual(2, hosts.Count(h => policy.Distance(h.Host) == HostDistance.Local));
             Assert.AreEqual("dc1", hosts[0].Host.Datacenter);
             Assert.AreEqual("dc1", hosts[1].Host.Datacenter);
             clusterMock.Verify();
             //No statement
-            hosts = policy.NewQueryPlan(null, null).ToList();
+            hosts = policy.NewQueryPlan(clusterMock.Object, null, null).ToList();
             //2 localhosts
             Assert.AreEqual(2, hosts.Count(h => policy.Distance(h.Host) == HostDistance.Local));
             Assert.AreEqual("dc1", hosts[0].Host.Datacenter);

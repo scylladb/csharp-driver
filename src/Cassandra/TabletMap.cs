@@ -11,7 +11,7 @@ namespace Cassandra
     internal class TabletMap
     {
         private static readonly Logger Logger = new Logger(typeof(TabletMap));
-        private static readonly ICollection<HostShard> EMPTY_LIST = new HostShard[0];
+        private static readonly ICollection<RoutingTarget> EMPTY_LIST = new RoutingTarget[0];
 
         private readonly ConcurrentDictionary<KeyspaceTableNamePair, TabletSet> _mapping;
         private readonly Metadata _metadata;
@@ -110,7 +110,7 @@ namespace Cassandra
         /// <c>false</c> when there is no tablet mapping for the table. Otherwise <c>true</c>, with
         /// <paramref name="replicas"/> empty when no cached tablet owns the token or one of its replica hosts is unknown.
         /// </returns>
-        public bool TryGetReplicas(string keyspace, string table, IToken token, out ICollection<HostShard> replicas)
+        public bool TryGetReplicas(string keyspace, string table, IToken token, out ICollection<RoutingTarget> replicas)
         {
             replicas = EMPTY_LIST;
             var key = new KeyspaceTableNamePair(keyspace, table);
@@ -132,7 +132,7 @@ namespace Cassandra
                 return true;
             }
 
-            var tabletReplicas = new List<HostShard>();
+            var tabletReplicas = new List<RoutingTarget>();
             foreach (var hostShardPair in row.Replicas)
             {
                 Host replica = _metadata.Hosts.ToCollection().FirstOrDefault(h => h.HostId == hostShardPair.HostID);
@@ -142,7 +142,7 @@ namespace Cassandra
                     return true;
                 }
 
-                tabletReplicas.Add(new HostShard(replica, hostShardPair.Shard));
+                tabletReplicas.Add(new RoutingTarget(replica, hostShardPair.Shard));
             }
             replicas = tabletReplicas;
             return true;

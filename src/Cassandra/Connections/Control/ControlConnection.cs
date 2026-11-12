@@ -251,18 +251,20 @@ namespace Cassandra.Connections.Control
             bool refreshContactPoints,
             bool refreshEndpoints)
         {
-            foreach (var hostShard in _config.DefaultRequestOptions.LoadBalancingPolicy.NewQueryPlan(null, null))
+            var plan = _config.DefaultRequestOptions.LoadBalancingPolicy.NewQueryPlan(
+                RoutingInfo.ForKeyspace(null), new ClusterState(_cluster));
+            foreach (var target in plan.TakeWhileHostIsSet())
             {
-                if (attempt.AttemptedHosts.TryAdd(hostShard.Host, null))
+                if (attempt.AttemptedHosts.TryAdd(target.Host, null))
                 {
-                    if (!IsHostValid(hostShard.Host, isInitializing))
+                    if (!IsHostValid(target.Host, isInitializing))
                     {
                         continue;
                     }
 
                     yield return GetHostContactPointOrConnectionEndpointResolutionPlan(
                         attempt,
-                        hostShard.Host,
+                        target.Host,
                         refreshContactPoints,
                         refreshEndpoints);
                 }

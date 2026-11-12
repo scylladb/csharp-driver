@@ -28,14 +28,13 @@ namespace Cassandra
     /// </para>
     /// <list type="number">
     /// <item>The <see cref="Distance(Host)"/> method is inherited  from the child policy.</item>
-    /// <item>The host yielded by the <see cref="NewQueryPlan(string, IStatement)"/> method will first return the
-    /// <see cref="HostDistance.Local"/> replicas for the statement, based on the <see cref="Statement.RoutingKey"/>.
+    /// <item>The host yielded by the <see cref="NewQueryPlan(RoutingInfo, ClusterState)"/> method will first return the
+    /// <see cref="HostDistance.Local"/> replicas for the statement, based on its <see cref="RoutingInfo.RoutingKey"/>.
     /// </item>
     /// </list>
     /// </summary>
-    public class TokenAwarePolicy : IExtendedLoadBalancingPolicy
+    public class TokenAwarePolicy : ILoadBalancingPolicy
     {
-        private ICluster _cluster;
         private readonly ThreadLocal<Random> _prng = new ThreadLocal<Random>(() => new Random(
             // Predictable random numbers are OK
             Environment.TickCount * Environment.CurrentManagedThreadId));
@@ -55,7 +54,6 @@ namespace Cassandra
 
         public void Initialize(ICluster cluster)
         {
-            _cluster = cluster;
             ChildPolicy.Initialize(cluster);
         }
 
@@ -78,44 +76,29 @@ namespace Cassandra
         ///  <c>IStatement.RoutingKey</c> is not <c>null</c>). Following what
         ///  it will return the plan of the child policy.</p>
         /// </summary>
-        /// <param name="loggedKeyspace">Keyspace on which the query is going to be executed</param>
-        /// <param name="query"> the query for which to build the plan. </param>
+        /// <param name="routing">The routing information of the request.</param>
+        /// <param name="cluster">The view of the cluster, which gives the replicas.</param>
         /// <returns>the new query plan.</returns>
-        public IEnumerable<HostShard> NewQueryPlan(string loggedKeyspace, IStatement query)
+        public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
         {
-            return NewQueryPlan(loggedKeyspace, query, query?.ShouldRouteAsLwt() == true);
-        }
-
-        /// <inheritdoc />
-        public IEnumerable<HostShard> NewQueryPlan(string loggedKeyspace, IStatement query, bool routeAsLwt)
-        {
-            var routingKey = query?.RoutingKey;
-            IEnumerable<HostShard> childIterator;
-            if (routingKey == null)
+            if (routing?.RoutingKey == null)
             {
-                childIterator = ChildPolicy is IExtendedLoadBalancingPolicy extChild
-                    ? extChild.NewQueryPlan(loggedKeyspace, query, routeAsLwt)
-                    : ChildPolicy.NewQueryPlan(loggedKeyspace, query);
-                foreach (var h in childIterator)
+                foreach (var h in ChildPolicy.NewQueryPlan(routing, cluster))
                 {
                     yield return h;
                 }
                 yield break;
             }
 
-            var keyspace = query.Keyspace ?? loggedKeyspace;
-            var table = query.TableName;
-            var replicas = (_cluster is IInternalCluster internalCluster
-                               ? internalCluster.GetRoutingReplicas(keyspace, table, routingKey.RawRoutingKey)
-                               : _cluster.Metadata.GetRoutingReplicas(keyspace, table, routingKey.RawRoutingKey))
-                           ?? new HostShard[0];
+            var replicas = cluster.GetReplicas(routing);
 
-            var localReplicaSet = new HashSet<HostShard>();
-            var localReplicaList = new List<HostShard>(replicas.Count());
+            // Keyed by host only: tablet replicas carry their shard while the child policy yields no shard
+            var localReplicaSet = new HashSet<Host>();
+            var localReplicaList = new List<RoutingTarget>(replicas.Count);
             // We can't do it lazily as we need to balance the load between local replicas
             foreach (var localReplica in replicas.Where(hs => ChildPolicy.Distance(hs.Host) == HostDistance.Local))
             {
-                localReplicaSet.Add(localReplica);
+                localReplicaSet.Add(localReplica.Host);
                 localReplicaList.Add(localReplica);
             }
             // Return the local replicas first
@@ -123,7 +106,7 @@ namespace Cassandra
             {
                 var startIndex = 0;
                 // Use a pseudo random start index if query should not be routed as LWT
-                if (!routeAsLwt)
+                if (!routing.ShouldRouteAsLwt)
                 {
                     startIndex = _prng.Value.Next();
                 }
@@ -134,12 +117,9 @@ namespace Cassandra
             }
 
             // Then, return the rest of child policy hosts
-            childIterator = ChildPolicy is IExtendedLoadBalancingPolicy extChild2
-                ? extChild2.NewQueryPlan(loggedKeyspace, query, routeAsLwt)
-                : ChildPolicy.NewQueryPlan(loggedKeyspace, query);
-            foreach (var h in childIterator)
+            foreach (var h in ChildPolicy.NewQueryPlan(routing, cluster))
             {
-                if (localReplicaSet.Contains(h))
+                if (localReplicaSet.Contains(h.Host))
                 {
                     continue;
                 }

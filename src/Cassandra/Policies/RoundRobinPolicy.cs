@@ -33,7 +33,7 @@ namespace Cassandra
     ///  <see cref="DCAwareRoundRobinPolicy"/> load balancing policy instead.
     /// </para>
     /// </summary>
-    public class RoundRobinPolicy : IExtendedLoadBalancingPolicy
+    public class RoundRobinPolicy : ILoadBalancingPolicy
     {
         ICluster _cluster;
         int _index;
@@ -62,18 +62,13 @@ namespace Cassandra
         ///  plans returned will cycle over all the host of the cluster in a round-robin
         ///  fashion.</p>
         /// </summary>
-        /// <param name="keyspace">Keyspace on which the query is going to be executed</param>
-        /// <param name="query"> the query for which to build the plan. </param>
+        /// <param name="routing">The routing information of the request.</param>
+        /// <param name="cluster">The view of the cluster.</param>
         /// <returns>a new query plan, i.e. an iterator indicating which host to try
         ///  first for querying, which one to use as failover, etc...</returns>
-        public IEnumerable<HostShard> NewQueryPlan(string keyspace, IStatement query)
+        public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
         {
-            return NewQueryPlan(keyspace, query, query?.ShouldRouteAsLwt() == true);
-        }
-
-        /// <inheritdoc />
-        public IEnumerable<HostShard> NewQueryPlan(string keyspace, IStatement query, bool routeAsLwt)
-        {
+            var routeAsLwt = routing?.ShouldRouteAsLwt == true;
             //shallow copy the all hosts
             var hosts = (from h in _cluster.AllHosts() select h).ToArray();
             var startIndex = 0;
@@ -90,7 +85,7 @@ namespace Cassandra
 
             for (var i = 0; i < hosts.Length; i++)
             {
-                yield return new HostShard(hosts[(startIndex + i) % hosts.Length], -1);
+                yield return new RoutingTarget(hosts[(startIndex + i) % hosts.Length], null);
             }
         }
     }

@@ -79,7 +79,7 @@ namespace Cassandra.Tests.Requests
             mockResult.Session.Keyspace = expectedKeyspace;
             var queryPlan = mockResult.Session.InternalCluster
                                       .GetResolvedEndpoints()
-                                      .Select(x => new HostShard(
+                                      .Select(x => new RoutingTarget(
                                           new Host(x.Value.First().GetHostIpEndPointWithFallback(), contactPoint: null),
                                           -1))
                                       .Take(2)
@@ -192,7 +192,7 @@ namespace Cassandra.Tests.Requests
             };
             var queryPlan = mockResult.Session.InternalCluster
                                       .GetResolvedEndpoints()
-                                      .Select(x => new HostShard(
+                                      .Select(x => new RoutingTarget(
                                           new Host(x.Value.First().GetHostIpEndPointWithFallback(), contactPoint: null),
                                           -1))
                                       .Take(1)
@@ -270,7 +270,7 @@ namespace Cassandra.Tests.Requests
             };
             var queryPlan = mockResult.Session.InternalCluster
                                       .GetResolvedEndpoints()
-                                      .Select(x => new HostShard(
+                                      .Select(x => new RoutingTarget(
                                           new Host(x.Value.First().GetHostIpEndPointWithFallback(), contactPoint: null),
                                           -1))
                                       .Take(1)
@@ -336,7 +336,7 @@ namespace Cassandra.Tests.Requests
             };
             var queryPlan = mockResult.Session.InternalCluster
                                       .GetResolvedEndpoints()
-                                      .Select(x => new HostShard(
+                                      .Select(x => new RoutingTarget(
                                           new Host(x.Value.First().GetHostIpEndPointWithFallback(), contactPoint: null),
                                           -1))
                                       .Take(1)
@@ -407,7 +407,7 @@ namespace Cassandra.Tests.Requests
             };
             var queryPlan = mockResult.Session.InternalCluster
                                       .GetResolvedEndpoints()
-                                      .Select(x => new HostShard(new Host(x.Value.First().GetHostIpEndPointWithFallback(), contactPoint: null), -1))
+                                      .Select(x => new RoutingTarget(new Host(x.Value.First().GetHostIpEndPointWithFallback(), contactPoint: null), null))
                                       .ToList();
             await mockResult.Session.GetOrCreateConnectionPool(queryPlan[0].Host, HostDistance.Local).Warmup().ConfigureAwait(false);
             await mockResult.Session.GetOrCreateConnectionPool(queryPlan[2].Host, HostDistance.Local).Warmup().ConfigureAwait(false);
@@ -480,7 +480,7 @@ namespace Cassandra.Tests.Requests
             };
             var queryPlan = mockResult.Session.InternalCluster
                                       .GetResolvedEndpoints()
-                                      .Select(x => new HostShard(new Host(x.Value.First().GetHostIpEndPointWithFallback(), contactPoint: null), -1))
+                                      .Select(x => new RoutingTarget(new Host(x.Value.First().GetHostIpEndPointWithFallback(), contactPoint: null), null))
                                       .ToList();
             await mockResult.Session.GetOrCreateConnectionPool(queryPlan[0].Host, HostDistance.Local).Warmup().ConfigureAwait(false);
             mockResult.Session.GetOrCreateConnectionPool(queryPlan[1].Host, HostDistance.Local);
@@ -554,7 +554,7 @@ namespace Cassandra.Tests.Requests
             };
             var queryPlan = mockResult.Session.InternalCluster
                                       .GetResolvedEndpoints()
-                                      .Select(x => new HostShard(new Host(x.Value.First().GetHostIpEndPointWithFallback(), contactPoint: null), -1))
+                                      .Select(x => new RoutingTarget(new Host(x.Value.First().GetHostIpEndPointWithFallback(), contactPoint: null), null))
                                       .ToList();
             await mockResult.Session.GetOrCreateConnectionPool(queryPlan[0].Host, HostDistance.Local).Warmup().ConfigureAwait(false);
             await mockResult.Session.GetOrCreateConnectionPool(queryPlan[1].Host, HostDistance.Local).Warmup().ConfigureAwait(false);
@@ -630,7 +630,7 @@ namespace Cassandra.Tests.Requests
             };
             var queryPlan = mockResult.Session.InternalCluster
                                       .GetResolvedEndpoints()
-                                      .Select(x => new HostShard(new Host(x.Value.First().GetHostIpEndPointWithFallback(), contactPoint: null), -1))
+                                      .Select(x => new RoutingTarget(new Host(x.Value.First().GetHostIpEndPointWithFallback(), contactPoint: null), null))
                                       .ToList();
             await mockResult.Session.GetOrCreateConnectionPool(queryPlan[1].Host, HostDistance.Local).Warmup().ConfigureAwait(false);
             await mockResult.Session.GetOrCreateConnectionPool(queryPlan[2].Host, HostDistance.Local).Warmup().ConfigureAwait(false);
@@ -704,7 +704,7 @@ namespace Cassandra.Tests.Requests
             };
             var queryPlan = mockResult.Session.InternalCluster
                                       .GetResolvedEndpoints()
-                                      .Select(x => new HostShard(new Host(x.Value.First().GetHostIpEndPointWithFallback(), contactPoint: null), -1))
+                                      .Select(x => new RoutingTarget(new Host(x.Value.First().GetHostIpEndPointWithFallback(), contactPoint: null), null))
                                       .ToList();
             await mockResult.Session.GetOrCreateConnectionPool(queryPlan[1].Host, HostDistance.Local).Warmup().ConfigureAwait(false);
             await mockResult.Session.GetOrCreateConnectionPool(queryPlan[2].Host, HostDistance.Local).Warmup().ConfigureAwait(false);
@@ -779,7 +779,7 @@ namespace Cassandra.Tests.Requests
             };
             var queryPlan = mockResult.Session.InternalCluster
                                       .GetResolvedEndpoints()
-                                      .Select(x => new HostShard(new Host(x.Value.First().GetHostIpEndPointWithFallback(), contactPoint: null), -1))
+                                      .Select(x => new RoutingTarget(new Host(x.Value.First().GetHostIpEndPointWithFallback(), contactPoint: null), null))
                                       .ToList();
             await mockResult.Session.GetOrCreateConnectionPool(queryPlan[1].Host, HostDistance.Local).Warmup().ConfigureAwait(false);
             await mockResult.Session.GetOrCreateConnectionPool(queryPlan[2].Host, HostDistance.Local).Warmup().ConfigureAwait(false);
@@ -917,7 +917,7 @@ namespace Cassandra.Tests.Requests
                 return HostDistance.Local;
             }
 
-            public IEnumerable<HostShard> NewQueryPlan(string keyspace, IStatement query)
+            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
             {
                 Interlocked.Increment(ref NewQueryPlanCount);
                 throw new NotImplementedException();

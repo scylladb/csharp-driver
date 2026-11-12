@@ -105,6 +105,18 @@
   </Suppression>
   <Suppression>
     <DiagnosticId>CP0001</DiagnosticId>
+    <Target>T:Cassandra.HostShard</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0001</DiagnosticId>
+    <Target>T:Cassandra.IExtendedLoadBalancingPolicy</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0001</DiagnosticId>
     <Target>T:Cassandra.ITypeAdapter</Target>
     <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
     <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
@@ -165,7 +177,31 @@
   </Suppression>
   <Suppression>
     <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.Cluster.GetReplicas(System.Byte[])</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.Cluster.GetReplicas(System.String,System.Byte[])</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
     <Target>M:Cassandra.DCAwareRoundRobinPolicy.#ctor(System.String,System.Int32)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.DCAwareRoundRobinPolicy.NewQueryPlan(System.String,Cassandra.IStatement)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.DCAwareRoundRobinPolicy.NewQueryPlan(System.String,Cassandra.IStatement,System.Boolean)</Target>
     <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
     <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
   </Suppression>
@@ -237,6 +273,18 @@
   </Suppression>
   <Suppression>
     <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.DefaultLoadBalancingPolicy.NewQueryPlan(System.String,Cassandra.IStatement)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.DefaultLoadBalancingPolicy.NewQueryPlan(System.String,Cassandra.IStatement,System.Boolean)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
     <Target>M:Cassandra.Diagnostics.get_CassandraPerformanceCountersEnabled</Target>
     <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
     <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
@@ -256,6 +304,24 @@
   <Suppression>
     <DiagnosticId>CP0002</DiagnosticId>
     <Target>M:Cassandra.FunctionFailureException.#ctor(System.Runtime.Serialization.SerializationInfo,System.Runtime.Serialization.StreamingContext)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.ICluster.GetReplicas(System.Byte[])</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.ICluster.GetReplicas(System.String,System.Byte[])</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.ILoadBalancingPolicy.NewQueryPlan(System.String,Cassandra.IStatement)</Target>
     <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
     <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
   </Suppression>
@@ -303,7 +369,31 @@
   </Suppression>
   <Suppression>
     <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.Metadata.GetReplicas(System.Byte[])</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.Metadata.GetReplicas(System.String,System.Byte[])</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
     <Target>M:Cassandra.NoHostAvailableException.#ctor(System.Runtime.Serialization.SerializationInfo,System.Runtime.Serialization.StreamingContext)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.RoundRobinPolicy.NewQueryPlan(System.String,Cassandra.IStatement)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.RoundRobinPolicy.NewQueryPlan(System.String,Cassandra.IStatement,System.Boolean)</Target>
     <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
     <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
   </Suppression>
@@ -440,8 +530,62 @@
     <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
   </Suppression>
   <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.TokenAwarePolicy.NewQueryPlan(System.String,Cassandra.IStatement)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Cassandra.TokenAwarePolicy.NewQueryPlan(System.String,Cassandra.IStatement,System.Boolean)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0006</DiagnosticId>
+    <Target>M:Cassandra.ICluster.GetReplicas(System.Byte[])</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0006</DiagnosticId>
+    <Target>M:Cassandra.ICluster.GetReplicas(System.String,System.Byte[])</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0006</DiagnosticId>
+    <Target>M:Cassandra.ILoadBalancingPolicy.NewQueryPlan(Cassandra.RoutingInfo,Cassandra.ClusterState)</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0008</DiagnosticId>
+    <Target>T:Cassandra.DCAwareRoundRobinPolicy</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0008</DiagnosticId>
+    <Target>T:Cassandra.DefaultLoadBalancingPolicy</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0008</DiagnosticId>
+    <Target>T:Cassandra.RoundRobinPolicy</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
     <DiagnosticId>CP0008</DiagnosticId>
     <Target>T:Cassandra.RowSet</Target>
+    <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
+    <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0008</DiagnosticId>
+    <Target>T:Cassandra.TokenAwarePolicy</Target>
     <Left>baselines/ScyllaDBCSharpDriver/lib/netstandard2.0/ScyllaDB.dll</Left>
     <Right>candidate-extracted/ScyllaDBCSharpDriver/lib/net10.0/ScyllaDB.dll</Right>
   </Suppression>

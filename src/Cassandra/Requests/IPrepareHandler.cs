@@ -26,7 +26,7 @@ namespace Cassandra.Requests
         Task<PreparedStatement> Prepare(
             InternalPrepareRequest request,
             IInternalSession session,
-            IEnumerator<HostShard> queryPlan,
+            IEnumerator<RoutingTarget> queryPlan,
             string sessionKeyspace,
             string effectiveKeyspace);
     }

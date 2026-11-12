@@ -388,9 +388,9 @@ namespace Cassandra.IntegrationTests.Core
                 return _parent.Distance(host);
             }
 
-            public IEnumerable<HostShard> NewQueryPlan(string keyspace, IStatement query)
+            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
             {
-                var plan = _parent.NewQueryPlan(keyspace, query);
+                var plan = _parent.NewQueryPlan(routing, cluster);
                 return plan.Where(h => !_disallowed.Contains(h.Host.Address));
             }
         }

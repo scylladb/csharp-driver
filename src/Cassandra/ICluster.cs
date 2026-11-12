@@ -113,7 +113,7 @@ namespace Cassandra
         /// <param name="partitionKey">Byte array representing the partition key</param>
         /// <returns></returns>
         [Obsolete("Use Metadata.GetReplicas(string keyspaceName, string tableName, byte[] partitionKey) for tablet-aware replica resolution.")]
-        ICollection<HostShard> GetReplicas(byte[] partitionKey);
+        ICollection<RoutingTarget> GetReplicas(byte[] partitionKey);
 
         /// <summary>
         /// Gets a collection of replicas for a given partitionKey on a given keyspace
@@ -127,7 +127,7 @@ namespace Cassandra
         /// <see cref="Metadata.GetReplicas(string, string, byte[])"/>.
         /// </remarks>
         [Obsolete("Use Metadata.GetReplicas(string keyspaceName, string tableName, byte[] partitionKey) for tablet-aware replica resolution.")]
-        ICollection<HostShard> GetReplicas(string keyspace, byte[] partitionKey);
+        ICollection<RoutingTarget> GetReplicas(string keyspace, byte[] partitionKey);
 
         /// <summary>
         ///  Shutdown this cluster instance. This closes all connections from all the

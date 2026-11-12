@@ -18,10 +18,11 @@ namespace Cassandra.Requests
 {
     internal class ValidHost
     {
-        private ValidHost(Host host, HostDistance distance)
+        private ValidHost(Host host, HostDistance distance, int? shard)
         {
             Host = host;
             Distance = distance;
+            Shard = shard;
         }
 
         public Host Host { get; }
@@ -29,11 +30,16 @@ namespace Cassandra.Requests
         public HostDistance Distance { get; }
 
         /// <summary>
+        /// The shard the query plan chose for this host, or null to let the connection pool choose it.
+        /// </summary>
+        public int? Shard { get; }
+
+        /// <summary>
         /// Builds a <see cref="ValidHost"/> instance.
         /// </summary>
         /// <returns>Newly built instance if valid or <code>null</code> if not valid
         /// (e.g. the host is ignored or the driver sees it as down)</returns>
-        public static ValidHost New(Host host, HostDistance distance)
+        public static ValidHost New(Host host, HostDistance distance, int? shard = null)
         {
             if (distance == HostDistance.Ignored)
             {
@@ -49,7 +55,7 @@ namespace Cassandra.Requests
                 return null;
             }
 
-            return new ValidHost(host, distance);
+            return new ValidHost(host, distance, shard);
         }
     }
 }

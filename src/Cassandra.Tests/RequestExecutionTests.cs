@@ -190,7 +190,7 @@ namespace Cassandra.Tests
                 host,
                 HostDistance.Local);
             Mock.Get(mockParent)
-                .Setup(m => m.GetConnectionToValidHostAsync(validHost, It.IsAny<Dictionary<IPEndPoint, Exception>>(), It.IsAny<int>()))
+                .Setup(m => m.GetConnectionToValidHostAsync(validHost, It.IsAny<Dictionary<IPEndPoint, Exception>>()))
                 .ReturnsAsync(connection);
             Mock.Get(mockParent)
                 .Setup(m => m.GetNextValidHost(It.IsAny<Dictionary<IPEndPoint, Exception>>()))
@@ -224,8 +224,9 @@ namespace Cassandra.Tests
                 });
         }
 
-        [Test]
-        public void Should_RetryRequestToSameHost_When_ConnectionFailsAndRetryDecisionIsRetrySameHost()
+        [TestCase(null)]
+        [TestCase(3)]
+        public void Should_RetryRequestToSameHost_When_ConnectionFailsAndRetryDecisionIsRetrySameHost(int? shard)
         {
             var mockSession = Mock.Of<IInternalSession>();
             var requestHandlerFactory = Mock.Of<IRequestHandlerFactory>();
@@ -254,7 +255,8 @@ namespace Cassandra.Tests
                 new ConstantReconnectionPolicy(1));
             var validHost = ValidHost.New(
                 host,
-                HostDistance.Local);
+                HostDistance.Local,
+                shard);
             var secondHost = new Host(
                 new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9047),
                 new ConstantReconnectionPolicy(1)); // second host should never be used if test passes
@@ -281,12 +283,13 @@ namespace Cassandra.Tests
 
             // Setup connection failure
             Mock.Get(mockParent)
-                .Setup(m => m.GetConnectionToValidHostAsync(validHost, It.IsAny<Dictionary<IPEndPoint, Exception>>(), It.IsAny<int>()))
+                .Setup(m => m.GetConnectionToValidHostAsync(validHost, It.IsAny<Dictionary<IPEndPoint, Exception>>()))
                 .ThrowsAsync(exception);
 
-            // Setup successful second connection on the same host retry (different method call - ValidateHostAndGetConnectionAsync)
+            // Setup successful second connection on the same host retry (different method call - ValidateHostAndGetConnectionAsync),
+            // on the shard the query plan chose
             Mock.Get(mockParent)
-                .Setup(m => m.ValidateHostAndGetConnectionAsync(new HostShard(validHost.Host, -1), It.IsAny<Dictionary<IPEndPoint, Exception>>()))
+                .Setup(m => m.ValidateHostAndGetConnectionAsync(new RoutingTarget(validHost.Host, shard), It.IsAny<Dictionary<IPEndPoint, Exception>>()))
                 .ReturnsAsync(connection);
 
             Mock.Get(mockParent)
@@ -320,10 +323,10 @@ namespace Cassandra.Tests
 
             // Validate that there were 2 connection attempts (1 with each method)
             Mock.Get(mockParent).Verify(
-                m => m.GetConnectionToValidHostAsync(validHost, It.IsAny<Dictionary<IPEndPoint, Exception>>(), It.IsAny<int>()),
+                m => m.GetConnectionToValidHostAsync(validHost, It.IsAny<Dictionary<IPEndPoint, Exception>>()),
                 Times.Once);
             Mock.Get(mockParent).Verify(
-                m => m.ValidateHostAndGetConnectionAsync(new HostShard(validHost.Host, -1), It.IsAny<Dictionary<IPEndPoint, Exception>>()),
+                m => m.ValidateHostAndGetConnectionAsync(new RoutingTarget(validHost.Host, shard), It.IsAny<Dictionary<IPEndPoint, Exception>>()),
                 Times.Once);
         }
 
@@ -376,7 +379,7 @@ namespace Cassandra.Tests
             parent.Setup(value => value.GetNextValidHost(It.IsAny<Dictionary<IPEndPoint, Exception>>()))
                 .Returns(validHost);
             parent.Setup(value => value.GetConnectionToValidHostAsync(
-                    validHost, It.IsAny<IDictionary<IPEndPoint, Exception>>(), It.IsAny<int>()))
+                    validHost, It.IsAny<IDictionary<IPEndPoint, Exception>>()))
                 .ReturnsAsync(connection.Object);
             var execution = new RequestExecution(
                 parent.Object, session.Object, request, NullRequestObserver.Instance,
@@ -471,7 +474,7 @@ namespace Cassandra.Tests
                 .Returns(validHost);
             parent
                 .Setup(value => value.GetConnectionToValidHostAsync(
-                    validHost, It.IsAny<IDictionary<IPEndPoint, Exception>>(), It.IsAny<int>()))
+                    validHost, It.IsAny<IDictionary<IPEndPoint, Exception>>()))
                 .ReturnsAsync(connection.Object);
             parent.Setup(value => value.SetNodeExecutionCompleted(It.IsAny<Guid>())).Returns(true);
             parent

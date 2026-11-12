@@ -385,13 +385,13 @@ namespace Cassandra.Tests.ExecutionProfiles
                 return HostDistance.Local;
             }
 
-            public IEnumerable<HostShard> NewQueryPlan(string keyspace, IStatement query)
+            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
             {
                 Interlocked.Increment(ref Count);
-                return new List<HostShard>
+                return new List<RoutingTarget>
                 {
-                    new HostShard(new Host(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042), contactPoint: null), -1),
-                    new HostShard(new Host(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042), contactPoint: null), -1) // 2 hosts for speculative execution policy
+                    new RoutingTarget(new Host(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042), contactPoint: null), null),
+                    new RoutingTarget(new Host(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042), contactPoint: null), null) // 2 hosts for speculative execution policy
                 };
             }
         }
