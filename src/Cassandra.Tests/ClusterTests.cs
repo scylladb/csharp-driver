@@ -297,8 +297,14 @@ namespace Cassandra.Tests
             configuration.SocketOptions.SetConnectTimeoutMillis(1).SetMetadataAbortTimeout(10);
             using (var cluster = CreateCluster(configuration))
             {
-                Assert.Throws<TimeoutException>(() => _ = cluster.Metadata);
-                Assert.Throws<TimeoutException>(() => _ = cluster.Metadata);
+                var firstTimeout = Assert.Throws<TimeoutException>(() => _ = cluster.Metadata);
+                var secondTimeout = Assert.Throws<TimeoutException>(() => _ = cluster.Metadata);
+                foreach (var timeout in new[] { firstTimeout, secondTimeout })
+                {
+                    Assert.That(timeout.Message, Does.Contain("does not cancel setup"));
+                    Assert.That(timeout.Message, Does.Contain("internal minimum"));
+                    Assert.That(timeout.Message, Does.Not.Contain("was aborted"));
+                }
                 controlConnection.Verify(c => c.InitAsync(), Times.Once);
                 controlConnection.Verify(c => c.Dispose(), Times.Never);
 
@@ -420,6 +426,78 @@ namespace Cassandra.Tests
                 speculativePolicy.Verify(p => p.Dispose(), failSpeculativePolicy ? Times.Once : Times.Never);
                 controlConnection.Verify(c => c.InitAsync(), Times.Once);
                 controlConnection.Verify(c => c.Dispose(), Times.Once);
+            }
+        }
+
+        [NonParallelizable]
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task ClientRoutesRetryRetainsPolicyFailureArrivingAfterItsFirstTerminalCheck(bool noHostAvailable)
+        {
+            var controlReady = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var policyStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var releasePolicy = new ManualResetEventSlim();
+            Exception failure = noHostAvailable
+                ? new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>())
+                : new TimeoutException("terminal policy failure");
+            var control = new Mock<IControlConnection>();
+            control.SetupSequence(value => value.InitAsync())
+                .Returns(controlReady.Task)
+                .Throws(new ObjectDisposedException("control connection"));
+            control.SetupGet(value => value.Serializer).Returns(new SerializerManager(ProtocolVersion.V3));
+            var policy = new Mock<ILoadBalancingPolicy>();
+            policy.Setup(value => value.Initialize(It.IsAny<ICluster>())).Callback(() =>
+            {
+                policyStarted.TrySetResult(true);
+                if (!releasePolicy.Wait(TimeSpan.FromSeconds(5)))
+                {
+                    throw new InvalidOperationException("Policy was not released.");
+                }
+                throw failure;
+            });
+            var configuration = CreateClientRoutesClusterConfiguration(control.Object, _ => { }, policy.Object);
+            configuration.SocketOptions.SetConnectTimeoutMillis(1).SetMetadataAbortTimeout(10);
+            using var cluster = CreateCluster(configuration);
+            Assert.Throws<TimeoutException>(() => _ = cluster.Metadata);
+            var retainedSetup = (Task)typeof(Cluster).GetField(
+                "_clientRoutesInitTask", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cluster);
+            var listener = new Mock<TraceListener> { CallBase = true };
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            listener.Setup(value => value.WriteLine(It.Is<string>(message => message.Contains("Connecting to cluster using"))))
+                .Callback<string>(_ =>
+                {
+                    releasePolicy.Set();
+                    try
+                    {
+                        retainedSetup.WaitAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
+                    }
+                    catch (Exception observed) when (ReferenceEquals(observed, failure))
+                    {
+                        // The retained policy failed between this caller's initial check and task classification.
+                    }
+                });
+            try
+            {
+                controlReady.TrySetResult(true);
+                await policyStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+                Trace.Listeners.Add(listener.Object);
+                var observed = Assert.Throws<InitFatalErrorException>(() => _ = cluster.Metadata);
+                Assert.AreSame(failure, observed.InnerException);
+                control.Verify(value => value.InitAsync(), Times.Once);
+                control.Verify(value => value.Dispose(), Times.Once);
+                policy.Verify(value => value.Initialize(cluster), Times.Once);
+                Assert.AreSame(retainedSetup, typeof(Cluster).GetField(
+                    "_clientRoutesInitTask", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cluster));
+            }
+            finally
+            {
+                releasePolicy.Set();
+                Trace.Listeners.Remove(listener.Object);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                await retainedSetup.ContinueWith(completed => _ = completed.Exception, TaskScheduler.Default)
+                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                listener.Object.Dispose();
             }
         }
 
@@ -861,6 +939,8 @@ namespace Cassandra.Tests
             {
                 var timeout = Assert.Throws<TimeoutException>(() => _ = cluster.Metadata);
                 Assert.AreSame(failure, timeout.InnerException);
+                Assert.That(timeout.Message, Does.Contain("fresh setup attempt"));
+                Assert.That(timeout.Message, Does.Not.Contain("does not cancel setup"));
                 controlConnection.Verify(c => c.Dispose(), Times.Never);
 
                 Assert.DoesNotThrow(() => _ = cluster.Metadata);
