@@ -2,11 +2,14 @@
 
 ## Load-balancing policy
 
-The load balancing policy interface consists of three methods:
+The load balancing policy interface consists of these methods:
 
 - `Distance(Host)`: determines the distance to the specified host. The values are `HostDistance.Ignored`, `Local` and `Remote`.
 - `Initialize(Cluster)`: initializes the policy. The driver calls this method only once and before any other method calls are made.
-- `NewQueryPlan(RoutingInfo, MetadataSnapshot)`: returns the nodes, and optionally their shards, to use for a request. Each new request calls this method. `RoutingInfo` describes the request: its keyspace, table, routing key, effective consistency levels and whether it should be routed as a lightweight transaction. `MetadataSnapshot` is an immutable view of the cluster metadata taken for the plan: the nodes of the cluster and the replicas of the request.
+- `Pick(RoutingInfo, MetadataSnapshot)`: returns the node, and optionally its shard, to send a request to first. Each new request calls this method once.
+- `Fallback(RoutingInfo, MetadataSnapshot)`: returns the nodes, and optionally their shards, to try in order when the first target can't be used, for retries and speculative executions. The driver calls it at most once per request, only when the plan goes past the pick, and skips the node of `Pick`. A policy that rotates through nodes should use a separate rotation in each method, so that requests needing their fallback targets don't move the first target of the next requests.
+
+For both methods, `RoutingInfo` describes the request: its keyspace, table, routing key, effective consistency levels and whether it should be routed as a lightweight transaction. `MetadataSnapshot` is an immutable view of the cluster metadata taken for the plan: the nodes of the cluster and the replicas of the request.
 
 The driver includes these implementations:
 

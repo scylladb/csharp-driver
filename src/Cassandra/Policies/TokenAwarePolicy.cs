@@ -28,8 +28,9 @@ namespace Cassandra
     /// </para>
     /// <list type="number">
     /// <item>The <see cref="Distance(Host)"/> method is inherited  from the child policy.</item>
-    /// <item>The host yielded by the <see cref="NewQueryPlan(RoutingInfo, MetadataSnapshot)"/> method will first return the
-    /// <see cref="HostDistance.Local"/> replicas for the statement, based on its <see cref="RoutingInfo.RoutingKey"/>.
+    /// <item>The <see cref="Pick"/> and <see cref="Fallback"/> methods first return the
+    /// <see cref="HostDistance.Local"/> replicas for the statement, based on its <see cref="RoutingInfo.RoutingKey"/>,
+    /// then the targets of the child policy.
     /// </item>
     /// </list>
     /// </summary>
@@ -70,27 +71,61 @@ namespace Cassandra
         }
 
         /// <summary>
-        ///  Returns the hosts to use for a new query. <p> The returned plan will first
-        ///  return replicas (whose <c>HostDistance</c> for the child policy is
-        ///  <c>Local</c>) for the query if it can determine them (i.e. mainly if
-        ///  <c>IStatement.RoutingKey</c> is not <c>null</c>). Following what
-        ///  it will return the plan of the child policy.</p>
+        ///  Returns a replica of the request whose <c>HostDistance</c> for the child policy is <c>Local</c>,
+        ///  chosen at random, or the first one when the request should be routed as a lightweight transaction.
+        ///  Without a routing key or such a replica, returns the first target of the child policy.
         /// </summary>
         /// <param name="routing">The routing information of the request.</param>
         /// <param name="metadata">The snapshot of the cluster metadata, which gives the replicas.</param>
-        /// <returns>the new query plan.</returns>
-        public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, MetadataSnapshot metadata)
+        public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot metadata)
+        {
+            if (routing?.RoutingKey != null)
+            {
+                var replicas = (metadata ?? MetadataSnapshot.Empty).GetReplicas(routing);
+                var localReplicaCount = 0;
+                foreach (var replica in replicas)
+                {
+                    if (ChildPolicy.Distance(replica.Host) == HostDistance.Local)
+                    {
+                        localReplicaCount++;
+                    }
+                }
+
+                if (localReplicaCount > 0)
+                {
+                    var chosen = routing.ShouldRouteAsLwt ? 0 : _prng.Value.Next(localReplicaCount);
+                    foreach (var replica in replicas)
+                    {
+                        if (ChildPolicy.Distance(replica.Host) == HostDistance.Local && chosen-- == 0)
+                        {
+                            return replica;
+                        }
+                    }
+                }
+            }
+
+            return ChildPolicy.Pick(routing, metadata);
+        }
+
+        /// <summary>
+        ///  Returns the replicas of the request whose <c>HostDistance</c> for the child policy is <c>Local</c>, if
+        ///  it can determine them (i.e. mainly if <see cref="RoutingInfo.RoutingKey"/> is not <c>null</c>), then the
+        ///  fallback targets of the child policy.
+        /// </summary>
+        /// <param name="routing">The routing information of the request.</param>
+        /// <param name="metadata">The snapshot of the cluster metadata, which gives the replicas.</param>
+        public IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot metadata)
         {
             if (routing?.RoutingKey == null)
             {
-                foreach (var h in ChildPolicy.NewQueryPlan(routing, metadata))
+                foreach (var h in ChildPolicy.Fallback(routing, metadata))
                 {
                     yield return h;
                 }
                 yield break;
             }
 
-            var replicas = metadata.GetReplicas(routing);
+            var replicas = (metadata ?? MetadataSnapshot.Empty).GetReplicas(routing);
 
             // Keyed by host only: tablet replicas carry their shard while the child policy yields no shard
             var localReplicaSet = new HashSet<Host>();
@@ -117,7 +152,7 @@ namespace Cassandra
             }
 
             // Then, return the rest of child policy hosts
-            foreach (var h in ChildPolicy.NewQueryPlan(routing, metadata))
+            foreach (var h in ChildPolicy.Fallback(routing, metadata))
             {
                 if (localReplicaSet.Contains(h.Host))
                 {

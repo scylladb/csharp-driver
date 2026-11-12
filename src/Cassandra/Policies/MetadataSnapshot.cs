@@ -39,7 +39,7 @@ namespace Cassandra
 
         /// <summary>
         /// Takes a snapshot of the current metadata of <paramref name="cluster"/>, for instance to call
-        /// <see cref="ILoadBalancingPolicy.NewQueryPlan(RoutingInfo, MetadataSnapshot)"/> to test a policy or to see
+        /// <see cref="ILoadBalancingPolicy.Pick"/> or <see cref="ILoadBalancingPolicy.Fallback"/> to test a policy or to see
         /// where a request would be routed.
         /// </summary>
         /// <param name="cluster">The cluster, which must be connected to know its nodes and replicas.</param>

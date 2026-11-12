@@ -22,7 +22,7 @@ namespace Cassandra
     /// What a load balancing policy knows about a request when it builds its query plan.
     /// <para>
     /// New routing inputs are added as properties, so that adding one doesn't change the signature of
-    /// <see cref="ILoadBalancingPolicy.NewQueryPlan"/>.
+    /// <see cref="ILoadBalancingPolicy.Pick"/> and <see cref="ILoadBalancingPolicy.Fallback"/>.
     /// </para>
     /// </summary>
     public sealed class RoutingInfo

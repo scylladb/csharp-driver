@@ -28,7 +28,7 @@ namespace Cassandra.Tests.Policies
         public void Should_Yield_The_Hosts_Of_The_Child_Policy()
         {
             var lbp = new DefaultLoadBalancingPolicy(new TestLoadBalancingPolicy());
-            var hosts = lbp.NewQueryPlan(Mock.Of<ICluster>(), null, new SimpleStatement("Q"));
+            var hosts = lbp.Plan(Mock.Of<ICluster>(), null, new SimpleStatement("Q"));
             CollectionAssert.AreEqual(
                 new[] { "101.0.0.0:9042", "102.0.0.0:9042" },
                 hosts.Select(h => h.Host.Address.ToString()));

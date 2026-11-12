@@ -325,14 +325,14 @@ namespace Cassandra.Tests
             var batch = new BatchStatement().Add(s1Mock.Object);
 
             var lookups = new List<RoutingInfo>();
-            var _ = lbp.NewQueryPlan(clusterMock, "ks2", batch, replicas: routing =>
+            var _ = lbp.Plan(clusterMock, "ks2", batch, replicas: routing =>
             {
                 lookups.Add(routing);
                 return new List<RoutingTarget>();
             }).ToList();
 
-            var lookup = lookups.Single();
-            Assert.AreEqual(("ks1", (string)null, rawRoutingKey), (lookup.Keyspace, lookup.Table, lookup.RoutingKey.RawRoutingKey));
+            Assert.That(lookups, Is.Not.Empty);
+            Assert.That(lookups.Select(r => (r.Keyspace, r.Table, r.RoutingKey.RawRoutingKey)), Is.All.EqualTo(("ks1", (string)null, rawRoutingKey)));
         }
     }
 }

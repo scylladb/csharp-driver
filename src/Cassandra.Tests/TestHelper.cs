@@ -701,7 +701,7 @@ namespace Cassandra.Tests
         /// confirmed LWT or a statement with a non-serial consistency level. The metadata snapshot is the cluster's
         /// when it has metadata; otherwise it has the cluster's hosts and the replicas of <paramref name="replicas"/>.
         /// </summary>
-        internal static IEnumerable<RoutingTarget> NewQueryPlan(
+        internal static IEnumerable<RoutingTarget> Plan(
             this ILoadBalancingPolicy policy,
             ICluster cluster,
             string keyspace,
@@ -719,7 +719,15 @@ namespace Cassandra.Tests
                     IsConfirmedLwt = routeAsLwt ?? statement.IsLwt(),
                     Consistency = routeAsLwt == null ? statement.ConsistencyLevel : ConsistencyLevel.LocalOne
                 };
-            return policy.NewQueryPlan(routing, TestHelper.Snapshot(cluster, replicas));
+            return policy.Plan(routing, TestHelper.Snapshot(cluster, replicas));
+        }
+
+        /// <summary>
+        /// Builds the query plan of <paramref name="policy"/> as the driver does: its pick, then its fallback targets.
+        /// </summary>
+        internal static IEnumerable<RoutingTarget> Plan(this ILoadBalancingPolicy policy, RoutingInfo routing, MetadataSnapshot metadata)
+        {
+            return QueryPlan.Create(policy, routing, metadata);
         }
 
         private static Metadata TryGetMetadata(ICluster cluster)
@@ -788,9 +796,18 @@ namespace Cassandra.Tests
                 return _childPolicy.Distance(host);
             }
 
-            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, MetadataSnapshot cluster)
+            public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot cluster)
             {
-                return !_useRoundRobin ? _hosts.Select(h => new RoutingTarget(h, null)) : _childPolicy.NewQueryPlan(routing, cluster);
+                foreach (var target in Fallback(routing, cluster))
+                {
+                    return target;
+                }
+                return null;
+            }
+
+            public IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot cluster)
+            {
+                return !_useRoundRobin ? _hosts.Select(h => new RoutingTarget(h, null)) : _childPolicy.Fallback(routing, cluster);
             }
         }
 
@@ -822,7 +839,16 @@ namespace Cassandra.Tests
                 return _distanceHandler(_cluster, host);
             }
 
-            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, MetadataSnapshot cluster)
+            public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot cluster)
+            {
+                foreach (var target in Fallback(routing, cluster))
+                {
+                    return target;
+                }
+                return null;
+            }
+
+            public IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot cluster)
             {
                 return _queryPlanHandler(_cluster, routing).Select(h => new RoutingTarget(h, null));
             }

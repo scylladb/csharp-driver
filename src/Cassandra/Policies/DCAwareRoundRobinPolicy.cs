@@ -42,7 +42,11 @@ namespace Cassandra
         private volatile LocalHosts _localHosts;
         private readonly Lock _localHostsLock = new Lock();
         ICluster _cluster;
+        // Separate rotations: requests that need their fallback targets don't move the first target of the next
+        // requests, and the fallback order rotates even when Pick isn't called, for instance by a wrapping policy
+        // that picks a replica
         int _index;
+        int _fallbackIndex;
 
         /// <summary>
         /// Creates a new datacenter aware round robin policy that auto-discover the local data-center.
@@ -158,33 +162,53 @@ namespace Cassandra
         }
 
         /// <summary>
-        ///  Returns the hosts to use for a new query. <p> The returned plan contains each
-        ///  known host in the local datacenter, in an order that follows a Round-robin
-        ///  algorithm.</p>
+        ///  Returns the next host of the local datacenter in a round-robin fashion, or the first one when the request
+        ///  should be routed as a lightweight transaction.
         /// </summary>
         /// <param name="routing">The routing information of the request.</param>
         /// <param name="metadata">The snapshot of the cluster metadata, which gives the hosts.</param>
-        /// <returns>a new query plan, i.e. an iterator indicating which host to try
-        ///  first for querying, which one to use as failover, etc...</returns>
-        public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, MetadataSnapshot metadata)
+        public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot metadata)
         {
-            var routeAsLwt = routing?.ShouldRouteAsLwt == true;
-            var startIndex = 0;
-            if (!routeAsLwt)
+            var localHosts = GetHosts((metadata ?? MetadataSnapshot.Empty).Hosts);
+            if (localHosts.Count == 0)
             {
-                startIndex = Interlocked.Increment(ref _index);
-                //Simplified overflow protection
-                if (startIndex > _maxIndex)
-                {
-                    Interlocked.Exchange(ref _index, 0);
-                }
+                return null;
             }
+            return new RoutingTarget(localHosts[NextStartIndex(routing, ref _index) % localHosts.Count], null);
+        }
+
+        /// <summary>
+        ///  Returns each known host in the local datacenter, in an order that follows a round-robin algorithm,
+        ///  separately from <see cref="Pick"/>.
+        /// </summary>
+        /// <param name="routing">The routing information of the request.</param>
+        /// <param name="metadata">The snapshot of the cluster metadata, which gives the hosts.</param>
+        public IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot metadata)
+        {
+            var startIndex = NextStartIndex(routing, ref _fallbackIndex);
             var localHosts = GetHosts((metadata ?? MetadataSnapshot.Empty).Hosts);
             //Round-robin through local nodes
             for (var i = 0; i < localHosts.Count; i++)
             {
                 yield return new RoutingTarget(localHosts[(startIndex + i) % localHosts.Count], null);
             }
+        }
+
+        // A request routed as a lightweight transaction tries the hosts in the same order every time
+        private int NextStartIndex(RoutingInfo routing, ref int index)
+        {
+            if (routing?.ShouldRouteAsLwt == true)
+            {
+                return 0;
+            }
+
+            var startIndex = Interlocked.Increment(ref index);
+            //Simplified overflow protection
+            if (startIndex > _maxIndex)
+            {
+                Interlocked.Exchange(ref index, 0);
+            }
+            return startIndex;
         }
 
         private string GetDatacenter(Host host)

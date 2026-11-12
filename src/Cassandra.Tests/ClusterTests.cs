@@ -292,7 +292,16 @@ namespace Cassandra.Tests
                 return _distances[host.Address.Address.ToString()];
             }
 
-            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, MetadataSnapshot cluster)
+            public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot cluster)
+            {
+                foreach (var target in Fallback(routing, cluster))
+                {
+                    return target;
+                }
+                return null;
+            }
+
+            public IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot cluster)
             {
                 return _cluster.AllHosts()
                     .OrderBy(h => Guid.NewGuid().GetHashCode())
