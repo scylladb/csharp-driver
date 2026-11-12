@@ -541,6 +541,7 @@ namespace Cassandra.IntegrationTests.Core
                 }
             }
         }
+
         private static long GetSettledMemory()
         {
             long previous = 0;
@@ -569,6 +570,5 @@ namespace Cassandra.IntegrationTests.Core
             Assert.Fail("The managed heap did not settle before measuring retained memory.");
             return 0;
         }
-
     }
 }
