@@ -59,10 +59,9 @@ namespace Cassandra.IntegrationTests.ClientRoutes
         [Test]
         public async Task DisablingForwardingDoesNotRecordTeardownFailure()
         {
-            var upstreamListener = new TcpListener(IPAddress.Loopback, 0);
-            upstreamListener.Start();
-            try
+            using (var upstreamListener = new TcpListener(IPAddress.Loopback, 0))
             {
+                upstreamListener.Start();
                 using (var relay = new TcpRelay((IPEndPoint)upstreamListener.LocalEndpoint))
                 using (var client = new TcpClient())
                 {
@@ -86,10 +85,6 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                         Assert.IsEmpty(relay.Failures);
                     }
                 }
-            }
-            finally
-            {
-                upstreamListener.Stop();
             }
         }
     }

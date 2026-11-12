@@ -125,10 +125,12 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             int ignored;
             while (_acceptedSourcePorts.TryDequeue(out ignored))
             {
+                // Drain the recorded observations.
             }
             string ignoredServerName;
             while (_requestedServerNames.TryDequeue(out ignoredServerName))
             {
+                // Drain the recorded observations.
             }
             Interlocked.Exchange(ref _acceptedConnectionCount, 0);
             Interlocked.Exchange(ref _forwardedConnectionCount, 0);
