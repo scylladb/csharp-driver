@@ -1236,9 +1236,10 @@ namespace Cassandra.Tests
             pool.Verify(value => value.Dispose(), Times.Once);
         }
 
-        [TestCase(false)]
-        [TestCase(true)]
-        public void Should_PreservePoolPublishedDuringRemovalMetricsCallback(bool clientRoutesEnabled)
+        [Test, Combinatorial]
+        public void Should_PreservePoolPublishedDuringRemovalMetricsCallback(
+            [Values(false, true)] bool clientRoutesEnabled,
+            [Values(false, true)] bool replacementLookup)
         {
             var metricsProvider = CreateMetricsProviderForRemovalTests();
             var oldPool = new Mock<IHostConnectionPool>();
@@ -1276,12 +1277,24 @@ namespace Cassandra.Tests
                                    }
                                });
 
-                Mock.Get(internalSession.InternalCluster).Raise(value => value.HostRemoved += null, host);
+                if (replacementLookup)
+                {
+                    // A stale-owner lookup retires the old pool; its metrics callback publishes
+                    // the replacement before the outer lookup resumes.
+                    Assert.AreSame(replacementPool.Object, internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+                }
+                else
+                {
+                    Mock.Get(internalSession.InternalCluster).Raise(value => value.HostRemoved += null, host);
+                }
 
                 Assert.IsTrue(callbackRan);
                 Assert.AreSame(replacementPool.Object, internalSession.GetOrCreateConnectionPool(replacement, HostDistance.Local));
                 Assert.AreEqual(1, internalSession.GetPools().Count());
                 Assert.IsTrue(session.GetMetrics().NodeMetrics.ContainsKey(replacement));
+                poolFactory.Verify(value => value.Create(
+                    It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>()), Times.Exactly(2));
                 oldPool.Verify(value => value.Dispose(), Times.Once);
                 replacementPool.Verify(value => value.Dispose(), Times.Never);
             }
