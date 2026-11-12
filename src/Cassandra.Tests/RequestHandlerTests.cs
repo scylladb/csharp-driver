@@ -50,7 +50,7 @@ namespace Cassandra.Tests
         {
             var host = new Host(new IPEndPoint(IPAddress.Parse("127.0.0.11"), 9042), contactPoint: null);
             var session = new Mock<IInternalSession>(MockBehavior.Strict);
-            var rejection = new HostConnectionPoolNotEligibleException();
+            var rejection = new HostConnectionPoolNotEligibleException("it is absent from metadata");
             session.Setup(value => value.GetOrCreateConnectionPool(host, HostDistance.Local)).Throws(rejection);
             var triedHosts = new Dictionary<IPEndPoint, Exception>();
 
