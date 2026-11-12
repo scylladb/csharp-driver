@@ -1218,9 +1218,6 @@ namespace Cassandra.Connections
                     .ConfigureAwait(false);
             }
 
-            HostConnectionPool.Logger.Info("Connection to {0} opened successfully, pool #{1} length: {2}",
-                _host.Address, GetHashCode(), newLength);
-
             // Publish shard state before releasing _connectionOpenOperation. Connection creation is
             // serialized by that field, so an older connection cannot overwrite a newer route
             // transition after the next open has already updated the pool.
@@ -1277,7 +1274,17 @@ namespace Cassandra.Connections
                 }
                 return await FinishOpen(openOperation, !IsClosing, failure).ConfigureAwait(false);
             }
-            return await FinishOpen(openOperation, true, null, c).ConfigureAwait(false);
+            var opened = await FinishOpen(openOperation, true, null, c).ConfigureAwait(false);
+            try
+            {
+                HostConnectionPool.Logger.Info("Connection to {0} opened successfully, pool #{1} length: {2}",
+                    _host.Address, GetHashCode(), newLength);
+            }
+            catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
+            {
+                // A diagnostic sink must not invalidate an already published connection.
+            }
+            return opened;
         }
 
         private void TryDisposeRejectedConnection(IConnection connection, string failureContext)
@@ -1564,6 +1571,12 @@ namespace Cassandra.Connections
                 var connectionShardingInfo = isRouted || previousShardingInfo == null
                     ? c.ShardingInfo()
                     : previousShardingInfo;
+                if (connectionShardingInfo != null && connectionShardingInfo.ScyllaNrShards <= 0)
+                {
+                    // Invalid shard counts cannot guide routing. Keep the transport usable
+                    // without shard metadata rather than discarding every reconnect attempt.
+                    connectionShardingInfo = null;
+                }
                 if (isRouted && connectionShardingInfo == null)
                 {
                     nextShardingInfo = null;
@@ -1631,13 +1644,16 @@ namespace Cassandra.Connections
                 }
                 catch (Exception ex) when (!Utils.IsFatalException(ex))
                 {
-                    var shardingInfo = Volatile.Read(ref _shardingInfo);
-                    HostConnectionPool.Logger.Warning(
-                        "Pool #{0} for host {1} failed to open a warmup connection: {2} of {3} open, " +
-                        "attempted shard: {4}, shard count: {5}, error: {6}",
-                        GetHashCode(), _host.Address, _connections.Count, _expectedConnectionLength,
-                        shardingInfo == null ? "unknown" : lastAttemptedShard.ToString(),
-                        shardingInfo == null ? "unknown" : shardingInfo.ScyllaNrShards.ToString(), ex);
+                    if (!IsClosing)
+                    {
+                        var shardingInfo = Volatile.Read(ref _shardingInfo);
+                        HostConnectionPool.Logger.Warning(
+                            "Pool #{0} for host {1} failed to open a warmup connection: {2} of {3} open, " +
+                            "attempted shard: {4}, shard count: {5}, error: {6}",
+                            GetHashCode(), _host.Address, _connections.Count, _expectedConnectionLength,
+                            shardingInfo == null ? "unknown" : lastAttemptedShard.ToString(),
+                            shardingInfo == null ? "unknown" : shardingInfo.ScyllaNrShards.ToString(), ex);
+                    }
                     OnConnectionClosing();
                     break;
                 }
