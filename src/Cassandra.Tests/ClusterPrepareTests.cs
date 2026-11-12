@@ -254,7 +254,7 @@ namespace Cassandra.Tests
 
                 Assert.AreEqual(requestKeyspace, preparedStatement.Keyspace);
                 loadBalancingPolicy.Verify(
-                    policy => policy.NewQueryPlan(It.Is<RoutingInfo>(r => r.Keyspace == requestKeyspace && r.Statement == null), It.IsAny<ClusterState>()), Times.Once);
+                    policy => policy.NewQueryPlan(It.Is<RoutingInfo>(r => r.Keyspace == requestKeyspace && r.Consistency == null), It.IsAny<ClusterState>()), Times.Once);
                 handlerMock.Verify(handler => handler.Prepare(
                     It.Is<InternalPrepareRequest>(request => request.Keyspace == requestKeyspace),
                     session,

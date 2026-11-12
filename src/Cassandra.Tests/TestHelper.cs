@@ -697,21 +697,21 @@ namespace Cassandra.Tests
 
         /// <summary>
         /// Builds a query plan the way the driver does for a statement executed with <paramref name="keyspace"/> as
-        /// the session keyspace. <paramref name="routeAsLwt"/> overrides the statement's own LWT routing.
+        /// the session keyspace. <paramref name="routeAsLwt"/> overrides the statement's own LWT routing, as a
+        /// confirmed LWT or a statement with a non-serial consistency level.
         /// </summary>
         internal static IEnumerable<RoutingTarget> NewQueryPlan(
             this ILoadBalancingPolicy policy, ICluster cluster, string keyspace, IStatement statement, bool? routeAsLwt = null)
         {
             var routing = statement == null
-                ? new RoutingInfo { Keyspace = keyspace, ShouldRouteAsLwt = routeAsLwt == true }
+                ? new RoutingInfo { Keyspace = keyspace, IsConfirmedLwt = routeAsLwt == true }
                 : new RoutingInfo
                 {
                     Keyspace = statement.Keyspace ?? keyspace,
                     Table = statement.TableName,
                     RoutingKey = statement.RoutingKey,
-                    IsConfirmedLwt = statement.IsLwt(),
-                    ShouldRouteAsLwt = routeAsLwt ?? statement.ShouldRouteAsLwt(),
-                    Statement = statement
+                    IsConfirmedLwt = routeAsLwt ?? statement.IsLwt(),
+                    Consistency = routeAsLwt == null ? statement.ConsistencyLevel : ConsistencyLevel.LocalOne
                 };
             return policy.NewQueryPlan(routing, new ClusterState(cluster));
         }
@@ -767,13 +767,13 @@ namespace Cassandra.Tests
         {
             private ICluster _cluster;
             private readonly Func<ICluster, Host, HostDistance> _distanceHandler;
-            private readonly Func<ICluster, string, IStatement, IEnumerable<Host>> _queryPlanHandler;
+            private readonly Func<ICluster, RoutingInfo, IEnumerable<Host>> _queryPlanHandler;
 
             public CustomLoadBalancingPolicy(
-                Func<ICluster, string, IStatement, IEnumerable<Host>> queryPlanHandler = null,
+                Func<ICluster, RoutingInfo, IEnumerable<Host>> queryPlanHandler = null,
                 Func<ICluster, Host, HostDistance> distanceHandler = null)
             {
-                _queryPlanHandler = queryPlanHandler ?? ((cluster, ks, statement) => cluster.AllHosts());
+                _queryPlanHandler = queryPlanHandler ?? ((cluster, routing) => cluster.AllHosts());
                 _distanceHandler = distanceHandler ?? ((_, __) => HostDistance.Local);
             }
 
@@ -789,7 +789,7 @@ namespace Cassandra.Tests
 
             public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
             {
-                return _queryPlanHandler(_cluster, routing?.Keyspace, routing?.Statement).Select(h => new RoutingTarget(h, null));
+                return _queryPlanHandler(_cluster, routing).Select(h => new RoutingTarget(h, null));
             }
         }
     }

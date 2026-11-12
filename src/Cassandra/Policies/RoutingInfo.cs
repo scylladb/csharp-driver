@@ -49,19 +49,33 @@ namespace Cassandra
         public bool IsConfirmedLwt { get; init; }
 
         /// <summary>
-        /// Gets whether the request should be routed as a lightweight transaction: it is a confirmed LWT, or its
-        /// effective consistency level is <see cref="ConsistencyLevel.Serial"/> or
-        /// <see cref="ConsistencyLevel.LocalSerial"/>, including when only the execution profile sets it. A policy
-        /// should then try the replicas in the same order for every request, so that concurrent LWTs on a
-        /// partition reach the same coordinator first.
+        /// Gets the effective consistency level of the request: the statement's, or else the one of the execution
+        /// profile or the cluster. It is null for a request issued by the driver itself, such as a prepare request.
+        /// <para>
+        /// It is the consistency level of the first attempt. The retry policy can retry with another one.
+        /// </para>
         /// </summary>
-        public bool ShouldRouteAsLwt { get; init; }
+        public ConsistencyLevel? Consistency { get; init; }
 
         /// <summary>
-        /// Gets the statement of the request, or null for a request issued by the driver itself, such as a prepare
-        /// request.
+        /// Gets the effective serial consistency level of the request, used for the serial phase of a lightweight
+        /// transaction: the statement's, or else the one of the execution profile or the cluster. It is null for a
+        /// request issued by the driver itself.
+        /// <para>
+        /// The driver sends it with every statement, so it doesn't tell whether the request is a lightweight
+        /// transaction and doesn't affect <see cref="ShouldRouteAsLwt"/>.
+        /// </para>
         /// </summary>
-        public IStatement Statement { get; init; }
+        public ConsistencyLevel? SerialConsistency { get; init; }
+
+        /// <summary>
+        /// Gets whether the request should be routed as a lightweight transaction: it is a confirmed LWT
+        /// (<see cref="IsConfirmedLwt"/>), or its <see cref="Consistency"/> is <see cref="ConsistencyLevel.Serial"/>
+        /// or <see cref="ConsistencyLevel.LocalSerial"/>, which reads the result of lightweight transactions. A
+        /// policy should then try the replicas in the same order for every request, so that concurrent LWTs on a
+        /// partition reach the same coordinator first.
+        /// </summary>
+        public bool ShouldRouteAsLwt => IsConfirmedLwt || Consistency?.IsSerialConsistencyLevel() == true;
 
         /// <summary>
         /// Builds the routing information of a statement executed by a session.
@@ -73,20 +87,17 @@ namespace Cassandra
                 return ForKeyspace(sessionKeyspace);
             }
 
-            // Either the statement itself says so, or the effective consistency level, from the request options or
-            // execution profile, is serial
-            var routeAsLwt = statement.ShouldRouteAsLwt()
-                || (statement is Statement stmt
-                    && stmt.ConsistencyLevel == null
-                    && requestOptions.ConsistencyLevel.IsSerialConsistencyLevel());
             return new RoutingInfo
             {
                 Keyspace = statement.Keyspace ?? sessionKeyspace,
                 Table = statement.TableName,
                 RoutingKey = statement.RoutingKey,
                 IsConfirmedLwt = statement.IsLwt(),
-                ShouldRouteAsLwt = routeAsLwt,
-                Statement = statement
+                Consistency = statement.ConsistencyLevel ?? requestOptions.ConsistencyLevel,
+                // ConsistencyLevel.Any is the statement's "not set" value, as when the driver builds the request
+                SerialConsistency = statement.SerialConsistencyLevel != ConsistencyLevel.Any
+                    ? statement.SerialConsistencyLevel
+                    : requestOptions.SerialConsistencyLevel
             };
         }
 

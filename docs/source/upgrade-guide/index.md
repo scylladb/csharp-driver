@@ -508,8 +508,9 @@ one passes `routing` and `cluster` on.
 |---|---|
 | `keyspace` parameter | `routing.Keyspace`, which is now the statement's keyspace, or else the session's |
 | `query.RoutingKey`, `query.TableName` | `routing.RoutingKey`, `routing.Table` |
-| `query.ShouldRouteAsLwt()`, `routeAsLwt` | `routing.ShouldRouteAsLwt`, which also covers a serial consistency level set only in the execution profile |
-| `query` | `routing.Statement`, still `null` for requests issued by the driver |
+| `query.ShouldRouteAsLwt()`, `routeAsLwt` | `routing.ShouldRouteAsLwt`, derived from `routing.IsConfirmedLwt` and `routing.Consistency`, so it also covers a serial consistency level set only in the execution profile. The driver no longer calls `IStatement.ShouldRouteAsLwt()` to route requests, so an override of it in a statement class has no effect on routing |
+| `query.ConsistencyLevel`, `query.SerialConsistencyLevel` | `routing.Consistency`, `routing.SerialConsistency`: the effective levels of the first attempt, with the execution profile's when the statement sets none, and `null` for requests issued by the driver |
+| `query`, for anything else | Not available: a policy receives the routing inputs, not the statement |
 | `cluster.Metadata.GetReplicas(keyspace, routingKey)` | `cluster.GetReplicas(routing)`, which returns the replicas the driver routes to: from the cached tablet owning the partition when tablets of the table are cached (none when no cached tablet owns it), and from the token map otherwise |
 | `cluster.AllHosts()`, kept from `Initialize()` | `cluster.Hosts` |
 | `class MyPolicy : IExtendedLoadBalancingPolicy` | `class MyPolicy : ILoadBalancingPolicy` |

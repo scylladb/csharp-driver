@@ -604,7 +604,7 @@ namespace Cassandra.IntegrationTests.Core
             const string query = "SELECT * FROM system.local WHERE key='local'";
             // Mark the last host as ignored
             var lbp = new TestHelper.CustomLoadBalancingPolicy(
-                (cluster, ks, stmt) => cluster.AllHosts(),
+                (cluster, routing) => cluster.AllHosts(),
                 (cluster, host) => host.Equals(cluster.AllHosts().Last()) ? HostDistance.Ignored : HostDistance.Local);
             var builder = ClusterBuilder().WithLoadBalancingPolicy(lbp);
 
@@ -715,7 +715,7 @@ namespace Cassandra.IntegrationTests.Core
         public async Task Should_Not_Use_The_LoadBalancingPolicy_When_Targeting_Single_Host()
         {
             var queryPlanCounter = 0;
-            var lbp = new TestHelper.CustomLoadBalancingPolicy((cluster, ks, stmt) =>
+            var lbp = new TestHelper.CustomLoadBalancingPolicy((cluster, routing) =>
             {
                 Interlocked.Increment(ref queryPlanCounter);
                 return cluster.AllHosts();

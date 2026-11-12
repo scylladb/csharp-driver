@@ -42,8 +42,35 @@ namespace Cassandra.Tests.Policies
             Assert.AreEqual("ks1", routing.Keyspace);
             Assert.AreEqual("tbl", routing.Table);
             Assert.AreSame(routingKey, routing.RoutingKey);
-            Assert.AreSame(statement.Object, routing.Statement);
+            Assert.AreEqual(ConsistencyLevel.LocalOne, routing.Consistency);
+            Assert.AreEqual(ConsistencyLevel.LocalSerial, routing.SerialConsistency);
             Assert.IsFalse(routing.IsConfirmedLwt);
+            Assert.IsFalse(routing.ShouldRouteAsLwt);
+        }
+
+        [Test]
+        public void ForStatement_Should_Use_The_Consistency_Levels_Of_The_Statement_Over_The_Profile()
+        {
+            var statement = new SimpleStatement("SELECT * FROM tbl")
+                .SetConsistencyLevel(ConsistencyLevel.Quorum)
+                .SetSerialConsistencyLevel(ConsistencyLevel.Serial);
+
+            var routing = RoutingInfo.ForStatement(statement, null, GetRequestOptions(ConsistencyLevel.LocalOne));
+
+            Assert.AreEqual(ConsistencyLevel.Quorum, routing.Consistency);
+            Assert.AreEqual(ConsistencyLevel.Serial, routing.SerialConsistency);
+            // The serial consistency level alone doesn't make a statement a lightweight transaction
+            Assert.IsFalse(routing.ShouldRouteAsLwt);
+        }
+
+        [Test]
+        public void ForKeyspace_Should_Have_No_Consistency_Levels()
+        {
+            var routing = RoutingInfo.ForKeyspace("ks1");
+
+            Assert.AreEqual("ks1", routing.Keyspace);
+            Assert.IsNull(routing.Consistency);
+            Assert.IsNull(routing.SerialConsistency);
             Assert.IsFalse(routing.ShouldRouteAsLwt);
         }
 
@@ -82,7 +109,6 @@ namespace Cassandra.Tests.Policies
         {
             var statement = new Mock<IStatement>();
             statement.Setup(s => s.IsLwt()).Returns(true);
-            statement.Setup(s => s.ShouldRouteAsLwt()).Returns(true);
 
             var routing = RoutingInfo.ForStatement(statement.Object, null, GetRequestOptions(ConsistencyLevel.LocalOne));
 
@@ -146,6 +172,7 @@ namespace Cassandra.Tests.Policies
         {
             var options = new Mock<IRequestOptions>();
             options.SetupGet(o => o.ConsistencyLevel).Returns(consistency);
+            options.SetupGet(o => o.SerialConsistencyLevel).Returns(ConsistencyLevel.LocalSerial);
             return options.Object;
         }
     }
