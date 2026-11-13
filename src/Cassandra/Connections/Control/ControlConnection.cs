@@ -1079,7 +1079,7 @@ namespace Cassandra.Connections.Control
 
                 lock (_connectionHandoffLock)
                 {
-                    if (ReferenceEquals(_connection, currentConnection))
+                    if (!IsShutdown && ReferenceEquals(_connection, currentConnection))
                     {
                         SetCurrentConnectionEndpoint(currentHost, currentEndPoint);
                     }
@@ -1298,6 +1298,14 @@ namespace Cassandra.Connections.Control
 
         private void SetCurrentConnectionEndpoint(Host host, IConnectionEndPoint endPoint)
         {
+            if (!ReferenceEquals(_host, host))
+            {
+                if (_host != null)
+                {
+                    _host.Down -= OnHostDown;
+                }
+                host.Down += OnHostDown;
+            }
             _host = host;
             _currentConnectionEndPoint = endPoint;
             _metadata.SetCassandraVersion(host.CassandraVersion);

@@ -362,6 +362,73 @@ namespace Cassandra.Tests.Connections.Control
         }
 
         [Test]
+        public async Task Should_TransferDownSubscriptionWhenRefreshReplacesCurrentHost()
+        {
+            var replacement = new Host(_endpoint1, contactPoint: null);
+            var connections = new List<IConnection>();
+            var reconnectStarted = NewSignal();
+            var factory = new FakeConnectionFactory(endpoint =>
+            {
+                var connection = new Mock<IConnection>();
+                connection.SetupGet(value => value.EndPoint).Returns(endpoint);
+                connections.Add(connection.Object);
+                if (connections.Count == 2)
+                {
+                    reconnectStarted.TrySetResult(true);
+                }
+                return connection.Object;
+            });
+            var topologyFactory = new Mock<ITopologyRefresherFactory>();
+            topologyFactory.Setup(value => value.Create(It.IsAny<Metadata>(), It.IsAny<Configuration>()))
+                .Returns((Metadata metadata, Configuration config) =>
+                {
+                    var topology = new Mock<ITopologyRefresher>();
+                    var initial = true;
+                    topology.Setup(value => value.RefreshNodeListAsync(
+                            It.IsAny<IConnectionEndPoint>(), It.IsAny<IConnection>(), It.IsAny<ISerializer>()))
+                        .Returns(() =>
+                        {
+                            metadata.Partitioner = "Murmur3Partitioner";
+                            var host = initial ? metadata.AddHost(_endpoint1) : replacement;
+                            initial = false;
+                            host.SetInfo(TestHelper.CreateRow(new Dictionary<string, object>
+                            {
+                                { "data_center", "ut-dc" }, { "rack", "ut-rack" }, { "tokens", null }
+                            }));
+                            return Task.FromResult(host);
+                        });
+                    return topology.Object;
+                });
+            var debouncer = new Mock<IProtocolEventDebouncer>();
+            debouncer.Setup(value => value.ScheduleEventAsync(It.IsAny<ProtocolEvent>(), false))
+                .Returns(TaskHelper.Completed);
+            var result = NewInstance(eventDebouncer: debouncer.Object, configBuilderAct: builder =>
+            {
+                builder.ConnectionFactory = factory;
+                builder.TopologyRefresherFactory = topologyFactory.Object;
+            });
+            using var control = result.ControlConnection;
+            await control.InitAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+            var original = control.Host;
+            var refresh = (Task)typeof(ControlConnection).GetMethod(
+                "Refresh", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                .Invoke(control, null);
+            await refresh.WaitToCompleteAsync(5000).ConfigureAwait(false);
+            Assert.AreSame(replacement, control.Host);
+
+            original.SetDown();
+            Assert.AreEqual(1, connections.Count);
+            replacement.SetDown();
+            await reconnectStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+            var reconnect = GetSharedReconnect(control);
+            if (reconnect != null)
+            {
+                await reconnect.WaitToCompleteAsync(5000).ConfigureAwait(false);
+            }
+            Assert.AreEqual(2, connections.Count);
+        }
+
+        [Test]
         public async Task Should_DisablePagingForUnpagedQueries()
         {
             const string query = "SELECT * FROM system.client_routes";
