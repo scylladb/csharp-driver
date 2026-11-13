@@ -343,7 +343,10 @@ namespace Cassandra.Connections
 
         public void ConsiderResizingPool(int inFlight)
         {
-            if (inFlight < _maxInflightThresholdToConsiderResizing)
+            if (inFlight < _maxInflightThresholdToConsiderResizing ||
+                _expectedConnectionLength >= _maxConnectionLength ||
+                _connections.Count < _expectedConnectionLength ||
+                Volatile.Read(ref _poolResizing) != 0)
             {
                 return;
             }
@@ -352,7 +355,7 @@ namespace Cassandra.Connections
             {
                 if (inFlight < _maxInflightThresholdToConsiderResizing)
                 {
-                    // The requests in-flight are normal
+                    // Distance may change the threshold after the fast-path checks.
                     return;
                 }
                 if (_expectedConnectionLength >= _maxConnectionLength)

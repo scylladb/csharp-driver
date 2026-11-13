@@ -2045,6 +2045,7 @@ namespace Cassandra.Tests.Connections
             config.PoolingOptions.SetCoreConnectionsPerHost(HostDistance.Remote, 1)
                                  .SetMaxConnectionsPerHost(HostDistance.Remote, 1);
             config.PoolingOptions.SetMaxConnectionsPerHost(HostDistance.Local, 8);
+            target.SetDistance(HostDistance.Local);
             Mock.Get(_resolver)
                 .Setup(resolver => resolver.GetConnectionShardAwareEndPointsAsync(_host, false, 19042))
                 .ReturnsAsync(new IConnectionEndPoint[]
