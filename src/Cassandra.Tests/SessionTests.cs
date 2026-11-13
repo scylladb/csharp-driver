@@ -1451,6 +1451,18 @@ namespace Cassandra.Tests
             });
         }
 
+        private static Session CreateWarmupSession(Configuration config, string sessionName)
+        {
+            var metadata = new Metadata(config);
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            cluster.Setup(value => value.AllHosts()).Returns(() => metadata.AllHosts());
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            var host = metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.11"), 9042));
+            host.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            return new Session(cluster.Object, config, null, SerializerManager.Default, sessionName);
+        }
+
         private sealed class ConsumedWarmupTraceListener : LoggingTests.TestTraceListener
         {
             private readonly bool _throwFromDiagnostic;
@@ -1468,18 +1480,6 @@ namespace Cassandra.Tests
                     throw new InvalidOperationException("warmup diagnostic sink failed");
                 }
             }
-        }
-
-        private static Session CreateWarmupSession(Configuration config, string sessionName)
-        {
-            var metadata = new Metadata(config);
-            var cluster = new Mock<IInternalCluster>();
-            cluster.SetupGet(value => value.Metadata).Returns(metadata);
-            cluster.Setup(value => value.AllHosts()).Returns(() => metadata.AllHosts());
-            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
-            var host = metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.11"), 9042));
-            host.SetInfo(CreateHostInfo(Guid.NewGuid()));
-            return new Session(cluster.Object, config, null, SerializerManager.Default, sessionName);
         }
     }
 }

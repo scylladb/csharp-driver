@@ -2800,18 +2800,6 @@ namespace Cassandra.Tests.Connections
             }
         }
 
-        private sealed class RejectedConnectionWarningTraceListener : LoggingTests.TestTraceListener
-        {
-            public override void WriteLine(string message)
-            {
-                if (message.Contains("after shard-state publication failed"))
-                {
-                    base.WriteLine(message);
-                    throw new InvalidOperationException("cleanup warning sink failed");
-                }
-            }
-        }
-
         private static IRow ClientRouteRow(Guid hostId, string address, int port, string connectionId)
         {
             return new TestHelper.DictionaryBasedRow(new Dictionary<string, object>
@@ -3006,6 +2994,18 @@ namespace Cassandra.Tests.Connections
             {
                 OnHash?.Invoke();
                 return M3PToken.Factory.Hash(partitionKey);
+            }
+        }
+
+        private sealed class RejectedConnectionWarningTraceListener : LoggingTests.TestTraceListener
+        {
+            public override void WriteLine(string message)
+            {
+                if (message.Contains("after shard-state publication failed"))
+                {
+                    base.WriteLine(message);
+                    throw new InvalidOperationException("cleanup warning sink failed");
+                }
             }
         }
     }

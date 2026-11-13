@@ -683,14 +683,14 @@ namespace Cassandra
 
         private sealed class HostPool
         {
-            public Host Host { get; }
-            public IHostConnectionPool Pool { get; }
-
             public HostPool(Host host, IHostConnectionPool pool)
             {
                 Host = host;
                 Pool = pool;
             }
+
+            public Host Host { get; }
+            public IHostConnectionPool Pool { get; }
         }
     }
 }
