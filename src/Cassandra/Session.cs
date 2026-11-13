@@ -401,6 +401,11 @@ namespace Cassandra
             return GetOrCreateConnectionPool(host, distance, allowDownHost: false);
         }
 
+        private static bool CanReusePool(HostPool entry, Host currentHost, bool customHost)
+        {
+            return ReferenceEquals(entry.Host, currentHost) || (customHost && !entry.Host.IsRemoved);
+        }
+
         private IHostConnectionPool GetOrCreateConnectionPool(Host host, HostDistance distance, bool allowDownHost)
         {
             var clientRoutesEnabled = Configuration.ClientRoutesRuntime != null;
@@ -535,11 +540,6 @@ namespace Cassandra
             var currentHost = _cluster.Metadata.GetHost(selectedHost.Address);
             customHost = currentHost == null && !clientRoutesEnabled && !selectedHost.IsRemoved;
             return customHost ? selectedHost : currentHost;
-        }
-
-        private static bool CanReusePool(HostPool entry, Host currentHost, bool customHost)
-        {
-            return ReferenceEquals(entry.Host, currentHost) || (customHost && !entry.Host.IsRemoved);
         }
 
         private bool IsPoolHostEligible(Host host, bool clientRoutesEnabled, bool allowDownHost, ref HostDistance distance)

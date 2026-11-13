@@ -108,6 +108,17 @@ namespace Cassandra.Connections.Control
             }
         }
 
+        private static bool HasDifferentHostId(Host host, IRow row, out Guid incomingHostId)
+        {
+            incomingHostId = Guid.Empty;
+            if (host.HostId == Guid.Empty || !row.ContainsColumn("host_id"))
+            {
+                return false;
+            }
+            incomingHostId = row.GetValue<Guid?>("host_id") ?? Guid.Empty;
+            return incomingHostId != Guid.Empty && incomingHostId != host.HostId;
+        }
+
         private Host ApplyNodeList(
             IConnectionEndPoint currentEndPoint, IRow localRow, bool isPeersV2, IEnumerable<IRow> peers)
         {
@@ -267,17 +278,6 @@ namespace Cassandra.Connections.Control
             }
 
             return host ?? _metadata.AddHost(address, contactPoint);
-        }
-
-        private static bool HasDifferentHostId(Host host, IRow row, out Guid incomingHostId)
-        {
-            incomingHostId = Guid.Empty;
-            if (host.HostId == Guid.Empty || !row.ContainsColumn("host_id"))
-            {
-                return false;
-            }
-            incomingHostId = row.GetValue<Guid?>("host_id") ?? Guid.Empty;
-            return incomingHostId != Guid.Empty && incomingHostId != host.HostId;
         }
 
         /// <summary>
