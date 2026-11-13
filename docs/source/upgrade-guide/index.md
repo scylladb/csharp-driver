@@ -36,6 +36,34 @@ and configure only `.SetSerialConsistencyLevel(ConsistencyLevel.Serial)`.
 To retain the previous ADO.NET defaults, explicitly set each command's `ConsistencyLevel`
 to `ConsistencyLevel.One` and configure `QueryOptions` with serial consistency `Serial`.
 
+ADO.NET connection strings have no consistency or query-option keys. Configure those options by
+subclassing `CqlConnection` and overriding `OnBuildingCluster`, for example:
+
+```csharp
+using Cassandra;
+using Cassandra.Data;
+
+public sealed class PreviousConsistencyConnection : CqlConnection
+{
+    protected override void OnBuildingCluster(Builder builder)
+    {
+        base.OnBuildingCluster(builder);
+        builder.WithQueryOptions(new QueryOptions()
+            .SetSerialConsistencyLevel(ConsistencyLevel.Serial));
+    }
+}
+```
+
+The default connection factory caches clusters by the connection string's `Cluster Name`.
+Choose a distinct name for this configuration before opening connections, or override
+`CreateCluster` to control cluster creation and caching.
+
+The command consistency getter is a snapshot of currently known settings. It reads an existing
+completed prepared-statement cache entry without sending a prepare request; a cache miss or
+in-flight preparation reports the current session default. A custom `CreatePreparedStatement`
+override can select a different statement during preparation. Call `Prepare()` first when
+relying on settings selected by such an override, then read the getter again.
+
 `QueryOptions.DefaultConsistencyLevel` and `QueryOptions.DefaultSerialConsistencyLevel` are
 public constants. Applications that explicitly use these constants must be recompiled against
 the upgraded driver to use their new values; existing compiled references retain the previous
