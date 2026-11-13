@@ -72,9 +72,9 @@ namespace Cassandra
         /// <summary>
         /// Returns the hosts to used for a query.
         /// </summary>
-        public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
+        public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, MetadataSnapshot metadata)
         {
-            return ChildPolicy.NewQueryPlan(routing, cluster);
+            return ChildPolicy.NewQueryPlan(routing, metadata);
         }
     }
 }

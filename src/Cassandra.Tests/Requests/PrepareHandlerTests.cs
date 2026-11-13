@@ -917,7 +917,7 @@ namespace Cassandra.Tests.Requests
                 return HostDistance.Local;
             }
 
-            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
+            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, MetadataSnapshot cluster)
             {
                 Interlocked.Increment(ref NewQueryPlanCount);
                 throw new NotImplementedException();

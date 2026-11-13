@@ -58,7 +58,8 @@ namespace Cassandra.IntegrationTests.MetadataTests
                 });
                 Assert.AreEqual(newCluster.Metadata.Hosts.Sum(h => h.Tokens.Count()), replicas.Count);
             });
-            Assert.IsTrue(object.ReferenceEquals(newCluster.Metadata.TokenToReplicasMap, oldTokenMap));
+            // Updated for the keyspace, without rebuilding the ring
+            Assert.IsTrue(((TokenMap)newCluster.Metadata.TokenToReplicasMap).SharesRingWith((TokenMap)oldTokenMap));
         }
 
         [Test]
@@ -79,7 +80,8 @@ namespace Cassandra.IntegrationTests.MetadataTests
             {
                 Assert.IsNull(newCluster.Metadata.TokenToReplicasMap.GetByKeyspace(keyspaceName));
             });
-            Assert.IsTrue(object.ReferenceEquals(newCluster.Metadata.TokenToReplicasMap, oldTokenMap));
+            // Updated for the keyspace, without rebuilding the ring
+            Assert.IsTrue(((TokenMap)newCluster.Metadata.TokenToReplicasMap).SharesRingWith((TokenMap)oldTokenMap));
         }
 
         [Test]
@@ -118,7 +120,8 @@ namespace Cassandra.IntegrationTests.MetadataTests
             });
 
             Assert.AreEqual(3, newCluster.Metadata.Hosts.Count(h => h.IsUp));
-            Assert.IsTrue(object.ReferenceEquals(newCluster.Metadata.TokenToReplicasMap, oldTokenMap));
+            // Updated for the keyspace, without rebuilding the ring
+            Assert.IsTrue(((TokenMap)newCluster.Metadata.TokenToReplicasMap).SharesRingWith((TokenMap)oldTokenMap));
         }
     }
 }

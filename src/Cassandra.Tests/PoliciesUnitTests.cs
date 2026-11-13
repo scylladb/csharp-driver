@@ -294,82 +294,86 @@ namespace Cassandra.Tests
             policy.Initialize(clusterMock.Object);
 
             var instances = new ConcurrentBag<object>();
-            Action action = () => instances.Add(policy.GetHosts());
+            Action action = () => instances.Add(policy.GetHosts(hostList));
             TestHelper.ParallelInvoke(action, 100);
             Assert.AreEqual(1, instances.GroupBy(i => i.GetHashCode()).Count());
         }
 
         [Test]
-        public void DCAwareRoundRobinPolicyWithNodesChanging()
+        public void DCAwareRoundRobinPolicyRebuildsLocalHostsWhenHostsChange()
         {
-            var hostList = new ConcurrentBag<Host>
+            var metadata = new Metadata(new Configuration());
+            var h1 = AddHost(metadata, "127.0.0.1", "dc1");
+            AddHost(metadata, "127.0.0.2", "dc2");
+            var h3 = AddHost(metadata, "127.0.0.3", "dc1");
+            var policy = new DCAwareRoundRobinPolicy("dc1");
+
+            var localHosts = policy.GetHosts(metadata.GetSnapshot().Hosts);
+            CollectionAssert.AreEquivalent(new[] { h1, h3 }, localHosts);
+            // Reused while the hosts don't change
+            Assert.AreSame(localHosts, policy.GetHosts(metadata.GetSnapshot().Hosts));
+
+            var h4 = AddHost(metadata, "127.0.0.4", "dc1");
+            CollectionAssert.AreEquivalent(new[] { h1, h3, h4 }, policy.GetHosts(metadata.GetSnapshot().Hosts));
+
+            metadata.Hosts.RemoveIfExists(h3.Address);
+            CollectionAssert.AreEquivalent(new[] { h1, h4 }, policy.GetHosts(metadata.GetSnapshot().Hosts));
+        }
+
+        [Test]
+        public void DCAwareRoundRobinPolicyDoesNotKeepAHostWhoseDatacenterIsNotKnownYet()
+        {
+            var metadata = new Metadata(new Configuration());
+            var h1 = AddHost(metadata, "127.0.0.1", "dc1");
+            // Added before the driver reads its datacenter, which doesn't create a new host collection
+            var h2 = metadata.Hosts.Add(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042));
+            var policy = new DCAwareRoundRobinPolicy("dc1");
+            var hosts = metadata.GetSnapshot().Hosts;
+
+            var localHosts = policy.GetHosts(hosts);
+            CollectionAssert.AreEquivalent(new[] { h1, h2 }, localHosts);
+            // Reused while the datacenter stays unknown, which it can for a peer without one
+            Assert.AreSame(localHosts, policy.GetHosts(hosts));
+
+            h2.SetInfo(HostRow("dc2"));
+            CollectionAssert.AreEquivalent(new[] { h1 }, policy.GetHosts(hosts));
+        }
+
+        [Test]
+        public void DCAwareRoundRobinPolicyDoesNotReuseLocalHostsFromBeforeTheDatacenterIsInferred()
+        {
+            var metadata = new Metadata(new Configuration());
+            var h1 = AddHost(metadata, "127.0.0.1", "dc1");
+            var h2 = AddHost(metadata, "127.0.0.2", "dc1");
+            var policy = new DCAwareRoundRobinPolicy();
+            var hosts = metadata.GetSnapshot().Hosts;
+
+            // For instance a control connection reconnecting before the policy is initialized
+            CollectionAssert.IsEmpty(policy.GetHosts(hosts));
+
+            var cluster = new Mock<ICluster>();
+            cluster.Setup(c => c.AllHosts()).Returns(metadata.Hosts.ToCollection());
+            policy.Initialize(cluster.Object);
+            CollectionAssert.AreEquivalent(new[] { h1, h2 }, policy.GetHosts(hosts));
+        }
+
+        private static Host AddHost(Metadata metadata, string address, string datacenter)
+        {
+            var host = metadata.Hosts.Add(new IPEndPoint(IPAddress.Parse(address), 9042));
+            host.SetInfo(HostRow(datacenter));
+            return host;
+        }
+
+        private static IRow HostRow(string datacenter)
+        {
+            return new TestHelper.DictionaryBasedRow(new Dictionary<string, object>
             {
-                TestHelper.CreateHost("0.0.0.1", "dc1"),
-                TestHelper.CreateHost("0.0.0.2", "dc2"),
-                TestHelper.CreateHost("0.0.0.3", "dc1"),
-                TestHelper.CreateHost("0.0.0.4", "dc2"),
-                TestHelper.CreateHost("0.0.0.5", "dc1"),
-                TestHelper.CreateHost("0.0.0.6", "dc2"),
-                TestHelper.CreateHost("0.0.0.7", "dc1"),
-                TestHelper.CreateHost("0.0.0.8", "dc2"),
-                TestHelper.CreateHost("0.0.0.9", "dc1"),
-                TestHelper.CreateHost("0.0.0.10", "dc2")
-            };
-            const string localDc = "dc1";
-            //to remove the host 3
-            var hostToRemove = hostList.First(h => TestHelper.GetLastAddressByte(h) == 3);
-            var clusterMock = new Mock<ICluster>();
-            clusterMock
-                .Setup(c => c.AllHosts())
-                .Returns(() =>
-                {
-                    return hostList.ToList();
-                });
-            //Initialize the balancing policy
-            var policy = new DCAwareRoundRobinPolicy(localDc);
-            policy.Initialize(clusterMock.Object);
-
-            var hostYielded = new ConcurrentBag<IEnumerable<Host>>();
-            Action action = () => hostYielded.Add(policy.NewQueryPlan(clusterMock.Object, null, null).ToList().Select(h => h.Host));
-
-            //Invoke without nodes changing
-            TestHelper.ParallelInvoke(action, 100);
-            Assert.True(hostYielded.Any(hl => hl.Any(h => h == hostToRemove)));
-
-            var actionList = new List<Action>(Enumerable.Repeat<Action>(action, 1000));
-
-
-            actionList.Insert(200, () =>
-            {
-                var host = TestHelper.CreateHost("0.0.0.11", "dc1");
-                //raise event and then add
-                clusterMock.Raise(c => c.HostAdded += null, host);
-                hostList.Add(host);
+                { "host_id", Guid.NewGuid() },
+                { "data_center", datacenter },
+                { "rack", "rack1" },
+                { "release_version", "3.11.1" },
+                { "tokens", new List<string> { "0" } }
             });
-            actionList.Insert(400, () =>
-            {
-                var host = TestHelper.CreateHost("0.0.0.12", "dc1");
-                //first add and then raise event
-                hostList.Add(host);
-                clusterMock.Raise(c => c.HostAdded += null, host);
-            });
-
-            actionList.Insert(400, () =>
-            {
-                var host = hostToRemove;
-                hostList = new ConcurrentBag<Host>(hostList.Where(h => h != hostToRemove));
-                clusterMock.Raise(c => c.HostRemoved += null, host);
-            });
-
-            //Invoke it with nodes being modified
-            TestHelper.ParallelInvoke(actionList);
-            //Clear the host yielded so far
-            hostYielded = new ConcurrentBag<IEnumerable<Host>>();
-            //Invoke it a some of times more in parallel
-            TestHelper.ParallelInvoke(action, 100);
-            //The removed node should not be returned
-            Assert.False(hostList.Any(h => h == hostToRemove));
-            Assert.False(hostYielded.Any(hl => hl.Any(h => h == hostToRemove)));
         }
 
         [Test]
@@ -412,26 +416,23 @@ namespace Cassandra.Tests
                 .Setup(c => c.AllHosts())
                 .Returns(hostList)
                 .Verifiable();
-            clusterMock
-                .Setup(c => c.GetRoutingReplicas(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<byte[]>()))
-                .Returns<string, string, byte[]>((keyspace, table, key) =>
+            Func<RoutingInfo, IReadOnlyList<RoutingTarget>> replicas = routing =>
+            {
+                var i = routing.RoutingKey.RawRoutingKey[0];
+                return hostList.Where(h =>
                 {
-                    var i = key[0];
-                    return hostList.Where(h =>
-                    {
-                        //The host at with address == k || address == k + n
-                        var address = TestHelper.GetLastAddressByte(h);
-                        return address == i || address == i + n;
-                    }).Select(h => new RoutingTarget(h, null)).ToList();
-                })
-                .Verifiable();
+                    //The host at with address == k || address == k + n
+                    var address = TestHelper.GetLastAddressByte(h);
+                    return address == i || address == i + n;
+                }).Select(h => new RoutingTarget(h, null)).ToList();
+            };
 
             var policy = new TokenAwarePolicy(new DCAwareRoundRobinPolicy("dc1"));
             policy.Initialize(clusterMock.Object);
 
             //key for host :::1 and :::3
             var k = new RoutingKey { RawRoutingKey = new byte[] { 1 } };
-            var hosts = policy.NewQueryPlan(clusterMock.Object, null, new SimpleStatement().SetRoutingKey(k)).ToList();
+            var hosts = policy.NewQueryPlan(clusterMock.Object, null, new SimpleStatement().SetRoutingKey(k), replicas: replicas).ToList();
             // 5 local hosts
             Assert.AreEqual(5, hosts.Count);
             //local replica first
@@ -441,7 +442,7 @@ namespace Cassandra.Tests
             //key for host :::2 and :::5
             k = new RoutingKey { RawRoutingKey = new byte[] { 2 } };
             n = 3;
-            hosts = policy.NewQueryPlan(clusterMock.Object, null, new SimpleStatement().SetRoutingKey(k)).ToList();
+            hosts = policy.NewQueryPlan(clusterMock.Object, null, new SimpleStatement().SetRoutingKey(k), replicas: replicas).ToList();
             Assert.AreEqual(5, hosts.Count);
             //local replicas first
             CollectionAssert.AreEquivalent(new[] { 2, 5 }, hosts.Take(2).Select(h => TestHelper.GetLastAddressByte(h.Host)));
@@ -473,19 +474,16 @@ namespace Cassandra.Tests
                 .Setup(c => c.AllHosts())
                 .Returns(hostList)
                 .Verifiable();
-            clusterMock
-                .Setup(c => c.GetRoutingReplicas(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<byte[]>()))
-                .Returns<string, string, byte[]>((keyspace, table, key) =>
+            Func<RoutingInfo, IReadOnlyList<RoutingTarget>> replicas = routing =>
+            {
+                var i = routing.RoutingKey.RawRoutingKey[0];
+                return hostList.Where(h =>
                 {
-                    var i = key[0];
-                    return hostList.Where(h =>
-                    {
-                        //The host at with address == k and the next one
-                        var address = TestHelper.GetLastAddressByte(h);
-                        return address == i || address == i + 1;
-                    }).Select(h => new RoutingTarget(h, null)).ToList();
-                })
-                .Verifiable();
+                    //The host at with address == k and the next one
+                    var address = TestHelper.GetLastAddressByte(h);
+                    return address == i || address == i + 1;
+                }).Select(h => new RoutingTarget(h, null)).ToList();
+            };
 
             var policy = new TokenAwarePolicy(new DCAwareRoundRobinPolicy("dc1"));
             policy.Initialize(clusterMock.Object);
@@ -496,7 +494,7 @@ namespace Cassandra.Tests
             const int times = 10000;
             Action action = () =>
             {
-                var h = policy.NewQueryPlan(clusterMock.Object, null, new SimpleStatement().SetRoutingKey(k)).First();
+                var h = policy.NewQueryPlan(clusterMock.Object, null, new SimpleStatement().SetRoutingKey(k), replicas: replicas).First();
                 firstHosts.Add(h.Host);
             };
             TestHelper.ParallelInvoke(action, times);
@@ -529,15 +527,14 @@ namespace Cassandra.Tests
                 .Returns(hostList);
             // Hosts 1 and 2 are replicas; for tablets they carry the shard that owns the tablet,
             // while the child policy always yields hosts without a shard
-            clusterMock
-                .Setup(c => c.GetRoutingReplicas(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<byte[]>()))
-                .Returns(new List<RoutingTarget> { new RoutingTarget(hostList[0], replicaShard), new RoutingTarget(hostList[1], replicaShard) });
+            Func<RoutingInfo, IReadOnlyList<RoutingTarget>> replicas = _ =>
+                new List<RoutingTarget> { new RoutingTarget(hostList[0], replicaShard), new RoutingTarget(hostList[1], replicaShard) };
 
             var policy = new TokenAwarePolicy(new DCAwareRoundRobinPolicy("dc1"));
             policy.Initialize(clusterMock.Object);
 
             var k = new RoutingKey { RawRoutingKey = new byte[] { 1 } };
-            var hosts = policy.NewQueryPlan(clusterMock.Object, null, new SimpleStatement().SetRoutingKey(k), routeAsLwt).ToList();
+            var hosts = policy.NewQueryPlan(clusterMock.Object, null, new SimpleStatement().SetRoutingKey(k), routeAsLwt, replicas).ToList();
 
             // Each local host exactly once: the 2 replicas followed by the remaining local host
             CollectionAssert.AreEquivalent(hostList.Take(3), hosts.Select(h => h.Host));
@@ -564,7 +561,7 @@ namespace Cassandra.Tests
             var policy = createPolicy();
             policy.Initialize(cluster.Object);
 
-            var plan = policy.NewQueryPlan(null, new ClusterState(cluster.Object)).ToList();
+            var plan = policy.NewQueryPlan(null, TestHelper.Snapshot(cluster.Object)).ToList();
 
             CollectionAssert.AreEquivalent(hosts, plan.Select(t => t.Host));
             Assert.That(plan.Select(t => t.Shard), Is.All.Null);
@@ -578,15 +575,21 @@ namespace Cassandra.Tests
             clusterMock
                 .Setup(c => c.AllHosts())
                 .Returns(new List<Host>());
-            clusterMock
-                .Setup(c => c.GetRoutingReplicas(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<byte[]>()))
-                .Returns(new List<RoutingTarget>());
+            var lookups = new List<RoutingInfo>();
             var policy = new TokenAwarePolicy(new RoundRobinPolicy());
             policy.Initialize(clusterMock.Object);
 
-            var _ = policy.NewQueryPlan(clusterMock.Object, "ks2", CreateStatement("ks1", "tbl1", rawRoutingKey)).ToList();
+            var _ = policy.NewQueryPlan(
+                clusterMock.Object,
+                "ks2",
+                CreateStatement("ks1", "tbl1", rawRoutingKey),
+                replicas: routing =>
+                {
+                    lookups.Add(routing);
+                    return new List<RoutingTarget>();
+                }).ToList();
 
-            clusterMock.Verify(c => c.GetRoutingReplicas("ks1", "tbl1", rawRoutingKey), Times.Once);
+            Assert.AreEqual(("ks1", "tbl1", rawRoutingKey), (lookups.Single().Keyspace, lookups.Single().Table, lookups.Single().RoutingKey.RawRoutingKey));
         }
 
         [Test]

@@ -501,9 +501,9 @@ namespace Cassandra
         }
 
         /// <inheritdoc />
-        ICollection<RoutingTarget> IInternalCluster.GetRoutingReplicas(string keyspace, string table, byte[] partitionKey)
+        MetadataSnapshot IInternalCluster.GetMetadataSnapshot()
         {
-            return Metadata.GetRoutingReplicas(keyspace, table, partitionKey);
+            return _metadata.GetSnapshot();
         }
 
         private void OnHostRemoved(Host h)
@@ -751,7 +751,7 @@ namespace Cassandra
                 return await handler.Prepare(
                     request,
                     session,
-                    lbp.NewQueryPlan(RoutingInfo.ForKeyspace(effectiveKeyspace), new ClusterState(this)).TakeWhileHostIsSet().GetEnumerator(),
+                    lbp.NewQueryPlan(RoutingInfo.ForKeyspace(effectiveKeyspace), MetadataSnapshot.Of(this)).TakeWhileHostIsSet().GetEnumerator(),
                     sessionKeyspace,
                     effectiveKeyspace).ConfigureAwait(false);
             }

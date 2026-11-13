@@ -1305,7 +1305,7 @@ namespace Cassandra.Tests.Requests
                 return HostDistance.Local;
             }
 
-            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
+            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, MetadataSnapshot cluster)
             {
                 return Enumerable.Empty<RoutingTarget>();
             }

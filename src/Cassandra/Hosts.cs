@@ -67,6 +67,15 @@ namespace Cassandra
         }
 
         /// <summary>
+        /// Gets the current hosts. The collection never changes, and it is the same instance until a host is added or
+        /// removed.
+        /// </summary>
+        public IReadOnlyCollection<Host> Snapshot()
+        {
+            return _hosts.ValuesSnapshot;
+        }
+
+        /// <summary>
         /// Adds the host if not exists
         /// </summary>
         public Host Add(IPEndPoint key)

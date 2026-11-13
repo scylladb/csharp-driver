@@ -13,6 +13,7 @@
 //   See the License for the specific language governing permissions and
 //   limitations under the License.
 //
+using System.Threading;
 using Cassandra.ExecutionProfiles;
 
 namespace Cassandra
@@ -76,6 +77,38 @@ namespace Cassandra
         /// partition reach the same coordinator first.
         /// </summary>
         public bool ShouldRouteAsLwt => IsConfirmedLwt || Consistency?.IsSerialConsistencyLevel() == true;
+
+        private TokenCache _token;
+
+        /// <summary>
+        /// Gets the token of <see cref="RoutingKey"/> for the partitioner of <paramref name="factory"/>, computing
+        /// it once: the policies of a request and their replica lookups reuse it.
+        /// </summary>
+        internal IToken GetToken(TokenFactory factory)
+        {
+            var cached = Volatile.Read(ref _token);
+            if (cached != null && ReferenceEquals(cached.Factory, factory))
+            {
+                return cached.Token;
+            }
+
+            var token = factory.Hash(RoutingKey.RawRoutingKey);
+            Volatile.Write(ref _token, new TokenCache(factory, token));
+            return token;
+        }
+
+        private sealed class TokenCache
+        {
+            public TokenCache(TokenFactory factory, IToken token)
+            {
+                Factory = factory;
+                Token = token;
+            }
+
+            public TokenFactory Factory { get; }
+
+            public IToken Token { get; }
+        }
 
         /// <summary>
         /// Builds the routing information of a statement executed by a session.

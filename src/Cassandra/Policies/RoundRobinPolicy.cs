@@ -35,12 +35,13 @@ namespace Cassandra
     /// </summary>
     public class RoundRobinPolicy : ILoadBalancingPolicy
     {
-        ICluster _cluster;
         int _index;
 
+        /// <summary>
+        /// Does nothing: the policy reads the hosts from the metadata snapshot of each query plan.
+        /// </summary>
         public void Initialize(ICluster cluster)
         {
-            this._cluster = cluster;
         }
 
         /// <summary>
@@ -63,14 +64,13 @@ namespace Cassandra
         ///  fashion.</p>
         /// </summary>
         /// <param name="routing">The routing information of the request.</param>
-        /// <param name="cluster">The view of the cluster.</param>
+        /// <param name="metadata">The snapshot of the cluster metadata, which gives the hosts.</param>
         /// <returns>a new query plan, i.e. an iterator indicating which host to try
         ///  first for querying, which one to use as failover, etc...</returns>
-        public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
+        public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, MetadataSnapshot metadata)
         {
             var routeAsLwt = routing?.ShouldRouteAsLwt == true;
-            //shallow copy the all hosts
-            var hosts = (from h in _cluster.AllHosts() select h).ToArray();
+            var hosts = (metadata ?? MetadataSnapshot.Empty).Hosts.ToArray();
             var startIndex = 0;
             if (!routeAsLwt)
             {

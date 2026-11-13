@@ -79,7 +79,7 @@ namespace Cassandra.Tests
             Mock.Get(enumerator).Setup(m => m.MoveNext()).Returns(false);
             Mock.Get(enumerable).Setup(m => m.GetEnumerator()).Returns(enumerator);
             Mock.Get(lbpMock)
-                .Setup(m => m.NewQueryPlan(It.IsAny<RoutingInfo>(), It.IsAny<ClusterState>()))
+                .Setup(m => m.NewQueryPlan(It.IsAny<RoutingInfo>(), It.IsAny<MetadataSnapshot>()))
                 .Returns(enumerable);
             var triedHosts = new Dictionary<IPEndPoint, Exception>();
 
@@ -103,7 +103,7 @@ namespace Cassandra.Tests
             Mock.Get(enumerator).SetupGet(m => m.Current).Returns(default(RoutingTarget));
             Mock.Get(enumerable).Setup(m => m.GetEnumerator()).Returns(enumerator);
             Mock.Get(lbpMock)
-                .Setup(m => m.NewQueryPlan(It.IsAny<RoutingInfo>(), It.IsAny<ClusterState>()))
+                .Setup(m => m.NewQueryPlan(It.IsAny<RoutingInfo>(), It.IsAny<MetadataSnapshot>()))
                 .Returns(enumerable);
             var triedHosts = new Dictionary<IPEndPoint, Exception>();
 
@@ -123,7 +123,7 @@ namespace Cassandra.Tests
             var hostA = new Host(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042), contactPoint: null);
             var hostB = new Host(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042), contactPoint: null);
             Mock.Get(lbpMock)
-                .Setup(m => m.NewQueryPlan(It.IsAny<RoutingInfo>(), It.IsAny<ClusterState>()))
+                .Setup(m => m.NewQueryPlan(It.IsAny<RoutingInfo>(), It.IsAny<MetadataSnapshot>()))
                 .Returns(new[] { new RoutingTarget(hostA, null), default, new RoutingTarget(hostB, null) });
             var triedHosts = new Dictionary<IPEndPoint, Exception>();
 
@@ -172,7 +172,7 @@ namespace Cassandra.Tests
             Mock.Get(enumerator).SetupGet(m => m.Current).Returns(hostShard);
             Mock.Get(enumerable).Setup(m => m.GetEnumerator()).Returns(enumerator);
             Mock.Get(lbpMock)
-                .Setup(m => m.NewQueryPlan(It.IsAny<RoutingInfo>(), It.IsAny<ClusterState>()))
+                .Setup(m => m.NewQueryPlan(It.IsAny<RoutingInfo>(), It.IsAny<MetadataSnapshot>()))
                 .Returns(enumerable);
             Mock.Get(lbpMock).Setup(m => m.Distance(hostShard.Host)).Returns(HostDistance.Local);
             var triedHosts = new Dictionary<IPEndPoint, Exception>();
@@ -213,7 +213,7 @@ namespace Cassandra.Tests
             var host = new Host(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042), contactPoint: null);
             Mock.Get(sessionMock.InternalCluster).Setup(c => c.RetrieveAndSetDistance(host)).Returns(HostDistance.Ignored);
             Mock.Get(lbpMock)
-                .Setup(m => m.NewQueryPlan(It.IsAny<RoutingInfo>(), It.IsAny<ClusterState>()))
+                .Setup(m => m.NewQueryPlan(It.IsAny<RoutingInfo>(), It.IsAny<MetadataSnapshot>()))
                 .Returns(new[] { new RoutingTarget(host, null) });
             var triedHosts = new Dictionary<IPEndPoint, Exception>();
 
@@ -235,7 +235,7 @@ namespace Cassandra.Tests
             Mock.Get(sessionMock).SetupGet(m => m.Cluster.Configuration).Returns(RequestHandlerMockTests.GetConfig(lbpMock));
             var target = new RoutingTarget(new Host(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9047), contactPoint: null), 3);
             Mock.Get(lbpMock)
-                .Setup(m => m.NewQueryPlan(It.IsAny<RoutingInfo>(), It.IsAny<ClusterState>()))
+                .Setup(m => m.NewQueryPlan(It.IsAny<RoutingInfo>(), It.IsAny<MetadataSnapshot>()))
                 .Returns(new[] { target });
             var connection = Mock.Of<IConnection>();
             var pool = new Mock<IHostConnectionPool>();

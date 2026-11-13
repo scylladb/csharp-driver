@@ -116,58 +116,6 @@ namespace Cassandra.Tests.Policies
             Assert.IsTrue(routing.ShouldRouteAsLwt);
         }
 
-        [Test]
-        public void ClusterState_Should_Require_A_Cluster()
-        {
-            Assert.Throws<ArgumentNullException>(() => new ClusterState(null));
-        }
-
-        [Test]
-        public void ClusterState_Hosts_Should_Be_The_Hosts_Of_The_Cluster()
-        {
-            var hosts = new List<Host> { new Host(new IPEndPoint(IPAddress.Loopback, 9042), contactPoint: null) };
-            var cluster = new Mock<IInternalCluster>();
-            cluster.Setup(c => c.AllHosts()).Returns(hosts);
-
-            Assert.AreSame(hosts, new ClusterState(cluster.Object).Hosts);
-        }
-
-        [Test]
-        public void ClusterState_GetReplicas_Should_Be_Empty_Without_A_Routing_Key()
-        {
-            var cluster = new Mock<IInternalCluster>(MockBehavior.Strict);
-            var state = new ClusterState(cluster.Object);
-
-            CollectionAssert.IsEmpty(state.GetReplicas(new RoutingInfo { Keyspace = "ks1" }));
-            CollectionAssert.IsEmpty(state.GetReplicas(null));
-        }
-
-        [Test]
-        public void ClusterState_GetReplicas_Should_Return_The_Routing_Replicas_With_Their_Shard()
-        {
-            var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), contactPoint: null);
-            var replicas = new List<RoutingTarget> { new RoutingTarget(host, 3) };
-            var cluster = new Mock<IInternalCluster>();
-            cluster.Setup(c => c.GetRoutingReplicas("ks1", "tbl1", new byte[] { 1 })).Returns(replicas);
-            var routing = new RoutingInfo
-            {
-                Keyspace = "ks1",
-                Table = "tbl1",
-                RoutingKey = new RoutingKey { RawRoutingKey = new byte[] { 1 } }
-            };
-
-            CollectionAssert.AreEqual(replicas, new ClusterState(cluster.Object).GetReplicas(routing));
-        }
-
-        [Test]
-        public void ClusterState_GetReplicas_Should_Be_Empty_When_The_Replicas_Are_Unknown()
-        {
-            var cluster = new Mock<IInternalCluster>();
-            var routing = new RoutingInfo { Keyspace = "ks1", RoutingKey = new RoutingKey { RawRoutingKey = new byte[] { 1 } } };
-
-            CollectionAssert.IsEmpty(new ClusterState(cluster.Object).GetReplicas(routing));
-        }
-
         private static IRequestOptions GetRequestOptions(ConsistencyLevel consistency)
         {
             var options = new Mock<IRequestOptions>();
