@@ -115,6 +115,7 @@ namespace Cassandra.Tests
                         if (scenario.StartsWith("inline-"))
                         {
                             callback(null, new ProxyResultResponse(ResultResponse.ResultResponseKind.Void))
+                                .WaitAsync(TimeSpan.FromSeconds(5))
                                 .GetAwaiter().GetResult();
                         }
                     })
