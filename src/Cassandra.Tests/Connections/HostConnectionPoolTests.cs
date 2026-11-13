@@ -331,9 +331,14 @@ namespace Cassandra.Tests.Connections
             }
         }
 
-        [Test]
+        [TestCase(false, "borrow")]
+        [TestCase(false, "background")]
+        [TestCase(false, "request")]
+        [TestCase(true, "borrow")]
+        [TestCase(true, "background")]
+        [TestCase(true, "request")]
         [NonParallelizable]
-        public async Task Should_KeepSuccessfulBackupWhenRecoveredRouteLoggerThrows()
+        public async Task Should_PreserveRecoveredRouteDiagnosticFailureSemantics(bool fatal, string path)
         {
             var firstEndPoint = CreateRouteEndPoint("198.51.100.7", "first");
             var secondEndPoint = CreateRouteEndPoint("198.51.100.8", "second");
@@ -342,24 +347,46 @@ namespace Cassandra.Tests.Connections
             var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
             var pool = CreatePool(resolver.Object, new FakeConnectionFactory(
                 (IConnectionEndPoint endPoint) => endPoint.Equals(firstEndPoint) ? first.Object : second.Object),
-                coreConnections: 1);
+                coreConnections: 1,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
             resolver.Setup(value => value.GetConnectionEndPointsAsync(_host, false))
                     .ReturnsAsync(new IConnectionEndPoint[] { firstEndPoint, secondEndPoint });
             var listener = new Mock<TraceListener> { CallBase = true };
+            Exception loggerFailure = fatal
+                ? new OutOfMemoryException("recovered route logger failed fatally")
+                : new InvalidOperationException("recovered route logger failed");
             listener.Setup(value => value.WriteLine(It.Is<string>(message =>
                         message.Contains("Failed to open a connection to"))))
-                    .Throws(new InvalidOperationException("recovered route logger failed"));
+                .Throws(loggerFailure);
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
             Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
             Trace.Listeners.Add(listener.Object);
             try
             {
-                var opening = pool.BorrowConnectionAsync();
-                await opening.WaitToCompleteAsync(5000).ConfigureAwait(false);
-                var opened = await opening.ConfigureAwait(false);
-                Assert.AreSame(second.Object, opened);
-                Assert.AreEqual(1, pool.OpenConnections);
-                second.Verify(value => value.Dispose(), Times.Never);
+                var foreground = path == "background"
+                    ? null
+                    : path == "request"
+                        ? pool.GetConnectionFromHostAsync(new Dictionary<IPEndPoint, Exception>(), () => null, null)
+                        : pool.BorrowConnectionAsync();
+                var opening = path == "background" ? InvokeCreateOrScheduleReconnectAsync(pool) : foreground;
+                if (fatal)
+                {
+                    var actual = await Assert.ThrowsAsync<OutOfMemoryException>(
+                        () => opening.WaitAsync(TimeSpan.FromSeconds(5)));
+                    Assert.AreSame(loggerFailure, actual);
+                    Assert.AreEqual(0, pool.OpenConnections);
+                    second.Verify(value => value.Dispose(), Times.Once);
+                }
+                else
+                {
+                    await opening.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    if (foreground != null)
+                    {
+                        Assert.AreSame(second.Object, await foreground.ConfigureAwait(false));
+                    }
+                    Assert.AreEqual(1, pool.OpenConnections);
+                    second.Verify(value => value.Dispose(), Times.Never);
+                }
                 listener.Verify(value => value.WriteLine(It.Is<string>(message =>
                     message.Contains("Failed to open a connection to"))), Times.Once);
             }
@@ -367,7 +394,7 @@ namespace Cassandra.Tests.Connections
             {
                 Trace.Listeners.Remove(listener.Object);
                 Diagnostics.CassandraTraceSwitch.Level = previousLevel;
-                pool.Dispose();
+                DisposePoolAndTimer(pool);
                 listener.Object.Dispose();
             }
         }
