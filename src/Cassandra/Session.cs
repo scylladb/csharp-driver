@@ -38,6 +38,11 @@ namespace Cassandra
     /// <inheritdoc cref="ISession" />
     public class Session : IInternalSession
     {
+        [ThreadStatic]
+        private static List<Action> _deferredMetricsRetirements;
+        [ThreadStatic]
+        private static Stack<Session> _activePoolLookups;
+
         private readonly ISerializerManager _serializerManager;
         private static readonly Logger Logger = new Logger(typeof(Session));
         private readonly IThreadSafeDictionary<IPEndPoint, HostPool> _connectionPool;
@@ -432,39 +437,29 @@ namespace Cassandra
             return ReferenceEquals(entry.Host, currentHost) || (customHost && !entry.Host.IsRemoved);
         }
 
-        private IHostConnectionPool GetOrCreateConnectionPool(Host host, HostDistance distance, bool allowDownHost)
+        private static bool IsPoolLifecycleLockHeld()
         {
-            Action retireFailedPoolMetrics = null;
-            try
+            if (_activePoolLookups != null)
             {
-                return GetOrCreateConnectionPool(host, distance, allowDownHost, out retireFailedPoolMetrics);
-            }
-            finally
-            {
-                // This lookup's lifecycle lock scope has unwound before provider teardown.
-                // Already queued lookups can now observe the retirement barrier.
-                try
+                foreach (var session in _activePoolLookups)
                 {
-                    retireFailedPoolMetrics?.Invoke();
-                }
-                catch (Exception cleanupFailure) when (!Utils.IsFatalException(cleanupFailure))
-                {
-                    // Keep the primary setup failure when metrics cleanup fails nonfatally.
+                    if (session._connectionPoolLifecycleLock.IsHeldByCurrentThread)
+                    {
+                        return true;
+                    }
                 }
             }
+            return false;
         }
 
-        private IHostConnectionPool GetOrCreateConnectionPool(
-            Host host, HostDistance distance, bool allowDownHost, out Action retireFailedPoolMetrics)
+        private IHostConnectionPool GetOrCreateConnectionPool(Host host, HostDistance distance, bool allowDownHost)
         {
-            retireFailedPoolMetrics = null;
             var clientRoutesEnabled = Configuration.ClientRoutesRuntime != null;
             if (IsDisposed)
             {
                 throw new ObjectDisposedException(nameof(Session));
             }
             ThrowIfMetricsRetirementBlocksPool(host.Address);
-
             var currentHost = ResolvePoolHost(host, clientRoutesEnabled, out var customHost);
             if (!IsDisposed && currentHost != null &&
                 _connectionPool.TryGetValue(host.Address, out var entry) &&
@@ -473,6 +468,92 @@ namespace Cassandra
             {
                 return entry.Pool;
             }
+
+            _activePoolLookups ??= new Stack<Session>();
+            _activePoolLookups.Push(this);
+            Action retireFailedPoolMetrics = null;
+            try
+            {
+                return GetOrCreateConnectionPool(host, distance, allowDownHost, out retireFailedPoolMetrics);
+            }
+            finally
+            {
+                try
+                {
+                    if (retireFailedPoolMetrics != null)
+                    {
+                        RunOrDeferMetricsRetirement(() =>
+                        {
+                            try
+                            {
+                                retireFailedPoolMetrics();
+                            }
+                            catch (Exception cleanupFailure) when (!Utils.IsFatalException(cleanupFailure))
+                            {
+                                // Keep the primary setup failure when teardown fails nonfatally.
+                            }
+                        });
+                    }
+                }
+                finally
+                {
+                    _activePoolLookups.Pop();
+                    DrainDeferredMetricsRetirements();
+                }
+            }
+        }
+
+        private void RunOrDeferMetricsRetirement(Action retirement)
+        {
+            if (!IsPoolLifecycleLockHeld())
+            {
+                retirement();
+                return;
+            }
+
+            // Metrics/policy callbacks can remove a host beneath a recursive creation
+            // lock. Retain the address barrier, but run teardown after the outer lookup
+            // unwinds. The thread owns this queue, including removals in other sessions.
+            _deferredMetricsRetirements ??= new List<Action>();
+            _deferredMetricsRetirements.Add(retirement);
+        }
+
+        private void DrainDeferredMetricsRetirements()
+        {
+            if (_deferredMetricsRetirements == null || IsPoolLifecycleLockHeld())
+            {
+                return;
+            }
+
+            var pending = _deferredMetricsRetirements;
+            _deferredMetricsRetirements = null;
+            Exception failure = null;
+            foreach (var retirement in pending)
+            {
+                try
+                {
+                    retirement();
+                }
+                catch (Exception error)
+                {
+                    // Settle every queued barrier, retaining fatal failure priority.
+                    if (failure == null || (!Utils.IsFatalException(failure) && Utils.IsFatalException(error)))
+                    {
+                        failure = error;
+                    }
+                }
+            }
+            if (failure != null)
+            {
+                ExceptionDispatchInfo.Capture(failure).Throw();
+            }
+        }
+
+        private IHostConnectionPool GetOrCreateConnectionPool(
+            Host host, HostDistance distance, bool allowDownHost, out Action retireFailedPoolMetrics)
+        {
+            retireFailedPoolMetrics = null;
+            var clientRoutesEnabled = Configuration.ClientRoutesRuntime != null;
 
             while (true)
             {
@@ -485,7 +566,7 @@ namespace Cassandra
                     }
 
                     ThrowIfMetricsRetirementBlocksPool(host.Address);
-                    currentHost = ResolvePoolHost(host, clientRoutesEnabled, out customHost);
+                    var currentHost = ResolvePoolHost(host, clientRoutesEnabled, out var customHost);
                     if (currentHost == null)
                     {
                         throw new HostConnectionPoolNotEligibleException("it is absent from metadata");
@@ -772,6 +853,21 @@ namespace Cassandra
 
         private void OnHostRemoved(Host host)
         {
+            _activePoolLookups ??= new Stack<Session>();
+            _activePoolLookups.Push(this);
+            try
+            {
+                OnHostRemovedCore(host);
+            }
+            finally
+            {
+                _activePoolLookups.Pop();
+                DrainDeferredMetricsRetirements();
+            }
+        }
+
+        private void OnHostRemovedCore(Host host)
+        {
             HostPool entry;
             IDisposable retiredMetrics;
             lock (_connectionPoolLifecycleLock)
@@ -802,6 +898,11 @@ namespace Cassandra
                 retiredMetrics = _metricsManager.DetachNodeMetrics(host);
             }
 
+            RunOrDeferMetricsRetirement(() => CompleteHostRemoval(host, entry, retiredMetrics));
+        }
+
+        private void CompleteHostRemoval(Host host, HostPool entry, IDisposable retiredMetrics)
+        {
             // Keep the pool reachable for shutdown if teardown fails. User teardown
             // callbacks may wait for another thread's lookup, which must complete with
             // an eligibility diagnostic until the old bucket has finished shutting down.

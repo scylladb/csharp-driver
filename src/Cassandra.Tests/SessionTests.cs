@@ -736,6 +736,154 @@ namespace Cassandra.Tests
             }
         }
 
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public async Task Should_DeferReentrantHostRemovalUntilOuterCreationReleasesItsLock(
+            bool secondSession, bool metricsCleanupThrows)
+        {
+            using var registering = new ManualResetEventSlim();
+            using var removeHost = new ManualResetEventSlim();
+            using var lookupPassedEarlyGuard = new ManualResetEventSlim();
+            var provider = CreateMetricsProviderForRemovalTests();
+            var pools = new List<Mock<IHostConnectionPool>>();
+            var factory = new Mock<IHostConnectionPoolFactory>();
+            factory.Setup(value => value.Create(
+                    It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>())).Returns(() =>
+                {
+                    var pool = new Mock<IHostConnectionPool>();
+                    pools.Add(pool);
+                    return pool.Object;
+                });
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = factory.Object,
+                MetricsProvider = provider.Object,
+                ClientRoutesOptions = new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+            }.Build();
+            using var metadata = new Metadata(config);
+            var oldHost = metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042));
+            oldHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var creatingHost = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
+            creatingHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var lookupThread = 0;
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(() =>
+            {
+                if (Environment.CurrentManagedThreadId == Volatile.Read(ref lookupThread))
+                {
+                    lookupPassedEarlyGuard.Set();
+                }
+                return metadata;
+            });
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            Task<Exception> queuedLookup = null;
+            var teardownCount = 0;
+            var lookupCompletedDuringTeardown = true;
+            provider.Setup(value => value.ShutdownMetricsBucket(It.Is<string>(bucket => bucket.Contains(".nodes."))))
+                .Callback(() =>
+                {
+                    var count = Interlocked.Increment(ref teardownCount);
+                    lookupCompletedDuringTeardown &= queuedLookup != null && queuedLookup.Wait(5000);
+                    if (metricsCleanupThrows && count == 1)
+                    {
+                        throw new InvalidOperationException("Metrics teardown failed");
+                    }
+                });
+            try
+            {
+                using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "reentrant-removal-first");
+                using var other = secondSession
+                    ? new Session(cluster.Object, config, null, SerializerManager.Default, "reentrant-removal-second")
+                    : null;
+                var internalSession = (IInternalSession)session;
+                internalSession.GetOrCreateConnectionPool(oldHost, HostDistance.Local);
+                ((IInternalSession)other)?.GetOrCreateConnectionPool(oldHost, HostDistance.Local);
+                var expectedRetirements = pools.Count;
+                var reentered = 0;
+                provider.Setup(value => value.Gauge(
+                        It.IsAny<string>(), It.IsAny<IMetric>(), It.IsAny<Func<double?>>()))
+                    .Returns((string _, IMetric metric, Func<double?> __) =>
+                    {
+                        if (metric is NodeMetric && Interlocked.Exchange(ref reentered, 1) == 0)
+                        {
+                            registering.Set();
+                            Assert.IsTrue(removeHost.Wait(5000), "Reentrant removal was not released.");
+                            metadata.RemoveHost(oldHost.Address);
+                            cluster.Raise(value => value.HostRemoved += null, oldHost);
+                        }
+                        return Mock.Of<IDriverGauge>();
+                    });
+                var creating = Task.Run(() =>
+                {
+                    try
+                    {
+                        internalSession.GetOrCreateConnectionPool(creatingHost, HostDistance.Local);
+                        return null;
+                    }
+                    catch (Exception error)
+                    {
+                        return error;
+                    }
+                });
+                try
+                {
+                    Assert.IsTrue(registering.Wait(5000), "Pool creation did not reach metrics registration.");
+                    oldHost.SetDown();
+                    queuedLookup = Task.Run(() =>
+                    {
+                        Volatile.Write(ref lookupThread, Environment.CurrentManagedThreadId);
+                        try
+                        {
+                            internalSession.GetOrCreateConnectionPool(oldHost, HostDistance.Local);
+                            return null;
+                        }
+                        catch (Exception error)
+                        {
+                            return error;
+                        }
+                    });
+                    Assert.IsTrue(lookupPassedEarlyGuard.Wait(5000), "Queued lookup did not pass its initial retirement guard.");
+                    Assert.IsFalse(queuedLookup.IsCompleted);
+                }
+                finally
+                {
+                    removeHost.Set();
+                    await creating.WaitToCompleteAsync(15000).ConfigureAwait(false);
+                    if (queuedLookup != null)
+                    {
+                        await queuedLookup.WaitToCompleteAsync(15000).ConfigureAwait(false);
+                    }
+                    Volatile.Write(ref lookupThread, 0);
+                }
+                Assert.AreEqual(expectedRetirements, teardownCount, "Every session's detached metrics must be retired.");
+                Assert.IsTrue(lookupCompletedDuringTeardown, "A recursive outer lifecycle lock blocked the queued lookup.");
+                Assert.IsInstanceOf<HostConnectionPoolNotEligibleException>(queuedLookup.Result);
+                StringAssert.Contains("metrics are being retired", queuedLookup.Result.Message);
+                if (metricsCleanupThrows)
+                {
+                    Assert.IsInstanceOf<InvalidOperationException>(creating.Result);
+                    pools[0].Verify(value => value.Dispose(), Times.Never);
+                }
+                else
+                {
+                    Assert.IsNull(creating.Result);
+                    pools[0].Verify(value => value.Dispose(), Times.Once);
+                }
+                if (secondSession)
+                {
+                    pools[1].Verify(value => value.Dispose(), Times.Once);
+                }
+            }
+            finally
+            {
+                removeHost.Set();
+                config.Timer.Dispose();
+            }
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         public void Should_PreservePublishedPoolMetricsWhenOuterInitializationFails(bool clientRoutesEnabled)
