@@ -1614,6 +1614,59 @@ namespace Cassandra.Tests.Connections
             }
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_PreserveAdaptiveTargetWhenRoutedOpenReportsEquivalentLayout(bool changePort)
+        {
+            var connections = new ConcurrentQueue<Mock<IConnection>>();
+            var factory = new FakeConnectionFactory(endpoint =>
+            {
+                var index = connections.Count;
+                var info = ShardingInfo.Create((index % 4).ToString(), "4",
+                    "org.apache.cassandra.dht.Murmur3Partitioner", "biased-token-round-robin", "12",
+                    changePort && index >= 4 ? "19043" : "19042", "19142");
+                var connection = CreateConnection(endpoint, shardingInfo: info);
+                connection.Object.ShardID = index % 4;
+                connections.Enqueue(connection);
+                return connection.Object;
+            });
+            var target = CreatePool(
+                connectionFactory: factory,
+                clientRoutesOptions: new ClientRoutesOptions(new[] { new ClientRouteProxy("route-a") }, 9042, true),
+                coreConnections: 4,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            var config = (Configuration)typeof(HostConnectionPool)
+                .GetField("_config", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(target);
+            config.PoolingOptions.SetMaxConnectionsPerHost(HostDistance.Local, 8);
+            target.SetDistance(HostDistance.Local);
+            try
+            {
+                await target.Warmup().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                var beforeResize = GetShardingInfo(target);
+                target.ConsiderResizingPool(int.MaxValue);
+                await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                Assert.AreEqual(5, target.OpenConnections);
+                Assert.AreEqual(5, GetExpectedConnectionLength(target));
+                Assert.AreNotSame(beforeResize, GetShardingInfo(target));
+                Assert.AreEqual(changePort ? 19043 : 19042, GetShardingInfo(target).ScyllaShardAwarePort);
+
+                var lost = connections.Single(connection => connection.Object.ShardID == 1);
+                lost.Raise(value => value.Closing += null, lost.Object);
+                await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                Assert.AreEqual(5, target.OpenConnections);
+                Assert.AreEqual(5, GetExpectedConnectionLength(target));
+                Assert.AreEqual(6, connections.Count);
+                CollectionAssert.AreEquivalent(new[] { 0, 1, 2, 3 },
+                    target.ConnectionsSnapshot.Select(connection => connection.ShardID).Distinct());
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
         [Test]
         public async Task Should_PreserveShardMultipleWhenDistanceChanges()
         {

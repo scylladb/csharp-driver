@@ -1586,7 +1586,12 @@ namespace Cassandra.Connections
                     // Distance changes share this lock. Derive the target only after
                     // validation so a newer distance cannot be overwritten by a saved target.
                     Interlocked.Exchange(ref _shardingInfo, nextShardingInfo);
-                    _expectedConnectionLength = GetCoreConnectionTarget(nextShardingInfo);
+                    // Each open can parse a fresh metadata object for the same layout.
+                    // Preserve adaptive growth when the shard count is unchanged.
+                    if (previousShardingInfo?.ScyllaNrShards != nextShardingInfo?.ScyllaNrShards)
+                    {
+                        _expectedConnectionLength = GetCoreConnectionTarget(nextShardingInfo);
+                    }
                 }
                 return true;
             }
