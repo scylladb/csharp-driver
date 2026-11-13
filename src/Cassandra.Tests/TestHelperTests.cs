@@ -23,12 +23,39 @@ using NUnit.Framework;
 
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 using CollectionAssert = NUnit.Framework.CollectionAssert;
+using StringAssert = NUnit.Framework.StringAssert;
 
 namespace Cassandra.Tests
 {
     [TestFixture]
     public sealed class TestHelperTests
     {
+        [Test]
+        public async Task SuccessfulRetryDoesNotRetainEarlierAssertionFailure()
+        {
+            var attempts = 0;
+            await TestHelper.RetryAssertUntilAsync(
+                () => Assert.AreEqual(2, ++attempts),
+                TimeSpan.FromSeconds(5),
+                TimeSpan.Zero,
+                "The second attempt should succeed.",
+                ex => !Utils.IsFatalException(ex)).ConfigureAwait(false);
+            Assert.AreEqual(2, attempts);
+        }
+
+        [Test]
+        public async Task ExhaustedRetryReportsTheLastFailure()
+        {
+            var exception = await Assert.ThrowsAsync<AssertionException>(() => TestHelper.RetryAssertUntilAsync(
+                () => Assert.Fail("The condition was never satisfied."),
+                TimeSpan.Zero,
+                TimeSpan.Zero,
+                "Retry timed out.",
+                ex => !Utils.IsFatalException(ex))).ConfigureAwait(false);
+            StringAssert.Contains("Retry timed out.", exception.Message);
+            StringAssert.Contains("The condition was never satisfied.", exception.Message);
+        }
+
         [Test]
         public async Task WaitUntilChecksConditionAfterTheFinalDelay()
         {
@@ -77,6 +104,18 @@ namespace Cassandra.Tests
                 ex => ex is AssertionException)).ConfigureAwait(false);
             Assert.AreSame(failure, observed);
             Assert.AreEqual(1, attempts);
+        }
+
+        [Test]
+        public void RunAllCleanupActionsDoesNotSuppressFatalFailures()
+        {
+            var failure = new OutOfMemoryException("fatal cleanup failure");
+            var subsequentActionRan = false;
+            var observed = Assert.Throws<OutOfMemoryException>(() => TestHelper.RunAllCleanupActions(
+                () => throw failure,
+                () => subsequentActionRan = true));
+            Assert.AreSame(failure, observed);
+            Assert.IsFalse(subsequentActionRan);
         }
 
         [Test]

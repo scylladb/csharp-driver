@@ -264,7 +264,8 @@ namespace Cassandra.Tests
         }
 
         /// <summary>
-        /// Runs every cleanup action and reports all failures after cleanup has finished.
+        /// Runs every cleanup action and reports nonfatal failures after cleanup has finished.
+        /// Fatal failures escape immediately.
         /// </summary>
         public static void RunAllCleanupActions(params Action[] cleanupActions)
         {
@@ -285,7 +286,7 @@ namespace Cassandra.Tests
                 {
                     cleanupAction();
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (!Utils.IsFatalException(ex))
                 {
                     if (exceptions == null)
                     {

@@ -35,32 +35,6 @@ namespace Cassandra.IntegrationTests.ClientRoutes
     [Category(TestCategory.Short)]
     public sealed class ClientRoutesTestSupportTests
     {
-        [Test]
-        public async Task SuccessfulRetryDoesNotRetainEarlierAssertionFailure()
-        {
-            var attempts = 0;
-            await TestHelper.RetryAssertUntilAsync(
-                () => Assert.AreEqual(2, ++attempts),
-                TimeSpan.FromSeconds(5),
-                TimeSpan.Zero,
-                "The second attempt should succeed.",
-                ex => !Utils.IsFatalException(ex)).ConfigureAwait(false);
-            Assert.AreEqual(2, attempts);
-        }
-
-        [Test]
-        public async Task ExhaustedRetryReportsTheLastFailure()
-        {
-            var exception = await Assert.ThrowsAsync<AssertionException>(() => TestHelper.RetryAssertUntilAsync(
-                () => Assert.Fail("The condition was never satisfied."),
-                TimeSpan.Zero,
-                TimeSpan.Zero,
-                "Retry timed out.",
-                ex => !Utils.IsFatalException(ex))).ConfigureAwait(false);
-            StringAssert.Contains("Retry timed out.", exception.Message);
-            StringAssert.Contains("The condition was never satisfied.", exception.Message);
-        }
-
         [TestCase(HttpStatusCode.Unauthorized)]
         [TestCase(HttpStatusCode.Forbidden)]
         [TestCase(HttpStatusCode.NotFound)]
