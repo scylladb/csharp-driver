@@ -17,6 +17,7 @@
 using System;
 using System.Threading.Tasks;
 using Cassandra.Connections;
+using Cassandra.Metrics.Registries;
 using Cassandra.Observers.Abstractions;
 using Cassandra.Requests;
 
@@ -31,6 +32,23 @@ namespace Cassandra.Observers.Composite
         {
             _o1 = o1;
             _o2 = o2;
+        }
+
+        public void OnNodePoolSelected(Host host, INodeMetrics metrics)
+        {
+            _o1.OnNodePoolSelected(host, metrics);
+            _o2.OnNodePoolSelected(host, metrics);
+        }
+
+        public Action CreateSpeculativeExecutionCallback(Host host, long delay)
+        {
+            var first = _o1.CreateSpeculativeExecutionCallback(host, delay) ?? (() => _o1.OnSpeculativeExecution(host, delay));
+            var second = _o2.CreateSpeculativeExecutionCallback(host, delay) ?? (() => _o2.OnSpeculativeExecution(host, delay));
+            return () =>
+            {
+                first();
+                second();
+            };
         }
 
         public async Task OnNodeRequestErrorAsync(

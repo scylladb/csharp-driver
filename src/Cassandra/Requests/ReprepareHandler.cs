@@ -160,6 +160,7 @@ namespace Cassandra.Requests
 
                 if (connection != null)
                 {
+                    nodeRequestInfo?.CaptureNodeMetrics(connection.NodeMetrics);
                     var response = await connection.SendWithKeyspace(request, connectionKeyspace).ConfigureAwait(false);
                     var outputPrepared = ReprepareHandler.ValidatePreparedResponse(response);
                     if (!outputPrepared.QueryId.SequenceEqual(ps.Id))

@@ -27,6 +27,7 @@ using Cassandra.Connections;
 using Cassandra.ExecutionProfiles;
 using Cassandra.Metrics;
 using Cassandra.Metrics.Internal;
+using Cassandra.Observers;
 using Cassandra.Observers.Abstractions;
 using Cassandra.Requests;
 using Cassandra.Serialization;
@@ -603,13 +604,25 @@ namespace Cassandra
             Host host, HostDistance distance, bool clientRoutesEnabled, bool allowDownHost, out Action retireFailedPoolMetrics)
         {
             retireFailedPoolMetrics = null;
-            var newPool = Configuration.HostConnectionPoolFactory.Create(
-                host, Configuration, _serializerManager, _observerFactory, Cluster.Metadata.GetTokenFactory());
+            var poolObservers = new PoolObserverFactory(_observerFactory, _shutdown.Task);
+            IHostConnectionPool newPool;
+            try
+            {
+                newPool = Configuration.HostConnectionPoolFactory.Create(
+                    host, Configuration, _serializerManager, poolObservers, Cluster.Metadata.GetTokenFactory());
+            }
+            catch
+            {
+                poolObservers.CancelInitialization();
+                throw;
+            }
             try
             {
                 newPool.AllConnectionClosed += InternalRef.OnAllConnectionClosed;
                 newPool.SetDistance(distance);
-                _metricsManager.GetOrCreateNodeMetrics(host).InitializePoolGauges(newPool);
+                var nodeMetrics = _metricsManager.GetOrCreateNodeMetricsForPool(host);
+                nodeMetrics.InitializePoolGauges(newPool);
+                newPool.NodeMetrics = nodeMetrics;
                 // Revalidate after metrics registration, which can invoke user callbacks
                 // or overlap another request's policy-distance evaluation.
                 if (!IsPoolHostEligible(host, clientRoutesEnabled, allowDownHost, ref distance))
@@ -627,11 +640,14 @@ namespace Cassandra
                     {
                         throw new HostConnectionPoolNotEligibleException("it was removed during pool creation");
                     }
+                    ThrowIfMetricsRetirementBlocksPool(host.Address);
                     _connectionPool.Add(host.Address, new HostPool(host, newPool));
+                    poolObservers.Initialize(nodeMetrics);
                 }
             }
             catch
             {
+                poolObservers.CancelInitialization();
                 try
                 {
                     newPool.Dispose();
@@ -652,7 +668,16 @@ namespace Cassandra
                             _metricsRetirements.Add(host.Address,
                                 new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously));
                             var retiredMetrics = _metricsManager.DetachNodeMetrics(host);
-                            retireFailedPoolMetrics = () => DisposeRetiredMetrics(host, retiredMetrics);
+                            retireFailedPoolMetrics = () =>
+                            {
+                                lock (_connectionPoolLifecycleLock)
+                                {
+                                    // An enclosing constructor may finish after this failure.
+                                    // Retire its registry before releasing the shared bucket.
+                                    retiredMetrics = _metricsManager.DetachNodeMetrics(host) ?? retiredMetrics;
+                                }
+                                DisposeRetiredMetrics(host, retiredMetrics);
+                            };
                         }
                     }
                     catch (Exception cleanupFailure) when (!Utils.IsFatalException(cleanupFailure))

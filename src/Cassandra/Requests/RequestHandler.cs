@@ -26,6 +26,7 @@ using System.Threading.Tasks;
 using Cassandra.Collections;
 using Cassandra.Connections;
 using Cassandra.ExecutionProfiles;
+using Cassandra.Metrics.Registries;
 using Cassandra.Observers.Abstractions;
 using Cassandra.Serialization;
 using Cassandra.SessionManagement;
@@ -422,7 +423,10 @@ namespace Cassandra.Requests
         {
             // The shard the query plan chose, such as the shard that owns a tablet
             var shardID = validHost.Shard ?? -1;
-            return RequestHandler.GetConnectionFromHostAsync(validHost.Host, validHost.Distance, _session, triedHosts, Statement != null ? Statement.RoutingKey : null, shardID);
+            return RequestHandler.GetConnectionFromHostAsync(
+                validHost.Host, validHost.Distance, _session, triedHosts,
+                Statement != null ? Statement.RoutingKey : null, shardID,
+                metrics => _requestObserver.OnNodePoolSelected(validHost.Host, metrics));
         }
 
         /// <summary>
@@ -435,12 +439,14 @@ namespace Cassandra.Requests
         /// <param name="triedHosts">Hosts for which there were attempts to connect and send the request.</param>
         /// <param name="routingKey">Routing key to use for the next host.</param>
         /// <param name="shardID">Shard to use.</param>
+        /// <param name="onPoolSelected">Captures the selected pool's metrics before connection acquisition can suspend.</param>
         /// <exception cref="InvalidQueryException">When the keyspace is not valid</exception>
         internal static Task<IConnection> GetConnectionFromHostAsync(
-            Host host, HostDistance distance, IInternalSession session, IDictionary<IPEndPoint, Exception> triedHosts, RoutingKey routingKey = null, int shardID = -1)
+            Host host, HostDistance distance, IInternalSession session, IDictionary<IPEndPoint, Exception> triedHosts,
+            RoutingKey routingKey = null, int shardID = -1, Action<INodeMetrics> onPoolSelected = null)
         {
             return GetConnectionFromHostInternalAsync(
-                host, distance, session, triedHosts, true, () => session.Keyspace, routingKey, shardID);
+                host, distance, session, triedHosts, true, () => session.Keyspace, routingKey, shardID, onPoolSelected);
         }
 
         internal static Task<IConnection> GetConnectionFromHostWithKeyspaceAsync(
@@ -464,7 +470,8 @@ namespace Cassandra.Requests
             bool retry,
             Func<string> getKeyspaceFunc,
             RoutingKey routingKey,
-            int shardID = -1)
+            int shardID = -1,
+            Action<INodeMetrics> onPoolSelected = null)
         {
             IHostConnectionPool hostPool;
             try
@@ -486,6 +493,8 @@ namespace Cassandra.Requests
 
             try
             {
+                // Bind speculative accounting before connection acquisition waits for USE or opening.
+                onPoolSelected?.Invoke(hostPool.NodeMetrics);
                 return await hostPool.GetConnectionFromHostAsync(
                     triedHosts, getKeyspaceFunc, routingKey, shardID).ConfigureAwait(false);
             }
@@ -496,7 +505,7 @@ namespace Cassandra.Requests
                     // A socket exception on the current connection does not mean that all the pool is closed:
                     // Retry on the same host
                     return await RequestHandler.GetConnectionFromHostInternalAsync(
-                        host, distance, session, triedHosts, false, getKeyspaceFunc, routingKey, shardID).ConfigureAwait(false);
+                        host, distance, session, triedHosts, false, getKeyspaceFunc, routingKey, shardID, onPoolSelected).ConfigureAwait(false);
                 }
 
                 throw;
@@ -564,6 +573,8 @@ namespace Cassandra.Requests
                 return;
             }
             //There is one live timer at a time.
+            var speculativeCallback = _requestObserver.CreateSpeculativeExecutionCallback(currentHost, delay)
+                ?? (() => _requestObserver.OnSpeculativeExecution(currentHost, delay));
             _nextExecutionTimeout = _session.Cluster.Configuration.Timer.NewTimeout(_ =>
             {
                 // Start the speculative execution outside the IO thread
@@ -575,7 +586,7 @@ namespace Cassandra.Requests
                     }
 
                     RequestHandler.Logger.Info("Starting new speculative execution after {0} ms. Last used host: {1}", delay, currentHost.Address);
-                    _requestObserver.OnSpeculativeExecution(currentHost, delay);
+                    speculativeCallback();
                     return StartNewExecutionAsync();
                 }, CancellationToken.None);
             }, null, delay);

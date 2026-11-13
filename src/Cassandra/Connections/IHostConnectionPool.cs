@@ -19,6 +19,7 @@ using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading.Tasks;
+using Cassandra.Metrics.Registries;
 
 namespace Cassandra.Connections
 {
@@ -40,6 +41,8 @@ namespace Cassandra.Connections
         bool HasConnections { get; }
 
         event Action<Host, HostConnectionPool> AllConnectionClosed;
+
+        INodeMetrics NodeMetrics { get; set; }
 
         /// <summary>
         /// Gets a snapshot of the current state of the pool.

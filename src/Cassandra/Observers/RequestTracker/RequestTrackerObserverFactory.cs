@@ -14,6 +14,7 @@
 //   limitations under the License.
 //
 
+using Cassandra.Metrics.Registries;
 using Cassandra.Observers.Abstractions;
 using Cassandra.Observers.Null;
 
@@ -36,6 +37,11 @@ namespace Cassandra.Observers.RequestTracker
         public IRequestObserver CreateRequestObserver()
         {
             return new RequestTrackerObserver(_tracker);
+        }
+
+        public IConnectionObserver CreateConnectionObserver(Host host, INodeMetrics nodeMetrics)
+        {
+            return NullConnectionObserver.Instance;
         }
     }
 }

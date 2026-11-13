@@ -21,7 +21,11 @@ using System.Threading;
 using System.Threading.Tasks;
 
 using Cassandra.Connections;
+using Cassandra.Metrics.Abstractions;
+using Cassandra.Metrics.Internal;
+using Cassandra.Metrics.Registries;
 using Cassandra.Observers.Abstractions;
+using Cassandra.Observers.Metrics;
 using Cassandra.Observers.Null;
 using Cassandra.Requests;
 using Cassandra.Responses;
@@ -42,6 +46,27 @@ namespace Cassandra.Tests.Requests
     {
         private const string Cql = "SELECT * FROM table1";
         private const string Keyspace = "ks1";
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_CountReprepareErrorsAgainstSelectedConnectionMetrics(bool retired)
+        {
+            var context = CreateContext();
+            var counter = new Mock<IDriverCounter>();
+            var errors = Mock.Of<IRequestErrorMetrics>(value => value.Aborted == counter.Object);
+            var metrics = Mock.Of<INodeMetrics>(value => value.Errors == errors && value.IsRetired == retired);
+            context.Connection.SetupGet(value => value.NodeMetrics).Returns(metrics);
+            var manager = new Mock<IMetricsManager>(MockBehavior.Strict);
+            var observer = new MetricsRequestObserver(manager.Object, Mock.Of<IDriverTimer>());
+            using var semaphore = new SemaphoreSlim(0, 1);
+            await Assert.ThrowsAsync<PreparedStatementIdMismatchException>(async () =>
+                await new ReprepareHandler().ReprepareOnSingleNodeAsync(
+                    context.Cluster.Object, observer, new SessionRequestInfo(context.Request, Keyspace),
+                    context.Pool, context.PreparedStatement, context.Request, semaphore, false).ConfigureAwait(false));
+            counter.Verify(value => value.Increment(), retired ? Times.Never() : Times.Once());
+            manager.VerifyNoOtherCalls();
+            Assert.AreEqual(1, semaphore.CurrentCount);
+        }
 
         [Test]
         public async Task ReprepareOnSingleNodeAsync_Should_Invalidate_And_Report_Error_When_FanOut_Id_Changes()

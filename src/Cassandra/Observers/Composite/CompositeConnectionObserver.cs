@@ -15,6 +15,7 @@
 //
 
 using System;
+using Cassandra.Metrics.Registries;
 using Cassandra.Observers.Abstractions;
 
 namespace Cassandra.Observers.Composite
@@ -23,11 +24,14 @@ namespace Cassandra.Observers.Composite
     {
         private readonly IConnectionObserver _o1;
         private readonly IConnectionObserver _o2;
+
         public CompositeConnectionObserver(IConnectionObserver o1, IConnectionObserver o2)
         {
             _o1 = o1;
             _o2 = o2;
         }
+
+        public INodeMetrics NodeMetrics => _o1.NodeMetrics ?? _o2.NodeMetrics;
 
         public void OnBytesSent(long size)
         {

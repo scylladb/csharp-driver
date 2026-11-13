@@ -34,6 +34,17 @@ namespace Cassandra.Metrics.Internal
         INodeMetrics GetOrCreateNodeMetrics(Host host);
 
         /// <summary>
+        /// Creates metrics for an eligible pool.
+        /// Failed initialization remains available for detachment and deferred cleanup.
+        /// </summary>
+        INodeMetrics GetOrCreateNodeMetricsForPool(Host host);
+
+        /// <summary>
+        /// Gets existing metrics for a connection's exact pool owner, or disabled metrics after retirement.
+        /// </summary>
+        INodeMetrics GetNodeMetrics(Host host);
+
+        /// <summary>
         /// Initialize metrics with the provided session.
         /// </summary>
         void InitializeMetrics(IInternalSession session);

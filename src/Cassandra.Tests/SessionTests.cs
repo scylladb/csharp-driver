@@ -27,6 +27,8 @@ using Cassandra.Connections;
 using Cassandra.Metrics;
 using Cassandra.Metrics.Abstractions;
 using Cassandra.Observers.Abstractions;
+using Cassandra.Observers.Metrics;
+using Cassandra.Requests;
 using Cassandra.Serialization;
 using Cassandra.SessionManagement;
 using Cassandra.Tasks;
@@ -208,6 +210,217 @@ namespace Cassandra.Tests
 
             Assert.IsFalse(listener.Messages.Values.Any(message =>
                 message.Contains("Connection pools for 2 host(s) failed to be warmed up")));
+        }
+
+        [TestCase(false, 0)]
+        [TestCase(true, 0)]
+        [TestCase(false, 1)]
+        [TestCase(true, 1)]
+        [TestCase(false, 2)]
+        [TestCase(true, 2)]
+        [TestCase(false, 3)]
+        [TestCase(true, 3)]
+        [TestCase(false, 4)]
+        [TestCase(true, 4)]
+        public async Task Should_BindConnectionMetricsWhenAnotherSessionBringsHostUpDuringRegistration(bool clientRoutesEnabled, int termination)
+        {
+            using var registrationEntered = new ManualResetEventSlim();
+            using var releaseRegistration = new ManualResetEventSlim();
+            var available = 0;
+            Exception setupFailure = termination == 2
+                ? new OutOfMemoryException("node metrics setup failed")
+                : new InvalidOperationException("node metrics setup failed");
+            var provider = CreateMetricsProviderForRemovalTests();
+            provider.Setup(value => value.Counter(It.IsAny<string>(), It.IsAny<IMetric>()))
+                .Returns((string bucket, IMetric metric) =>
+                {
+                    if (metric is NodeMetric && bucket.Contains("initializing-session.nodes."))
+                    {
+                        registrationEntered.Set();
+                        if (!releaseRegistration.Wait(10000))
+                        {
+                            throw new TimeoutException("Metric registration was not released");
+                        }
+                        if (termination == 1 || termination == 2)
+                        {
+                            throw setupFailure;
+                        }
+                    }
+                    return Mock.Of<IDriverCounter>();
+                });
+            var nodeBytesSent = new Mock<IDriverMeter>();
+            provider.Setup(value => value.Meter(
+                    It.Is<string>(bucket => bucket.Contains("initializing-session.nodes.")),
+                    It.Is<IMetric>(metric => metric.Equals(NodeMetric.Meters.BytesSent))))
+                .Returns(nodeBytesSent.Object);
+            var resolver = new Mock<IEndPointResolver>();
+            resolver.Setup(value => value.GetConnectionEndPointsAsync(It.IsAny<Host>(), It.IsAny<bool>()))
+                .ReturnsAsync(new IConnectionEndPoint[] { new FakeConnectionEndPoint("127.0.0.1", 9042) });
+            var observers = new ConcurrentDictionary<IConnection, IConnectionObserver>();
+            var connections = new Mock<IConnectionFactory>();
+            connections.Setup(value => value.Create(
+                    It.IsAny<ISerializer>(), It.IsAny<IConnectionEndPoint>(), It.IsAny<Configuration>(),
+                    It.IsAny<IConnectionObserver>()))
+                .Returns((ISerializer _, IConnectionEndPoint endpoint, Configuration __, IConnectionObserver observer) =>
+                {
+                    var connection = new Mock<IConnection>();
+                    connection.SetupGet(value => value.EndPoint).Returns(endpoint);
+                    connection.SetupGet(value => value.NodeMetrics).Returns(() => observer.NodeMetrics);
+                    connection.Setup(value => value.Open()).Returns(() => Volatile.Read(ref available) == 0
+                        ? Task.FromException<Cassandra.Responses.Response>(new SocketException((int)SocketError.ConnectionRefused))
+                        : Task.FromResult<Cassandra.Responses.Response>(null));
+                    observers.TryAdd(connection.Object, observer);
+                    return connection.Object;
+                });
+            var pools = new ConcurrentQueue<HostConnectionPool>();
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                    It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>()))
+                .Returns((Host node, Configuration configuration, ISerializerManager serializer,
+                    IObserverFactory factory, TokenFactory tokens) =>
+                {
+                    var pool = new HostConnectionPool(node, configuration, serializer, factory, tokens);
+                    pools.Enqueue(pool);
+                    return pool;
+                });
+            var config = new TestConfigurationBuilder
+            {
+                MetricsProvider = provider.Object,
+                HostConnectionPoolFactory = poolFactory.Object,
+                RequestTracker = Mock.Of<IRequestTracker>(),
+                ConnectionFactory = connections.Object,
+                EndPointResolver = resolver.Object,
+                PoolingOptions = new PoolingOptions().SetCoreConnectionsPerHost(HostDistance.Local, 1),
+                Policies = new Cassandra.Policies(
+                    new RoundRobinPolicy(), new ConstantReconnectionPolicy(60000), new DefaultRetryPolicy()),
+                ClientRoutesOptions = clientRoutesEnabled
+                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    : null
+            }.Build();
+            using var metadata = new Metadata(config);
+            var host = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
+            host.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            if (clientRoutesEnabled)
+            {
+                var routes = new Mock<IMetadataQueryProvider>();
+                routes.Setup(value => value.QueryUnpagedAsync(It.IsAny<string>(), It.IsAny<bool>()))
+                    .ReturnsAsync(new IRow[] { new TestHelper.DictionaryBasedRow(new Dictionary<string, object>
+                    {
+                        { "host_id", host.HostId }, { "address", "127.0.0.1" },
+                        { "port", 9042 }, { "tls_port", 9142 }, { "connection_id", "connection-a" }
+                    }) });
+                await config.ClientRoutesRuntime.Bind(routes.Object)
+                    .FullRefreshBarrierAsync(new[] { host.HostId }, false).ConfigureAwait(false);
+                config.ClientRoutesRuntime.CompleteLifecyclePass();
+            }
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            cluster.Setup(value => value.AllHosts()).Returns(() => metadata.AllHosts());
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            var down = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            host.Down += _ => down.TrySetResult(true);
+            var up = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            host.Up += _ => up.TrySetResult(true);
+            try
+            {
+                using var first = new Session(cluster.Object, config, null, SerializerManager.Default, "reconnecting-session");
+                await ((IInternalSession)first).Init().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                await down.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.IsFalse(host.IsUp);
+                var firstPool = ((IInternalSession)first).GetPools().Single().Value;
+                using var second = new Session(cluster.Object, config, null, SerializerManager.Default, "initializing-session");
+                var initializing = (IInternalSession)second;
+                var initialization = Task.Run(() => initializing.Init());
+                Task shutdown = null;
+                Exception initializationFailure = null;
+                try
+                {
+                    Assert.IsTrue(registrationEntered.Wait(5000));
+                    Volatile.Write(ref available, 1);
+                    firstPool.ScheduleReconnection(true);
+                    await up.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    Assert.IsTrue(host.IsUp, "The other session must produce the Host-Up event.");
+                    Assert.AreEqual(1, firstPool.OpenConnections);
+                    var secondPool = pools.Last();
+                    var pending = secondPool.BorrowConnectionAsync();
+                    Assert.IsFalse(pending.IsCompleted, "Connection opening must wait for pool publication.");
+                    Assert.AreEqual(0, secondPool.OpenConnections);
+                    var createdBeforePublication = observers.Count;
+                    if (termination == 3 || termination == 4)
+                    {
+                        if (termination == 3)
+                        {
+                            shutdown = Task.Run(() => second.ShutdownAsync());
+                        }
+                        else
+                        {
+                            secondPool.Dispose();
+                            shutdown = Task.Run(() => second.ShutdownAsync());
+                        }
+                        await Assert.CatchAsync<OperationCanceledException>(async () =>
+                            await pending.WaitToCompleteAsync(5000).ConfigureAwait(false));
+                        Assert.IsTrue(SpinWait.SpinUntil(() => second.IsDisposed, 5000));
+                        Assert.AreEqual(createdBeforePublication, observers.Count,
+                            "Canceled startup must not create a connection before provider release.");
+                    }
+                    releaseRegistration.Set();
+                    try
+                    {
+                        await initialization.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        initializationFailure = ex;
+                    }
+                    if (termination == 0)
+                    {
+                        Assert.IsNull(initializationFailure);
+                        await pending.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                        var connection = await pending.ConfigureAwait(false);
+                        Assert.AreSame(secondPool.NodeMetrics, connection.NodeMetrics,
+                            "A healthy connection must retain its pool's published registry.");
+                        observers[connection].OnBytesSent(7);
+                        nodeBytesSent.Verify(value => value.Mark(7), Times.Once);
+                    }
+                    else
+                    {
+                        if (termination == 1 || termination == 2)
+                        {
+                            Assert.AreSame(setupFailure, initializationFailure);
+                            await Assert.CatchAsync<OperationCanceledException>(async () =>
+                                await pending.WaitToCompleteAsync(5000).ConfigureAwait(false));
+                        }
+                        else
+                        {
+                            Assert.IsNull(initializationFailure, "Warmup exits normally after session shutdown.");
+                        }
+                        Assert.AreEqual(0, secondPool.OpenConnections);
+                        Assert.AreEqual(0, initializing.GetPools().Count());
+                        Assert.AreEqual(createdBeforePublication, observers.Count);
+                    }
+                }
+                finally
+                {
+                    releaseRegistration.Set();
+                    try
+                    {
+                        await initialization.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (ReferenceEquals(ex, setupFailure) || ex is ObjectDisposedException)
+                    {
+                        // The assertions above verify the original setup or shutdown failure.
+                    }
+                    if (shutdown != null)
+                    {
+                        await shutdown.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    }
+                }
+            }
+            finally
+            {
+                config.Timer.Dispose();
+            }
         }
 
         [Test]
@@ -957,6 +1170,133 @@ namespace Cassandra.Tests
             }
         }
 
+        [TestCase("ordinary", "success", false)]
+        [TestCase("ordinary", "ordinary", false)]
+        [TestCase("fatal", "ordinary", false)]
+        [TestCase("aggregate-fatal", "ordinary", false)]
+        [TestCase("ordinary", "fatal", false)]
+        [TestCase("fatal", "aggregate-fatal", false)]
+        [TestCase("ordinary", "success", true)]
+        [TestCase("fatal", "ordinary", true)]
+        [TestCase("ordinary", "fatal", true)]
+        public async Task Should_DeferFailedMetricsConstructorCleanupAndPreserveItsFailure(
+            string setup, string cleanup, bool selfRemoval)
+        {
+            var setupFailure = setup == "ordinary"
+                ? (Exception)new InvalidOperationException("Metric registration failed")
+                : new OutOfMemoryException("Fatal metric registration");
+            if (setup == "aggregate-fatal")
+            {
+                setupFailure = new AggregateException(setupFailure);
+            }
+            var cleanupFailure = cleanup == "ordinary"
+                ? (Exception)new InvalidOperationException("Metrics rollback failed")
+                : new OutOfMemoryException("Fatal metrics rollback");
+            if (cleanup == "aggregate-fatal")
+            {
+                cleanupFailure = new AggregateException(cleanupFailure);
+            }
+            var provider = CreateMetricsProviderForRemovalTests();
+            var factory = new Mock<IHostConnectionPoolFactory>();
+            factory.Setup(value => value.Create(
+                    It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>())).Returns(() => Mock.Of<IHostConnectionPool>());
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = factory.Object,
+                MetricsProvider = provider.Object,
+                ClientRoutesOptions = new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+            }.Build();
+            using var metadata = new Metadata(config);
+            var host = metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042));
+            var otherHost = metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042));
+            host.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            otherHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            var failRegistration = true;
+            string failedBucket = null;
+            provider.Setup(value => value.Gauge(It.IsAny<string>(), It.IsAny<IMetric>(), It.IsAny<Func<double?>>()))
+                .Returns((string bucket, IMetric metric, Func<double?> _) =>
+                {
+                    if (metric is NodeMetric && bucket.Contains("127_0_0_1") && failRegistration)
+                    {
+                        failedBucket = bucket;
+                        if (selfRemoval)
+                        {
+                            metadata.RemoveHost(host.Address);
+                            cluster.Raise(value => value.HostRemoved += null, host);
+                        }
+                        throw setupFailure;
+                    }
+                    return Mock.Of<IDriverGauge>();
+                });
+            Task<Exception> nestedLookup = null;
+            var rollbackCalls = 0;
+            var lookupCompletedDuringRollback = false;
+            try
+            {
+                using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "failed-metrics-constructor");
+                var internalSession = (IInternalSession)session;
+                provider.Setup(value => value.ShutdownMetricsBucket(It.Is<string>(bucket => bucket == failedBucket)))
+                    .Callback(() =>
+                    {
+                        Interlocked.Increment(ref rollbackCalls);
+                        nestedLookup = Task.Run(() =>
+                        {
+                            try
+                            {
+                                internalSession.GetOrCreateConnectionPool(otherHost, HostDistance.Local);
+                                return null;
+                            }
+                            catch (Exception error)
+                            {
+                                return error;
+                            }
+                        });
+                        lookupCompletedDuringRollback = nestedLookup.Wait(5000);
+                        if (cleanup != "success")
+                        {
+                            throw cleanupFailure;
+                        }
+                    });
+                try
+                {
+                    var observed = Assert.Catch(() => internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+                    Assert.AreSame(cleanup == "fatal" || cleanup == "aggregate-fatal" ? cleanupFailure : setupFailure, observed);
+                    Assert.IsTrue(lookupCompletedDuringRollback, "Constructor rollback retained a creation lock.");
+                    Assert.IsNull(nestedLookup.Result);
+                    Assert.AreEqual(1, rollbackCalls, "Partially registered metrics must be retired exactly once.");
+                    failRegistration = false;
+                    var retryHost = selfRemoval ? metadata.AddHost(host.Address) : host;
+                    retryHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+                    if (cleanup == "success")
+                    {
+                        Assert.IsNotNull(internalSession.GetOrCreateConnectionPool(retryHost, HostDistance.Local));
+                    }
+                    else
+                    {
+                        var rejection = Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
+                            internalSession.GetOrCreateConnectionPool(retryHost, HostDistance.Local));
+                        StringAssert.Contains("metrics could not be retired", rejection.Message);
+                    }
+                }
+                finally
+                {
+                    provider.Setup(value => value.ShutdownMetricsBucket(It.IsAny<string>()));
+                    if (nestedLookup != null)
+                    {
+                        await nestedLookup.WaitToCompleteAsync(10000).ConfigureAwait(false);
+                    }
+                }
+            }
+            finally
+            {
+                config.Timer.Dispose();
+            }
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         public async Task Should_PropagateFatalSetupFailureWhenTwoWarmupRetirementsComplete(bool clientRoutesEnabled)
@@ -1130,10 +1470,219 @@ namespace Cassandra.Tests
                 Assert.AreEqual(1, internalSession.GetPools().Count());
                 Assert.AreEqual(1, session.GetMetrics().NodeMetrics.Count);
                 Assert.AreSame(publishedMetrics, session.GetMetrics().NodeMetrics[host]);
+                metricsProvider.Verify(value => value.ShutdownMetricsBucket(
+                    It.Is<string>(bucket => bucket.Contains(".nodes."))), Times.Never);
                 outerPool.Verify(value => value.Dispose(), Times.Once);
                 publishedPool.Verify(value => value.Dispose(), Times.Never);
             }
             publishedPool.Verify(value => value.Dispose(), Times.Once);
+        }
+
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public void Should_RejectOuterPublicationAfterCaughtNestedMetricsFailure(bool clientRoutesEnabled, bool failRetirement)
+        {
+            Session session = null;
+            Host host = null;
+            var reentered = false;
+            var failNestedCounter = true;
+            var setupFailure = new InvalidOperationException("Nested metric setup failed");
+            Exception nestedFailure = null;
+            var provider = CreateMetricsProviderForRemovalTests();
+            provider.Setup(value => value.Counter(It.IsAny<string>(), It.IsAny<IMetric>()))
+                .Returns((string _, IMetric metric) =>
+                {
+                    if (metric is NodeMetric && !reentered)
+                    {
+                        reentered = true;
+                        try
+                        {
+                            ((IInternalSession)session).GetOrCreateConnectionPool(host, HostDistance.Local);
+                        }
+                        catch (Exception error)
+                        {
+                            nestedFailure = error;
+                        }
+                    }
+                    else if (metric is NodeMetric && failNestedCounter)
+                    {
+                        failNestedCounter = false;
+                        throw setupFailure;
+                    }
+                    return Mock.Of<IDriverCounter>();
+                });
+            var pools = new List<Mock<IHostConnectionPool>>();
+            var factory = new Mock<IHostConnectionPoolFactory>();
+            factory.Setup(value => value.Create(
+                    It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>()))
+                .Returns(() =>
+                {
+                    var pool = new Mock<IHostConnectionPool>();
+                    pools.Add(pool);
+                    return pool.Object;
+                });
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = factory.Object,
+                MetricsProvider = provider.Object,
+                ClientRoutesOptions = clientRoutesEnabled
+                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    : null
+            }.Build();
+            try
+            {
+                using (session = CreateWarmupSession(config, "caught-nested-metrics-failure"))
+                {
+                    var internalSession = (IInternalSession)session;
+                    host = internalSession.InternalCluster.AllHosts().Single();
+                    var shutdowns = 0;
+                    provider.Setup(value => value.ShutdownMetricsBucket(It.Is<string>(bucket => bucket.Contains(".nodes."))))
+                        .Callback(() =>
+                        {
+                            shutdowns++;
+                            if (failRetirement)
+                            {
+                                throw new InvalidOperationException("Nested retirement failed");
+                            }
+                        });
+                    try
+                    {
+                        Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
+                            internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+                        Assert.AreSame(setupFailure, nestedFailure);
+                        Assert.AreEqual(0, internalSession.GetPools().Count());
+                        Assert.AreEqual(0, session.GetMetrics().NodeMetrics.Count);
+                        Assert.AreEqual(1, shutdowns);
+                        Assert.AreEqual(2, pools.Count);
+                        foreach (var pool in pools)
+                        {
+                            pool.Verify(value => value.Dispose(), Times.Once);
+                        }
+                        if (failRetirement)
+                        {
+                            var rejection = Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
+                                internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+                            StringAssert.Contains("metrics could not be retired", rejection.Message);
+                        }
+                        else
+                        {
+                            Assert.IsNotNull(internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+                            Assert.AreEqual(1, internalSession.GetPools().Count());
+                            Assert.AreEqual(1, session.GetMetrics().NodeMetrics.Count);
+                            Assert.AreEqual(1, shutdowns);
+                        }
+                    }
+                    finally
+                    {
+                        provider.Setup(value => value.ShutdownMetricsBucket(It.IsAny<string>()));
+                    }
+                }
+            }
+            finally
+            {
+                config.Timer.Dispose();
+            }
+        }
+
+        [TestCase(false, "ordinary")]
+        [TestCase(false, "fatal")]
+        [TestCase(false, "aggregate-fatal")]
+        [TestCase(true, "ordinary")]
+        [TestCase(true, "fatal")]
+        [TestCase(true, "aggregate-fatal")]
+        public void Should_PreserveOuterSetupFailureAfterNestedFailureAndRemoval(bool clientRoutesEnabled, string setup)
+        {
+            Session session = null;
+            Host host = null;
+            var reentered = false;
+            var failInitialization = true;
+            var innerFailure = new InvalidOperationException("Inner metric setup failed");
+            var outerFailure = setup == "ordinary"
+                ? (Exception)new InvalidOperationException("Outer metric setup failed")
+                : new OutOfMemoryException("Fatal outer metric setup");
+            if (setup == "aggregate-fatal")
+            {
+                outerFailure = new AggregateException(outerFailure);
+            }
+            Exception nestedFailure = null;
+            var provider = CreateMetricsProviderForRemovalTests();
+            provider.Setup(value => value.Counter(It.IsAny<string>(), It.IsAny<IMetric>()))
+                .Returns((string _, IMetric metric) =>
+                {
+                    if (metric is NodeMetric && failInitialization)
+                    {
+                        var internalSession = (IInternalSession)session;
+                        if (!reentered)
+                        {
+                            reentered = true;
+                            try
+                            {
+                                internalSession.GetOrCreateConnectionPool(host, HostDistance.Local);
+                            }
+                            catch (Exception error)
+                            {
+                                nestedFailure = error;
+                            }
+                            throw outerFailure;
+                        }
+                        internalSession.InternalCluster.Metadata.RemoveHost(host.Address);
+                        Mock.Get(internalSession.InternalCluster).Raise(value => value.HostRemoved += null, host);
+                        throw innerFailure;
+                    }
+                    return Mock.Of<IDriverCounter>();
+                });
+            var pools = new List<Mock<IHostConnectionPool>>();
+            var factory = new Mock<IHostConnectionPoolFactory>();
+            factory.Setup(value => value.Create(
+                    It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>()))
+                .Returns(() =>
+                {
+                    var pool = new Mock<IHostConnectionPool>();
+                    pools.Add(pool);
+                    return pool.Object;
+                });
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = factory.Object,
+                MetricsProvider = provider.Object,
+                ClientRoutesOptions = clientRoutesEnabled
+                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    : null
+            }.Build();
+            try
+            {
+                using (session = CreateWarmupSession(config, "nested-failed-metrics-removal"))
+                {
+                    var internalSession = (IInternalSession)session;
+                    host = internalSession.InternalCluster.AllHosts().Single();
+                    var observed = Assert.Catch(() => internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+                    Assert.AreSame(outerFailure, observed);
+                    Assert.AreSame(innerFailure, nestedFailure);
+                    Assert.AreEqual(0, internalSession.GetPools().Count());
+                    Assert.AreEqual(0, session.GetMetrics().NodeMetrics.Count);
+                    provider.Verify(value => value.ShutdownMetricsBucket(
+                        It.Is<string>(bucket => bucket.Contains(".nodes."))), Times.Once);
+                    Assert.AreEqual(2, pools.Count);
+                    foreach (var pool in pools)
+                    {
+                        pool.Verify(value => value.Dispose(), Times.Once);
+                    }
+                    failInitialization = false;
+                    var replacement = internalSession.InternalCluster.Metadata.AddHost(host.Address);
+                    replacement.SetInfo(CreateHostInfo(Guid.NewGuid()));
+                    Assert.IsNotNull(internalSession.GetOrCreateConnectionPool(replacement, HostDistance.Local));
+                    Assert.AreEqual(1, internalSession.GetPools().Count());
+                    Assert.AreEqual(1, session.GetMetrics().NodeMetrics.Count);
+                }
+            }
+            finally
+            {
+                config.Timer.Dispose();
+            }
         }
 
         [Test]
@@ -1564,6 +2113,13 @@ namespace Cassandra.Tests
                 try
                 {
                     Assert.IsTrue(retirementStarted.Wait(5000), "Metrics retirement did not start.");
+                    var requestObserver = new MetricsRequestObserver(internalSession.MetricsManager, Mock.Of<IDriverTimer>());
+                    await requestObserver.OnNodeRequestAbortedAsync(null, new NodeRequestInfo(oldHost, null)).ConfigureAwait(false);
+                    requestObserver.OnSpeculativeExecution(oldHost, 0);
+                    // A newer Host at the address must not register metrics during retirement.
+                    requestObserver.OnSpeculativeExecution(replacementHost, 0);
+                    provider.Verify(value => value.Gauge(
+                        It.IsAny<string>(), It.Is<IMetric>(metric => metric is NodeMetric), It.IsAny<Func<double?>>()), Times.Exactly(2));
                     lookup = Task.Run(() =>
                     {
                         try
@@ -1594,8 +2150,98 @@ namespace Cassandra.Tests
                 Assert.AreEqual(1, Volatile.Read(ref bucketActive), "Old teardown shut down the replacement bucket.");
                 Assert.AreEqual(1, Volatile.Read(ref rejected));
                 Assert.AreSame(replacementHost, session.GetMetrics().NodeMetrics.Keys.Single());
+                var staleObserver = new MetricsRequestObserver(internalSession.MetricsManager, Mock.Of<IDriverTimer>());
+                await staleObserver.OnNodeRequestAbortedAsync(null, new NodeRequestInfo(oldHost, null)).ConfigureAwait(false);
+                provider.Verify(value => value.Gauge(
+                    It.IsAny<string>(), It.Is<IMetric>(metric => metric is NodeMetric), It.IsAny<Func<double?>>()), Times.Exactly(4));
                 oldPool.Verify(value => value.Dispose(), Times.Once);
                 replacementPool.Verify(value => value.Dispose(), Times.Never);
+            }
+            finally
+            {
+                config.Timer.Dispose();
+            }
+        }
+
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public async Task Should_KeepRetiredCustomHostEventsOutOfReplacementMetrics(bool reuseCustomHost, bool useAlias)
+        {
+            var provider = CreateMetricsProviderForRemovalTests();
+            var abortedCounters = new List<Mock<IDriverCounter>>();
+            provider.Setup(value => value.Counter(
+                    It.IsAny<string>(), It.Is<IMetric>(metric => metric.Equals(NodeMetric.Counters.AbortedRequests))))
+                .Returns(() =>
+                {
+                    var counter = new Mock<IDriverCounter>();
+                    abortedCounters.Add(counter);
+                    return counter.Object;
+                });
+            var factory = new Mock<IHostConnectionPoolFactory>();
+            factory.Setup(value => value.Create(
+                    It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>()))
+                .Returns(() =>
+                {
+                    var pool = new Mock<IHostConnectionPool>();
+                    pool.SetupProperty(value => value.NodeMetrics);
+                    return pool.Object;
+                });
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = factory.Object,
+                MetricsProvider = provider.Object
+            }.Build();
+            using var metadata = new Metadata(config);
+            var address = new IPEndPoint(IPAddress.Loopback, 9042);
+            var customHost = new Host(address, new ConstantReconnectionPolicy(1000));
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            try
+            {
+                using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "custom-host-metrics");
+                var internalSession = (IInternalSession)session;
+                var originalPool = internalSession.GetOrCreateConnectionPool(customHost, HostDistance.Local);
+                var oldAlias = new Host(address, new ConstantReconnectionPolicy(1000));
+                Assert.AreSame(originalPool, internalSession.GetOrCreateConnectionPool(oldAlias, HostDistance.Local));
+                var observer = new MetricsRequestObserver(internalSession.MetricsManager, Mock.Of<IDriverTimer>());
+                var originalMetrics = originalPool.NodeMetrics;
+                Assert.AreSame(internalSession.MetricsManager.GetNodeMetrics(customHost), originalMetrics);
+                var originalInfo = new NodeRequestInfo(useAlias ? oldAlias : customHost, null, originalMetrics);
+                await observer.OnNodeStartAsync(null, originalInfo).ConfigureAwait(false);
+                await observer.OnNodeRequestAbortedAsync(null, originalInfo).ConfigureAwait(false);
+                abortedCounters[0].Verify(value => value.Increment(), Times.Once);
+                var replacementHost = metadata.AddHost(address);
+                replacementHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+                var replacementPool = internalSession.GetOrCreateConnectionPool(replacementHost, HostDistance.Local);
+                Assert.IsFalse(customHost.IsRemoved);
+                Assert.AreEqual(2, abortedCounters.Count);
+                await observer.OnNodeRequestAbortedAsync(null, originalInfo).ConfigureAwait(false);
+                abortedCounters[0].Verify(value => value.Increment(), Times.Once);
+                abortedCounters[1].Verify(value => value.Increment(), Times.Never);
+
+                // Fresh custom aliases must continue to use the current metadata owner's pool and metrics.
+                var alias = new Host(address, new ConstantReconnectionPolicy(1000));
+                Assert.AreSame(replacementPool, internalSession.GetOrCreateConnectionPool(alias, HostDistance.Local));
+                var replacementInfo = new NodeRequestInfo(alias, null, replacementPool.NodeMetrics);
+                await observer.OnNodeStartAsync(null, replacementInfo).ConfigureAwait(false);
+                await observer.OnNodeRequestAbortedAsync(null, replacementInfo).ConfigureAwait(false);
+                abortedCounters[1].Verify(value => value.Increment(), Times.Once);
+
+                if (reuseCustomHost)
+                {
+                    metadata.RemoveHost(address);
+                    cluster.Raise(value => value.HostRemoved += null, replacementHost);
+                    var reusedPool = internalSession.GetOrCreateConnectionPool(customHost, HostDistance.Local);
+                    Assert.AreEqual(3, abortedCounters.Count);
+                    var reusedInfo = new NodeRequestInfo(customHost, null, reusedPool.NodeMetrics);
+                    await observer.OnNodeStartAsync(null, reusedInfo).ConfigureAwait(false);
+                    await observer.OnNodeRequestAbortedAsync(null, reusedInfo).ConfigureAwait(false);
+                    abortedCounters[2].Verify(value => value.Increment(), Times.Once);
+                }
             }
             finally
             {
@@ -2359,6 +3005,38 @@ namespace Cassandra.Tests
             {
                 Trace.Listeners.Remove(listener);
                 Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                config.Timer.Dispose();
+            }
+        }
+
+        [TestCase("metrics")]
+        [TestCase("null")]
+        [TestCase("metrics-first")]
+        [TestCase("metrics-last")]
+        public void Should_PreserveConnectionObserverMetricsSnapshot(string observerKind)
+        {
+            var metrics = Mock.Of<Cassandra.Metrics.Registries.INodeMetrics>();
+            IConnectionObserver metricsObserver = new MetricsConnectionObserver(
+                Mock.Of<Cassandra.Metrics.Registries.ISessionMetrics>(), metrics, false);
+            var nullObserver = Cassandra.Observers.Null.NullConnectionObserver.Instance;
+            IConnectionObserver observer = observerKind switch
+            {
+                "metrics" => metricsObserver,
+                "metrics-first" => new Cassandra.Observers.Composite.CompositeConnectionObserver(metricsObserver, nullObserver),
+                "metrics-last" => new Cassandra.Observers.Composite.CompositeConnectionObserver(nullObserver, metricsObserver),
+                _ => nullObserver
+            };
+            var config = new TestConfigurationBuilder().Build();
+            try
+            {
+                using var connection = new Connection(
+                    SerializerManager.Default.GetCurrentSerializer(),
+                    new ConnectionEndPoint(new IPEndPoint(IPAddress.Loopback, 9042), config.ServerNameResolver, null),
+                    config, new StartupRequestFactory(config.StartupOptionsFactory, false), observer);
+                Assert.AreSame(observerKind == "null" ? null : metrics, ((IConnection)connection).NodeMetrics);
+            }
+            finally
+            {
                 config.Timer.Dispose();
             }
         }

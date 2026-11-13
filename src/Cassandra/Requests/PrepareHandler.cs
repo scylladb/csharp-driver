@@ -129,7 +129,8 @@ namespace Cassandra.Requests
                     session, queryPlan, triedHosts, connectionKeyspace).ConfigureAwait(false);
                 var connection = hostConnectionTuple.Item2;
                 var host = hostConnectionTuple.Item1;
-                var nodeRequestInfo = new NodeRequestInfo(host, info.PrepareRequest ?? new PrepareRequest(request.Query, request.Keyspace));
+                var nodeRequestInfo = new NodeRequestInfo(
+                    host, info.PrepareRequest ?? new PrepareRequest(request.Query, request.Keyspace), connection.NodeMetrics);
                 var responseReceived = false;
                 try
                 {

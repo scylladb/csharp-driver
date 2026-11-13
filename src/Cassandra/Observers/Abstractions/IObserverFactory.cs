@@ -14,6 +14,8 @@
 //   limitations under the License.
 //
 
+using Cassandra.Metrics.Registries;
+
 namespace Cassandra.Observers.Abstractions
 {
     /// <summary>
@@ -24,5 +26,7 @@ namespace Cassandra.Observers.Abstractions
         IRequestObserver CreateRequestObserver();
 
         IConnectionObserver CreateConnectionObserver(Host host);
+
+        IConnectionObserver CreateConnectionObserver(Host host, INodeMetrics nodeMetrics);
     }
 }
