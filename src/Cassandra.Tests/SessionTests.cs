@@ -440,16 +440,22 @@ namespace Cassandra.Tests
             }
         }
 
-        [TestCase(false, false, false)]
-        [TestCase(false, false, true)]
-        [TestCase(false, true, false)]
-        [TestCase(false, true, true)]
-        [TestCase(true, false, false)]
-        [TestCase(true, false, true)]
-        [TestCase(true, true, false)]
-        [TestCase(true, true, true)]
+        [TestCase(false, false, false, false, false)]
+        [TestCase(false, false, true, false, false)]
+        [TestCase(false, true, false, false, false)]
+        [TestCase(false, true, true, false, false)]
+        [TestCase(true, false, false, false, false)]
+        [TestCase(true, false, true, false, false)]
+        [TestCase(true, true, false, false, false)]
+        [TestCase(true, true, true, false, false)]
+        [TestCase(false, true, false, true, false)]
+        [TestCase(false, true, true, true, false)]
+        [TestCase(true, true, false, true, false)]
+        [TestCase(true, true, true, true, false)]
+        [TestCase(true, false, false, false, true)]
+        [TestCase(true, false, true, false, true)]
         public void Should_RejectPoolPublicationWhenMetricsCallbackEndsHostLifetime(
-            bool clientRoutesEnabled, bool shutdown, bool metricsCleanupThrows)
+            bool clientRoutesEnabled, bool shutdown, bool metricsCleanupThrows, bool crossThread, bool markDown)
         {
             Session session = null;
             Host host = null;
@@ -468,7 +474,19 @@ namespace Cassandra.Tests
                                {
                                    if (shutdown)
                                    {
-                                       session.ShutdownAsync().GetAwaiter().GetResult();
+                                       if (crossThread)
+                                       {
+                                           Assert.IsTrue(Task.Run(() => session.ShutdownAsync()).Wait(5000),
+                                               "Cross-thread shutdown waited for its metrics callback.");
+                                       }
+                                       else
+                                       {
+                                           session.ShutdownAsync().GetAwaiter().GetResult();
+                                       }
+                                   }
+                                   else if (markDown)
+                                   {
+                                       host.SetDown();
                                    }
                                    else
                                    {
@@ -500,8 +518,13 @@ namespace Cassandra.Tests
                 var internalSession = (IInternalSession)session;
                 host = internalSession.InternalCluster.AllHosts().Single();
 
-                Assert.Throws(shutdown ? typeof(ObjectDisposedException) : typeof(HostConnectionPoolNotEligibleException), () =>
+                var error = Assert.Throws(shutdown ? typeof(ObjectDisposedException) : typeof(HostConnectionPoolNotEligibleException), () =>
                     internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+                if (markDown)
+                {
+                    StringAssert.Contains("it is down", error.Message);
+                    Assert.IsFalse(host.IsUp);
+                }
 
                 Assert.AreEqual(shutdown, session.IsDisposed);
                 Assert.IsEmpty(internalSession.GetPools());

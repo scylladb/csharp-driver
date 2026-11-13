@@ -42,6 +42,7 @@ namespace Cassandra
         private static readonly Logger Logger = new Logger(typeof(Session));
         private readonly IThreadSafeDictionary<IPEndPoint, HostPool> _connectionPool;
         private readonly Lock _connectionPoolLifecycleLock = new Lock();
+        private readonly Lock _connectionPoolPublicationLock = new Lock();
         private readonly IInternalCluster _cluster;
         private int _disposed;
         private long _initialized;
@@ -177,7 +178,9 @@ namespace Cassandra
         public Task ShutdownAsync()
         {
             KeyValuePair<IPEndPoint, HostPool>[] pools;
-            lock (_connectionPoolLifecycleLock)
+            // Pool initialization invokes user metrics callbacks. Shutdown must not wait
+            // for those callbacks, which can themselves wait for shutdown on another thread.
+            lock (_connectionPoolPublicationLock)
             {
                 // Only dispose once, and exclude pool publication from the shutdown snapshot.
                 if (Interlocked.Increment(ref _disposed) != 1)
@@ -456,16 +459,23 @@ namespace Cassandra
                     newPool.AllConnectionClosed += InternalRef.OnAllConnectionClosed;
                     newPool.SetDistance(distance);
                     _metricsManager.GetOrCreateNodeMetrics(host).InitializePoolGauges(newPool);
-                    // User metrics callbacks can synchronously shut down the session or remove the host.
-                    if (IsDisposed)
+                    // Revalidate after user metrics callbacks, which can change host state.
+                    if (clientRoutesEnabled && !allowDownHost && !host.IsUp)
                     {
-                        throw new ObjectDisposedException(nameof(Session));
+                        throw new HostConnectionPoolNotEligibleException("it is down");
                     }
-                    if (host.IsRemoved)
+                    lock (_connectionPoolPublicationLock)
                     {
-                        throw new HostConnectionPoolNotEligibleException("it was removed during pool creation");
+                        if (IsDisposed)
+                        {
+                            throw new ObjectDisposedException(nameof(Session));
+                        }
+                        if (host.IsRemoved)
+                        {
+                            throw new HostConnectionPoolNotEligibleException("it was removed during pool creation");
+                        }
+                        _connectionPool.Add(host.Address, new HostPool(host, newPool));
                     }
-                    _connectionPool.Add(host.Address, new HostPool(host, newPool));
                 }
                 catch
                 {
@@ -662,10 +672,18 @@ namespace Cassandra
                     // Keep the pool reachable for shutdown if metrics teardown throws.
                     _metricsManager.RemoveNodeMetrics(host);
                     // A metrics callback may have already retired it and published a replacement.
-                    if (_connectionPool.TryGetValue(host.Address, out var currentEntry) &&
-                        ReferenceEquals(currentEntry, entry))
+                    var removed = false;
+                    lock (_connectionPoolPublicationLock)
                     {
-                        _connectionPool.Remove(host.Address);
+                        if (_connectionPool.TryGetValue(host.Address, out var currentEntry) &&
+                            ReferenceEquals(currentEntry, entry))
+                        {
+                            _connectionPool.Remove(host.Address);
+                            removed = true;
+                        }
+                    }
+                    if (removed)
+                    {
                         entry.Pool.OnHostRemoved();
                         entry.Pool.Dispose();
                     }
