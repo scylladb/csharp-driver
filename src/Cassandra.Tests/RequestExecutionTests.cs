@@ -814,6 +814,56 @@ namespace Cassandra.Tests
 
         [TestCase(false)]
         [TestCase(true)]
+        public async Task Should_PreserveFatalAcquisitionFailure_When_RetryingCurrentHost(bool fatal)
+        {
+            var config = new TestConfigurationBuilder().Build();
+            var session = new Mock<IInternalSession>();
+            session.SetupGet(value => value.Cluster.Configuration).Returns(config);
+            var parent = new Mock<IRequestHandler>();
+            var host = new Host(new IPEndPoint(IPAddress.Loopback, 9047), new ConstantReconnectionPolicy(1));
+            var validHost = ValidHost.New(host, HostDistance.Local);
+            var initialFailure = new OverloadedException("retry current host");
+            Exception retryFailure = fatal
+                ? new OutOfMemoryException("fatal connection acquisition")
+                : new InvalidOperationException("ordinary connection acquisition");
+            var exhausted = new NoHostAvailableException("query plan exhausted");
+            var completed = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
+            parent.SetupSequence(value => value.GetNextValidHost(It.IsAny<Dictionary<IPEndPoint, Exception>>()))
+                .Returns(validHost)
+                .Throws(exhausted);
+            parent.Setup(value => value.GetConnectionToValidHostAsync(
+                    validHost, It.IsAny<IDictionary<IPEndPoint, Exception>>()))
+                .ThrowsAsync(initialFailure);
+            parent.Setup(value => value.ValidateHostAndGetConnectionAsync(
+                    new RoutingTarget(host, null), It.IsAny<Dictionary<IPEndPoint, Exception>>()))
+                .ThrowsAsync(retryFailure);
+            parent.SetupGet(value => value.RetryPolicy)
+                .Returns(Mock.Of<IExtendedRetryPolicy>(value =>
+                    value.OnRequestError(It.IsAny<IStatement>(), config, initialFailure, 0)
+                        == RetryDecision.Retry(null, true)));
+            parent.SetupGet(value => value.RequestOptions).Returns(config.DefaultRequestOptions);
+            parent.Setup(value => value.SetCompletedAsync(It.IsAny<Exception>(), It.IsAny<RowSet>()))
+                .Callback<Exception, RowSet>((error, _) => completed.TrySetResult(error))
+                .ReturnsAsync(true);
+            parent.Setup(value => value.SetNoMoreHostsAsync(It.IsAny<NoHostAvailableException>(), It.IsAny<IRequestExecution>()))
+                .Callback<NoHostAvailableException, IRequestExecution>((error, _) => completed.TrySetResult(error))
+                .Returns(Task.CompletedTask);
+            var execution = new RequestExecution(
+                parent.Object, session.Object, Mock.Of<IRequest>(), NullRequestObserver.Instance,
+                new SessionRequestInfo(Mock.Of<IStatement>(), null));
+
+            execution.Start(false);
+
+            var returnedError = await completed.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.AreSame(fatal ? retryFailure : exhausted, returnedError);
+            parent.Verify(value => value.ValidateHostAndGetConnectionAsync(
+                new RoutingTarget(host, null), It.IsAny<Dictionary<IPEndPoint, Exception>>()), Times.Once);
+            parent.Verify(value => value.GetNextValidHost(It.IsAny<Dictionary<IPEndPoint, Exception>>()),
+                Times.Exactly(fatal ? 1 : 2));
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
         public async Task Should_Not_Block_Response_Callback_When_Reprepare_Waits_For_Another_Keyspace(bool useBatch)
         {
             var serializerManager = new SerializerManager(ProtocolVersion.V4);
