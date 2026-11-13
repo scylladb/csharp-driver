@@ -43,6 +43,82 @@ namespace Cassandra.Tests
     [TestFixture]
     public class SessionTests
     {
+        [NonParallelizable]
+        [Test, Combinatorial]
+        public async Task Should_LogInitialPoolFailuresConsumedByWarmup(
+            [Values(false, true)] bool allHostsFail,
+            [Values(false, true)] bool throwFromDiagnostic,
+            [Values(false, true)] bool cancelOpen,
+            [Values(false, true)] bool verbose)
+        {
+            var failedAddress = new IPEndPoint(IPAddress.Parse("127.0.0.11"), 9042);
+            var otherAddress = new IPEndPoint(IPAddress.Parse("127.0.0.12"), 9042);
+            var attempts = new ConcurrentDictionary<IPEndPoint, int>();
+            var connectionFactory = new FakeConnectionFactory(endPoint =>
+            {
+                var address = endPoint.GetHostIpEndPointWithFallback();
+                attempts.AddOrUpdate(address, 1, (_, count) => count + 1);
+                var connection = new Mock<IConnection>();
+                connection.SetupGet(value => value.EndPoint).Returns(endPoint);
+                if (address.Equals(failedAddress) || allHostsFail)
+                {
+                    Exception failure = cancelOpen
+                        ? new OperationCanceledException("initial warmup failure at " + address)
+                        : new InvalidOperationException("initial warmup failure at " + address);
+                    connection.Setup(value => value.Open()).ThrowsAsync(failure);
+                }
+                else
+                {
+                    connection.Setup(value => value.Open()).ReturnsAsync((Responses.Response)null);
+                }
+                return connection.Object;
+            });
+            var config = new TestConfigurationBuilder
+            {
+                ConnectionFactory = connectionFactory,
+                PoolingOptions = new PoolingOptions().SetCoreConnectionsPerHost(HostDistance.Local, 1),
+                Policies = new Cassandra.Policies(
+                    new RoundRobinPolicy(), new ConstantReconnectionPolicy(3600000), new DefaultRetryPolicy())
+            }.Build();
+            using var metadata = new Metadata(config);
+            foreach (var address in new[] { failedAddress, otherAddress })
+            {
+                metadata.AddHost(address).SetInfo(CreateHostInfo(Guid.NewGuid()));
+            }
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            cluster.Setup(value => value.AllHosts()).Returns(() => metadata.AllHosts());
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new ConsumedWarmupTraceListener(throwFromDiagnostic);
+            Diagnostics.CassandraTraceSwitch.Level = verbose ? TraceLevel.Verbose : TraceLevel.Info;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "initial-warmup-test");
+                await ((IInternalSession)session).Init().WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                foreach (var address in new[] { failedAddress, otherAddress })
+                {
+                    Assert.AreEqual(1, attempts[address], "A retry must not supply the initial diagnostic.");
+                    Assert.AreEqual(address.Equals(failedAddress) || allHostsFail ? 1 : 0,
+                        listener.Messages.Values.Count(message =>
+                            message.Contains("Connection pool for host " + address) &&
+                            message.Contains("initial warmup failure at " + address)));
+                }
+                Assert.IsFalse(listener.Messages.Values.Any(message =>
+                    message.Contains("#WARNING:") && message.Contains("Connection pool for host")));
+                Assert.AreEqual(allHostsFail, listener.Messages.Values.Any(message =>
+                    message.Contains("Connection pools for 2 host(s) failed to be warmed up")));
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                config.Timer.Dispose();
+            }
+        }
+
         [Test]
         public async Task Should_PropagateFatalWarmupFailure_WhenAnotherHostFailsNormally()
         {
@@ -2639,6 +2715,7 @@ namespace Cassandra.Tests
                     var failure = Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
                         internalSession.GetOrCreateConnectionPool(replacementHost, HostDistance.Local));
                     StringAssert.Contains("metrics could not be retired", failure.Message);
+                    Assert.IsTrue(listener.Messages.Values.Any(message => message.Contains("metrics could not be retired")));
                 }
             }
             finally
@@ -3375,5 +3452,23 @@ namespace Cassandra.Tests
             return new Session(cluster.Object, config, null, SerializerManager.Default, sessionName);
         }
 
+        private sealed class ConsumedWarmupTraceListener : LoggingTests.TestTraceListener
+        {
+            private readonly bool _throwFromDiagnostic;
+
+            public ConsumedWarmupTraceListener(bool throwFromDiagnostic)
+            {
+                _throwFromDiagnostic = throwFromDiagnostic;
+            }
+
+            public override void WriteLine(string message)
+            {
+                base.WriteLine(message);
+                if (_throwFromDiagnostic && message.Contains("initial warmup failure at "))
+                {
+                    throw new InvalidOperationException("warmup diagnostic sink failed");
+                }
+            }
+        }
     }
 }

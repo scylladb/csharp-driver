@@ -20,6 +20,8 @@ namespace Cassandra.Requests
     {
         void Cancel();
 
+        void ReportConnectionFailures(System.Exception returnedError);
+
         /// <summary>
         /// Starts a new execution using the current request. Note that an I/O task is scheduled here in a fire and forget manner.
         /// <para/>

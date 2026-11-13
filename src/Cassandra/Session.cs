@@ -248,7 +248,8 @@ namespace Cassandra
         /// <summary>
         /// Creates the required connections on all hosts in the local DC.
         /// Returns a Task that is marked as completed after all pools were warmed up.
-        /// If all host pool warmups fail with recoverable errors, it logs an error.
+        /// Unless the session is disposed, recoverable host pool warmup failures are logged at Info,
+        /// including partial failures, with an additional error if all host pool warmups fail.
         /// Fatal errors propagate to the caller.
         /// </summary>
         private async Task Warmup()
@@ -303,6 +304,36 @@ namespace Cassandra
                 {
                     // Shutdown may close connections while initial warmup is still pending.
                     return;
+                }
+
+                for (var i = 0; i < hostWarmups.Length; i++)
+                {
+                    var warmup = hostWarmups[i];
+                    Exception failure = warmup?.Exception;
+                    if (warmup?.IsCanceled == true)
+                    {
+                        try
+                        {
+                            await warmup.ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException cancellation)
+                        {
+                            // Canceled tasks have no Exception property; retain their original cause.
+                            failure = cancellation;
+                        }
+                    }
+                    if (failure == null)
+                    {
+                        continue;
+                    }
+                    try
+                    {
+                        Session.Logger.Info("Connection pool for host {0} failed to warm up: {1}", hosts[i].Address, failure);
+                    }
+                    catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
+                    {
+                        // A diagnostic sink must not change the result of recoverable warmup.
+                    }
                 }
 
                 if (tasks.Any(t => t.Status == TaskStatus.RanToCompletion))

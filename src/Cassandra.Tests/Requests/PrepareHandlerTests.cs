@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Threading;
@@ -25,6 +26,7 @@ using System.Threading.Tasks;
 using Cassandra.Connections;
 using Cassandra.Metrics.Abstractions;
 using Cassandra.Metrics.Registries;
+using Cassandra.Observers.Null;
 using Cassandra.Requests;
 using Cassandra.Responses;
 using Cassandra.Serialization;
@@ -41,6 +43,103 @@ namespace Cassandra.Tests.Requests
     public class PrepareHandlerTests
     {
         private readonly ISerializer _serializer = new SerializerManager(ProtocolVersion.V3).GetCurrentSerializer();
+
+        [TestCase("recovered", false)]
+        [TestCase("recovered", true)]
+        [TestCase("all-failed", false)]
+        [TestCase("later-error", false)]
+        [TestCase("later-error", true)]
+        [NonParallelizable]
+        public async Task Should_ReportConsumedConnectionFailuresDuringPrepare(string scenario, bool throwingSink)
+        {
+            var hosts = new[]
+            {
+                new Host(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042), contactPoint: null),
+                new Host(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042), contactPoint: null)
+            };
+            var failure = new InvalidOperationException("prepare connection failed");
+            var terminalError = new InvalidQueryException("prepare failed after connection failover");
+            var config = new TestConfigurationBuilder().Build();
+            config.QueryOptions.SetPrepareOnAllHosts(false);
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Configuration).Returns(config);
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            var session = new Mock<IInternalSession>();
+            session.SetupGet(value => value.Cluster).Returns(cluster.Object);
+            session.SetupGet(value => value.ObserverFactory).Returns(NullObserverFactory.Instance);
+            var connection = new Mock<IConnection>();
+            if (scenario == "later-error")
+            {
+                connection.Setup(value => value.SendWithKeyspace(It.IsAny<IRequest>(), It.IsAny<string>()))
+                    .ThrowsAsync(terminalError);
+            }
+            else
+            {
+                connection.Setup(value => value.SendWithKeyspace(It.IsAny<IRequest>(), It.IsAny<string>()))
+                    .ReturnsAsync(new ProxyResultResponse(ResultResponse.ResultResponseKind.Void,
+                        new OutputPrepared(Array.Empty<byte>(),
+                            new RowSetMetadata { Columns = Array.Empty<CqlColumn>() },
+                            new RowSetMetadata { Columns = Array.Empty<CqlColumn>() })));
+            }
+            for (var i = 0; i < hosts.Length; i++)
+            {
+                var host = hosts[i];
+                var fails = i == 0 || scenario == "all-failed";
+                var pool = new Mock<IHostConnectionPool>();
+                pool.Setup(value => value.GetConnectionFromHostAsync(
+                        It.IsAny<IDictionary<IPEndPoint, Exception>>(), It.IsAny<Func<string>>(),
+                        It.IsAny<RoutingKey>(), -1))
+                    .Returns<IDictionary<IPEndPoint, Exception>, Func<string>, RoutingKey, int>((tried, _, __, ___) =>
+                    {
+                        if (fails)
+                        {
+                            tried[host.Address] = failure;
+                            return Task.FromResult<IConnection>(null);
+                        }
+                        return Task.FromResult(connection.Object);
+                    });
+                session.Setup(value => value.GetOrCreateConnectionPool(host, HostDistance.Local)).Returns(pool.Object);
+            }
+            var handler = new PrepareHandler(SerializerManager.Default, cluster.Object, Mock.Of<IReprepareHandler>());
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new PrepareConnectionTraceListener(throwingSink);
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                var resultTask = handler.Prepare(new InternalPrepareRequest(_serializer, "SELECT * FROM table1", null, null),
+                    session.Object, hosts.Select(host => new RoutingTarget(host, null)).GetEnumerator(), null, null)
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+                if (scenario == "all-failed")
+                {
+                    var error = await Assert.ThrowsAsync<NoHostAvailableException>(() => resultTask);
+                    Assert.AreSame(failure, error.Errors[hosts[0].Address]);
+                    Assert.AreSame(failure, error.Errors[hosts[1].Address]);
+                }
+                else if (scenario == "later-error")
+                {
+                    var error = await Assert.ThrowsAsync<InvalidQueryException>(() => resultTask);
+                    Assert.AreSame(terminalError, error);
+                }
+                else
+                {
+                    Assert.IsNotNull(await resultTask.ConfigureAwait(false));
+                }
+                var messages = listener.Messages.Values.Where(message => message.Contains("Request consumed")).ToArray();
+                Assert.AreEqual(scenario == "all-failed" ? 0 : 1, messages.Length);
+                if (messages.Length > 0)
+                {
+                    Assert.IsTrue(messages[0].Contains(failure.Message));
+                    Assert.IsTrue(messages[0].Contains(hosts[0].Address.ToString()));
+                }
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                config.Timer.Dispose();
+            }
+        }
 
         [TestCase(false)]
         [TestCase(true)]
@@ -857,6 +956,25 @@ namespace Cassandra.Tests.Requests
             foreach (var pool in poolConnections)
             {
                 Mock.Get(pool.Single()).Verify(c => c.SendWithKeyspace(request, It.IsAny<string>()), Times.Once);
+            }
+        }
+
+        private sealed class PrepareConnectionTraceListener : LoggingTests.TestTraceListener
+        {
+            private readonly bool _throwingSink;
+
+            internal PrepareConnectionTraceListener(bool throwingSink)
+            {
+                _throwingSink = throwingSink;
+            }
+
+            public override void WriteLine(string message)
+            {
+                base.WriteLine(message);
+                if (_throwingSink && message.Contains("Request consumed"))
+                {
+                    throw new InvalidOperationException("diagnostic callback failed");
+                }
             }
         }
 

@@ -265,7 +265,7 @@ namespace Cassandra.Requests
             }
             if (ex != null)
             {
-                await _requestResultHandler.TrySetExceptionAsync(ex, _sessionRequestInfo).ConfigureAwait(false);
+                await CompleteRequestAsync(ex, null).ConfigureAwait(false);
                 return true;
             }
             if (action != null)
@@ -280,19 +280,38 @@ namespace Cassandra.Requests
                     catch (Exception actionEx)
                     {
                         await ClearNodeExecutionsAsync().ConfigureAwait(false);
-                        await _requestResultHandler.TrySetExceptionAsync(actionEx, _sessionRequestInfo).ConfigureAwait(false);
+                        await CompleteRequestAsync(actionEx, null).ConfigureAwait(false);
                         return;
                     }
 
                     await ClearNodeExecutionsAsync().ConfigureAwait(false);
-                    await _requestResultHandler.TrySetResultAsync(result, _sessionRequestInfo).ConfigureAwait(false);
+                    await CompleteRequestAsync(null, result).ConfigureAwait(false);
                 }, CancellationToken.None).Forget();
                 return true;
             }
 
             await ClearNodeExecutionsAsync().ConfigureAwait(false);
-            await _requestResultHandler.TrySetResultAsync(result, _sessionRequestInfo).ConfigureAwait(false);
+            await CompleteRequestAsync(null, result).ConfigureAwait(false);
             return true;
+        }
+
+        private Task CompleteRequestAsync(Exception error, RowSet result)
+        {
+            try
+            {
+                foreach (var execution in _running)
+                {
+                    execution.ReportConnectionFailures(error);
+                }
+            }
+            catch (Exception diagnosticFailure)
+            {
+                // A fatal diagnostic failure must complete the already claimed request.
+                error = diagnosticFailure;
+            }
+            return error == null
+                ? _requestResultHandler.TrySetResultAsync(result, _sessionRequestInfo)
+                : _requestResultHandler.TrySetExceptionAsync(error, _sessionRequestInfo);
         }
 
         private async Task ClearNodeExecutionsAsync()
@@ -317,17 +336,19 @@ namespace Cassandra.Requests
             }
         }
 
-        public Task SetNoMoreHostsAsync(NoHostAvailableException ex, IRequestExecution execution)
+        public async Task SetNoMoreHostsAsync(NoHostAvailableException ex, IRequestExecution execution)
         {
             //An execution ended with a NoHostAvailableException (retrying or starting).
             //If there is a running execution, do not yield it to the user
             _running.Remove(execution);
             if (_running.Count > 0)
             {
+                execution.ReportConnectionFailures(null);
                 RequestHandler.Logger.Info("Could not obtain an available host for speculative execution");
-                return TaskHelper.Completed;
+                return;
             }
-            return SetCompletedAsync(ex);
+            var finishedNow = await SetCompletedAsync(ex).ConfigureAwait(false);
+            execution.ReportConnectionFailures(finishedNow ? ex : null);
         }
 
         public bool HasCompleted()
@@ -386,18 +407,33 @@ namespace Cassandra.Requests
         /// <inheritdoc />
         public async Task<IConnection> GetNextConnectionAsync(Dictionary<IPEndPoint, Exception> triedHosts)
         {
-            // While there is an available host
-            while (TryGetNextHost(out var target))
+            ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>> connectionFailures = null;
+            try
             {
-                var c = await ValidateHostAndGetConnectionAsync(target, triedHosts).ConfigureAwait(false);
-                if (c == null)
+                // While there is an available host
+                while (TryGetNextHost(out var target))
                 {
-                    continue;
+                    var c = await ValidateHostAndGetConnectionAsync(target, triedHosts).ConfigureAwait(false);
+                    if (c == null)
+                    {
+                        if (triedHosts.TryGetValue(target.Host.Address, out var failure) && failure != null)
+                        {
+                            connectionFailures ??= new ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>>();
+                            connectionFailures.Enqueue(new KeyValuePair<IPEndPoint, Exception>(target.Host.Address, failure));
+                        }
+                        continue;
+                    }
+                    ConsumedConnectionFailures.Report(connectionFailures, null);
+                    return c;
                 }
-                return c;
-            }
 
-            throw new NoHostAvailableException(triedHosts);
+                throw new NoHostAvailableException(triedHosts);
+            }
+            catch (Exception ex)
+            {
+                ConsumedConnectionFailures.Report(connectionFailures, ex);
+                throw;
+            }
         }
 
         /// <inheritdoc />
