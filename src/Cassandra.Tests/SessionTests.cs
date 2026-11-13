@@ -1044,6 +1044,91 @@ namespace Cassandra.Tests
         [TestCase(false, true)]
         [TestCase(true, false)]
         [TestCase(true, true)]
+        public async Task Should_AllowCrossThreadReplacementLookupDuringMetricsRetirement(
+            bool clientRoutesEnabled, bool retireDuringLookup)
+        {
+            var oldPool = new Mock<IHostConnectionPool>();
+            var replacementPool = new Mock<IHostConnectionPool>();
+            var factory = new Mock<IHostConnectionPoolFactory>();
+            factory.SetupSequence(value => value.Create(
+                    It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>()))
+                .Returns(oldPool.Object).Returns(replacementPool.Object);
+            var provider = CreateMetricsProviderForRemovalTests();
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = factory.Object,
+                MetricsProvider = provider.Object,
+                ClientRoutesOptions = clientRoutesEnabled
+                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    : null
+            }.Build();
+            using var metadata = new Metadata(config);
+            var address = new IPEndPoint(IPAddress.Loopback, 9042);
+            var oldHost = metadata.AddHost(address);
+            oldHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            try
+            {
+                using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "retirement-callback-lookup-test");
+                var internalSession = (IInternalSession)session;
+                Assert.AreSame(oldPool.Object, internalSession.GetOrCreateConnectionPool(oldHost, HostDistance.Local));
+                metadata.RemoveHost(address);
+                var replacementHost = metadata.AddHost(address);
+                replacementHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+                Task<IHostConnectionPool> replacementLookup = null;
+                var reentered = 0;
+                provider.Setup(value => value.ShutdownMetricsBucket(It.Is<string>(bucket => bucket.Contains(".nodes."))))
+                    .Callback(() =>
+                    {
+                        if (Interlocked.Exchange(ref reentered, 1) == 0)
+                        {
+                            replacementLookup = Task.Run(() =>
+                                internalSession.GetOrCreateConnectionPool(replacementHost, HostDistance.Local));
+                            Assert.IsTrue(replacementLookup.Wait(5000),
+                                "Replacement lookup waited for its metrics teardown callback.");
+                        }
+                    });
+                try
+                {
+                    if (retireDuringLookup)
+                    {
+                        Assert.AreSame(replacementPool.Object,
+                            internalSession.GetOrCreateConnectionPool(oldHost, HostDistance.Local));
+                    }
+                    else
+                    {
+                        cluster.Raise(value => value.HostRemoved += null, oldHost);
+                    }
+                }
+                finally
+                {
+                    if (replacementLookup != null)
+                    {
+                        await replacementLookup.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    }
+                }
+                Assert.AreEqual(1, reentered);
+                Assert.AreSame(replacementPool.Object, replacementLookup.Result);
+                Assert.AreSame(replacementPool.Object, internalSession.GetPools().Single().Value);
+                Assert.AreSame(replacementHost, session.GetMetrics().NodeMetrics.Keys.Single());
+                oldPool.Verify(value => value.OnHostRemoved(), Times.Once);
+                oldPool.Verify(value => value.Dispose(), Times.Once);
+                replacementPool.Verify(value => value.OnHostRemoved(), Times.Never);
+                replacementPool.Verify(value => value.Dispose(), Times.Never);
+            }
+            finally
+            {
+                config.Timer.Dispose();
+            }
+        }
+
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
         public void Should_UseCurrentPoolOwnerAndClientRoutesDistanceForReplacement(bool clientRoutesEnabled, bool poolRemovalCompleted)
         {
             var address = new IPEndPoint(IPAddress.Parse("127.0.0.9"), 9042);
@@ -1106,7 +1191,7 @@ namespace Cassandra.Tests
                 var expectedDistance = clientRoutesEnabled ? HostDistance.Remote : HostDistance.Local;
                 Mock.Get(replacementPool).Verify(value => value.SetDistance(expectedDistance), Times.Once);
                 cluster.Verify(value => value.RetrieveAndSetDistance(It.Is<Host>(host => ReferenceEquals(host, replacementHost))),
-                    clientRoutesEnabled ? Times.Exactly(2) : Times.Never());
+                    clientRoutesEnabled ? Times.Exactly(poolRemovalCompleted ? 2 : 3) : Times.Never());
                 Mock.Get(oldPool).Verify(value => value.OnHostRemoved(), Times.Once);
                 Mock.Get(oldPool).Verify(value => value.Dispose(), Times.Once);
             }
