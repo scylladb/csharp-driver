@@ -660,6 +660,64 @@ namespace Cassandra.Tests.Connections
             }
         }
 
+        [TestCase(TraceLevel.Warning, false, 1)]
+        [TestCase(TraceLevel.Warning, true, 1)]
+        [TestCase(TraceLevel.Info, false, 1)]
+        [TestCase(TraceLevel.Error, false, 0)]
+        [NonParallelizable]
+        public async Task Should_NotLogSuccessfulOpenAsFailureWhenHostUpHandlerThrows(
+            TraceLevel level, bool diagnosticThrows, int expectedWarnings)
+        {
+            var failure = new InvalidOperationException("host up handler failed");
+            var target = CreatePool(
+                coreConnections: 1,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            var hostUpCalls = 0;
+            _host.SetDown();
+            _host.Up += _ =>
+            {
+                hostUpCalls++;
+                throw failure;
+            };
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            var listener = new Mock<TraceListener> { CallBase = true };
+            listener.Setup(value => value.WriteLine(It.Is<string>(message =>
+                    message.Contains("Post-connection maintenance"))))
+                .Callback(() =>
+                {
+                    if (diagnosticThrows)
+                    {
+                        throw new InvalidOperationException("Warning listener failed");
+                    }
+                });
+            Diagnostics.CassandraTraceSwitch.Level = level;
+            Trace.Listeners.Add(listener.Object);
+            try
+            {
+                await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                Assert.AreEqual(1, hostUpCalls);
+                Assert.AreEqual(1, target.OpenConnections);
+                var connection = target.ConnectionsSnapshot.Single();
+                var borrowing = target.BorrowConnectionAsync();
+                await borrowing.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreSame(connection, await borrowing.ConfigureAwait(false));
+                listener.Verify(value => value.WriteLine(It.Is<string>(message =>
+                    message.Contains("Post-connection maintenance") && message.Contains(_host.Address.ToString()) &&
+                    message.Contains(failure.Message))), Times.Exactly(expectedWarnings));
+                listener.Verify(value => value.WriteLine(It.Is<string>(message =>
+                    message.Contains("could not be created"))), Times.Never,
+                    "A post-open callback failure must not be reported as a failed connection open.");
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener.Object);
+                listener.Object.Dispose();
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                DisposePoolAndTimer(target);
+            }
+        }
+
         [Test]
         [NonParallelizable]
         public async Task Should_ScheduleRetryWhenConsumedFailureLoggerThrows()
@@ -1618,123 +1676,32 @@ namespace Cassandra.Tests.Connections
             }
         }
 
-        [Test]
-        public async Task Should_DisposeRoutedCandidate_WhenPoolIsDisposedDuringOpen()
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_BringDownHostUpOnlyAfterSuccessfulWarmup(bool failOpen)
         {
-            var openStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            var releaseOpen = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            var connections = new ConcurrentQueue<Mock<IConnection>>();
-            var factory = new FakeConnectionFactory(endPoint =>
-            {
-                var connection = CreateConnection(endPoint);
-                var disposed = 0;
-                connection.SetupGet(value => value.IsDisposed).Returns(() => Volatile.Read(ref disposed) != 0);
-                connection.Setup(value => value.Dispose()).Callback(() => Interlocked.Exchange(ref disposed, 1));
-                connection.Setup(value => value.Open()).Returns(async () =>
-                {
-                    openStarted.TrySetResult(true);
-                    await releaseOpen.Task.ConfigureAwait(false);
-                    return (Cassandra.Responses.Response)null;
-                });
-                connections.Enqueue(connection);
-                return connection.Object;
-            });
-            var options = new ClientRoutesOptions(
-                new[] { new ClientRouteProxy("route-a") },
-                9042,
-                false);
             var target = CreatePool(
-                connectionFactory: factory,
-                clientRoutesOptions: options);
-            Task opening = null;
-            try
-            {
-                opening = target.EnsureCreate();
-                await openStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
-
-                target.Dispose();
-                releaseOpen.TrySetResult(true);
-
-                await Assert.ThrowsAsync<SocketException>(async () =>
-                    await opening.WaitToCompleteAsync(5000).ConfigureAwait(false));
-                var candidate = connections.Single();
-                Assert.IsInstanceOf<ClientRouteConnectionEndPoint>(candidate.Object.EndPoint);
-                candidate.Verify(value => value.Dispose(), Times.Once);
-                Assert.AreEqual(0, target.OpenConnections);
-                Assert.IsEmpty(target.ConnectionsSnapshot);
-                Assert.IsNull(GetConnectionOpenOperation(target));
-            }
-            finally
-            {
-                target.Dispose();
-                releaseOpen.TrySetResult(true);
-                try
-                {
-                    await (opening ?? Task.CompletedTask).ContinueWith(
-                            completed => _ = completed.Exception, TaskScheduler.Default)
-                        .WaitToCompleteAsync(5000).ConfigureAwait(false);
-                }
-                finally
-                {
-                    DisposePoolAndTimer(target);
-                }
-            }
-        }
-
-        [TestCase(TraceLevel.Warning, false, 1)]
-        [TestCase(TraceLevel.Warning, true, 1)]
-        [TestCase(TraceLevel.Info, false, 1)]
-        [TestCase(TraceLevel.Error, false, 0)]
-        [NonParallelizable]
-        public async Task Should_NotLogSuccessfulOpenAsFailureWhenHostUpHandlerThrows(
-            TraceLevel level, bool diagnosticThrows, int expectedWarnings)
-        {
-            var failure = new InvalidOperationException("host up handler failed");
-            var target = CreatePool(
+                connectionFactory: new FakeConnectionFactory(endpoint => CreateConnection(
+                    endpoint, failOpen ? new InvalidOperationException("warmup failed") : null).Object),
                 coreConnections: 1,
                 reconnectionPolicy: new ConstantReconnectionPolicy(60000));
-            var hostUpCalls = 0;
             _host.SetDown();
-            _host.Up += _ =>
-            {
-                hostUpCalls++;
-                throw failure;
-            };
-            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
-            var listener = new Mock<TraceListener> { CallBase = true };
-            listener.Setup(value => value.WriteLine(It.Is<string>(message =>
-                    message.Contains("Post-connection maintenance"))))
-                .Callback(() =>
-                {
-                    if (diagnosticThrows)
-                    {
-                        throw new InvalidOperationException("Warning listener failed");
-                    }
-                });
-            Diagnostics.CassandraTraceSwitch.Level = level;
-            Trace.Listeners.Add(listener.Object);
             try
             {
-                await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
-
-                Assert.AreEqual(1, hostUpCalls);
-                Assert.AreEqual(1, target.OpenConnections);
-                var connection = target.ConnectionsSnapshot.Single();
-                var borrowing = target.BorrowConnectionAsync();
-                await borrowing.WaitToCompleteAsync(5000).ConfigureAwait(false);
-                Assert.AreSame(connection, await borrowing.ConfigureAwait(false));
-                listener.Verify(value => value.WriteLine(It.Is<string>(message =>
-                    message.Contains("Post-connection maintenance") && message.Contains(_host.Address.ToString()) &&
-                    message.Contains(failure.Message))), Times.Exactly(expectedWarnings));
-                listener.Verify(value => value.WriteLine(It.Is<string>(message =>
-                    message.Contains("could not be created"))), Times.Never,
-                    "A post-open callback failure must not be reported as a failed connection open.");
+                if (failOpen)
+                {
+                    await Assert.ThrowsAsync<InvalidOperationException>(() => target.Warmup().WaitToCompleteAsync(5000));
+                    Assert.IsFalse(_host.IsUp);
+                }
+                else
+                {
+                    await target.Warmup().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    Assert.IsTrue(_host.IsUp);
+                    Assert.AreEqual(1, target.OpenConnections);
+                }
             }
             finally
             {
-                Trace.Listeners.Remove(listener.Object);
-                listener.Object.Dispose();
-                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
                 DisposePoolAndTimer(target);
             }
         }
@@ -1802,33 +1769,66 @@ namespace Cassandra.Tests.Connections
             }
         }
 
-        [TestCase(false)]
-        [TestCase(true)]
-        public async Task Should_BringDownHostUpOnlyAfterSuccessfulWarmup(bool failOpen)
+        [Test]
+        public async Task Should_DisposeRoutedCandidate_WhenPoolIsDisposedDuringOpen()
         {
+            var openStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseOpen = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var connections = new ConcurrentQueue<Mock<IConnection>>();
+            var factory = new FakeConnectionFactory(endPoint =>
+            {
+                var connection = CreateConnection(endPoint);
+                var disposed = 0;
+                connection.SetupGet(value => value.IsDisposed).Returns(() => Volatile.Read(ref disposed) != 0);
+                connection.Setup(value => value.Dispose()).Callback(() => Interlocked.Exchange(ref disposed, 1));
+                connection.Setup(value => value.Open()).Returns(async () =>
+                {
+                    openStarted.TrySetResult(true);
+                    await releaseOpen.Task.ConfigureAwait(false);
+                    return (Cassandra.Responses.Response)null;
+                });
+                connections.Enqueue(connection);
+                return connection.Object;
+            });
+            var options = new ClientRoutesOptions(
+                new[] { new ClientRouteProxy("route-a") },
+                9042,
+                false);
             var target = CreatePool(
-                connectionFactory: new FakeConnectionFactory(endpoint => CreateConnection(
-                    endpoint, failOpen ? new InvalidOperationException("warmup failed") : null).Object),
-                coreConnections: 1,
-                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
-            _host.SetDown();
+                connectionFactory: factory,
+                clientRoutesOptions: options);
+            Task opening = null;
             try
             {
-                if (failOpen)
-                {
-                    await Assert.ThrowsAsync<InvalidOperationException>(() => target.Warmup().WaitToCompleteAsync(5000));
-                    Assert.IsFalse(_host.IsUp);
-                }
-                else
-                {
-                    await target.Warmup().WaitToCompleteAsync(5000).ConfigureAwait(false);
-                    Assert.IsTrue(_host.IsUp);
-                    Assert.AreEqual(1, target.OpenConnections);
-                }
+                opening = target.EnsureCreate();
+                await openStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                target.Dispose();
+                releaseOpen.TrySetResult(true);
+
+                await Assert.ThrowsAsync<SocketException>(async () =>
+                    await opening.WaitToCompleteAsync(5000).ConfigureAwait(false));
+                var candidate = connections.Single();
+                Assert.IsInstanceOf<ClientRouteConnectionEndPoint>(candidate.Object.EndPoint);
+                candidate.Verify(value => value.Dispose(), Times.Once);
+                Assert.AreEqual(0, target.OpenConnections);
+                Assert.IsEmpty(target.ConnectionsSnapshot);
+                Assert.IsNull(GetConnectionOpenOperation(target));
             }
             finally
             {
-                DisposePoolAndTimer(target);
+                target.Dispose();
+                releaseOpen.TrySetResult(true);
+                try
+                {
+                    await (opening ?? Task.CompletedTask).ContinueWith(
+                            completed => _ = completed.Exception, TaskScheduler.Default)
+                        .WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+                finally
+                {
+                    DisposePoolAndTimer(target);
+                }
             }
         }
 
