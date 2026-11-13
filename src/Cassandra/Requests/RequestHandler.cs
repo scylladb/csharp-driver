@@ -565,16 +565,21 @@ namespace Cassandra.Requests
         /// </summary>
         private async Task StartNewExecutionAsync()
         {
+            IRequestExecution execution = null;
             try
             {
-                var execution = _session.Cluster.Configuration.RequestExecutionFactory.Create(this, _session, _request, _requestObserver, _sessionRequestInfo);
-                var lastHost = execution.Start(false);
+                execution = _session.Cluster.Configuration.RequestExecutionFactory.Create(this, _session, _request, _requestObserver, _sessionRequestInfo);
                 _running.Add(execution);
+                var lastHost = execution.Start(false);
                 ScheduleNext(lastHost);
             }
             catch (NoHostAvailableException ex)
             {
-                if (_running.Count == 0)
+                if (execution != null)
+                {
+                    await SetNoMoreHostsAsync(ex, execution).ConfigureAwait(false);
+                }
+                else if (_running.Count == 0)
                 {
                     //Its the sending of the first execution
                     //There isn't any host available, yield it to the user

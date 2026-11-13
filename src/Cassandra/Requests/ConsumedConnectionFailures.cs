@@ -17,8 +17,8 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Linq;
 using System.Net;
+using Cassandra.Connections;
 
 namespace Cassandra.Requests
 {
@@ -32,26 +32,115 @@ namespace Cassandra.Requests
         internal static void Report(
             ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>> failures, Exception returnedError)
         {
-            if (failures == null)
+            if (failures == null || failures.IsEmpty)
             {
                 return;
             }
+
+            var returnedCauses = returnedError == null ? null : GetReturnedCauses(returnedError);
             while (failures.TryDequeue(out var failure))
             {
-                if (ReferenceEquals(returnedError, failure.Value) ||
-                    (returnedError is NoHostAvailableException noHost &&
-                     noHost.Errors.Values.Any(error => ReferenceEquals(error, failure.Value))))
+                var diagnosticError = returnedCauses == null
+                    ? failure.Value
+                    : GetUnreturnedFailure(failure.Value, returnedCauses);
+                if (diagnosticError == null)
                 {
                     continue;
                 }
+
                 try
                 {
-                    Logger.Info("Request consumed a failure to obtain a connection to {0}: {1}", failure.Key, failure.Value);
+                    Logger.Info("Request consumed a failure to obtain a connection to {0}: {1}", failure.Key, diagnosticError);
                 }
                 catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
                 {
                     // A diagnostic sink must not discard the request result or its original error.
                 }
+            }
+        }
+
+        private static HashSet<Exception> GetReturnedCauses(Exception returnedError)
+        {
+            var causes = new HashSet<Exception>(ReferenceEqualityComparer.Instance);
+            var pending = new Stack<Exception>();
+            pending.Push(returnedError);
+            while (pending.TryPop(out var error))
+            {
+                if (error == null || !causes.Add(error))
+                {
+                    continue;
+                }
+
+                if (error is NoHostAvailableException noHost)
+                {
+                    foreach (var cause in noHost.Errors.Values)
+                    {
+                        pending.Push(cause);
+                    }
+                }
+
+                if (error is ConnectionFailure connectionFailure)
+                {
+                    foreach (var cause in connectionFailure.SupersededConnectionErrors)
+                    {
+                        pending.Push(cause);
+                    }
+
+                    foreach (var cause in connectionFailure.UnresolvedResolutionErrors)
+                    {
+                        pending.Push(cause);
+                    }
+                }
+
+                if (error is AggregateException aggregate)
+                {
+                    foreach (var cause in aggregate.InnerExceptions)
+                    {
+                        pending.Push(cause);
+                    }
+                }
+                else
+                {
+                    pending.Push(error.InnerException);
+                }
+            }
+
+            return causes;
+        }
+
+        private static Exception GetUnreturnedFailure(Exception error, HashSet<Exception> returnedCauses)
+        {
+            if (returnedCauses.Contains(error))
+            {
+                return null;
+            }
+
+            if (!(error is ConnectionFailure connectionFailure))
+            {
+                return error;
+            }
+
+            var unreturned = new List<Exception>();
+            AddUnreturnedFailure(connectionFailure.PreferredError, returnedCauses, unreturned);
+            foreach (var cause in connectionFailure.SupersededConnectionErrors)
+            {
+                AddUnreturnedFailure(cause, returnedCauses, unreturned);
+            }
+
+            foreach (var cause in connectionFailure.UnresolvedResolutionErrors)
+            {
+                AddUnreturnedFailure(cause, returnedCauses, unreturned);
+            }
+
+            return unreturned.Count == 0 ? null : new AggregateException("Consumed connection candidate failures", unreturned);
+        }
+
+        private static void AddUnreturnedFailure(Exception error, HashSet<Exception> returnedCauses, List<Exception> unreturned)
+        {
+            var cause = GetUnreturnedFailure(error, returnedCauses);
+            if (cause != null)
+            {
+                unreturned.Add(cause);
             }
         }
     }
