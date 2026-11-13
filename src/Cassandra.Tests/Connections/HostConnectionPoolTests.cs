@@ -1863,6 +1863,5 @@ namespace Cassandra.Tests.Connections
             }
             return connection;
         }
-
     }
 }

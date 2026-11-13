@@ -107,6 +107,12 @@ namespace Cassandra.Requests
                 RecordConnectionFailure(host);
                 RequestExecution.Logger.Warning("RequestHandler could not obtain a connection while attempting to retry with the current host.");
             }
+            catch (Exception ex) when (Utils.IsFatalException(ex))
+            {
+                // This acquisition runs in the background: complete the caller instead of retrying or dropping the error.
+                await _parent.SetCompletedAsync(ex).ConfigureAwait(false);
+                return;
+            }
             catch (Exception ex)
             {
                 RequestExecution.Logger.Warning("RequestHandler received exception while attempting to retry with the current host: {0}", ex.ToString());
