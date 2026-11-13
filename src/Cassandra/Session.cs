@@ -323,7 +323,7 @@ namespace Cassandra
             }
             catch (HostConnectionPoolNotEligibleException)
             {
-                // The host was removed or became ignored after the warmup list was built.
+                // Host state or unfinished metrics retirement prevents this host from owning a pool.
                 // Exclude skipped hosts from the completed-pool success check.
                 return null;
             }
@@ -713,7 +713,7 @@ namespace Cassandra
                     else
                     {
                         // A failed provider shutdown leaves the bucket's state unknown.
-                        // Keep new registrations out of it for this session.
+                        // Keep new pool registrations out of it for this session.
                         _metricsRetirements.CompareAndUpdate(
                             host.Address, (_, active) => active, (_, __) => false);
                     }
