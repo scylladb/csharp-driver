@@ -17,6 +17,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Reflection;
@@ -263,6 +264,45 @@ namespace Cassandra.Tests
         }
 
         /// <summary>
+        /// Runs every cleanup action and reports nonfatal failures after cleanup has finished.
+        /// Fatal failures escape immediately.
+        /// </summary>
+        public static void RunAllCleanupActions(params Action[] cleanupActions)
+        {
+            if (cleanupActions == null)
+            {
+                throw new ArgumentNullException(nameof(cleanupActions));
+            }
+
+            List<Exception> exceptions = null;
+            foreach (var cleanupAction in cleanupActions)
+            {
+                if (cleanupAction == null)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    cleanupAction();
+                }
+                catch (Exception ex) when (!Utils.IsFatalException(ex))
+                {
+                    if (exceptions == null)
+                    {
+                        exceptions = new List<Exception>();
+                    }
+                    exceptions.Add(ex);
+                }
+            }
+
+            if (exceptions != null)
+            {
+                throw new AggregateException("One or more cleanup actions failed.", exceptions);
+            }
+        }
+
+        /// <summary>
         /// Waits on the current thread until the condition is met and returns the number of attempts made
         /// </summary>
         public static int WaitUntil(Func<bool> condition, int intervals = 500, int attempts = 10)
@@ -286,6 +326,56 @@ namespace Cassandra.Tests
                 await Task.Delay(intervals).ConfigureAwait(false);
             }
             return i;
+        }
+
+        public static async Task WaitUntilOrFailAsync(
+            Func<bool> condition,
+            TimeSpan timeout,
+            TimeSpan interval,
+            string failureMessage)
+        {
+            var elapsed = Stopwatch.StartNew();
+            while (!condition())
+            {
+                var remaining = timeout - elapsed.Elapsed;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    Assert.Fail(failureMessage);
+                }
+                await Task.Delay(interval < remaining ? interval : remaining).ConfigureAwait(false);
+            }
+        }
+
+        internal static async Task RetryAssertUntilAsync(
+            Action assertion,
+            TimeSpan timeout,
+            TimeSpan interval,
+            string failureMessage,
+            Func<Exception, bool> exceptionFilter)
+        {
+            var elapsed = Stopwatch.StartNew();
+            while (true)
+            {
+                Exception lastException;
+                using (new TestExecutionContext.IsolatedContext())
+                {
+                    try
+                    {
+                        assertion();
+                        return;
+                    }
+                    catch (Exception ex) when (exceptionFilter(ex))
+                    {
+                        lastException = ex;
+                    }
+                }
+                var remaining = timeout - elapsed.Elapsed;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    throw new AssertionException(failureMessage + " " + lastException);
+                }
+                await Task.Delay(interval < remaining ? interval : remaining).ConfigureAwait(false);
+            }
         }
 
         public static void AssertPropertiesEqual(object actual, object expected)
