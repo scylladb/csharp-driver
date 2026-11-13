@@ -1161,6 +1161,12 @@ namespace Cassandra.Tests
         [TestCase(false, "shutdown")]
         [TestCase(true, "shutdown")]
         [TestCase(true, "ignored")]
+        [TestCase(false, "factory-failure")]
+        [TestCase(true, "factory-failure")]
+        [TestCase(false, "metrics-failure")]
+        [TestCase(true, "metrics-failure")]
+        [TestCase(false, "sync-warmup-failure")]
+        [TestCase(true, "sync-warmup-failure")]
         [NonParallelizable]
         public async Task Should_RetrySelectedWarmupAfterMetricsRetirement(bool clientRoutesEnabled, string outcome)
         {
@@ -1168,6 +1174,7 @@ namespace Cassandra.Tests
             using var finishRetirement = new ManualResetEventSlim();
             var oldPool = new Mock<IHostConnectionPool>();
             var replacementPool = new Mock<IHostConnectionPool>();
+            var setupFailure = new InvalidOperationException("Synchronous replacement " + outcome);
             replacementPool.Setup(value => value.Warmup()).Returns(Task.CompletedTask);
             var factory = new Mock<IHostConnectionPoolFactory>();
             factory.SetupSequence(value => value.Create(
@@ -1221,6 +1228,23 @@ namespace Cassandra.Tests
                 var replacementHost = metadata.AddHost(address);
                 replacementHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
                 replacementHost.SetDown();
+                if (outcome == "factory-failure")
+                {
+                    factory.Setup(value => value.Create(
+                            It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                            It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>()))
+                        .Throws(setupFailure);
+                }
+                if (outcome == "metrics-failure")
+                {
+                    provider.Setup(value => value.Gauge(
+                            It.IsAny<string>(), It.Is<IMetric>(metric => metric is NodeMetric), It.IsAny<Func<double?>>()))
+                        .Throws(setupFailure);
+                }
+                if (outcome == "sync-warmup-failure")
+                {
+                    replacementPool.Setup(value => value.Warmup()).Throws(setupFailure);
+                }
                 removal = Task.Run(() => cluster.Raise(value => value.HostRemoved += null, oldHost));
                 try
                 {
@@ -1253,10 +1277,20 @@ namespace Cassandra.Tests
                     }
                     if (initialization != null)
                     {
-                        await initialization.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                        if (outcome.EndsWith("-failure", StringComparison.Ordinal))
+                        {
+                            var observed = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                                await initialization.WaitToCompleteAsync(5000).ConfigureAwait(false));
+                            Assert.AreSame(setupFailure, observed);
+                        }
+                        else
+                        {
+                            await initialization.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                        }
                     }
                 }
-                replacementPool.Verify(value => value.Warmup(), outcome == "success" ? Times.Once() : Times.Never());
+                replacementPool.Verify(value => value.Warmup(),
+                    outcome == "success" || outcome == "sync-warmup-failure" ? Times.Once() : Times.Never());
                 if (outcome == "success")
                 {
                     Assert.AreSame(replacementPool.Object, internalSession.GetPools().Single().Value);

@@ -238,12 +238,6 @@ namespace Cassandra
             Interlocked.Exchange(ref _initialized, 1);
         }
 
-        private static async Task<bool> CompletePoolWarmup(Task warmup)
-        {
-            await warmup.ConfigureAwait(false);
-            return true;
-        }
-
         /// <summary>
         /// Creates the required connections on all hosts in the local DC.
         /// Returns a Task that is marked as completed after all pools were warmed up.
@@ -254,14 +248,16 @@ namespace Cassandra
         private async Task Warmup()
         {
             var hosts = _cluster.AllHosts().Where(h => _cluster.RetrieveAndSetDistance(h) == HostDistance.Local).ToArray();
-            var tasks = new Task<bool>[hosts.Length];
+            var poolCreations = new Task<Task>[hosts.Length];
             for (var i = 0; i < hosts.Length; i++)
             {
-                tasks[i] = WarmupHost(hosts[i]);
+                poolCreations[i] = WarmupHost(hosts[i]);
             }
 
-            var hostWarmups = tasks;
-            tasks = tasks.Where(task => task != null).ToArray();
+            // Keep setup failures outside the recoverable asynchronous-warmup catch,
+            // including setup retried after the previous metrics bucket retires.
+            var hostWarmups = await Task.WhenAll(poolCreations).ConfigureAwait(false);
+            var tasks = hostWarmups.Where(task => task != null).ToArray();
             var allWarmups = Task.WhenAll(tasks);
             try
             {
@@ -311,19 +307,18 @@ namespace Cassandra
                     }
                 }
 
-                if (tasks.Any(t => t.Status == TaskStatus.RanToCompletion && t.Result))
+                if (tasks.Any(t => t.Status == TaskStatus.RanToCompletion))
                 {
                     // At least 1 of the warmup tasks completed
                     return;
                 }
 
                 // Log and continue as the ControlConnection is connected
-                var attemptedHosts = tasks.Count(t => t.Status != TaskStatus.RanToCompletion || t.Result);
-                Session.Logger.Error($"Connection pools for {attemptedHosts} host(s) failed to be warmed up");
+                Session.Logger.Error($"Connection pools for {tasks.Length} host(s) failed to be warmed up");
             }
         }
 
-        private Task<bool> WarmupHost(Host host)
+        private Task<Task> WarmupHost(Host host)
         {
             IHostConnectionPool pool;
             try
@@ -339,34 +334,34 @@ namespace Cassandra
             {
                 // Host state prevents this host from owning a pool.
                 // Exclude skipped hosts from the completed-pool success check.
-                return null;
+                return Task.FromResult<Task>(null);
             }
             catch (ObjectDisposedException) when (IsDisposed)
             {
                 // Shutdown owns all pools and must not let warmup publish another one.
-                return null;
+                return Task.FromResult<Task>(null);
             }
 
             // Invoke Warmup synchronously, like pool creation and metrics initialization above,
             // so synchronous failures retain their original propagation behavior.
-            return CompletePoolWarmup(pool.Warmup());
+            return Task.FromResult(pool.Warmup());
         }
 
-        private async Task<bool> WarmupAfterMetricsRetirement(Host host, Task<bool> retirement)
+        private async Task<Task> WarmupAfterMetricsRetirement(Host host, Task<bool> retirement)
         {
             // Request lookups still fail immediately so metrics callbacks can wait for them.
             // Initial warmup retains the selected host and retries after the bucket is retired.
             await Task.WhenAny(retirement, _shutdown.Task).ConfigureAwait(false);
             if (IsDisposed)
             {
-                return false;
+                return null;
             }
             if (!await retirement.ConfigureAwait(false))
             {
-                throw new HostConnectionPoolNotEligibleException("its previous metrics could not be retired");
+                return Task.FromException(
+                    new HostConnectionPoolNotEligibleException("its previous metrics could not be retired"));
             }
-            var warmup = WarmupHost(host);
-            return warmup != null && await warmup.ConfigureAwait(false);
+            return await WarmupHost(host).ConfigureAwait(false);
         }
 
         /// <inheritdoc />
