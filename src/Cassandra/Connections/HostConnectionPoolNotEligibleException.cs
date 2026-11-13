@@ -23,12 +23,12 @@ namespace Cassandra.Connections
     /// </summary>
     internal sealed class HostConnectionPoolNotEligibleException : DriverException
     {
-        internal Task<bool> MetricsRetirement { get; }
-
         internal HostConnectionPoolNotEligibleException(string reason, Task<bool> metricsRetirement = null)
             : base("The host is not eligible for a connection pool: " + reason + ".")
         {
             MetricsRetirement = metricsRetirement;
         }
+
+        internal Task<bool> MetricsRetirement { get; }
     }
 }
