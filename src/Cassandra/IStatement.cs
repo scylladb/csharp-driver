@@ -164,8 +164,9 @@ namespace Cassandra
         IStatement SetAutoPage(bool autoPage);
 
         /// <summary>
-        ///  Sets the consistency level for the query. <p> The default consistency level,
-        ///  if this method is not called, is ConsistencyLevel.ONE.</p>
+        /// Sets the consistency level for the query.
+        /// If unset, the execution profile or <see cref="QueryOptions"/> supplies the level.
+        /// The unconfigured default is <see cref="ConsistencyLevel.LocalQuorum"/>.
         /// </summary>
         /// <param name="consistency"> the consistency level to set. </param>
         /// <returns>this <c>IStatement</c> object.</returns>

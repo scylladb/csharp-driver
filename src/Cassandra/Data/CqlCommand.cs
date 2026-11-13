@@ -32,7 +32,7 @@ namespace Cassandra.Data
         internal CqlConnection CqlConnection;
         internal CqlBatchTransaction CqlTransaction;
         private string _commandText;
-        private ConsistencyLevel _consistencyLevel = ConsistencyLevel.One;
+        private ConsistencyLevel? _consistencyLevel;
         [GeneratedRegex(@"\B:[a-zA-Z][a-zA-Z0-9_]*", RegexOptions.Multiline)]
         private static partial Regex RegexParseParameterName { get; }
         private PreparedStatement _preparedStatement;
@@ -58,10 +58,17 @@ namespace Cassandra.Data
 
         /// <summary>
         /// Gets or sets the ConsistencyLevel when executing the current <see cref="CqlCommand"/>.
+        /// When unset, this command inherits the prepared statement or session defaults.
+        /// Before a connection is available, the default is <see cref="ConsistencyLevel.LocalQuorum"/>.
         /// </summary>
         public ConsistencyLevel ConsistencyLevel
         {
-            get { return _consistencyLevel; }
+            get
+            {
+                return _consistencyLevel ?? _preparedStatement?.ConsistencyLevel ??
+                       CqlConnection?.ManagedConnection?.Cluster?.Configuration?.DefaultRequestOptions.ConsistencyLevel ??
+                       QueryOptions.DefaultConsistencyLevel;
+            }
             set { _consistencyLevel = value; }
         }
 
@@ -158,13 +165,15 @@ namespace Cassandra.Data
             RowSet rowSet;
             if (_preparedStatement == null)
             {
-                rowSet = CqlConnection.ManagedConnection.Execute(_commandText, ConsistencyLevel);
+                rowSet = CqlConnection.ManagedConnection.Execute(
+                    new SimpleStatement(_commandText).SetConsistencyLevel(_consistencyLevel));
             }
             else //if _preparedStatement != null
             {
 
                 var query = _preparedStatement.Bind(GetParameterValues());
-                query.SetConsistencyLevel(ConsistencyLevel);
+                if (_consistencyLevel.HasValue)
+                    query.SetConsistencyLevel(_consistencyLevel.Value);
                 rowSet = CqlConnection.ManagedConnection.Execute(query);
             }
 
@@ -183,14 +192,15 @@ namespace Cassandra.Data
                 if (cm.StartsWith("CREATE ")
                     || cm.StartsWith("DROP ")
                     || cm.StartsWith("ALTER "))
-                    managedConnection.Execute(_commandText, ConsistencyLevel);
+                    managedConnection.Execute(new SimpleStatement(_commandText).SetConsistencyLevel(_consistencyLevel));
                 else
-                    managedConnection.Execute(_commandText, ConsistencyLevel);
+                    managedConnection.Execute(new SimpleStatement(_commandText).SetConsistencyLevel(_consistencyLevel));
             }
             else //if _preparedStatement != null
             {
                 var query = _preparedStatement.Bind(GetParameterValues());
-                query.SetConsistencyLevel(ConsistencyLevel);
+                if (_consistencyLevel.HasValue)
+                    query.SetConsistencyLevel(_consistencyLevel.Value);
                 if (cm.StartsWith("CREATE ")
                     || cm.StartsWith("DROP ")
                     || cm.StartsWith("ALTER "))
@@ -209,12 +219,14 @@ namespace Cassandra.Data
             RowSet rowSet;
             if (_preparedStatement == null)
             {
-                rowSet = CqlConnection.ManagedConnection.Execute(_commandText, ConsistencyLevel);
+                rowSet = CqlConnection.ManagedConnection.Execute(
+                    new SimpleStatement(_commandText).SetConsistencyLevel(_consistencyLevel));
             }
             else //if _preparedStatement != null
             {
                 var query = _preparedStatement.Bind(GetParameterValues());
-                query.SetConsistencyLevel(ConsistencyLevel);
+                if (_consistencyLevel.HasValue)
+                    query.SetConsistencyLevel(_consistencyLevel.Value);
                 rowSet = CqlConnection.ManagedConnection.Execute(query);
             }
 
