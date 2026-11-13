@@ -44,6 +44,12 @@ namespace Cassandra.Metrics.Internal
         void RemoveNodeMetrics(Host host);
 
         /// <summary>
+        /// Removes node metrics without invoking provider callbacks. The caller owns
+        /// disposal of the returned metrics, or receives null when none exist.
+        /// </summary>
+        INodeMetrics DetachNodeMetrics(Host host);
+
+        /// <summary>
         /// Whether SessionMetrics of type Timer are enabled.
         /// </summary>
         bool AreSessionTimerMetricsEnabled { get; }
