@@ -1622,7 +1622,7 @@ namespace Cassandra.Tests.Connections
             var factory = new FakeConnectionFactory(endpoint =>
             {
                 var index = connections.Count;
-                var info = ShardingInfo.Create((index % 4).ToString(), "4",
+                var info = ShardingInfo.Create(new[] { "0", "1", "2", "3" }[index % 4], "4",
                     "org.apache.cassandra.dht.Murmur3Partitioner", "biased-token-round-robin", "12",
                     changePort && index >= 4 ? "19043" : "19042", "19142");
                 var connection = CreateConnection(endpoint, shardingInfo: info);
@@ -2382,7 +2382,7 @@ namespace Cassandra.Tests.Connections
             var connections = new List<Mock<IConnection>>();
             var factory = new FakeConnectionFactory(endPoint =>
             {
-                var info = ShardingInfo.Create("0", shardCount.ToString(),
+                var info = ShardingInfo.Create("0", shardCount == 0 ? "0" : "-1",
                     "org.apache.cassandra.dht.Murmur3Partitioner", "biased-token-round-robin", "12", "19042", "19142");
                 var connection = CreateConnection(endPoint, shardingInfo: info);
                 connections.Add(connection);
