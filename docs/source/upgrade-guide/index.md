@@ -2,6 +2,26 @@
 
 The purpose of this guide is to detail the changes made by the successive versions of the ScyllaDB C# Driver that are relevant to for an upgrade from prior versions.
 
+## Unreleased
+
+### Local consistency defaults
+
+Application reads, writes and batches now default to `LOCAL_QUORUM` instead of `LOCAL_ONE`.
+The serial phase of lightweight transactions defaults to `LOCAL_SERIAL` instead of `SERIAL`,
+so its linearizability guarantee is scoped to the local datacenter. The quorum default can
+require more replicas to be available than the previous default.
+
+Explicit statement, execution-profile and query-option settings keep their existing precedence.
+To retain the previous defaults, configure the cluster explicitly:
+
+```csharp
+var cluster = Cluster.Builder()
+    .WithQueryOptions(new QueryOptions()
+        .SetConsistencyLevel(ConsistencyLevel.LocalOne)
+        .SetSerialConsistencyLevel(ConsistencyLevel.Serial))
+    .Build();
+```
+
 ## Our policy regarding API changes and release versioning
 
 The driver versions follow semantic versioning.
