@@ -61,11 +61,14 @@ namespace Cassandra.IntegrationTests.ClientRoutes
         private readonly TcpRelayMode _mode;
         private readonly X509Certificate2 _serverCertificate;
         private readonly Task _acceptTask;
+        private readonly object _forwardingSync = new object();
+        private CancellationTokenSource _acceptCancellation = new CancellationTokenSource();
 
         private long _connectionId;
         private int _acceptedConnectionCount;
         private int _forwardedConnectionCount;
         private int _forwardingEnabled = 1;
+        private int _forwardingGeneration;
         private int _disposed;
 
         public TcpRelay(
@@ -104,20 +107,32 @@ namespace Cassandra.IntegrationTests.ClientRoutes
 
         public void DisableForwarding()
         {
-            Interlocked.Exchange(ref _forwardingEnabled, 0);
-            foreach (var connection in _connections.Values)
+            lock (_forwardingSync)
             {
-                connection.Dispose();
+                if (Volatile.Read(ref _disposed) != 0)
+                {
+                    return;
+                }
+                Interlocked.Exchange(ref _forwardingEnabled, 0);
+                AdvanceForwardingGeneration();
+                foreach (var connection in _connections.Values)
+                {
+                    connection.Dispose();
+                }
             }
         }
 
         public void EnableForwarding()
         {
-            if (Volatile.Read(ref _disposed) != 0)
+            lock (_forwardingSync)
             {
-                throw new ObjectDisposedException(nameof(TcpRelay));
+                if (Volatile.Read(ref _disposed) != 0)
+                {
+                    throw new ObjectDisposedException(nameof(TcpRelay));
+                }
+                AdvanceForwardingGeneration();
+                Interlocked.Exchange(ref _forwardingEnabled, 1);
             }
-            Interlocked.Exchange(ref _forwardingEnabled, 1);
         }
 
         public void ResetObservations()
@@ -163,6 +178,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 {
                     connection.Dispose();
                 }
+                _acceptCancellation.Dispose();
                 _cancellation.Dispose();
             }
         }
@@ -209,10 +225,21 @@ namespace Cassandra.IntegrationTests.ClientRoutes
         {
             while (!_cancellation.IsCancellationRequested)
             {
+                int generation;
+                CancellationToken acceptToken;
+                lock (_forwardingSync)
+                {
+                    generation = _forwardingGeneration;
+                    acceptToken = _acceptCancellation.Token;
+                }
                 TcpClient client;
                 try
                 {
-                    client = await _listener.AcceptTcpClientAsync().ConfigureAwait(false);
+                    client = await _listener.AcceptTcpClientAsync(acceptToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (acceptToken.IsCancellationRequested)
+                {
+                    continue;
                 }
                 catch (ObjectDisposedException) when (_cancellation.IsCancellationRequested)
                 {
@@ -225,6 +252,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 catch (Exception ex) when (!Utils.IsFatalException(ex))
                 {
                     RecordFailure(ex);
+                    _listener.Stop();
                     return;
                 }
 
@@ -235,9 +263,17 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                     Interlocked.Increment(ref _acceptedConnectionCount);
 
                     var connectionId = Interlocked.Increment(ref _connectionId);
-                    var connection = new RelayConnection(client);
-                    _connections[connectionId] = connection;
-                    _ = Task.Run(() => RelayAsync(connectionId, connection));
+                    var connection = new RelayConnection(client, generation);
+                    lock (_forwardingSync)
+                    {
+                        if (generation != _forwardingGeneration || _forwardingEnabled == 0)
+                        {
+                            connection.Dispose();
+                            continue;
+                        }
+                        _connections[connectionId] = connection;
+                        _ = Task.Run(() => RelayAsync(connectionId, connection));
+                    }
                 }
                 catch (Exception ex) when (!Utils.IsFatalException(ex))
                 {
@@ -256,13 +292,25 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             }
         }
 
+        private void AdvanceForwardingGeneration()
+        {
+            _forwardingGeneration++;
+            var previous = _acceptCancellation;
+            _acceptCancellation = new CancellationTokenSource();
+            previous.Cancel();
+            previous.Dispose();
+        }
+
         private async Task RelayAsync(long connectionId, RelayConnection connection)
         {
             try
             {
-                if (Volatile.Read(ref _forwardingEnabled) == 0)
+                lock (_forwardingSync)
                 {
-                    return;
+                    if (_forwardingEnabled == 0 || connection.Generation != _forwardingGeneration)
+                    {
+                        return;
+                    }
                 }
 
                 var upstream = new TcpClient(_target.AddressFamily);
@@ -322,12 +370,15 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             private IDisposable _clientStream;
             private TcpClient _upstream;
 
-            public RelayConnection(TcpClient client)
+            public RelayConnection(TcpClient client, int generation)
             {
                 Client = client;
+                Generation = generation;
             }
 
             public TcpClient Client { get; }
+
+            public int Generation { get; }
 
             public bool IsDisposed
             {
