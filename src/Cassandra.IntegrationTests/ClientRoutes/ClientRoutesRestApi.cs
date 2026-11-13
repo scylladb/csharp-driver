@@ -97,12 +97,9 @@ namespace Cassandra.IntegrationTests.ClientRoutes
         public async Task DeleteAllAsync()
         {
             var existingEntries = await GetAsync(_nodeUris[0]).ConfigureAwait(false);
-            if (existingEntries.Count == 0)
+            foreach (var nodeUri in _nodeUris.Skip(1))
             {
-                foreach (var nodeUri in _nodeUris.Skip(1))
-                {
-                    existingEntries.AddRange(await GetAsync(nodeUri).ConfigureAwait(false));
-                }
+                existingEntries.AddRange(await GetAsync(nodeUri).ConfigureAwait(false));
             }
 
             var keys = existingEntries

@@ -323,21 +323,25 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             Assert.AreEqual(1, requests);
         }
 
-        [Test]
-        public async Task CleanupDeletesRoutesFoundOnlyOnAnotherNode()
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task CleanupDeletesRoutesFoundOnEveryNode(bool firstNodeHasRoutes)
         {
             var entries = Entries();
+            var laterEntry = new ClientRouteApiEntry("later", Guid.NewGuid(), "127.0.0.2", 9042);
             var deleted = false;
             using var client = new HttpClient(new CallbackHandler(async (request, _) =>
             {
                 if (request.Method == HttpMethod.Delete)
                 {
                     StringAssert.Contains(entries[0].Key.ConnectionId, await request.Content.ReadAsStringAsync().ConfigureAwait(false));
+                    StringAssert.Contains(laterEntry.Key.ConnectionId, await request.Content.ReadAsStringAsync().ConfigureAwait(false));
                     deleted = true;
                     return Response(HttpStatusCode.OK, "");
                 }
                 return Response(HttpStatusCode.OK,
-                    request.RequestUri.Host == "127.0.0.2" && !deleted ? JsonConvert.SerializeObject(entries) : "[]");
+                    deleted ? "[]" : request.RequestUri.Host == "127.0.0.2" ? JsonConvert.SerializeObject(new[] { entries[0], laterEntry }) :
+                    firstNodeHasRoutes ? JsonConvert.SerializeObject(entries) : "[]");
             }));
             using var api = new ClientRoutesRestApi(new[] { "127.0.0.1", "127.0.0.2" }, client);
             await api.DeleteAllAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
