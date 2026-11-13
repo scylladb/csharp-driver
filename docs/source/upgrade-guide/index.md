@@ -16,6 +16,7 @@ To retain the previous defaults, configure the cluster explicitly:
 
 ```csharp
 var cluster = Cluster.Builder()
+    .AddContactPoint("127.0.0.1")
     .WithQueryOptions(new QueryOptions()
         .SetConsistencyLevel(ConsistencyLevel.LocalOne)
         .SetSerialConsistencyLevel(ConsistencyLevel.Serial))
