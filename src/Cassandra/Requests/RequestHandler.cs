@@ -47,6 +47,9 @@ namespace Cassandra.Requests
         private readonly IEnumerator<RoutingTarget> _queryPlan;
         private readonly Lock _queryPlanLock = new Lock();
         private readonly ICollection<IRequestExecution> _running = new CopyOnWriteList<IRequestExecution>();
+        private ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>> _connectionFailures;
+        private Exception _returnedError;
+        private int _diagnosticsCompleted;
         private ISpeculativeExecutionPlan _executionPlan;
         private volatile HashedWheelTimer.ITimeout _nextExecutionTimeout;
         private readonly IRequestObserver _requestObserver;
@@ -296,21 +299,37 @@ namespace Cassandra.Requests
 
         private Task CompleteRequestAsync(Exception error, RowSet result)
         {
+            Volatile.Write(ref _returnedError, error);
+            Volatile.Write(ref _diagnosticsCompleted, 1);
             try
             {
-                foreach (var execution in _running)
-                {
-                    execution.ReportConnectionFailures(error);
-                }
+                ConsumedConnectionFailures.Report(Volatile.Read(ref _connectionFailures), error);
             }
             catch (Exception diagnosticFailure)
             {
                 // A fatal diagnostic failure must complete the already claimed request.
                 error = diagnosticFailure;
+                Volatile.Write(ref _returnedError, error);
             }
             return error == null
                 ? _requestResultHandler.TrySetResultAsync(result, _sessionRequestInfo)
                 : _requestResultHandler.TrySetExceptionAsync(error, _sessionRequestInfo);
+        }
+
+        public void RecordConnectionFailure(IPEndPoint host, Exception failure)
+        {
+            var failures = Volatile.Read(ref _connectionFailures);
+            if (failures == null)
+            {
+                var created = new ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>>();
+                failures = Interlocked.CompareExchange(ref _connectionFailures, created, null) ?? created;
+            }
+
+            failures.Enqueue(new KeyValuePair<IPEndPoint, Exception>(host, failure));
+            if (Volatile.Read(ref _diagnosticsCompleted) != 0)
+            {
+                ConsumedConnectionFailures.Report(failures, Volatile.Read(ref _returnedError));
+            }
         }
 
         private async Task ClearNodeExecutionsAsync()
@@ -342,12 +361,10 @@ namespace Cassandra.Requests
             _running.Remove(execution);
             if (_running.Count > 0)
             {
-                execution.ReportConnectionFailures(null);
                 RequestHandler.Logger.Info("Could not obtain an available host for speculative execution");
                 return;
             }
-            var finishedNow = await SetCompletedAsync(ex).ConfigureAwait(false);
-            execution.ReportConnectionFailures(finishedNow ? ex : null);
+            await SetCompletedAsync(ex).ConfigureAwait(false);
         }
 
         public bool HasCompleted()

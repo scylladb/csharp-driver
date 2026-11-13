@@ -17,7 +17,6 @@
 //
 
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
@@ -39,7 +38,6 @@ namespace Cassandra.Requests
         private readonly IInternalSession _session;
         private readonly IRequest _request;
         private readonly Dictionary<IPEndPoint, Exception> _triedHosts = new Dictionary<IPEndPoint, Exception>();
-        private ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>> _connectionFailures;
         private volatile IConnection _connection;
         private volatile int _retryCount;
         private volatile OperationState _operation;
@@ -156,21 +154,8 @@ namespace Cassandra.Requests
         {
             if (_triedHosts.TryGetValue(host.Address, out var failure) && failure != null)
             {
-                if (_connectionFailures == null)
-                {
-                    _connectionFailures = new ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>>();
-                }
-                _connectionFailures.Enqueue(new KeyValuePair<IPEndPoint, Exception>(host.Address, failure));
-                if (_parent.HasCompleted())
-                {
-                    ReportConnectionFailures(null);
-                }
+                _parent.RecordConnectionFailure(host.Address, failure);
             }
-        }
-
-        public void ReportConnectionFailures(Exception returnedError)
-        {
-            ConsumedConnectionFailures.Report(Volatile.Read(ref _connectionFailures), returnedError);
         }
 
         /// <summary>

@@ -52,6 +52,11 @@ namespace Cassandra.Requests
         bool HasCompleted();
 
         /// <summary>
+        /// Records a failed connection acquisition until the whole request's returned error is known.
+        /// </summary>
+        void RecordConnectionFailure(IPEndPoint host, Exception failure);
+
+        /// <summary>
         /// Gets the next valid host for the purpose of obtaining a connection.
         /// </summary>
         /// <param name="triedHosts">Hosts for which there were attempts to connect and send the request.</param>
