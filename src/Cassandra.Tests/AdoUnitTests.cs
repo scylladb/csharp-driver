@@ -33,7 +33,7 @@ namespace Cassandra.Tests
             var sessionMock = new Mock<ISession>();
             var rowset = new RowSet();
             sessionMock
-                .Setup(s => s.Execute(It.IsAny<string>(), It.IsAny<ConsistencyLevel>()))
+                .Setup(s => s.Execute(It.Is<IStatement>(statement => statement.ConsistencyLevel == null)))
                 .Returns(rowset)
                 .Verifiable();
             connection.ManagedConnection = sessionMock.Object;

@@ -253,11 +253,10 @@ namespace Cassandra
         }
 
         /// <summary>
-        ///  Sets a default consistency level for all <c>BoundStatement</c> created
-        ///  from this object. <p> If no consistency level is set through this method, the
-        ///  BoundStatement created from this object will use the default consistency
-        ///  level (One). </p><p> Changing the default consistency level is not retroactive,
-        ///  it only applies to BoundStatement created after the change.</p>
+        /// Sets a default consistency level for all <see cref="BoundStatement"/> instances created from this object.
+        /// If unset, bound statements use the execution profile or <see cref="QueryOptions"/> consistency,
+        /// whose unconfigured default is <see cref="ConsistencyLevel.LocalQuorum"/>.
+        /// Changing this setting is not retroactive; it applies only to statements bound after the change.
         /// </summary>
         /// <param name="consistency"> the default consistency level to set. </param>
         /// <returns>this <c>PreparedStatement</c> object.</returns>

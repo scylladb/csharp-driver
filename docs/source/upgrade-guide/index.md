@@ -6,13 +6,19 @@ The purpose of this guide is to detail the changes made by the successive versio
 
 ### Local consistency defaults
 
-Application reads, writes and batches now default to `LOCAL_QUORUM` instead of `LOCAL_ONE`.
+Statements and batches executed through `ISession` now default to `LOCAL_QUORUM`. For clusters
+other than DataStax Apollo, the previous ordinary consistency default was `LOCAL_ONE`.
 The serial phase of lightweight transactions defaults to `LOCAL_SERIAL` instead of `SERIAL`,
 so its linearizability guarantee is scoped to the local datacenter. The quorum default can
 require more replicas to be available than the previous default.
 
 Explicit statement, execution-profile and query-option settings keep their existing precedence.
-To retain the previous defaults, configure the cluster explicitly:
+ADO.NET `Cassandra.Data.CqlCommand` now inherits these session defaults when its
+`ConsistencyLevel` property is unset; it previously forced `ONE`. An explicitly assigned
+command consistency still takes precedence over the session defaults.
+
+To retain the previous `ISession` defaults on clusters other than DataStax Apollo, configure the cluster
+explicitly:
 
 ```csharp
 var cluster = Cluster.Builder()
@@ -22,6 +28,18 @@ var cluster = Cluster.Builder()
         .SetSerialConsistencyLevel(ConsistencyLevel.Serial))
     .Build();
 ```
+
+DataStax Apollo clusters already used `LOCAL_QUORUM` as the ordinary consistency default.
+To retain their previous `ISession` defaults, omit `.SetConsistencyLevel(...)` from the example above
+and configure only `.SetSerialConsistencyLevel(ConsistencyLevel.Serial)`.
+
+To retain the previous ADO.NET defaults, explicitly set each command's `ConsistencyLevel`
+to `ConsistencyLevel.One` and configure `QueryOptions` with serial consistency `Serial`.
+
+`QueryOptions.DefaultConsistencyLevel` and `QueryOptions.DefaultSerialConsistencyLevel` are
+public constants. Applications that explicitly use these constants must be recompiled against
+the upgraded driver to use their new values; existing compiled references retain the previous
+inlined values.
 
 ## Our policy regarding API changes and release versioning
 

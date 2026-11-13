@@ -27,7 +27,7 @@ namespace Cassandra.Tests.ExecutionProfiles
     {
         [TestCase(false, ConsistencyLevel.LocalQuorum, ConsistencyLevel.LocalSerial)]
         [TestCase(true, ConsistencyLevel.LocalOne, ConsistencyLevel.Serial)]
-        public void Should_PreserveExplicitConsistency_When_DbaasFallbackIsApplied(
+        public void Should_ResolveDefaultOrExplicitConsistency_WithDbaasFallback(
             bool explicitSettings, ConsistencyLevel expectedConsistency, ConsistencyLevel expectedSerialConsistency)
         {
             var queryOptions = new QueryOptions();
@@ -40,6 +40,7 @@ namespace Cassandra.Tests.ExecutionProfiles
             var configuration = new TestConfigurationBuilder { QueryOptions = queryOptions }.Build();
             configuration.SetDefaultConsistencyLevel(ConsistencyLevel.LocalQuorum);
 
+            // The unconfigured case checks resolved defaults; the explicit case checks override preservation.
             Assert.AreEqual(expectedConsistency, configuration.DefaultRequestOptions.ConsistencyLevel);
             Assert.AreEqual(expectedSerialConsistency, configuration.DefaultRequestOptions.SerialConsistencyLevel);
         }
