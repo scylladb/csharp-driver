@@ -58,13 +58,15 @@ namespace Cassandra.Data
         /// <summary>
         /// Gets or sets the ConsistencyLevel when executing the current <see cref="CqlCommand"/>.
         /// When unset, this command inherits the prepared statement or session defaults.
+        /// The getter reports the currently known prepared or cached statement setting, otherwise the session default,
+        /// without preparing the command. A custom connection can select a different statement during preparation.
         /// Before a connection is available, the default is <see cref="ConsistencyLevel.LocalQuorum"/>.
         /// </summary>
         public ConsistencyLevel ConsistencyLevel
         {
             get
             {
-                return _consistencyLevel ?? _preparedStatement?.ConsistencyLevel ??
+                return _consistencyLevel ?? GetPreparedConsistencyLevel() ??
                        CqlConnection?.ManagedConnection?.Cluster?.Configuration?.DefaultRequestOptions.ConsistencyLevel ??
                        QueryOptions.DefaultConsistencyLevel;
             }
@@ -272,6 +274,24 @@ namespace Cassandra.Data
                 var cqlQuery = RegexParseParameterName.Replace(CommandText, "?");
                 _preparedStatement = CqlConnection.CreatePreparedStatement(cqlQuery);
             }
+        }
+
+        private ConsistencyLevel? GetPreparedConsistencyLevel()
+        {
+            if (_preparedStatement != null)
+            {
+                return _preparedStatement.ConsistencyLevel;
+            }
+
+            var session = CqlConnection?.ManagedConnection;
+            var cluster = session?.Cluster as Cluster;
+            if (cluster == null || Parameters.Count == 0 || CommandText == null)
+            {
+                return null;
+            }
+
+            var cqlQuery = RegexParseParameterName.Replace(CommandText, "?");
+            return cluster.GetCachedPreparedStatement(cqlQuery, session.Keyspace)?.ConsistencyLevel;
         }
 
         private object[] GetParameterValues()

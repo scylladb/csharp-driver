@@ -163,6 +163,73 @@ namespace Cassandra.IntegrationTests.Data
             }
         }
 
+        [Test, Combinatorial]
+        public void Should_UseCachedPreparedConsistency_Before_ImplicitPreparation(
+            [Values("reader", "scalar", "nonquery", "transaction")] string operation,
+            [Values(ConsistencyLevel.One, ConsistencyLevel.Serial, ConsistencyLevel.LocalSerial)] ConsistencyLevel preparedConsistency,
+            [Values] bool explicitCommand,
+            [Values(ConsistencyLevel.Serial, ConsistencyLevel.LocalSerial)] ConsistencyLevel serialConsistency)
+        {
+            const string query = "SELECT enabled FROM ado_consistency WHERE id = ?";
+            var expectedConsistency = explicitCommand ? ConsistencyLevel.LocalOne : preparedConsistency;
+            TestCluster.PrimeFluent(b => b
+                .WhenQuery(query, when => when.WithConsistency(expectedConsistency).WithParam(1))
+                .ThenRowsSuccess(new[] { "enabled" }, rows => rows.WithRow(true)));
+
+            using (var connection = new TestCqlConnection(_connection.ConnectionString, builder =>
+                builder.WithExecutionProfiles(profiles => profiles.WithProfile(
+                    Configuration.DefaultExecutionProfileName, profile => profile
+                        .WithConsistencyLevel(ConsistencyLevel.Quorum)
+                        .WithSerialConsistencyLevel(serialConsistency)))))
+            {
+                connection.Open();
+                connection.Session.Prepare(query).SetConsistencyLevel(preparedConsistency);
+                var prepares = TestCluster.GetQueries(query, QueryType.Prepare).Count;
+                using (var transaction = operation == "transaction" ? connection.BeginTransaction() : null)
+                using (var command = (CqlCommand)connection.CreateCommand())
+                {
+                    command.CommandText = query.Replace("?", ":id");
+                    command.Parameters.Add("id", 1);
+                    if (explicitCommand)
+                    {
+                        command.ConsistencyLevel = ConsistencyLevel.LocalOne;
+                    }
+
+                    Assert.IsFalse(command.IsPrepared);
+                    Assert.AreEqual(expectedConsistency, command.ConsistencyLevel);
+                    Assert.IsFalse(command.IsPrepared);
+                    Assert.AreEqual(prepares, TestCluster.GetQueries(query, QueryType.Prepare).Count);
+                    switch (operation)
+                    {
+                        case "reader":
+                            using (var reader = command.ExecuteReader())
+                            {
+                                Assert.IsTrue(reader.Read());
+                                Assert.IsTrue(reader.GetBoolean(0));
+                            }
+
+                            break;
+                        case "scalar":
+                            Assert.AreEqual(true, command.ExecuteScalar());
+                            break;
+                        case "nonquery":
+                            Assert.AreEqual(-1, command.ExecuteNonQuery());
+                            break;
+                        case "transaction":
+                            transaction.Commit();
+                            break;
+                    }
+
+                    Assert.IsTrue(command.IsPrepared);
+                    Assert.AreEqual(expectedConsistency, command.ConsistencyLevel);
+                    var logs = TestCluster.GetQueries(query, QueryType.Execute);
+                    Assert.AreEqual(1, logs.Count);
+                    Assert.AreEqual(expectedConsistency, logs[0].ConsistencyLevel);
+                    Assert.AreEqual(serialConsistency, logs[0].SerialConsistencyLevel);
+                }
+            }
+        }
+
         private sealed class TestCqlConnection : CqlConnection
         {
             private readonly Action<Builder> _configure;
@@ -172,6 +239,8 @@ namespace Cassandra.IntegrationTests.Data
             {
                 _configure = configure;
             }
+
+            public ISession Session => ManagedConnection;
 
             protected override Cluster CreateCluster(CassandraConnectionStringBuilder connectionStringBuilder)
             {

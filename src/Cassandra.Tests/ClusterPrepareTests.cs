@@ -23,6 +23,7 @@ using System.Threading;
 using System.Threading.Tasks;
 
 using Cassandra.Connections;
+using Cassandra.Data;
 using Cassandra.Requests;
 using Cassandra.Responses;
 using Cassandra.Serialization;
@@ -1470,6 +1471,147 @@ namespace Cassandra.Tests
                     await prepareTask.ConfigureAwait(false));
                 Assert.IsFalse(cluster.InternalRef.PreparedQueries.ContainsKey(new byte[] { 1 }));
                 Assert.AreEqual(0, GetPrivateCollectionCount(cluster, "_preparedStatementCache"));
+            }
+        }
+
+        [TestCase(null)]
+        [TestCase("")]
+        [TestCase("ks1")]
+        public async Task CqlCommand_Should_Read_Completed_Cached_Consistency_Without_Preparing(string keyspace)
+        {
+            const string query = "SELECT v FROM table1 WHERE id = ?";
+            var serializerManager = new SerializerManager(ProtocolVersion.V4);
+            var preparedStatement = CreatePreparedStatement(serializerManager, 1, query, keyspace)
+                .SetConsistencyLevel(ConsistencyLevel.One);
+            var handler = new Mock<IPrepareHandler>();
+            handler.Setup(value => value.Prepare(
+                    It.IsAny<InternalPrepareRequest>(),
+                    It.IsAny<IInternalSession>(),
+                    It.IsAny<IEnumerator<HostShard>>(),
+                    It.IsAny<string>(),
+                    It.IsAny<string>()))
+                .ReturnsAsync(preparedStatement);
+
+            using (var cluster = CreateCluster(handler.Object))
+            using (var session = CreateSession(cluster, serializerManager, keyspace))
+            using (var connection = new CqlConnection { ManagedConnection = session })
+            using (var command = (CqlCommand)connection.CreateCommand())
+            {
+                command.CommandText = "SELECT v FROM table1 WHERE id = :id";
+                command.Parameters.Add("id", 1);
+                Assert.AreEqual(ConsistencyLevel.LocalQuorum, command.ConsistencyLevel);
+                Assert.AreEqual(0, GetPrivateCollectionCount(cluster, "_preparedStatementCache"));
+
+                await PrepareAsync(cluster, session, serializerManager, query).ConfigureAwait(false);
+                Assert.AreEqual(ConsistencyLevel.One, command.ConsistencyLevel);
+                Assert.IsFalse(command.IsPrepared);
+                Assert.AreSame(preparedStatement, cluster.GetCachedPreparedStatement(query, keyspace));
+
+                command.ConsistencyLevel = ConsistencyLevel.LocalOne;
+                Assert.AreEqual(ConsistencyLevel.LocalOne, command.ConsistencyLevel);
+                handler.Verify(
+                    value => value.Prepare(
+                        It.IsAny<InternalPrepareRequest>(),
+                        It.IsAny<IInternalSession>(),
+                        It.IsAny<IEnumerator<HostShard>>(),
+                        It.IsAny<string>(),
+                        It.IsAny<string>()),
+                    Times.Once);
+            }
+        }
+
+        [Test]
+        public async Task Cached_Consistency_Should_Isolate_Keyspaces_And_Reject_Invalidated_Entries()
+        {
+            const string query = "SELECT v FROM table1 WHERE id = ?";
+            var serializerManager = new SerializerManager(ProtocolVersion.V4);
+            var first = CreatePreparedStatement(serializerManager, 1, query, "ks1")
+                .SetConsistencyLevel(ConsistencyLevel.One);
+            var second = CreatePreparedStatement(serializerManager, 2, query, "ks2")
+                .SetConsistencyLevel(ConsistencyLevel.LocalOne);
+            var handler = new Mock<IPrepareHandler>();
+            handler.Setup(value => value.Prepare(
+                    It.IsAny<InternalPrepareRequest>(),
+                    It.IsAny<IInternalSession>(),
+                    It.IsAny<IEnumerator<HostShard>>(),
+                    It.IsAny<string>(),
+                    It.IsAny<string>()))
+                .Returns<InternalPrepareRequest, IInternalSession, IEnumerator<HostShard>, string, string>(
+                    (request, session, plan, sessionKeyspace, effectiveKeyspace) =>
+                        Task.FromResult(effectiveKeyspace == "ks1" ? first : second));
+
+            using (var cluster = CreateCluster(handler.Object))
+            using (var session1 = CreateSession(cluster, serializerManager, "ks1"))
+            using (var session2 = CreateSession(cluster, serializerManager, "ks2"))
+            {
+                await PrepareAsync(cluster, session1, serializerManager, query).ConfigureAwait(false);
+                await PrepareAsync(cluster, session2, serializerManager, query).ConfigureAwait(false);
+                Assert.AreSame(first, cluster.GetCachedPreparedStatement(query, "ks1"));
+                Assert.AreSame(second, cluster.GetCachedPreparedStatement(query, "ks2"));
+                Assert.IsNull(cluster.GetCachedPreparedStatement(query, "ks3"));
+                Assert.IsNull(cluster.GetCachedPreparedStatement(query + " LIMIT 1", "ks1"));
+
+                cluster.InternalRef.InvalidatePreparedStatement(first.Id, query, "ks1");
+                Assert.IsNull(cluster.GetCachedPreparedStatement(query, "ks1"));
+                Assert.AreSame(second, cluster.GetCachedPreparedStatement(query, "ks2"));
+                handler.Verify(
+                    value => value.Prepare(
+                        It.IsAny<InternalPrepareRequest>(),
+                        It.IsAny<IInternalSession>(),
+                        It.IsAny<IEnumerator<HostShard>>(),
+                        It.IsAny<string>(),
+                        It.IsAny<string>()),
+                    Times.Exactly(2));
+            }
+        }
+
+        [Test]
+        public async Task CqlCommand_Getter_Should_Not_Wait_For_An_InFlight_Prepare()
+        {
+            const string query = "SELECT v FROM table1 WHERE id = ?";
+            var serializerManager = new SerializerManager(ProtocolVersion.V4);
+            var preparedStatement = CreatePreparedStatement(serializerManager, 1, query)
+                .SetConsistencyLevel(ConsistencyLevel.One);
+            var completion = new TaskCompletionSource<PreparedStatement>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var handler = new Mock<IPrepareHandler>();
+            handler.Setup(value => value.Prepare(
+                    It.IsAny<InternalPrepareRequest>(),
+                    It.IsAny<IInternalSession>(),
+                    It.IsAny<IEnumerator<HostShard>>(),
+                    It.IsAny<string>(),
+                    It.IsAny<string>()))
+                .Returns(completion.Task);
+
+            using (var cluster = CreateCluster(handler.Object))
+            using (var session = CreateSession(cluster, serializerManager, "ks1"))
+            using (var connection = new CqlConnection { ManagedConnection = session })
+            using (var command = (CqlCommand)connection.CreateCommand())
+            {
+                command.CommandText = "SELECT v FROM table1 WHERE id = :id";
+                command.Parameters.Add("id", 1);
+                var prepare = PrepareAsync(cluster, session, serializerManager, query);
+                var read = Task.Run(() => command.ConsistencyLevel);
+                try
+                {
+                    Assert.IsTrue(read.Wait(TimeSpan.FromSeconds(2)));
+                    Assert.AreEqual(ConsistencyLevel.LocalQuorum, read.Result);
+                    Assert.IsFalse(command.IsPrepared);
+                }
+                finally
+                {
+                    completion.TrySetResult(preparedStatement);
+                }
+
+                await prepare.ConfigureAwait(false);
+                Assert.AreEqual(ConsistencyLevel.One, command.ConsistencyLevel);
+                handler.Verify(
+                    value => value.Prepare(
+                        It.IsAny<InternalPrepareRequest>(),
+                        It.IsAny<IInternalSession>(),
+                        It.IsAny<IEnumerator<HostShard>>(),
+                        It.IsAny<string>(),
+                        It.IsAny<string>()),
+                    Times.Once);
             }
         }
 
