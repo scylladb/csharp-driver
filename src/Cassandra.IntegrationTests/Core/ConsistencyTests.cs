@@ -29,18 +29,18 @@ namespace Cassandra.IntegrationTests.Core
     {
         private const string Query = "SELECT id, value from verifyconsistency";
 
-        /// Tests that the default consistency level for queries is LOCAL_ONE
+        /// Tests that the default consistency level for queries is LOCAL_QUORUM
         /// 
-        /// LocalOne_Is_Default_Consistency tests that the default consistency level for all queries is LOCAL_ONE. It performs
-        /// a simple select statement and verifies that the result set metadata shows that the achieved consistency level is LOCAL_ONE.
+        /// LocalQuorum_Is_Default_Consistency tests that the default consistency level for all queries is LOCAL_QUORUM. It performs
+        /// a simple select statement and verifies that the result set metadata shows that the achieved consistency level is LOCAL_QUORUM.
         /// 
         /// @since 3.0.0
         /// @jira_ticket CSHARP-378
-        /// @expected_result The default consistency level should be LOCAL_ONE
+        /// @expected_result The default consistency level should be LOCAL_QUORUM
         /// 
         /// @test_category consistency
         [Test]
-        public void Should_UseCLLocalOne_When_NotSpecifiedXDefaultX()
+        public void Should_UseCLLocalQuorum_When_NotSpecifiedXDefaultX()
         {
             using (var simulacronCluster = SimulacronCluster.CreateNew(new SimulacronOptions { Nodes = "3" }))
             using (var cluster = ClusterBuilder()
@@ -48,8 +48,8 @@ namespace Cassandra.IntegrationTests.Core
             {
                 var session = cluster.Connect();
                 var rs = session.Execute(new SimpleStatement(Query));
-                Assert.AreEqual(ConsistencyLevel.LocalOne, rs.Info.AchievedConsistency);
-                VerifyConsistency(simulacronCluster, Query, ConsistencyLevel.LocalOne);
+                Assert.AreEqual(ConsistencyLevel.LocalQuorum, rs.Info.AchievedConsistency);
+                VerifyConsistency(simulacronCluster, Query, ConsistencyLevel.LocalQuorum);
             }
         }
 
@@ -91,8 +91,8 @@ namespace Cassandra.IntegrationTests.Core
                 var session = cluster.Connect();
                 var simpleStatement = new SimpleStatement(conditionalQuery);
                 var result = session.Execute(simpleStatement);
-                Assert.AreEqual(ConsistencyLevel.LocalOne, result.Info.AchievedConsistency);
-                VerifyConsistency(simulacronCluster, conditionalQuery, ConsistencyLevel.LocalOne, serialConsistency);
+                Assert.AreEqual(ConsistencyLevel.LocalQuorum, result.Info.AchievedConsistency);
+                VerifyConsistency(simulacronCluster, conditionalQuery, ConsistencyLevel.LocalQuorum, serialConsistency);
             }
         }
 
@@ -206,8 +206,8 @@ namespace Cassandra.IntegrationTests.Core
                 var prepStmt = session.Prepare(prepQuery);
                 var boundStmt = prepStmt.Bind(1);
                 var result = session.Execute(boundStmt);
-                Assert.AreEqual(ConsistencyLevel.LocalOne, result.Info.AchievedConsistency);
-                VerifyConsistency(simulacronCluster, prepQuery, ConsistencyLevel.LocalOne, consistencyLevel, QueryType.Execute);
+                Assert.AreEqual(ConsistencyLevel.LocalQuorum, result.Info.AchievedConsistency);
+                VerifyConsistency(simulacronCluster, prepQuery, ConsistencyLevel.LocalQuorum, consistencyLevel, QueryType.Execute);
             }
         }
 
@@ -246,7 +246,7 @@ namespace Cassandra.IntegrationTests.Core
 
             if (serialConsistency == null)
             {
-                Assert.AreEqual(ConsistencyLevel.Serial, log.SerialConsistencyLevel);
+                Assert.AreEqual(ConsistencyLevel.LocalSerial, log.SerialConsistencyLevel);
             }
             else
             {
