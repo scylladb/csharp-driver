@@ -261,7 +261,21 @@ namespace Cassandra
 
             // Keep setup failures outside the recoverable asynchronous-warmup catch,
             // including setup retried after the previous metrics bucket retires.
-            var hostWarmups = await Task.WhenAll(poolCreations).ConfigureAwait(false);
+            var allCreations = Task.WhenAll(poolCreations);
+            Task[] hostWarmups;
+            try
+            {
+                hostWarmups = await allCreations.ConfigureAwait(false);
+            }
+            catch
+            {
+                var fatal = allCreations.Exception?.Flatten().InnerExceptions.FirstOrDefault(Utils.IsFatalException);
+                if (fatal != null)
+                {
+                    ExceptionDispatchInfo.Capture(fatal).Throw();
+                }
+                throw;
+            }
             var tasks = hostWarmups.Where(task => task != null).ToArray();
             var allWarmups = Task.WhenAll(tasks);
             try
@@ -472,9 +486,15 @@ namespace Cassandra
             _activePoolLookups ??= new Stack<Session>();
             _activePoolLookups.Push(this);
             Action retireFailedPoolMetrics = null;
+            Exception primaryFailure = null;
             try
             {
                 return GetOrCreateConnectionPool(host, distance, allowDownHost, out retireFailedPoolMetrics);
+            }
+            catch (Exception failure)
+            {
+                primaryFailure = failure;
+                throw;
             }
             finally
             {
@@ -482,7 +502,7 @@ namespace Cassandra
                 {
                     if (retireFailedPoolMetrics != null)
                     {
-                        RunOrDeferMetricsRetirement(() =>
+                        DeferMetricsRetirement(() =>
                         {
                             try
                             {
@@ -498,7 +518,7 @@ namespace Cassandra
                 finally
                 {
                     _activePoolLookups.Pop();
-                    DrainDeferredMetricsRetirements();
+                    DrainDeferredMetricsRetirements(primaryFailure);
                 }
             }
         }
@@ -514,11 +534,16 @@ namespace Cassandra
             // Metrics/policy callbacks can remove a host beneath a recursive creation
             // lock. Retain the address barrier, but run teardown after the outer lookup
             // unwinds. The thread owns this queue, including removals in other sessions.
+            DeferMetricsRetirement(retirement);
+        }
+
+        private static void DeferMetricsRetirement(Action retirement)
+        {
             _deferredMetricsRetirements ??= new List<Action>();
             _deferredMetricsRetirements.Add(retirement);
         }
 
-        private void DrainDeferredMetricsRetirements()
+        private void DrainDeferredMetricsRetirements(Exception primaryFailure)
         {
             if (_deferredMetricsRetirements == null || IsPoolLifecycleLockHeld())
             {
@@ -543,7 +568,7 @@ namespace Cassandra
                     }
                 }
             }
-            if (failure != null)
+            if (failure != null && (!Utils.IsFatalException(primaryFailure) || Utils.IsFatalException(failure)))
             {
                 ExceptionDispatchInfo.Capture(failure).Throw();
             }
@@ -650,7 +675,9 @@ namespace Cassandra
                     try
                     {
                         // A metrics callback may have published another pool at this address.
-                        if (!_connectionPool.ContainsKey(host.Address))
+                        // An existing removal owns its barrier and will detach metrics
+                        // after this in-progress constructor has returned.
+                        if (!_connectionPool.ContainsKey(host.Address) && !_metricsRetirements.ContainsKey(host.Address))
                         {
                             _metricsRetirements.Add(host.Address,
                                 new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously));
@@ -855,14 +882,20 @@ namespace Cassandra
         {
             _activePoolLookups ??= new Stack<Session>();
             _activePoolLookups.Push(this);
+            Exception primaryFailure = null;
             try
             {
                 OnHostRemovedCore(host);
             }
+            catch (Exception failure)
+            {
+                primaryFailure = failure;
+                throw;
+            }
             finally
             {
                 _activePoolLookups.Pop();
-                DrainDeferredMetricsRetirements();
+                DrainDeferredMetricsRetirements(primaryFailure);
             }
         }
 
@@ -898,7 +931,19 @@ namespace Cassandra
                 retiredMetrics = _metricsManager.DetachNodeMetrics(host);
             }
 
-            RunOrDeferMetricsRetirement(() => CompleteHostRemoval(host, entry, retiredMetrics));
+            RunOrDeferMetricsRetirement(() =>
+            {
+                if (retiredMetrics == null)
+                {
+                    // Removal can reenter a metrics constructor before it publishes
+                    // its registry. Keep ownership until the outer creation unwinds.
+                    lock (_connectionPoolLifecycleLock)
+                    {
+                        retiredMetrics = _metricsManager.DetachNodeMetrics(host);
+                    }
+                }
+                CompleteHostRemoval(host, entry, retiredMetrics);
+            });
         }
 
         private void CompleteHostRemoval(Host host, HostPool entry, IDisposable retiredMetrics)
