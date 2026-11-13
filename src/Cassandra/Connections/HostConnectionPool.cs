@@ -1492,9 +1492,9 @@ namespace Cassandra.Connections
                 // Probably a SocketException/AuthenticationException, move along
                 if (!_canCreateForeground && createIfNeeded)
                 {
-                    HostConnectionPool.Logger.Verbose("Could not open a connection to {0} " +
-                                                      "because the pool is not allowing creation of connections in the foreground. " +
-                                                      "Exception: {1}", _host.Address, ex.ToString());
+                    HostConnectionPool.Logger.Verbose("Could not open a connection to {0}: {1}. " +
+                                                      "Further foreground connection creation is disabled for this pool.",
+                                                      _host.Address, ex.ToString());
                 }
                 else
                 {

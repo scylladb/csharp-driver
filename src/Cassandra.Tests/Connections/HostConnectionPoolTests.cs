@@ -838,10 +838,11 @@ namespace Cassandra.Tests.Connections
             }
         }
 
-        [TestCase(false)]
-        [TestCase(true)]
+        [TestCase(false, TraceLevel.Info)]
+        [TestCase(true, TraceLevel.Info)]
+        [TestCase(true, TraceLevel.Verbose)]
         [NonParallelizable]
-        public async Task Should_KeepForegroundFailureInCallerResult(bool useRequestPath)
+        public async Task Should_KeepForegroundFailureInCallerResult(bool useRequestPath, TraceLevel traceLevel)
         {
             var failure = new InvalidOperationException("foreground connection failure");
             var target = CreatePool(
@@ -850,7 +851,7 @@ namespace Cassandra.Tests.Connections
                 reconnectionPolicy: new ConstantReconnectionPolicy(60000));
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
             using var listener = new LoggingTests.TestTraceListener();
-            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Diagnostics.CassandraTraceSwitch.Level = traceLevel;
             Trace.Listeners.Add(listener);
             try
             {
@@ -868,8 +869,14 @@ namespace Cassandra.Tests.Connections
                         await target.BorrowConnectionAsync().WaitToCompleteAsync(5000).ConfigureAwait(false));
                     Assert.AreSame(failure, propagated);
                 }
-                Assert.IsFalse(listener.Messages.Values.Any(message => message.Contains("foreground connection failure")),
+                var failures = listener.Messages.Values.Where(message => message.Contains("foreground connection failure")).ToArray();
+                Assert.AreEqual(traceLevel == TraceLevel.Verbose ? 1 : 0, failures.Length,
                     "Failures retained for the caller follow CONTRIBUTING's no duplicate error logging rule.");
+                if (failures.Length > 0)
+                {
+                    StringAssert.Contains("Could not open a connection to", failures[0]);
+                    StringAssert.DoesNotContain("because the pool", failures[0]);
+                }
             }
             finally
             {
