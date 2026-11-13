@@ -1877,8 +1877,7 @@ namespace Cassandra.Tests.Connections
                 clientRoutesOptions: new ClientRoutesOptions(new[] { new ClientRouteProxy("route-a") }, 9042, true),
                 coreConnections: 4,
                 reconnectionPolicy: new ConstantReconnectionPolicy(60000));
-            var config = (Configuration)typeof(HostConnectionPool)
-                .GetField("_config", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(target);
+            var config = GetConfiguration(target);
             config.PoolingOptions.SetMaxConnectionsPerHost(HostDistance.Local, 8);
             target.SetDistance(HostDistance.Local);
             try
@@ -2336,8 +2335,7 @@ namespace Cassandra.Tests.Connections
                 coreConnections: 4,
                 reconnectionPolicy: new ConstantReconnectionPolicy(60000),
                 clientRoutesCacheCreated: cache => routesCache = cache);
-            var config = (Configuration)typeof(HostConnectionPool)
-                .GetField("_config", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(target);
+            var config = GetConfiguration(target);
             config.PoolingOptions.SetCoreConnectionsPerHost(HostDistance.Remote, 1)
                                  .SetMaxConnectionsPerHost(HostDistance.Remote, 1);
             config.PoolingOptions.SetMaxConnectionsPerHost(HostDistance.Local, 8);
@@ -2547,8 +2545,7 @@ namespace Cassandra.Tests.Connections
                 coreConnections: 1,
                 reconnectionPolicy: new ConstantReconnectionPolicy(60000),
                 clientRoutesCacheCreated: cache => routesCache = cache);
-            var config = (Configuration)typeof(HostConnectionPool)
-                .GetField("_config", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(target);
+            var config = GetConfiguration(target);
 
             Task warmup = null;
             Task<IConnection> borrow = null;
@@ -3077,8 +3074,7 @@ namespace Cassandra.Tests.Connections
 
         private static void DisposePoolAndTimer(HostConnectionPool pool)
         {
-            var config = (Configuration)typeof(HostConnectionPool)
-                .GetField("_config", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(pool);
+            var config = GetConfiguration(pool);
             try
             {
                 pool.Dispose();
@@ -3087,6 +3083,15 @@ namespace Cassandra.Tests.Connections
             {
                 config.Timer.Dispose();
             }
+        }
+
+        private static Configuration GetConfiguration(HostConnectionPool pool)
+        {
+            var field = typeof(HostConnectionPool).GetField(
+                "_config",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.IsNotNull(field);
+            return (Configuration)field.GetValue(pool);
         }
 
         private static int GetExpectedConnectionLength(HostConnectionPool pool)
