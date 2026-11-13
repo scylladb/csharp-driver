@@ -29,6 +29,16 @@ namespace Cassandra.IntegrationTests.Data
     {
         private TestCqlConnection _connection;
 
+        public enum ConsistencySource
+        {
+            Defaults,
+            QueryOptions,
+            DefaultProfile,
+            CommandOne,
+            CommandLocalOne,
+            CommandLocalQuorum
+        }
+
         public override void SetUp()
         {
             base.SetUp();
@@ -44,6 +54,113 @@ namespace Cassandra.IntegrationTests.Data
         {
             _connection?.Dispose();
             base.TearDown();
+        }
+
+        [Test, Combinatorial]
+        public void Should_SendInheritedOrExplicitConsistency(
+            [Values("reader", "scalar", "nonquery", "transaction")] string operation,
+            [Values] bool prepared,
+            [Values] ConsistencySource source)
+        {
+            var hasProfile = source != ConsistencySource.Defaults && source != ConsistencySource.QueryOptions;
+            ConsistencyLevel? commandConsistency = null;
+            if (source == ConsistencySource.CommandOne)
+            {
+                commandConsistency = ConsistencyLevel.One;
+            }
+            else if (source == ConsistencySource.CommandLocalOne)
+            {
+                commandConsistency = ConsistencyLevel.LocalOne;
+            }
+            else if (source == ConsistencySource.CommandLocalQuorum)
+            {
+                commandConsistency = ConsistencyLevel.LocalQuorum;
+            }
+
+            var expectedConsistency = commandConsistency ?? (hasProfile
+                ? ConsistencyLevel.Quorum
+                : source == ConsistencySource.QueryOptions
+                    ? ConsistencyLevel.LocalOne
+                    : ConsistencyLevel.LocalQuorum);
+            var expectedSerial = source == ConsistencySource.Defaults ? ConsistencyLevel.LocalSerial : ConsistencyLevel.Serial;
+            var query = prepared
+                ? "INSERT INTO ado_consistency (id) VALUES (?) IF NOT EXISTS"
+                : "INSERT INTO ado_consistency (id) VALUES (1) IF NOT EXISTS";
+
+            TestCluster.PrimeFluent(b => b
+                .WhenQuery(query, when =>
+                {
+                    when.WithConsistency(expectedConsistency);
+                    if (prepared)
+                    {
+                        when.WithParam(1);
+                    }
+                })
+                .ThenRowsSuccess(new[] { "[applied]" }, rows => rows.WithRow(true)));
+
+            using (var connection = new TestCqlConnection(_connection.ConnectionString, builder =>
+            {
+                if (source != ConsistencySource.Defaults)
+                {
+                    builder.WithQueryOptions(new QueryOptions()
+                        .SetConsistencyLevel(ConsistencyLevel.LocalOne)
+                        .SetSerialConsistencyLevel(hasProfile ? ConsistencyLevel.LocalSerial : ConsistencyLevel.Serial));
+                }
+
+                if (hasProfile)
+                {
+                    builder.WithExecutionProfiles(profiles => profiles.WithProfile(
+                        Configuration.DefaultExecutionProfileName, profile => profile
+                            .WithConsistencyLevel(ConsistencyLevel.Quorum)
+                            .WithSerialConsistencyLevel(ConsistencyLevel.Serial)));
+                }
+            }))
+            {
+                connection.Open();
+                using (var transaction = operation == "transaction" ? connection.BeginTransaction() : null)
+                using (var command = (CqlCommand)connection.CreateCommand())
+                {
+                    command.CommandText = prepared ? query.Replace("?", ":id") : query;
+                    if (prepared)
+                    {
+                        command.Parameters.Add("id", 1);
+                    }
+
+                    if (commandConsistency.HasValue)
+                    {
+                        command.ConsistencyLevel = commandConsistency.Value;
+                    }
+
+                    command.Prepare();
+                    Assert.AreEqual(expectedConsistency, command.ConsistencyLevel);
+                    switch (operation)
+                    {
+                        case "reader":
+                            using (var reader = command.ExecuteReader())
+                            {
+                                Assert.IsTrue(reader.Read());
+                                Assert.IsTrue(reader.GetBoolean(0));
+                            }
+
+                            break;
+                        case "scalar":
+                            Assert.AreEqual(true, command.ExecuteScalar());
+                            break;
+                        case "nonquery":
+                            Assert.AreEqual(-1, command.ExecuteNonQuery());
+                            break;
+                        case "transaction":
+                            transaction.Commit();
+                            break;
+                    }
+
+                    var logs = TestCluster.GetQueries(query, prepared ? QueryType.Execute : QueryType.Query);
+                    Assert.AreEqual(1, logs.Count);
+                    Assert.AreEqual(expectedConsistency, logs[0].ConsistencyLevel);
+                    Assert.AreEqual(expectedSerial, logs[0].SerialConsistencyLevel);
+                    Assert.AreEqual(expectedConsistency, command.ConsistencyLevel);
+                }
+            }
         }
 
         private sealed class TestCqlConnection : CqlConnection
@@ -77,117 +194,6 @@ namespace Cassandra.IntegrationTests.Data
                         _cluster?.Shutdown();
                         _cluster = null;
                     }
-                }
-            }
-        }
-
-        public enum ConsistencySource
-        {
-            Defaults,
-            QueryOptions,
-            DefaultProfile,
-            CommandOne,
-            CommandLocalOne,
-            CommandLocalQuorum
-        }
-
-        [Test, Combinatorial]
-        public void Should_SendInheritedOrExplicitConsistency(
-            [Values("reader", "scalar", "nonquery", "transaction")] string operation,
-            [Values] bool prepared,
-            [Values] ConsistencySource source)
-        {
-            var hasProfile = source != ConsistencySource.Defaults && source != ConsistencySource.QueryOptions;
-            ConsistencyLevel? commandConsistency = null;
-            if (source == ConsistencySource.CommandOne)
-            {
-                commandConsistency = ConsistencyLevel.One;
-            }
-            else if (source == ConsistencySource.CommandLocalOne)
-            {
-                commandConsistency = ConsistencyLevel.LocalOne;
-            }
-            else if (source == ConsistencySource.CommandLocalQuorum)
-            {
-                commandConsistency = ConsistencyLevel.LocalQuorum;
-            }
-
-            var expectedConsistency = commandConsistency ?? (hasProfile ? ConsistencyLevel.Quorum :
-                source == ConsistencySource.QueryOptions ? ConsistencyLevel.LocalOne : ConsistencyLevel.LocalQuorum);
-            var expectedSerial = source == ConsistencySource.Defaults ? ConsistencyLevel.LocalSerial : ConsistencyLevel.Serial;
-            var query = prepared
-                ? "INSERT INTO ado_consistency (id) VALUES (?) IF NOT EXISTS"
-                : "INSERT INTO ado_consistency (id) VALUES (1) IF NOT EXISTS";
-
-            TestCluster.PrimeFluent(b => b
-                .WhenQuery(query, when =>
-                {
-                    when.WithConsistency(expectedConsistency);
-                    if (prepared)
-                    {
-                        when.WithParam(1);
-                    }
-                })
-                .ThenRowsSuccess(new[] { "[applied]" }, rows => rows.WithRow(true)));
-
-            using (var connection = new TestCqlConnection(_connection.ConnectionString, builder =>
-            {
-                if (source != ConsistencySource.Defaults)
-                {
-                    builder.WithQueryOptions(new QueryOptions()
-                        .SetConsistencyLevel(ConsistencyLevel.LocalOne)
-                        .SetSerialConsistencyLevel(hasProfile ? ConsistencyLevel.LocalSerial : ConsistencyLevel.Serial));
-                }
-                if (hasProfile)
-                {
-                    builder.WithExecutionProfiles(profiles => profiles.WithProfile(
-                        Configuration.DefaultExecutionProfileName, profile => profile
-                            .WithConsistencyLevel(ConsistencyLevel.Quorum)
-                            .WithSerialConsistencyLevel(ConsistencyLevel.Serial)));
-                }
-            }))
-            {
-                connection.Open();
-                using (var transaction = operation == "transaction" ? connection.BeginTransaction() : null)
-                using (var command = (CqlCommand)connection.CreateCommand())
-                {
-                    command.CommandText = prepared ? query.Replace("?", ":id") : query;
-                    if (prepared)
-                    {
-                        command.Parameters.Add("id", 1);
-                    }
-                    if (commandConsistency.HasValue)
-                    {
-                        command.ConsistencyLevel = commandConsistency.Value;
-                    }
-
-                    command.Prepare();
-                    Assert.AreEqual(expectedConsistency, command.ConsistencyLevel);
-                    switch (operation)
-                    {
-                        case "reader":
-                            using (var reader = command.ExecuteReader())
-                            {
-                                Assert.IsTrue(reader.Read());
-                                Assert.IsTrue(reader.GetBoolean(0));
-                            }
-                            break;
-                        case "scalar":
-                            Assert.AreEqual(true, command.ExecuteScalar());
-                            break;
-                        case "nonquery":
-                            Assert.AreEqual(-1, command.ExecuteNonQuery());
-                            break;
-                        case "transaction":
-                            transaction.Commit();
-                            break;
-                    }
-
-                    var logs = TestCluster.GetQueries(query, prepared ? QueryType.Execute : QueryType.Query);
-                    Assert.AreEqual(1, logs.Count);
-                    Assert.AreEqual(expectedConsistency, logs[0].ConsistencyLevel);
-                    Assert.AreEqual(expectedSerial, logs[0].SerialConsistencyLevel);
-                    Assert.AreEqual(expectedConsistency, command.ConsistencyLevel);
                 }
             }
         }

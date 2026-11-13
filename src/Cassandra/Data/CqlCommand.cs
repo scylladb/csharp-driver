@@ -69,7 +69,11 @@ namespace Cassandra.Data
                        CqlConnection?.ManagedConnection?.Cluster?.Configuration?.DefaultRequestOptions.ConsistencyLevel ??
                        QueryOptions.DefaultConsistencyLevel;
             }
-            set { _consistencyLevel = value; }
+
+            set
+            {
+                _consistencyLevel = value;
+            }
         }
 
         /// <summary>
@@ -176,6 +180,7 @@ namespace Cassandra.Data
                 {
                     query.SetConsistencyLevel(_consistencyLevel.Value);
                 }
+
                 rowSet = CqlConnection.ManagedConnection.Execute(query);
             }
 
@@ -205,6 +210,7 @@ namespace Cassandra.Data
                 {
                     query.SetConsistencyLevel(_consistencyLevel.Value);
                 }
+
                 if (cm.StartsWith("CREATE ")
                     || cm.StartsWith("DROP ")
                     || cm.StartsWith("ALTER "))
@@ -233,6 +239,7 @@ namespace Cassandra.Data
                 {
                     query.SetConsistencyLevel(_consistencyLevel.Value);
                 }
+
                 rowSet = CqlConnection.ManagedConnection.Execute(query);
             }
 
