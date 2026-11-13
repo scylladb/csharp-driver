@@ -41,6 +41,8 @@ namespace Cassandra
         private readonly ISerializerManager _serializerManager;
         private static readonly Logger Logger = new Logger(typeof(Session));
         private readonly IThreadSafeDictionary<IPEndPoint, HostPool> _connectionPool;
+        private readonly IThreadSafeDictionary<IPEndPoint, bool> _metricsRetirements =
+            new CopyOnWriteDictionary<IPEndPoint, bool>();
         private readonly Lock _connectionPoolLifecycleLock = new Lock();
         private readonly Lock _connectionPoolPublicationLock = new Lock();
         private readonly IInternalCluster _cluster;
@@ -402,6 +404,11 @@ namespace Cassandra
         private IHostConnectionPool GetOrCreateConnectionPool(Host host, HostDistance distance, bool allowDownHost)
         {
             var clientRoutesEnabled = Configuration.ClientRoutesRuntime != null;
+            if (IsDisposed)
+            {
+                throw new ObjectDisposedException(nameof(Session));
+            }
+            ThrowIfMetricsRetirementBlocksPool(host.Address);
 
             var currentHost = ResolvePoolHost(host, clientRoutesEnabled, out var customHost);
             if (!IsDisposed && currentHost != null &&
@@ -422,6 +429,7 @@ namespace Cassandra
                         throw new ObjectDisposedException(nameof(Session));
                     }
 
+                    ThrowIfMetricsRetirementBlocksPool(host.Address);
                     currentHost = ResolvePoolHost(host, clientRoutesEnabled, out customHost);
                     if (currentHost == null)
                     {
@@ -454,7 +462,7 @@ namespace Cassandra
                     }
                 }
 
-                // Metrics teardown can wait for another thread to publish a replacement.
+                // Metrics teardown callbacks can wait for another thread's lookup.
                 // Retire outside the creation lock, then resolve the owner and policy again.
                 OnHostRemoved(retiringHost);
             }
@@ -507,7 +515,9 @@ namespace Cassandra
                         // A metrics callback may have published another pool at this address.
                         if (!_connectionPool.ContainsKey(host.Address))
                         {
-                            _metricsManager.RemoveNodeMetrics(host);
+                            _metricsRetirements.Add(host.Address, true);
+                            var retiredMetrics = _metricsManager.DetachNodeMetrics(host);
+                            DisposeRetiredMetrics(host, retiredMetrics);
                         }
                     }
                     catch (Exception cleanupFailure) when (!Utils.IsFatalException(cleanupFailure))
@@ -674,12 +684,53 @@ namespace Cassandra
             return profile;
         }
 
+        private void ThrowIfMetricsRetirementBlocksPool(IPEndPoint address)
+        {
+            if (_metricsRetirements.TryGetValue(address, out var active))
+            {
+                throw new HostConnectionPoolNotEligibleException(active
+                    ? "its previous metrics are being retired"
+                    : "its previous metrics could not be retired");
+            }
+        }
+
+        private void DisposeRetiredMetrics(Host host, IDisposable retiredMetrics)
+        {
+            var succeeded = false;
+            try
+            {
+                retiredMetrics?.Dispose();
+                succeeded = true;
+            }
+            finally
+            {
+                lock (_connectionPoolLifecycleLock)
+                {
+                    if (succeeded)
+                    {
+                        _metricsRetirements.Remove(host.Address);
+                    }
+                    else
+                    {
+                        // A failed provider shutdown leaves the bucket's state unknown.
+                        // Keep new registrations out of it for this session.
+                        _metricsRetirements.CompareAndUpdate(
+                            host.Address, (_, active) => active, (_, __) => false);
+                    }
+                }
+            }
+        }
+
         private void OnHostRemoved(Host host)
         {
             HostPool entry;
             IDisposable retiredMetrics;
             lock (_connectionPoolLifecycleLock)
             {
+                if (_metricsRetirements.ContainsKey(host.Address))
+                {
+                    return;
+                }
                 if (_connectionPool.TryGetValue(host.Address, out entry))
                 {
                     if (!ReferenceEquals(entry.Host, host))
@@ -697,12 +748,14 @@ namespace Cassandra
                 }
                 // Detach under the owner check so a concurrent retirement cannot
                 // replace the registry before we remove it.
+                _metricsRetirements.Add(host.Address, true);
                 retiredMetrics = _metricsManager.DetachNodeMetrics(host);
             }
 
             // Keep the pool reachable for shutdown if teardown fails. User teardown
-            // callbacks may wait for another thread to look up or replace this pool.
-            retiredMetrics?.Dispose();
+            // callbacks may wait for another thread's lookup, which must complete with
+            // an eligibility diagnostic until the old bucket has finished shutting down.
+            DisposeRetiredMetrics(host, retiredMetrics);
             if (entry == null)
             {
                 return;

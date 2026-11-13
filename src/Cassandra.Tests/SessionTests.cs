@@ -1040,11 +1040,125 @@ namespace Cassandra.Tests
             }
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_PreserveReplacementMetricsBucketWhenRetirementOverlapsLookup(bool clientRoutesEnabled)
+        {
+            using var retirementStarted = new ManualResetEventSlim();
+            using var finishRetirement = new ManualResetEventSlim();
+            var provider = CreateMetricsProviderForRemovalTests();
+            string nodeBucket = null;
+            var bucketActive = 0;
+            var pausedRetirement = 0;
+            provider.Setup(value => value.Gauge(
+                    It.IsAny<string>(), It.IsAny<IMetric>(), It.IsAny<Func<double?>>()))
+                .Returns((string bucket, IMetric metric, Func<double?> _) =>
+                {
+                    if (metric is NodeMetric)
+                    {
+                        var previousBucket = Interlocked.CompareExchange(ref nodeBucket, bucket, null);
+                        if (previousBucket != null)
+                        {
+                            Assert.AreEqual(previousBucket, bucket);
+                        }
+                        Volatile.Write(ref bucketActive, 1);
+                    }
+                    return Mock.Of<IDriverGauge>();
+                });
+            provider.Setup(value => value.ShutdownMetricsBucket(It.Is<string>(bucket => bucket.Contains(".nodes."))))
+                .Callback(() =>
+                {
+                    if (Interlocked.Exchange(ref pausedRetirement, 1) == 0)
+                    {
+                        retirementStarted.Set();
+                        Assert.IsTrue(finishRetirement.Wait(5000), "Metrics retirement was not released.");
+                    }
+                    // Model the provider's address-bucket shutdown, including any later registration.
+                    Volatile.Write(ref bucketActive, 0);
+                });
+            var oldPool = new Mock<IHostConnectionPool>();
+            var replacementPool = new Mock<IHostConnectionPool>();
+            var factory = new Mock<IHostConnectionPoolFactory>();
+            factory.SetupSequence(value => value.Create(
+                    It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>()))
+                .Returns(oldPool.Object).Returns(replacementPool.Object);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = factory.Object,
+                MetricsProvider = provider.Object,
+                ClientRoutesOptions = clientRoutesEnabled
+                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    : null
+            }.Build();
+            using var metadata = new Metadata(config);
+            var address = new IPEndPoint(IPAddress.Loopback, 9042);
+            var oldHost = metadata.AddHost(address);
+            oldHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            try
+            {
+                using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "retirement-bucket-test");
+                var internalSession = (IInternalSession)session;
+                internalSession.GetOrCreateConnectionPool(oldHost, HostDistance.Local);
+                metadata.RemoveHost(address);
+                var replacementHost = clientRoutesEnabled
+                    ? metadata.AddHost(address)
+                    : new Host(address, new ConstantReconnectionPolicy(1000));
+                replacementHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+                var removal = Task.Run(() => cluster.Raise(value => value.HostRemoved += null, oldHost));
+                Task<IHostConnectionPool> lookup = null;
+                IHostConnectionPool candidate = null;
+                var rejected = 0;
+                try
+                {
+                    Assert.IsTrue(retirementStarted.Wait(5000), "Metrics retirement did not start.");
+                    lookup = Task.Run(() =>
+                    {
+                        try
+                        {
+                            return internalSession.GetOrCreateConnectionPool(replacementHost, HostDistance.Local);
+                        }
+                        catch (HostConnectionPoolNotEligibleException error)
+                        {
+                            StringAssert.Contains("metrics are being retired", error.Message);
+                            Interlocked.Exchange(ref rejected, 1);
+                            return null;
+                        }
+                    });
+                    Assert.IsTrue(lookup.Wait(5000), "Pool lookup waited for metrics retirement.");
+                    candidate = lookup.Result;
+                }
+                finally
+                {
+                    finishRetirement.Set();
+                    await removal.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    if (lookup != null)
+                    {
+                        await lookup.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    }
+                }
+                candidate = candidate ?? internalSession.GetOrCreateConnectionPool(replacementHost, HostDistance.Local);
+                Assert.AreSame(replacementPool.Object, candidate);
+                Assert.AreEqual(1, Volatile.Read(ref bucketActive), "Old teardown shut down the replacement bucket.");
+                Assert.AreEqual(1, Volatile.Read(ref rejected));
+                Assert.AreSame(replacementHost, session.GetMetrics().NodeMetrics.Keys.Single());
+                oldPool.Verify(value => value.Dispose(), Times.Once);
+                replacementPool.Verify(value => value.Dispose(), Times.Never);
+            }
+            finally
+            {
+                config.Timer.Dispose();
+            }
+        }
+
         [TestCase(false, false)]
         [TestCase(false, true)]
         [TestCase(true, false)]
         [TestCase(true, true)]
-        public async Task Should_AllowCrossThreadReplacementLookupDuringMetricsRetirement(
+        public async Task Should_CompleteCrossThreadReplacementLookupDuringMetricsRetirement(
             bool clientRoutesEnabled, bool retireDuringLookup)
         {
             var oldPool = new Mock<IHostConnectionPool>();
@@ -1078,7 +1192,7 @@ namespace Cassandra.Tests
                 metadata.RemoveHost(address);
                 var replacementHost = metadata.AddHost(address);
                 replacementHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
-                Task<IHostConnectionPool> replacementLookup = null;
+                Task replacementLookup = null;
                 var reentered = 0;
                 provider.Setup(value => value.ShutdownMetricsBucket(It.Is<string>(bucket => bucket.Contains(".nodes."))))
                     .Callback(() =>
@@ -1086,7 +1200,11 @@ namespace Cassandra.Tests
                         if (Interlocked.Exchange(ref reentered, 1) == 0)
                         {
                             replacementLookup = Task.Run(() =>
-                                internalSession.GetOrCreateConnectionPool(replacementHost, HostDistance.Local));
+                            {
+                                var error = Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
+                                    internalSession.GetOrCreateConnectionPool(replacementHost, HostDistance.Local));
+                                StringAssert.Contains("metrics are being retired", error.Message);
+                            });
                             Assert.IsTrue(replacementLookup.Wait(5000),
                                 "Replacement lookup waited for its metrics teardown callback.");
                         }
@@ -1111,7 +1229,9 @@ namespace Cassandra.Tests
                     }
                 }
                 Assert.AreEqual(1, reentered);
-                Assert.AreSame(replacementPool.Object, replacementLookup.Result);
+                Assert.IsTrue(replacementLookup.IsCompletedSuccessfully);
+                Assert.AreSame(replacementPool.Object,
+                    internalSession.GetOrCreateConnectionPool(replacementHost, HostDistance.Local));
                 Assert.AreSame(replacementPool.Object, internalSession.GetPools().Single().Value);
                 Assert.AreSame(replacementHost, session.GetMetrics().NodeMetrics.Keys.Single());
                 oldPool.Verify(value => value.OnHostRemoved(), Times.Once);
@@ -1431,13 +1551,19 @@ namespace Cassandra.Tests
                 internalSession.GetOrCreateConnectionPool(replacement, HostDistance.Local)));
             pool.Verify(value => value.Dispose(), Times.Never);
             Assert.AreSame(pool.Object, internalSession.GetExistingPool(host.Address));
+            var blocked = Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
+                internalSession.GetOrCreateConnectionPool(replacement, HostDistance.Local));
+            StringAssert.Contains("its previous metrics could not be retired", blocked.Message);
+            poolFactory.Verify(value => value.Create(
+                It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>()), Times.Once);
 
             await session.ShutdownAsync().ConfigureAwait(false);
             pool.Verify(value => value.Dispose(), Times.Once);
         }
 
         [Test, Combinatorial]
-        public void Should_PreservePoolPublishedDuringRemovalMetricsCallback(
+        public void Should_RetryPoolPublicationAfterRemovalMetricsCallback(
             [Values(false, true)] bool clientRoutesEnabled,
             [Values(false, true)] bool replacementLookup)
         {
@@ -1473,14 +1599,16 @@ namespace Cassandra.Tests
                                    if (!callbackRan)
                                    {
                                        callbackRan = true;
-                                       internalSession.GetOrCreateConnectionPool(replacement, HostDistance.Local);
+                                       var error = Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
+                                           internalSession.GetOrCreateConnectionPool(replacement, HostDistance.Local));
+                                       StringAssert.Contains("metrics are being retired", error.Message);
                                    }
                                });
 
                 if (replacementLookup)
                 {
-                    // A stale-owner lookup retires the old pool; its metrics callback publishes
-                    // the replacement before the outer lookup resumes.
+                    // A stale-owner lookup retires the old bucket before its outer
+                    // lookup can publish replacement metrics in that bucket.
                     Assert.AreSame(replacementPool.Object, internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
                 }
                 else
