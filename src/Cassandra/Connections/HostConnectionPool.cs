@@ -1395,11 +1395,11 @@ namespace Cassandra.Connections
                 {
                     HostConnectionPool.Logger.Verbose("Could not open a connection to {0}: {1}. " +
                                                       "Further foreground connection creation is disabled for this pool.",
-                                                      _host.Address, ex.ToString());
+                                                      _host.Address, ex);
                 }
                 else
                 {
-                    HostConnectionPool.Logger.Warning("Exception while trying borrow a connection from a pool: {0}", ex.ToString());
+                    HostConnectionPool.Logger.Warning("Exception while trying borrow a connection from a pool: {0}", ex);
                 }
                 triedHosts[_host.Address] = ex;
             }
