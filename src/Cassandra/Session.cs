@@ -434,6 +434,30 @@ namespace Cassandra
 
         private IHostConnectionPool GetOrCreateConnectionPool(Host host, HostDistance distance, bool allowDownHost)
         {
+            Action retireFailedPoolMetrics = null;
+            try
+            {
+                return GetOrCreateConnectionPool(host, distance, allowDownHost, out retireFailedPoolMetrics);
+            }
+            finally
+            {
+                // This lookup's lifecycle lock scope has unwound before provider teardown.
+                // Already queued lookups can now observe the retirement barrier.
+                try
+                {
+                    retireFailedPoolMetrics?.Invoke();
+                }
+                catch (Exception cleanupFailure) when (!Utils.IsFatalException(cleanupFailure))
+                {
+                    // Keep the primary setup failure when metrics cleanup fails nonfatally.
+                }
+            }
+        }
+
+        private IHostConnectionPool GetOrCreateConnectionPool(
+            Host host, HostDistance distance, bool allowDownHost, out Action retireFailedPoolMetrics)
+        {
+            retireFailedPoolMetrics = null;
             var clientRoutesEnabled = Configuration.ClientRoutesRuntime != null;
             if (IsDisposed)
             {
@@ -489,7 +513,7 @@ namespace Cassandra
                     }
                     else
                     {
-                        return CreateConnectionPool(host, distance, clientRoutesEnabled, allowDownHost);
+                        return CreateConnectionPool(host, distance, clientRoutesEnabled, allowDownHost, out retireFailedPoolMetrics);
                     }
                 }
 
@@ -500,8 +524,9 @@ namespace Cassandra
         }
 
         private IHostConnectionPool CreateConnectionPool(
-            Host host, HostDistance distance, bool clientRoutesEnabled, bool allowDownHost)
+            Host host, HostDistance distance, bool clientRoutesEnabled, bool allowDownHost, out Action retireFailedPoolMetrics)
         {
+            retireFailedPoolMetrics = null;
             var newPool = Configuration.HostConnectionPoolFactory.Create(
                 host, Configuration, _serializerManager, _observerFactory, Cluster.Metadata.GetTokenFactory());
             try
@@ -549,7 +574,7 @@ namespace Cassandra
                             _metricsRetirements.Add(host.Address,
                                 new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously));
                             var retiredMetrics = _metricsManager.DetachNodeMetrics(host);
-                            DisposeRetiredMetrics(host, retiredMetrics);
+                            retireFailedPoolMetrics = () => DisposeRetiredMetrics(host, retiredMetrics);
                         }
                     }
                     catch (Exception cleanupFailure) when (!Utils.IsFatalException(cleanupFailure))

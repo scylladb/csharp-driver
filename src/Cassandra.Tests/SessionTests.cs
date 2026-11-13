@@ -627,6 +627,117 @@ namespace Cassandra.Tests
 
         [TestCase(false)]
         [TestCase(true)]
+        public async Task Should_ReleaseQueuedLookupBeforeRejectedPublicationMetricsTeardown(bool metricsCleanupThrows)
+        {
+            using var registering = new ManualResetEventSlim();
+            using var completeRegistration = new ManualResetEventSlim();
+            using var lookupPassedEarlyGuard = new ManualResetEventSlim();
+            var provider = CreateMetricsProviderForRemovalTests();
+            provider.Setup(value => value.Gauge(
+                    It.IsAny<string>(), It.IsAny<IMetric>(), It.IsAny<Func<double?>>()))
+                .Returns((string _, IMetric metric, Func<double?> __) =>
+                {
+                    if (metric is NodeMetric)
+                    {
+                        registering.Set();
+                        Assert.IsTrue(completeRegistration.Wait(5000), "Metrics registration was not released.");
+                    }
+                    return Mock.Of<IDriverGauge>();
+                });
+            var pool = new Mock<IHostConnectionPool>();
+            var factory = new Mock<IHostConnectionPoolFactory>();
+            factory.Setup(value => value.Create(
+                    It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>())).Returns(pool.Object);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = factory.Object,
+                MetricsProvider = provider.Object,
+                ClientRoutesOptions = new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+            }.Build();
+            using var metadata = new Metadata(config);
+            var host = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
+            host.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var lookupThread = 0;
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(() =>
+            {
+                if (Environment.CurrentManagedThreadId == Volatile.Read(ref lookupThread))
+                {
+                    // ResolvePoolHost runs after the unlocked retirement check and before
+                    // this unpublished pool's lookup enters the lifecycle lock.
+                    lookupPassedEarlyGuard.Set();
+                }
+                return metadata;
+            });
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            Task<Exception> queuedLookup = null;
+            var lookupCompletedDuringTeardown = false;
+            var teardownCount = 0;
+            provider.Setup(value => value.ShutdownMetricsBucket(It.Is<string>(bucket => bucket.Contains(".nodes."))))
+                .Callback(() =>
+                {
+                    Interlocked.Increment(ref teardownCount);
+                    lookupCompletedDuringTeardown = queuedLookup != null && queuedLookup.Wait(5000);
+                    if (metricsCleanupThrows)
+                    {
+                        throw new InvalidOperationException("Metrics teardown failed");
+                    }
+                });
+            try
+            {
+                using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "queued-rejected-pool-test");
+                var internalSession = (IInternalSession)session;
+                var creating = Task.Run(() =>
+                    Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
+                        internalSession.GetOrCreateConnectionPool(host, HostDistance.Local)));
+                try
+                {
+                    Assert.IsTrue(registering.Wait(5000), "Pool creation did not reach metrics registration.");
+                    queuedLookup = Task.Run(() =>
+                    {
+                        Volatile.Write(ref lookupThread, Environment.CurrentManagedThreadId);
+                        try
+                        {
+                            internalSession.GetOrCreateConnectionPool(host, HostDistance.Local);
+                            return null;
+                        }
+                        catch (Exception failure)
+                        {
+                            return failure;
+                        }
+                    });
+                    Assert.IsTrue(lookupPassedEarlyGuard.Wait(5000), "Queued lookup did not pass its initial retirement guard.");
+                    Assert.IsFalse(queuedLookup.IsCompleted);
+                    host.SetDown();
+                }
+                finally
+                {
+                    completeRegistration.Set();
+                    await creating.WaitToCompleteAsync(10000).ConfigureAwait(false);
+                    if (queuedLookup != null)
+                    {
+                        await queuedLookup.WaitToCompleteAsync(10000).ConfigureAwait(false);
+                    }
+                    Volatile.Write(ref lookupThread, 0);
+                }
+                Assert.AreEqual(1, teardownCount);
+                Assert.IsTrue(lookupCompletedDuringTeardown, "Metrics teardown blocked a queued lookup from entering the lifecycle lock.");
+                Assert.IsInstanceOf<HostConnectionPoolNotEligibleException>(queuedLookup.Result);
+                StringAssert.Contains("metrics are being retired", queuedLookup.Result.Message);
+                Assert.IsEmpty(internalSession.GetPools());
+                Assert.IsEmpty(session.GetMetrics().NodeMetrics);
+                pool.Verify(value => value.Dispose(), Times.Once);
+            }
+            finally
+            {
+                completeRegistration.Set();
+                config.Timer.Dispose();
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
         public void Should_PreservePublishedPoolMetricsWhenOuterInitializationFails(bool clientRoutesEnabled)
         {
             Session session = null;
