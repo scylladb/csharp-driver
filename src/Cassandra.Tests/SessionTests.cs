@@ -119,6 +119,65 @@ namespace Cassandra.Tests
             }
         }
 
+        [TestCase(1)]
+        [TestCase(2)]
+        [NonParallelizable]
+        public async Task Should_StopWarmupDiagnosticsWhenFirstDiagnosticDisposesSession(int hostCount)
+        {
+            var connectionFactory = new FakeConnectionFactory(endPoint =>
+            {
+                var connection = new Mock<IConnection>();
+                connection.SetupGet(value => value.EndPoint).Returns(endPoint);
+                connection.Setup(value => value.Open())
+                    .ThrowsAsync(new InvalidOperationException("initial warmup failure"));
+                return connection.Object;
+            });
+            var config = new TestConfigurationBuilder
+            {
+                ConnectionFactory = connectionFactory,
+                PoolingOptions = new PoolingOptions().SetCoreConnectionsPerHost(HostDistance.Local, 1),
+                Policies = new Cassandra.Policies(
+                    new RoundRobinPolicy(), new ConstantReconnectionPolicy(3600000), new DefaultRetryPolicy())
+            }.Build();
+            using var metadata = new Metadata(config);
+            foreach (var address in new[] { "127.0.0.11", "127.0.0.12" }.Take(hostCount))
+            {
+                metadata.AddHost(new IPEndPoint(IPAddress.Parse(address), 9042))
+                    .SetInfo(CreateHostInfo(Guid.NewGuid()));
+            }
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            cluster.Setup(value => value.AllHosts()).Returns(() => metadata.AllHosts());
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "dispose-during-diagnostic");
+            var shutdownReturned = false;
+            using var listener = new ConsumedWarmupTraceListener(false, message =>
+            {
+                if (!shutdownReturned && message.Contains("failed to warm up:"))
+                {
+                    session.Dispose();
+                    shutdownReturned = true;
+                }
+            });
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                await ((IInternalSession)session).Init().WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                Assert.IsTrue(shutdownReturned);
+                Assert.AreEqual(1, listener.Messages.Values.Count(message => message.Contains("failed to warm up:")));
+                Assert.IsFalse(listener.Messages.Values.Any(message => message.Contains("failed to be warmed up")));
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                config.Timer.Dispose();
+            }
+        }
+
         [Test]
         public async Task Should_PropagateFatalWarmupFailure_WhenAnotherHostFailsNormally()
         {
@@ -3455,15 +3514,18 @@ namespace Cassandra.Tests
         private sealed class ConsumedWarmupTraceListener : LoggingTests.TestTraceListener
         {
             private readonly bool _throwFromDiagnostic;
+            private readonly Action<string> _onMessage;
 
-            public ConsumedWarmupTraceListener(bool throwFromDiagnostic)
+            public ConsumedWarmupTraceListener(bool throwFromDiagnostic, Action<string> onMessage = null)
             {
                 _throwFromDiagnostic = throwFromDiagnostic;
+                _onMessage = onMessage;
             }
 
             public override void WriteLine(string message)
             {
                 base.WriteLine(message);
+                _onMessage?.Invoke(message);
                 if (_throwFromDiagnostic && message.Contains("initial warmup failure at "))
                 {
                     throw new InvalidOperationException("warmup diagnostic sink failed");
