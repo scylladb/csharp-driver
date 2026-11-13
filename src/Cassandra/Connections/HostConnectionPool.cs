@@ -979,7 +979,7 @@ namespace Cassandra.Connections
                 StartCreatingConnection(null);
                 _host.BringUpIfDown();
             }
-            catch (Exception ex)
+            catch (Exception ex) when (!Utils.IsFatalException(ex))
             {
                 // A shared background failure is consumed once, including during teardown.
                 if (openOperation != null && openOperation.TryObserveConsumedFailure())
@@ -1388,7 +1388,7 @@ namespace Cassandra.Connections
                     ex.MaxRequestsPerConnection, ex.ConnectionLength);
                 triedHosts[_host.Address] = ex;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (!Utils.IsFatalException(ex))
             {
                 // Probably a SocketException/AuthenticationException, move along
                 if (!_canCreateForeground && createIfNeeded)
