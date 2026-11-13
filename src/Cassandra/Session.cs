@@ -568,7 +568,7 @@ namespace Cassandra
                     }
                 }
             }
-            if (failure != null && (!Utils.IsFatalException(primaryFailure) || Utils.IsFatalException(failure)))
+            if (failure != null && (primaryFailure == null || Utils.IsFatalException(failure)))
             {
                 ExceptionDispatchInfo.Capture(failure).Throw();
             }

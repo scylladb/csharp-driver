@@ -960,9 +960,11 @@ namespace Cassandra.Tests
             }
         }
 
-        [TestCase(false)]
-        [TestCase(true)]
-        public void Should_PreserveFatalFailureAcrossDeferredMetricsRetirement(bool fatalInitialization)
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(false, false)]
+        public void Should_PreserveInitializationFailureAcrossDeferredMetricsRetirement(
+            bool fatalInitialization, bool fatalRetirement)
         {
             var fatalFailure = new OutOfMemoryException("Fatal initialization or retirement");
             var ordinaryFailure = new InvalidOperationException("Ordinary initialization or retirement");
@@ -1013,12 +1015,12 @@ namespace Cassandra.Tests
                         return Mock.Of<IDriverGauge>();
                     });
                 provider.Setup(value => value.ShutdownMetricsBucket(It.Is<string>(bucket => bucket == oldBucket)))
-                    .Throws(fatalInitialization ? ordinaryFailure : fatalFailure);
+                    .Throws(fatalRetirement ? fatalFailure : new InvalidOperationException("Ordinary retirement"));
                 try
                 {
-                    var observed = Assert.Throws<OutOfMemoryException>(() =>
+                    var observed = Assert.Catch(() =>
                         internalSession.GetOrCreateConnectionPool(creatingHost, HostDistance.Local));
-                    Assert.AreSame(fatalFailure, observed);
+                    Assert.AreSame(fatalRetirement || fatalInitialization ? fatalFailure : ordinaryFailure, observed);
                 }
                 finally
                 {
