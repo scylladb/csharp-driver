@@ -232,7 +232,7 @@ namespace Cassandra
 
             if (IsDisposed)
             {
-                return;
+                throw new ObjectDisposedException(nameof(Session));
             }
 
             if (Keyspace != null)
@@ -257,7 +257,15 @@ namespace Cassandra
             var poolCreations = new Task<Task>[hosts.Length];
             for (var i = 0; i < hosts.Length; i++)
             {
-                poolCreations[i] = WarmupHost(hosts[i]);
+                try
+                {
+                    poolCreations[i] = WarmupHost(hosts[i]);
+                }
+                catch (Exception failure) when (!Utils.IsFatalException(failure))
+                {
+                    // Include ordinary synchronous setup in the fatal-priority aggregation.
+                    poolCreations[i] = Task.FromException<Task>(failure);
+                }
             }
 
             // Keep setup failures outside the recoverable asynchronous-warmup catch,
@@ -332,8 +340,8 @@ namespace Cassandra
                 return Task.FromResult<Task>(null);
             }
 
-            // Invoke Warmup synchronously, like pool creation and metrics initialization above,
-            // so synchronous failures retain their original propagation behavior.
+            // Invoke Warmup during setup so its synchronous failures participate
+            // in the same fatal-priority aggregation as pool creation.
             return Task.FromResult(pool.Warmup());
         }
 
@@ -457,7 +465,14 @@ namespace Cassandra
                 CanReusePool(entry, currentHost, customHost) &&
                 IsPoolHostEligible(currentHost, clientRoutesEnabled, allowDownHost, ref distance))
             {
-                return entry.Pool;
+                // Policy callbacks can retire this exact entry before selection returns.
+                if (!IsDisposed && !currentHost.IsRemoved &&
+                    !_metricsRetirements.ContainsKey(host.Address) &&
+                    _connectionPool.TryGetValue(host.Address, out var currentEntry) &&
+                    ReferenceEquals(currentEntry, entry))
+                {
+                    return entry.Pool;
+                }
             }
 
             _activePoolLookups ??= new Stack<Session>();
@@ -578,6 +593,17 @@ namespace Cassandra
                             distance == HostDistance.Ignored ? "its policy distance is ignored" : "it is down");
                     }
 
+                    // Revalidate after policy callbacks before reusing or creating a pool.
+                    if (IsDisposed)
+                    {
+                        throw new ObjectDisposedException(nameof(Session));
+                    }
+                    ThrowIfMetricsRetirementBlocksPool(host.Address);
+                    if (host.IsRemoved)
+                    {
+                        throw new HostConnectionPoolNotEligibleException("it was removed during pool selection");
+                    }
+
                     if (_connectionPool.TryGetValue(host.Address, out var existingEntry))
                     {
                         if (CanReusePool(existingEntry, host, customHost))
@@ -621,7 +647,6 @@ namespace Cassandra
                 newPool.AllConnectionClosed += InternalRef.OnAllConnectionClosed;
                 newPool.SetDistance(distance);
                 var nodeMetrics = _metricsManager.GetOrCreateNodeMetricsForPool(host);
-                nodeMetrics.InitializePoolGauges(newPool);
                 newPool.NodeMetrics = nodeMetrics;
                 // Revalidate after metrics registration, which can invoke user callbacks
                 // or overlap another request's policy-distance evaluation.
@@ -642,6 +667,7 @@ namespace Cassandra
                     }
                     ThrowIfMetricsRetirementBlocksPool(host.Address);
                     _connectionPool.Add(host.Address, new HostPool(host, newPool));
+                    nodeMetrics.InitializePoolGauges(newPool);
                     poolObservers.Initialize(nodeMetrics);
                 }
             }

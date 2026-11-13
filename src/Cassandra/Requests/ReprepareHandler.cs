@@ -142,7 +142,8 @@ namespace Cassandra.Requests
             NodeRequestInfo nodeRequestInfo = null;
             if (observer != null)
             {
-                nodeRequestInfo = new NodeRequestInfo(poolKvp.Key, sessionRequestInfo.PrepareRequest ?? new PrepareRequest(ps.Cql, ps.Keyspace));
+                nodeRequestInfo = new NodeRequestInfo(
+                    poolKvp.Key, sessionRequestInfo.PrepareRequest ?? new PrepareRequest(ps.Cql, ps.Keyspace), poolKvp.Value.NodeMetrics);
                 await observer.OnNodeStartAsync(sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
             }
 
