@@ -21,6 +21,12 @@ using System.Reflection;
 using System.Threading.Tasks;
 using Cassandra.Connections;
 using Cassandra.ExecutionProfiles;
+using Cassandra.Metrics.Abstractions;
+using Cassandra.Metrics.Internal;
+using Cassandra.Metrics.Registries;
+using Cassandra.Observers.Abstractions;
+using Cassandra.Observers.Composite;
+using Cassandra.Observers.Metrics;
 using Cassandra.Observers.Null;
 using Cassandra.Observers.RequestTracker;
 using Cassandra.Requests;
@@ -37,6 +43,102 @@ namespace Cassandra.Tests
     [TestFixture]
     public class RequestExecutionTests
     {
+        [TestCase(false, "abort")]
+        [TestCase(true, "abort")]
+        [TestCase(false, "error")]
+        [TestCase(true, "error")]
+        [TestCase(false, "policy")]
+        [TestCase(true, "policy")]
+        [TestCase(false, "speculative")]
+        [TestCase(true, "speculative")]
+        public async Task Should_KeepConnectionMetricsSnapshotAcrossReplacement(bool retireBeforeStart, string callback)
+        {
+            var config = new TestConfigurationBuilder().Build();
+            var alias = new Host(new IPEndPoint(IPAddress.Loopback, 9042), new ConstantReconnectionPolicy(1000));
+            var validHost = ValidHost.New(alias, HostDistance.Local);
+            var counter = new Mock<IDriverCounter>();
+            var errors = Mock.Of<IRequestErrorMetrics>(value => value.Aborted == counter.Object);
+            var retired = false;
+            var originalMetrics = new Mock<INodeMetrics>();
+            originalMetrics.SetupGet(value => value.IsRetired).Returns(() => retired);
+            originalMetrics.SetupGet(value => value.Errors).Returns(errors);
+            originalMetrics.SetupGet(value => value.SpeculativeExecutions).Returns(counter.Object);
+            var manager = new Mock<IMetricsManager>(MockBehavior.Strict);
+            var metricsObserver = new MetricsRequestObserver(manager.Object, Mock.Of<IDriverTimer>());
+            var started = new TaskCompletionSource<NodeRequestInfo>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var observer = new Mock<IRequestObserver>();
+            observer.Setup(value => value.OnNodeStartAsync(It.IsAny<SessionRequestInfo>(), It.IsAny<NodeRequestInfo>()))
+                .Callback<SessionRequestInfo, NodeRequestInfo>((_, info) => started.TrySetResult(info))
+                .Returns(Task.CompletedTask);
+            var connection = new Mock<IConnection>();
+            connection.SetupGet(value => value.NodeMetrics).Returns(originalMetrics.Object);
+            connection.Setup(value => value.SendWithKeyspace(
+                    It.IsAny<IRequest>(), It.IsAny<string>(), It.IsAny<Func<IRequestError, Response, Task>>(),
+                    It.IsAny<int>(), It.IsAny<bool>()))
+                .ReturnsAsync((OperationState)null);
+            var selectedConnection = new TaskCompletionSource<IConnection>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var parent = new Mock<IRequestHandler>();
+            parent.SetupGet(value => value.Serializer).Returns(SerializerManager.Default.GetCurrentSerializer());
+            parent.SetupGet(value => value.RequestOptions).Returns(config.DefaultRequestOptions);
+            parent.Setup(value => value.GetNextValidHost(It.IsAny<Dictionary<IPEndPoint, Exception>>())).Returns(validHost);
+            parent.Setup(value => value.GetConnectionToValidHostAsync(validHost, It.IsAny<IDictionary<IPEndPoint, Exception>>()))
+                .Returns(selectedConnection.Task);
+            parent.Setup(value => value.OnNewNodeExecution(It.IsAny<NodeRequestInfo>())).Returns(true);
+            var execution = new RequestExecution(
+                parent.Object, Mock.Of<IInternalSession>(), Mock.Of<IRequest>(),
+                new CompositeRequestObserver(metricsObserver, observer.Object), new SessionRequestInfo((IStatement)null, null));
+            try
+            {
+                execution.Start(false);
+                retired = retireBeforeStart;
+                selectedConnection.SetResult(connection.Object);
+                var info = await started.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.AreSame(alias, info.Host);
+                Assert.AreSame(originalMetrics.Object, info.NodeMetrics);
+
+                async Task NotifyAsync(NodeRequestInfo requestInfo)
+                {
+                    switch (callback)
+                    {
+                        case "abort":
+                            await metricsObserver.OnNodeRequestAbortedAsync(null, requestInfo).ConfigureAwait(false);
+                            break;
+                        case "error":
+                            await metricsObserver.OnNodeRequestErrorAsync(
+                                RequestError.CreateClientError(new InvalidOperationException(), false), null, requestInfo).ConfigureAwait(false);
+                            break;
+                        case "policy":
+                            await metricsObserver.OnNodeRequestErrorAsync(
+                                RequestErrorType.Aborted, RetryDecision.RetryDecisionType.Rethrow, null, requestInfo, null).ConfigureAwait(false);
+                            break;
+                        default:
+                            metricsObserver.OnSpeculativeExecution(requestInfo.Host, 0);
+                            break;
+                    }
+                }
+
+                await NotifyAsync(info).ConfigureAwait(false);
+                retired = true;
+                await NotifyAsync(info).ConfigureAwait(false);
+                if (callback == "speculative")
+                {
+                    counter.Verify(value => value.Increment(1), retireBeforeStart ? Times.Never() : Times.Once());
+                }
+                else
+                {
+                    // A failure before any connection was selected cannot adopt another owner's registry.
+                    await NotifyAsync(new NodeRequestInfo(alias, null)).ConfigureAwait(false);
+                    counter.Verify(value => value.Increment(), retireBeforeStart ? Times.Never() : Times.Once());
+                }
+                manager.VerifyNoOtherCalls();
+            }
+            finally
+            {
+                selectedConnection.TrySetResult(connection.Object);
+                config.Timer.Dispose();
+            }
+        }
+
         [Test]
         public async Task Should_Cancel_Operation_When_Cancelled_Before_Keyspace_Send_Completes()
         {

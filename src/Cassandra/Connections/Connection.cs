@@ -27,6 +27,7 @@ using System.Threading.Tasks;
 using Cassandra.Connections.Control;
 using Cassandra.Compression;
 using Cassandra.Metrics;
+using Cassandra.Metrics.Registries;
 using Cassandra.Observers.Abstractions;
 using Cassandra.Requests;
 using Cassandra.Responses;
@@ -86,6 +87,7 @@ namespace Cassandra.Connections
         private int _writeState = Connection.WriteStateInit;
         private int _inFlight;
         private readonly IConnectionObserver _connectionObserver;
+
         private readonly bool _timerEnabled;
         private readonly int _heartBeatInterval;
 
@@ -183,6 +185,8 @@ namespace Cassandra.Connections
 
         /// <inheritdoc />
         public bool UseMetadataId => _useMetadataId;
+
+        public INodeMetrics NodeMetrics => _connectionObserver.NodeMetrics;
 
         /// <summary>
         /// Decides whether this connection exchanges result metadata ids, and so how its frames are

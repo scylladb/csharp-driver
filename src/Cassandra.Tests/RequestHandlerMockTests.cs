@@ -21,10 +21,15 @@ using System.Net;
 using System.Threading.Tasks;
 using Cassandra.Connections;
 using Cassandra.Metrics;
+using Cassandra.Metrics.Abstractions;
 using Cassandra.Metrics.Internal;
 using Cassandra.Metrics.Providers.Null;
-using Cassandra.Observers.Metrics;
+using Cassandra.Metrics.Registries;
 using Cassandra.Observers.Abstractions;
+using Cassandra.Observers.Composite;
+using Cassandra.Observers.Metrics;
+using Cassandra.Observers.Null;
+using Cassandra.Observers.RequestTracker;
 using Cassandra.Requests;
 using Cassandra.Serialization;
 using Cassandra.SessionManagement;
@@ -39,6 +44,77 @@ namespace Cassandra.Tests
     [SuppressMessage("ReSharper", "PossibleMultipleEnumeration", Justification = "Reviewed")]
     public class RequestHandlerMockTests
     {
+        [Test]
+        public async Task Should_CountSpeculationWhileSelectedPoolConnectionIsPending()
+        {
+            var session = GetMockInternalSession();
+            var config = GetConfig(Mock.Of<ILoadBalancingPolicy>());
+            Mock.Get(session).SetupGet(value => value.Cluster.Configuration).Returns(config);
+            var alias = new Host(new IPEndPoint(IPAddress.Loopback, 9042), contactPoint: null);
+            var counter = new Mock<IDriverCounter>();
+            var retired = false;
+            var metrics = new Mock<INodeMetrics>();
+            metrics.SetupGet(value => value.IsRetired).Returns(() => retired);
+            metrics.SetupGet(value => value.SpeculativeExecutions).Returns(counter.Object);
+            var pendingConnection = new TaskCompletionSource<IConnection>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var pool = new Mock<IHostConnectionPool>();
+            pool.SetupGet(value => value.NodeMetrics).Returns(metrics.Object);
+            pool.Setup(value => value.GetConnectionFromHostAsync(
+                    It.IsAny<IDictionary<IPEndPoint, Exception>>(), It.IsAny<Func<string>>(), It.IsAny<RoutingKey>(), -1))
+                .Returns(pendingConnection.Task);
+            Mock.Get(session).Setup(value => value.GetOrCreateConnectionPool(alias, HostDistance.Local)).Returns(pool.Object);
+            var manager = new Mock<IMetricsManager>(MockBehavior.Strict);
+            var observer = new MetricsRequestObserver(manager.Object, Mock.Of<IDriverTimer>());
+            var handler = new RequestHandler(session, SerializerManager.Default.GetCurrentSerializer(),
+                new SessionRequestInfo((IStatement)null, null), observer);
+            try
+            {
+                var acquisition = handler.GetConnectionToValidHostAsync(
+                    ValidHost.New(alias, HostDistance.Local), new Dictionary<IPEndPoint, Exception>());
+                Assert.IsFalse(acquisition.IsCompleted);
+                observer.OnSpeculativeExecution(alias, 1);
+                counter.Verify(value => value.Increment(1), Times.Once);
+                var oldTimer = observer.CreateSpeculativeExecutionCallback(alias, 1);
+                retired = true;
+                var replacementCounter = new Mock<IDriverCounter>();
+                observer.OnNodePoolSelected(alias, Mock.Of<INodeMetrics>(value =>
+                    value.SpeculativeExecutions == replacementCounter.Object));
+                oldTimer();
+                counter.Verify(value => value.Increment(1), Times.Once);
+                replacementCounter.Verify(value => value.Increment(It.IsAny<long>()), Times.Never);
+                observer.CreateSpeculativeExecutionCallback(alias, 1)();
+                replacementCounter.Verify(value => value.Increment(1), Times.Once);
+                manager.VerifyNoOtherCalls();
+                pendingConnection.SetResult(Mock.Of<IConnection>());
+                Assert.IsNotNull(await acquisition.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+            }
+            finally
+            {
+                pendingConnection.TrySetResult(Mock.Of<IConnection>());
+                config.Timer.Dispose();
+            }
+        }
+
+        [Test]
+        public void Should_NotifyCompositeSpeculativeObserversOnlyWhenCapturedCallbackRuns()
+        {
+            var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), contactPoint: null);
+            var tracker = new Mock<IRequestObserver>();
+            var counter = new Mock<IDriverCounter>();
+            var metrics = Mock.Of<INodeMetrics>(value => value.SpeculativeExecutions == counter.Object);
+            IRequestObserver observer = new CompositeRequestObserver(
+                new MetricsRequestObserver(Mock.Of<IMetricsManager>(), Mock.Of<IDriverTimer>()),
+                new CompositeRequestObserver(NullRequestObserver.Instance,
+                    new CompositeRequestObserver(new RequestTrackerObserver(Mock.Of<IRequestTracker>()), tracker.Object)));
+            observer.OnNodePoolSelected(host, metrics);
+            var callback = observer.CreateSpeculativeExecutionCallback(host, 2);
+            tracker.Verify(value => value.OnSpeculativeExecution(host, 2), Times.Never);
+            counter.Verify(value => value.Increment(It.IsAny<long>()), Times.Never);
+            callback();
+            tracker.Verify(value => value.OnSpeculativeExecution(host, 2), Times.Once);
+            counter.Verify(value => value.Increment(1), Times.Once);
+        }
+
         private static IInternalSession GetMockInternalSession()
         {
             var sessionMock = new Mock<IInternalSession>();

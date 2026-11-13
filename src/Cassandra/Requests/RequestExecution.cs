@@ -184,7 +184,7 @@ namespace Cassandra.Requests
                 var p = (InternalPrepareRequest)request;
                 prepare = new PrepareRequest(p.Query, p.Keyspace);
             }
-            var nodeRequestInfo = new NodeRequestInfo(host, prepare);
+            var nodeRequestInfo = new NodeRequestInfo(host, prepare, _connection.NodeMetrics);
             if (_parent.OnNewNodeExecution(nodeRequestInfo))
             {
                 await _requestObserver.OnNodeStartAsync(_sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
