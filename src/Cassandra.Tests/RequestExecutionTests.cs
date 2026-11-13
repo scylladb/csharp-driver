@@ -15,6 +15,7 @@
 //
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -59,16 +60,32 @@ namespace Cassandra.Tests
         [TestCase("init-recovered", TraceLevel.Info, false)]
         [TestCase("init-all-failed", TraceLevel.Info, false)]
         [TestCase("init-later-error", TraceLevel.Info, false)]
+        [TestCase("recovered-composite", TraceLevel.Info, false)]
+        [TestCase("all-failed-composite", TraceLevel.Info, false)]
+        [TestCase("later-error-composite", TraceLevel.Info, false)]
+        [TestCase("init-recovered-composite", TraceLevel.Info, false)]
+        [TestCase("init-all-failed-composite", TraceLevel.Info, false)]
+        [TestCase("init-later-error-composite", TraceLevel.Info, false)]
+        [TestCase("inline-response", TraceLevel.Info, false)]
+        [TestCase("inline-response", TraceLevel.Info, true)]
+        [TestCase("inline-fatal-diagnostic", TraceLevel.Info, true)]
         [NonParallelizable]
         public async Task Should_ReportConsumedConnectionFailuresAfterRequestRecovery(
             string scenario, TraceLevel traceLevel, bool throwFromDiagnostic)
         {
+            var composite = scenario.EndsWith("-composite");
+            scenario = scenario.Replace("-composite", "");
             var hosts = new[]
             {
                 new Host(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042), contactPoint: null),
                 new Host(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042), contactPoint: null)
             };
-            var failure = new InvalidOperationException("initial foreground connection failed");
+            var preferredFailure = new InvalidOperationException("initial foreground connection failed");
+            var superseded = new InvalidOperationException("superseded route cause");
+            var unresolved = new InvalidOperationException("unresolved backup DNS");
+            Exception failure = composite
+                ? new ConnectionFailure(preferredFailure, new[] { superseded }, new[] { unresolved })
+                : preferredFailure;
             var terminalError = new InvalidQueryException("query failed after connection failover");
             var acquisitionStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var acquisitionResult = new TaskCompletionSource<IConnection>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -92,7 +109,15 @@ namespace Cassandra.Tests
                     It.IsAny<IRequest>(), It.IsAny<string>(), It.IsAny<Func<IRequestError, Response, Task>>(),
                     It.IsAny<int>(), It.IsAny<bool>()))
                 .Callback<IRequest, string, Func<IRequestError, Response, Task>, int, bool>(
-                    (_, __, callback, ___, ____) => sent.TrySetResult(callback))
+                    (_, __, callback, ___, ____) =>
+                    {
+                        sent.TrySetResult(callback);
+                        if (scenario.StartsWith("inline-"))
+                        {
+                            callback(null, new ProxyResultResponse(ResultResponse.ResultResponseKind.Void))
+                                .GetAwaiter().GetResult();
+                        }
+                    })
                 .ReturnsAsync((OperationState)null);
             for (var i = 0; i < hosts.Length; i++)
             {
@@ -127,7 +152,7 @@ namespace Cassandra.Tests
                 new QueryRequest(serializer, statement.QueryString, QueryProtocolOptions.Default, false, null),
                 new SessionRequestInfo(statement, null), config.DefaultRequestOptions, NullRequestObserver.Instance);
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
-            using var listener = new RecoveredConnectionTraceListener(throwFromDiagnostic, scenario == "fatal-diagnostic");
+            using var listener = new RecoveredConnectionTraceListener(throwFromDiagnostic, scenario.Contains("fatal-diagnostic"));
             Task<RowSet> responseTask = null;
             Diagnostics.CassandraTraceSwitch.Level = traceLevel;
             Trace.Listeners.Add(listener);
@@ -140,8 +165,8 @@ namespace Cassandra.Tests
                     if (scenario == "init-all-failed")
                     {
                         var error = await Assert.ThrowsAsync<NoHostAvailableException>(() => connectionTask);
-                        Assert.AreSame(failure, error.Errors[hosts[0].Address]);
-                        Assert.AreSame(failure, error.Errors[hosts[1].Address]);
+                        Assert.AreSame(preferredFailure, error.Errors[hosts[0].Address]);
+                        Assert.AreSame(preferredFailure, error.Errors[hosts[1].Address]);
                     }
                     else if (scenario == "init-later-error")
                     {
@@ -170,23 +195,26 @@ namespace Cassandra.Tests
                     {
                         var error = await Assert.ThrowsAsync<NoHostAvailableException>(
                             () => responseTask.WaitAsync(TimeSpan.FromSeconds(5)));
-                        Assert.AreSame(failure, error.Errors[hosts[0].Address]);
-                        Assert.AreSame(failure, error.Errors[hosts[1].Address]);
+                        Assert.AreSame(preferredFailure, error.Errors[hosts[0].Address]);
+                        Assert.AreSame(preferredFailure, error.Errors[hosts[1].Address]);
                     }
                     else
                     {
-                        var callback = await sent.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-                        Assert.IsFalse(listener.Messages.Values.Any(message => message.Contains("Request consumed")));
-                        if (scenario == "external-timeout")
+                        if (!scenario.StartsWith("inline-"))
                         {
-                            await handler.SetCompletedAsync(terminalError).ConfigureAwait(false);
-                        }
-                        else
-                        {
-                            await callback(
-                                    scenario == "later-error" ? RequestError.CreateClientError(terminalError, false) : null,
-                                    new ProxyResultResponse(ResultResponse.ResultResponseKind.Void))
-                                .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                            var callback = await sent.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                            Assert.IsFalse(listener.Messages.Values.Any(message => message.Contains("Request consumed")));
+                            if (scenario == "external-timeout")
+                            {
+                                await handler.SetCompletedAsync(terminalError).ConfigureAwait(false);
+                            }
+                            else
+                            {
+                                await callback(
+                                        scenario == "later-error" ? RequestError.CreateClientError(terminalError, false) : null,
+                                        new ProxyResultResponse(ResultResponse.ResultResponseKind.Void))
+                                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                            }
                         }
                         if (scenario == "later-error" || scenario == "external-timeout")
                         {
@@ -194,7 +222,7 @@ namespace Cassandra.Tests
                                 () => responseTask.WaitAsync(TimeSpan.FromSeconds(5)));
                             Assert.AreSame(terminalError, error);
                         }
-                        else if (scenario == "fatal-diagnostic")
+                        else if (scenario.Contains("fatal-diagnostic"))
                         {
                             var error = await Assert.ThrowsAsync<OutOfMemoryException>(
                                 () => responseTask.WaitAsync(TimeSpan.FromSeconds(5)));
@@ -215,8 +243,13 @@ namespace Cassandra.Tests
                 Assert.AreEqual(expected, diagnostics.Length);
                 if (expected != 0)
                 {
-                    Assert.IsTrue(diagnostics[0].Contains(failure.Message));
+                    Assert.IsTrue(diagnostics[0].Contains(preferredFailure.Message));
                     Assert.IsTrue(diagnostics[0].Contains(hosts[0].Address.ToString()));
+                    if (composite)
+                    {
+                        Assert.IsTrue(diagnostics[0].Contains(superseded.Message));
+                        Assert.IsTrue(diagnostics[0].Contains(unresolved.Message));
+                    }
                 }
             }
             finally
@@ -242,6 +275,48 @@ namespace Cassandra.Tests
                     Diagnostics.CassandraTraceSwitch.Level = previousLevel;
                     config.Timer.Dispose();
                 }
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        [NonParallelizable]
+        public void Should_LogOnlyCompositeCausesAbsentFromTheReturnedError(bool partiallyReturned)
+        {
+            var host = new IPEndPoint(IPAddress.Loopback, 9042);
+            var preferred = new InvalidOperationException("returned preferred cause");
+            var superseded = new InvalidOperationException("returned supplemental cause");
+            var unresolved = new InvalidOperationException("consumed DNS cause");
+            var failure = new ConnectionFailure(preferred, new[] { superseded }, new[] { unresolved });
+            var terminalFailure = partiallyReturned
+                ? new ConnectionFailure(preferred, new[] { superseded }, Array.Empty<Exception>())
+                : failure;
+            var returnedError = new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>
+            {
+                [host] = terminalFailure
+            });
+            var failures = new ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>>();
+            failures.Enqueue(new KeyValuePair<IPEndPoint, Exception>(host, failure));
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new RecoveredConnectionTraceListener(false, false);
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                ConsumedConnectionFailures.Report(failures, returnedError);
+                var messages = listener.Messages.Values.Where(message => message.Contains("Request consumed")).ToArray();
+                Assert.AreEqual(partiallyReturned ? 1 : 0, messages.Length);
+                if (partiallyReturned)
+                {
+                    Assert.IsTrue(messages[0].Contains(unresolved.Message));
+                    Assert.IsFalse(messages[0].Contains(preferred.Message));
+                    Assert.IsFalse(messages[0].Contains(superseded.Message));
+                }
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
             }
         }
 
@@ -825,6 +900,7 @@ namespace Cassandra.Tests
             Assert.IsInstanceOf<PreparedStatementIdMismatchException>(completedException);
             Assert.AreEqual(1, ((PreparedStatementIdMismatchException)completedException).Id[0]);
         }
+
         private sealed class RecoveredConnectionTraceListener : LoggingTests.TestTraceListener
         {
             internal Exception Failure { get; }

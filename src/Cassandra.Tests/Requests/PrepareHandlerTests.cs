@@ -49,15 +49,25 @@ namespace Cassandra.Tests.Requests
         [TestCase("all-failed", false)]
         [TestCase("later-error", false)]
         [TestCase("later-error", true)]
+        [TestCase("recovered-composite", false)]
+        [TestCase("all-failed-composite", false)]
+        [TestCase("later-error-composite", false)]
         [NonParallelizable]
         public async Task Should_ReportConsumedConnectionFailuresDuringPrepare(string scenario, bool throwingSink)
         {
+            var composite = scenario.EndsWith("-composite");
+            scenario = scenario.Replace("-composite", "");
             var hosts = new[]
             {
                 new Host(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042), contactPoint: null),
                 new Host(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042), contactPoint: null)
             };
-            var failure = new InvalidOperationException("prepare connection failed");
+            var preferredFailure = new InvalidOperationException("prepare connection failed");
+            var superseded = new InvalidOperationException("superseded prepare route cause");
+            var unresolved = new InvalidOperationException("unresolved prepare backup DNS");
+            Exception failure = composite
+                ? new ConnectionFailure(preferredFailure, new[] { superseded }, new[] { unresolved })
+                : preferredFailure;
             var terminalError = new InvalidQueryException("prepare failed after connection failover");
             var config = new TestConfigurationBuilder().Build();
             config.QueryOptions.SetPrepareOnAllHosts(false);
@@ -113,8 +123,8 @@ namespace Cassandra.Tests.Requests
                 if (scenario == "all-failed")
                 {
                     var error = await Assert.ThrowsAsync<NoHostAvailableException>(() => resultTask);
-                    Assert.AreSame(failure, error.Errors[hosts[0].Address]);
-                    Assert.AreSame(failure, error.Errors[hosts[1].Address]);
+                    Assert.AreSame(preferredFailure, error.Errors[hosts[0].Address]);
+                    Assert.AreSame(preferredFailure, error.Errors[hosts[1].Address]);
                 }
                 else if (scenario == "later-error")
                 {
@@ -129,8 +139,13 @@ namespace Cassandra.Tests.Requests
                 Assert.AreEqual(scenario == "all-failed" ? 0 : 1, messages.Length);
                 if (messages.Length > 0)
                 {
-                    Assert.IsTrue(messages[0].Contains(failure.Message));
+                    Assert.IsTrue(messages[0].Contains(preferredFailure.Message));
                     Assert.IsTrue(messages[0].Contains(hosts[0].Address.ToString()));
+                    if (composite)
+                    {
+                        Assert.IsTrue(messages[0].Contains(superseded.Message));
+                        Assert.IsTrue(messages[0].Contains(unresolved.Message));
+                    }
                 }
             }
             finally

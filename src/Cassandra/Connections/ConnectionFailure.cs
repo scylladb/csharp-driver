@@ -18,6 +18,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Sockets;
+using System.Text;
 
 namespace Cassandra.Connections
 {
@@ -56,6 +57,22 @@ namespace Cassandra.Connections
             return currentPreferredError == null ||
                    !(candidateError is SocketException) ||
                    currentPreferredError is SocketException;
+        }
+
+        public override string ToString()
+        {
+            var text = new StringBuilder(base.ToString());
+            foreach (var error in SupersededConnectionErrors)
+            {
+                text.AppendLine().Append("Superseded connection error: ").Append(error);
+            }
+
+            foreach (var error in UnresolvedResolutionErrors)
+            {
+                text.AppendLine().Append("Unresolved endpoint error: ").Append(error);
+            }
+
+            return text.ToString();
         }
 
         private static string GetMessage(Exception preferredError)
