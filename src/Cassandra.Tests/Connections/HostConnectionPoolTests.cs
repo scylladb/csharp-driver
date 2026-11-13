@@ -1580,6 +1580,139 @@ namespace Cassandra.Tests.Connections
         }
 
         [Test]
+        public async Task Should_ReplaceShardLayoutOnLaterRoutedOpen()
+        {
+            var first = ShardingInfo.Create("0", "4", "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin", "12", "19042", "19142");
+            var replacement = ShardingInfo.Create("0", "8", "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin", "12", "19042", "19142");
+            var current = first;
+            var target = CreatePool(
+                connectionFactory: new FakeConnectionFactory(endpoint => CreateConnection(endpoint, shardingInfo: current).Object),
+                clientRoutesOptions: new ClientRoutesOptions(new[] { new ClientRouteProxy("route-a") }, 9042, true));
+            try
+            {
+                await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreSame(first, GetShardingInfo(target));
+                Assert.AreEqual(4, GetExpectedConnectionLength(target));
+
+                current = replacement;
+                await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreSame(replacement, GetShardingInfo(target));
+                Assert.AreEqual(8, GetExpectedConnectionLength(target));
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [Test]
+        public async Task Should_PreserveShardMultipleWhenDistanceChanges()
+        {
+            var info = ShardingInfo.Create("0", "4", "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin", "12", "19042", "19142");
+            var target = CreatePool(
+                connectionFactory: new FakeConnectionFactory(endpoint => CreateConnection(endpoint, shardingInfo: info).Object),
+                clientRoutesOptions: new ClientRoutesOptions(new[] { new ClientRouteProxy("route-a") }, 9042, true));
+            try
+            {
+                await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                target.SetDistance(HostDistance.Remote);
+                Assert.AreEqual(4, GetExpectedConnectionLength(target));
+                Assert.AreSame(info, GetShardingInfo(target));
+                target.SetDistance(HostDistance.Ignored);
+                Assert.AreEqual(0, GetExpectedConnectionLength(target));
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_BringDownHostUpOnlyAfterSuccessfulWarmup(bool failOpen)
+        {
+            var target = CreatePool(
+                connectionFactory: new FakeConnectionFactory(endpoint => CreateConnection(
+                    endpoint, failOpen ? new InvalidOperationException("warmup failed") : null).Object),
+                coreConnections: 1,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            _host.SetDown();
+            try
+            {
+                if (failOpen)
+                {
+                    await Assert.ThrowsAsync<InvalidOperationException>(() => target.Warmup().WaitToCompleteAsync(5000));
+                    Assert.IsFalse(_host.IsUp);
+                }
+                else
+                {
+                    await target.Warmup().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    Assert.IsTrue(_host.IsUp);
+                    Assert.AreEqual(1, target.OpenConnections);
+                }
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [Test]
+        public async Task Should_FillNewShardTargetWhenWarmupFallsBackToDirect()
+        {
+            var info = ShardingInfo.Create("0", "4", "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin", "12", "19042", "19142");
+            var rows = new List<IRow>();
+            ClientRoutesCache cache = null;
+            var initializedRoutes = false;
+            var created = new List<IConnection>();
+            var factory = new FakeConnectionFactory(endpoint =>
+            {
+                var connection = CreateConnection(endpoint, shardingInfo: info).Object;
+                created.Add(connection);
+                if (created.Count == 1)
+                {
+                    rows.Clear();
+                    for (var i = 0; i < 3; i++)
+                    {
+                        cache.FullRefreshBarrierAsync().WaitToCompleteAsync(5000).GetAwaiter().GetResult();
+                    }
+                }
+                return connection;
+            });
+            var target = CreatePool(
+                connectionFactory: factory,
+                clientRoutesOptions: new ClientRoutesOptions(new[] { new ClientRouteProxy("route-a") }, 9042, false),
+                clientRouteRowsFactory: hostId =>
+                {
+                    if (!initializedRoutes)
+                    {
+                        rows.Add(ClientRouteRow(hostId, "198.51.100.90", 9042, "route-a"));
+                        initializedRoutes = true;
+                    }
+                    return rows;
+                },
+                clientRoutesCacheCreated: value => cache = value);
+            Mock.Get(_resolver).Setup(value => value.GetConnectionShardAwareEndPointsAsync(_host, false, 19042))
+                .ReturnsAsync(new IConnectionEndPoint[] { new FakeConnectionEndPoint("127.0.0.1", 19042) });
+            try
+            {
+                await target.Warmup().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreEqual(4, target.OpenConnections);
+                Assert.AreEqual(4, GetExpectedConnectionLength(target));
+                Assert.IsInstanceOf<ClientRouteConnectionEndPoint>(created.First().EndPoint);
+                Assert.IsTrue(created.Skip(1).All(connection => !(connection.EndPoint is ClientRouteConnectionEndPoint)));
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [Test]
         public async Task Should_UseShardAwareOpenWithoutChangingResolvedDestination()
         {
             var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);

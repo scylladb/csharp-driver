@@ -1416,7 +1416,7 @@ namespace Cassandra.Connections
             lock (_connectionHandoffLock)
             {
                 _distance = distance;
-                _expectedConnectionLength = _poolingOptions.GetCoreConnectionsPerHost(distance);
+                _expectedConnectionLength = GetCoreConnectionTarget(Volatile.Read(ref _shardingInfo));
                 _maxInflightThresholdToConsiderResizing = _poolingOptions.GetMaxSimultaneousRequestsPerConnectionTreshold(distance);
                 _maxConnectionLength = _poolingOptions.GetMaxConnectionPerHost(distance);
             }
@@ -1558,9 +1558,9 @@ namespace Cassandra.Connections
                     // without shard metadata rather than discarding every reconnect attempt.
                     connectionShardingInfo = null;
                 }
-                if (isRouted && connectionShardingInfo == null)
+                if (isRouted)
                 {
-                    nextShardingInfo = null;
+                    nextShardingInfo = connectionShardingInfo;
                 }
                 else if (previousShardingInfo == null && connectionShardingInfo != null)
                 {
@@ -1582,15 +1582,19 @@ namespace Cassandra.Connections
                 {
                     // Distance changes share this lock. Derive the target only after
                     // validation so a newer distance cannot be overwritten by a saved target.
-                    var coreSize = _poolingOptions.GetCoreConnectionsPerHost(_distance);
-                    var expectedConnectionLength = nextShardingInfo == null
-                        ? coreSize
-                        : nextShardingInfo.ScyllaNrShards * HostConnectionPool.CeilingDivide(coreSize, nextShardingInfo.ScyllaNrShards);
                     Interlocked.Exchange(ref _shardingInfo, nextShardingInfo);
-                    _expectedConnectionLength = expectedConnectionLength;
+                    _expectedConnectionLength = GetCoreConnectionTarget(nextShardingInfo);
                 }
                 return true;
             }
+        }
+
+        private int GetCoreConnectionTarget(ShardingInfo shardingInfo)
+        {
+            var coreSize = _poolingOptions.GetCoreConnectionsPerHost(_distance);
+            return shardingInfo == null
+                ? coreSize
+                : shardingInfo.ScyllaNrShards * HostConnectionPool.CeilingDivide(coreSize, shardingInfo.ScyllaNrShards);
         }
 
         private int GetConnectionsPerShardTarget(int shardCount)
@@ -1615,9 +1619,7 @@ namespace Cassandra.Connections
                 throw;
             }
 
-            var length = _expectedConnectionLength;
-
-            for (var i = 1; i < length; i++)
+            for (var i = 1; i < _expectedConnectionLength; i++)
             {
                 try
                 {
@@ -1638,6 +1640,10 @@ namespace Cassandra.Connections
                     OnConnectionClosing();
                     break;
                 }
+            }
+            if (!IsClosing && _connections.Count > 0)
+            {
+                _host.BringUpIfDown();
             }
         }
 
