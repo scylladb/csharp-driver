@@ -399,6 +399,43 @@ namespace Cassandra.Tests.Connections
             }
         }
 
+        [TestCase(TraceLevel.Off, false)]
+        [TestCase(TraceLevel.Info, false)]
+        [TestCase(TraceLevel.Verbose, true)]
+        [NonParallelizable]
+        public async Task Should_FormatSupplementalFailuresOnlyWhenVerboseDiagnosticsAreEnabled(
+            TraceLevel traceLevel, bool expectedFormatting)
+        {
+            var endpoint = new FakeConnectionEndPoint("198.51.100.9", 9042);
+            var supplemental = new Mock<Exception>();
+            supplemental.Setup(value => value.ToString()).Returns("supplemental connection failure");
+            var failure = new ConnectionFailure(new InvalidOperationException("preferred failure"),
+                new[] { supplemental.Object }, Array.Empty<Exception>());
+            var resolver = new Mock<IEndPointResolver>();
+            var pool = CreatePool(resolver.Object,
+                new FakeConnectionFactory((IConnectionEndPoint _) => CreateConnection(endpoint, failure).Object),
+                coreConnections: 1,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            resolver.Setup(value => value.GetConnectionEndPointsAsync(_host, false))
+                .ReturnsAsync(new IConnectionEndPoint[] { endpoint });
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            Diagnostics.CassandraTraceSwitch.Level = traceLevel;
+            try
+            {
+                var triedHosts = new Dictionary<IPEndPoint, Exception>();
+                var connection = await pool.GetConnectionFromHostAsync(triedHosts, () => null, null)
+                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.IsNull(connection);
+                Assert.IsNotNull(triedHosts[_host.Address]);
+                supplemental.Verify(value => value.ToString(), expectedFormatting ? Times.AtLeastOnce() : Times.Never());
+            }
+            finally
+            {
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                DisposePoolAndTimer(pool);
+            }
+        }
+
         [Test]
         [NonParallelizable]
         public async Task Should_NotLogUnrecoveredRouteFailures()
