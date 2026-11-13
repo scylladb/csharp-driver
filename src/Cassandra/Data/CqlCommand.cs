@@ -172,7 +172,9 @@ namespace Cassandra.Data
 
                 var query = _preparedStatement.Bind(GetParameterValues());
                 if (_consistencyLevel.HasValue)
+                {
                     query.SetConsistencyLevel(_consistencyLevel.Value);
+                }
                 rowSet = CqlConnection.ManagedConnection.Execute(query);
             }
 
@@ -199,7 +201,9 @@ namespace Cassandra.Data
             {
                 var query = _preparedStatement.Bind(GetParameterValues());
                 if (_consistencyLevel.HasValue)
+                {
                     query.SetConsistencyLevel(_consistencyLevel.Value);
+                }
                 if (cm.StartsWith("CREATE ")
                     || cm.StartsWith("DROP ")
                     || cm.StartsWith("ALTER "))
@@ -225,7 +229,9 @@ namespace Cassandra.Data
             {
                 var query = _preparedStatement.Bind(GetParameterValues());
                 if (_consistencyLevel.HasValue)
+                {
                     query.SetConsistencyLevel(_consistencyLevel.Value);
+                }
                 rowSet = CqlConnection.ManagedConnection.Execute(query);
             }
 
