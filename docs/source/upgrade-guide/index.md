@@ -4,6 +4,24 @@ The purpose of this guide is to detail the changes made by the successive versio
 
 ## Unreleased
 
+### Local consistency defaults
+
+Application reads, writes and batches now default to `LOCAL_QUORUM` instead of `LOCAL_ONE`.
+The serial phase of lightweight transactions defaults to `LOCAL_SERIAL` instead of `SERIAL`,
+so its linearizability guarantee is scoped to the local datacenter. The quorum default can
+require more replicas to be available than the previous default.
+
+Explicit statement, execution-profile and query-option settings keep their existing precedence.
+To retain the previous defaults, configure the cluster explicitly:
+
+```csharp
+var cluster = Cluster.Builder()
+    .WithQueryOptions(new QueryOptions()
+        .SetConsistencyLevel(ConsistencyLevel.LocalOne)
+        .SetSerialConsistencyLevel(ConsistencyLevel.Serial))
+    .Build();
+```
+
 ### IPv6 wildcard topology addresses
 
 The driver now treats an advertised IPv6 wildcard RPC address (`::`) like the IPv4 wildcard (`0.0.0.0`), whether client routes are enabled or disabled. When deriving an endpoint from system tables, it uses the peer address for `system.peers`, or the broadcast or listen address for `system.local`. A peer with no fallback address is excluded. If the local endpoint must be derived from `system.local` and no fallback address is available, topology discovery fails.
