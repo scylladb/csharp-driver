@@ -654,9 +654,10 @@ namespace Cassandra.Tests.Connections
             }
         }
 
-        [Test]
+        [TestCase(false)]
+        [TestCase(true)]
         [NonParallelizable]
-        public async Task Should_LogOptionalConnectionFailureSwallowedByWarmup()
+        public async Task Should_LogOptionalConnectionFailureSwallowedByWarmup(bool throwFromDiagnostic)
         {
             var failure = new InvalidOperationException("optional warmup connection failure");
             var shardingInfo = ShardingInfo.Create(
@@ -698,17 +699,32 @@ namespace Cassandra.Tests.Connections
                 reconnectionPolicy: new ConstantReconnectionPolicy(60000));
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
             using var listener = new LoggingTests.TestTraceListener();
+            var throwingListener = new Mock<TraceListener> { CallBase = true };
+            throwingListener.Setup(value => value.WriteLine(It.Is<string>(message =>
+                    message.Contains("failed to open a warmup connection"))))
+                .Throws(new InvalidOperationException("optional warmup diagnostic sink failed"));
             Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
             Trace.Listeners.Add(listener);
+            if (throwFromDiagnostic)
+            {
+                Trace.Listeners.Add(throwingListener.Object);
+            }
             try
             {
+                _host.SetDown();
                 await target.Warmup().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.IsTrue(_host.IsUp);
                 Assert.AreEqual(2, GetExpectedConnectionLength(target));
                 var failures = listener.Messages.Values.Where(message =>
                     message.Contains("failed to open a warmup connection") &&
                     message.Contains("optional warmup connection failure")).ToArray();
                 Assert.AreEqual(1, failures.Length);
                 StringAssert.Contains("#WARNING:", failures[0]);
+                if (throwFromDiagnostic)
+                {
+                    throwingListener.Verify(value => value.WriteLine(It.Is<string>(message =>
+                        message.Contains("failed to open a warmup connection"))), Times.Once);
+                }
                 Assert.AreEqual(1, target.OpenConnections);
                 await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
                 Assert.AreEqual(2, target.OpenConnections);
@@ -726,6 +742,8 @@ namespace Cassandra.Tests.Connections
                 finally
                 {
                     Trace.Listeners.Remove(listener);
+                    Trace.Listeners.Remove(throwingListener.Object);
+                    throwingListener.Object.Dispose();
                     Diagnostics.CassandraTraceSwitch.Level = previousLevel;
                 }
             }

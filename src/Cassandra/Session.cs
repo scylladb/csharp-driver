@@ -352,6 +352,10 @@ namespace Cassandra
                     {
                         // A diagnostic sink must not change the result of recoverable warmup.
                     }
+                    if (IsDisposed)
+                    {
+                        return;
+                    }
                 }
 
                 if (tasks.Any(t => t.Status == TaskStatus.RanToCompletion))

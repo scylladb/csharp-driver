@@ -1492,12 +1492,19 @@ namespace Cassandra.Connections
                 {
                     if (!IsClosing)
                     {
-                        HostConnectionPool.Logger.Warning(
-                            "Pool #{0} for host {1} failed to open a warmup connection: {2} of {3} open, " +
-                            "attempted shard: {4}, shard count: {5}, error: {6}",
-                            GetHashCode(), _host.Address, _connections.Count, _expectedConnectionLength,
-                            shardingInfo == null ? "unknown" : lastAttemptedShard.ToString(),
-                            shardingInfo == null ? "unknown" : shardingInfo.ScyllaNrShards.ToString(), ex);
+                        try
+                        {
+                            HostConnectionPool.Logger.Warning(
+                                "Pool #{0} for host {1} failed to open a warmup connection: {2} of {3} open, " +
+                                "attempted shard: {4}, shard count: {5}, error: {6}",
+                                GetHashCode(), _host.Address, _connections.Count, _expectedConnectionLength,
+                                shardingInfo == null ? "unknown" : lastAttemptedShard.ToString(),
+                                shardingInfo == null ? "unknown" : shardingInfo.ScyllaNrShards.ToString(), ex);
+                        }
+                        catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
+                        {
+                            // A diagnostic sink must not prevent recovery of the retained connections.
+                        }
                     }
                     OnConnectionClosing();
                     break;
