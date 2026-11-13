@@ -388,7 +388,7 @@ namespace Cassandra.IntegrationTests.Core
                 return _parent.Distance(host);
             }
 
-            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
+            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, MetadataSnapshot cluster)
             {
                 var plan = _parent.NewQueryPlan(routing, cluster);
                 return plan.Where(h => !_disallowed.Contains(h.Host.Address));

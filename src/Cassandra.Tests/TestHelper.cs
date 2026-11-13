@@ -721,10 +721,17 @@ namespace Cassandra.Tests
         /// <summary>
         /// Builds a query plan the way the driver does for a statement executed with <paramref name="keyspace"/> as
         /// the session keyspace. <paramref name="routeAsLwt"/> overrides the statement's own LWT routing, as a
-        /// confirmed LWT or a statement with a non-serial consistency level.
+        /// confirmed LWT or a statement with a non-serial consistency level. The metadata snapshot is the cluster's
+        /// when it has metadata and <paramref name="replicas"/> is null; otherwise it has the cluster's hosts and
+        /// the replicas of <paramref name="replicas"/>.
         /// </summary>
         internal static IEnumerable<RoutingTarget> NewQueryPlan(
-            this ILoadBalancingPolicy policy, ICluster cluster, string keyspace, IStatement statement, bool? routeAsLwt = null)
+            this ILoadBalancingPolicy policy,
+            ICluster cluster,
+            string keyspace,
+            IStatement statement,
+            bool? routeAsLwt = null,
+            Func<RoutingInfo, IReadOnlyList<RoutingTarget>> replicas = null)
         {
             var routing = statement == null
                 ? new RoutingInfo { Keyspace = keyspace, IsConfirmedLwt = routeAsLwt == true }
@@ -736,7 +743,38 @@ namespace Cassandra.Tests
                     IsConfirmedLwt = routeAsLwt ?? statement.IsLwt(),
                     Consistency = routeAsLwt == null ? statement.ConsistencyLevel : ConsistencyLevel.LocalOne
                 };
-            return policy.NewQueryPlan(routing, new ClusterState(cluster));
+            return policy.NewQueryPlan(routing, TestHelper.Snapshot(cluster, replicas));
+        }
+
+        /// <summary>
+        /// Gets the metadata snapshot of <paramref name="cluster"/> when it has metadata and
+        /// <paramref name="replicas"/> is null, or else a snapshot with its hosts and the replicas of
+        /// <paramref name="replicas"/>.
+        /// </summary>
+        internal static MetadataSnapshot Snapshot(ICluster cluster, Func<RoutingInfo, IReadOnlyList<RoutingTarget>> replicas = null)
+        {
+            if (replicas == null && TryGetMetadata(cluster) is { } metadata)
+            {
+                return metadata.GetSnapshot();
+            }
+
+            var hosts = cluster?.AllHosts();
+            return new MetadataSnapshot(
+                hosts as IReadOnlyCollection<Host> ?? hosts?.ToList() ?? new List<Host>(),
+                replicas ?? (_ => Array.Empty<RoutingTarget>()));
+        }
+
+        private static Metadata TryGetMetadata(ICluster cluster)
+        {
+            try
+            {
+                return cluster?.Metadata;
+            }
+            catch (MockException)
+            {
+                // A strict mock without metadata
+                return null;
+            }
         }
 
         /// <summary>
@@ -776,7 +814,7 @@ namespace Cassandra.Tests
                 return _childPolicy.Distance(host);
             }
 
-            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
+            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, MetadataSnapshot cluster)
             {
                 return !_useRoundRobin ? _hosts.Select(h => new RoutingTarget(h, null)) : _childPolicy.NewQueryPlan(routing, cluster);
             }
@@ -810,7 +848,7 @@ namespace Cassandra.Tests
                 return _distanceHandler(_cluster, host);
             }
 
-            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
+            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, MetadataSnapshot cluster)
             {
                 return _queryPlanHandler(_cluster, routing).Select(h => new RoutingTarget(h, null));
             }

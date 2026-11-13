@@ -598,10 +598,16 @@ query plan that yields `default(RoutingTarget)` ends there, as a `null` element 
 ### `ILoadBalancingPolicy.NewQueryPlan` takes the routing information
 
 `ILoadBalancingPolicy.NewQueryPlan(string keyspace, IStatement query)` is replaced by
-`NewQueryPlan(RoutingInfo routing, ClusterState cluster)`, and
+`NewQueryPlan(RoutingInfo routing, MetadataSnapshot metadata)`, and
 `IExtendedLoadBalancingPolicy` is removed. Its `routeAsLwt` parameter is now
 `RoutingInfo.ShouldRouteAsLwt`, so every policy gets it, and a policy wrapping another
-one passes `routing` and `cluster` on.
+one passes `routing` and `metadata` on.
+
+`MetadataSnapshot` is an immutable view of the nodes, the token map and the cached
+tablets, taken for each query plan: everything a policy reads from it comes from the
+same metadata, even when the driver learns about changes while the plan is used. Read
+the nodes from it rather than from the cluster passed to `Initialize()`. The state of
+each node, such as `Host.IsUp`, can still change.
 
 | 3.x | 4.0 |
 |---|---|
@@ -610,8 +616,8 @@ one passes `routing` and `cluster` on.
 | `query.ShouldRouteAsLwt()`, `routeAsLwt` | `routing.ShouldRouteAsLwt`, derived from `routing.IsConfirmedLwt` and `routing.Consistency`, so it also covers a serial consistency level set only in the execution profile. The driver no longer calls `IStatement.ShouldRouteAsLwt()` to route requests, so an override of it in a statement class has no effect on routing |
 | `query.ConsistencyLevel`, `query.SerialConsistencyLevel` | `routing.Consistency`, `routing.SerialConsistency`: the effective levels of the first attempt, with the execution profile's when the statement sets none, and `null` for requests issued by the driver |
 | `query`, for anything else | Not available: a policy receives the routing inputs, not the statement |
-| `cluster.Metadata.GetReplicas(keyspace, routingKey)` | `cluster.GetReplicas(routing)`, which returns the replicas the driver routes to: from the cached tablet owning the partition when tablets of the table are cached (none when no cached tablet owns it), and from the token map otherwise |
-| `cluster.AllHosts()`, kept from `Initialize()` | `cluster.Hosts` |
+| `cluster.Metadata.GetReplicas(keyspace, routingKey)` | `metadata.GetReplicas(routing)`, which reuses the token it computed for `routing` while the partitioner and the routing key's bytes stay the same, and which returns the replicas the driver routes to: from the cached tablet owning the partition when tablets of the table are cached (none when no cached tablet owns it), and from the token map otherwise |
+| `cluster.AllHosts()`, kept from `Initialize()` | `metadata.Hosts` |
 | `class MyPolicy : IExtendedLoadBalancingPolicy` | `class MyPolicy : ILoadBalancingPolicy` |
 
 New routing inputs are added to `RoutingInfo` as properties, without changing the
@@ -622,7 +628,7 @@ request would be routed, create both arguments:
 
 ```csharp
 var routing = new RoutingInfo { Keyspace = "ks", Table = "tbl", RoutingKey = routingKey };
-var plan = policy.NewQueryPlan(routing, new ClusterState(cluster));
+var plan = policy.NewQueryPlan(routing, new MetadataSnapshot(cluster));
 ```
 
 ### `ExecuteAsync` returns `AsyncRowSet`

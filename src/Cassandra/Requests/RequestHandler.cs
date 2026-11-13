@@ -128,7 +128,7 @@ namespace Cassandra.Requests
         private static IEnumerable<RoutingTarget> GetPolicyQueryPlan(ISession session, IStatement statement, ILoadBalancingPolicy lbp, IRequestOptions requestOptions)
         {
             var routing = RoutingInfo.ForStatement(statement, session.Keyspace, requestOptions);
-            foreach (var target in lbp.NewQueryPlan(routing, new ClusterState(session.Cluster)).TakeWhileHostIsSet())
+            foreach (var target in lbp.NewQueryPlan(routing, MetadataSnapshot.Of(session.Cluster)).TakeWhileHostIsSet())
             {
                 yield return target;
             }

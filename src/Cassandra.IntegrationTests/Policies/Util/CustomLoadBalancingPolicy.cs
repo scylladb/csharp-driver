@@ -39,7 +39,7 @@ namespace Cassandra.IntegrationTests.Policies.Util
             return HostDistance.Local;
         }
 
-        public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
+        public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, MetadataSnapshot cluster)
         {
             var queryPlan = new List<RoutingTarget>();
             var allHosts = _cluster.AllHosts();

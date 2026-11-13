@@ -13,6 +13,8 @@
 //   See the License for the specific language governing permissions and
 //   limitations under the License.
 //
+using System;
+using System.Threading;
 using Cassandra.ExecutionProfiles;
 
 namespace Cassandra
@@ -26,6 +28,8 @@ namespace Cassandra
     /// </summary>
     public sealed class RoutingInfo
     {
+        private TokenCache _token;
+
         /// <summary>
         /// Gets the keyspace of the request: the statement's keyspace, or else the session's. It can be null.
         /// </summary>
@@ -108,6 +112,49 @@ namespace Cassandra
         internal static RoutingInfo ForKeyspace(string keyspace)
         {
             return new RoutingInfo { Keyspace = keyspace };
+        }
+
+        /// <summary>
+        /// Gets the token of <see cref="RoutingKey"/> for the partitioner of <paramref name="factory"/>. The last token
+        /// computed is kept with its partitioner and a copy of the routing key, so the policies of a request and their
+        /// replica lookups reuse it while neither changes. The routing key can be replaced or its bytes changed.
+        /// </summary>
+        internal IToken GetToken(TokenFactory factory)
+        {
+            var key = RoutingKey.RawRoutingKey;
+            var cached = Volatile.Read(ref _token);
+            if (cached != null && ReferenceEquals(cached.Factory, factory) && HasSameBytes(cached.Key, key))
+            {
+                return cached.Token;
+            }
+
+            // The token is computed from the cached copy: a token can keep the array it was computed from, as the
+            // ordered partitioner's does, and the caller can reuse the routing key's array once it's replaced
+            var keyCopy = CopyOf(key);
+            var token = factory.Hash(keyCopy);
+            Volatile.Write(ref _token, new TokenCache(factory, keyCopy, token));
+            return token;
+        }
+
+        private static byte[] CopyOf(byte[] key) => (byte[])key?.Clone();
+
+        private static bool HasSameBytes(byte[] cached, byte[] key) =>
+            cached == null ? key == null : key != null && cached.AsSpan().SequenceEqual(key);
+
+        private sealed class TokenCache
+        {
+            public TokenCache(TokenFactory factory, byte[] key, IToken token)
+            {
+                Factory = factory;
+                Key = key;
+                Token = token;
+            }
+
+            public TokenFactory Factory { get; }
+
+            public byte[] Key { get; }
+
+            public IToken Token { get; }
         }
     }
 }

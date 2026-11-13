@@ -385,7 +385,7 @@ namespace Cassandra.Tests.ExecutionProfiles
                 return HostDistance.Local;
             }
 
-            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
+            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, MetadataSnapshot cluster)
             {
                 Interlocked.Increment(ref Count);
                 return new List<RoutingTarget>

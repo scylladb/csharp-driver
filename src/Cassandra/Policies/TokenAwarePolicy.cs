@@ -28,7 +28,7 @@ namespace Cassandra
     /// </para>
     /// <list type="number">
     /// <item>The <see cref="Distance(Host)"/> method is inherited  from the child policy.</item>
-    /// <item>The host yielded by the <see cref="NewQueryPlan(RoutingInfo, ClusterState)"/> method will first return the
+    /// <item>The host yielded by the <see cref="NewQueryPlan(RoutingInfo, MetadataSnapshot)"/> method will first return the
     /// <see cref="HostDistance.Local"/> replicas for the statement, based on its <see cref="RoutingInfo.RoutingKey"/>.
     /// </item>
     /// </list>
@@ -77,20 +77,20 @@ namespace Cassandra
         ///  it will return the plan of the child policy.</p>
         /// </summary>
         /// <param name="routing">The routing information of the request.</param>
-        /// <param name="cluster">The view of the cluster, which gives the replicas.</param>
+        /// <param name="metadata">The snapshot of the cluster metadata, which gives the replicas.</param>
         /// <returns>the new query plan.</returns>
-        public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
+        public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, MetadataSnapshot metadata)
         {
             if (routing?.RoutingKey == null)
             {
-                foreach (var h in ChildPolicy.NewQueryPlan(routing, cluster))
+                foreach (var h in ChildPolicy.NewQueryPlan(routing, metadata))
                 {
                     yield return h;
                 }
                 yield break;
             }
 
-            var replicas = cluster.GetReplicas(routing);
+            var replicas = metadata.GetReplicas(routing);
 
             // Keyed by host only: tablet replicas carry their shard while the child policy yields no shard
             var localReplicaSet = new HashSet<Host>();
@@ -117,7 +117,7 @@ namespace Cassandra
             }
 
             // Then, return the rest of child policy hosts
-            foreach (var h in ChildPolicy.NewQueryPlan(routing, cluster))
+            foreach (var h in ChildPolicy.NewQueryPlan(routing, metadata))
             {
                 if (localReplicaSet.Contains(h.Host))
                 {

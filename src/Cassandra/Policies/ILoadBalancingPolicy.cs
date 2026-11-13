@@ -61,8 +61,10 @@ namespace Cassandra
         /// </summary>
         /// <param name="routing">What is known about the request: its keyspace, table, routing key and whether
         ///  it should be routed as a lightweight transaction.</param>
-        /// <param name="cluster">The view of the cluster, which gives the replicas of the request.</param>
+        /// <param name="metadata">The snapshot of the cluster metadata for this plan: the nodes and the replicas of the
+        ///  request. A policy should read the nodes from it rather than from the cluster it was initialized with, so
+        ///  that the whole plan is built from the same metadata.</param>
         /// <returns>The targets to try, in order.</returns>
-        IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster);
+        IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, MetadataSnapshot metadata);
     }
 }
