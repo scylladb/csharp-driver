@@ -48,8 +48,8 @@ namespace Cassandra.IntegrationTests.Data
 
         private sealed class TestCqlConnection : CqlConnection
         {
-            private Cluster _cluster;
             private readonly Action<Builder> _configure;
+            private Cluster _cluster;
 
             public TestCqlConnection(string connectionString, Action<Builder> configure = null) : base(connectionString)
             {
@@ -100,11 +100,17 @@ namespace Cassandra.IntegrationTests.Data
             var hasProfile = source != ConsistencySource.Defaults && source != ConsistencySource.QueryOptions;
             ConsistencyLevel? commandConsistency = null;
             if (source == ConsistencySource.CommandOne)
+            {
                 commandConsistency = ConsistencyLevel.One;
+            }
             else if (source == ConsistencySource.CommandLocalOne)
+            {
                 commandConsistency = ConsistencyLevel.LocalOne;
+            }
             else if (source == ConsistencySource.CommandLocalQuorum)
+            {
                 commandConsistency = ConsistencyLevel.LocalQuorum;
+            }
 
             var expectedConsistency = commandConsistency ?? (hasProfile ? ConsistencyLevel.Quorum :
                 source == ConsistencySource.QueryOptions ? ConsistencyLevel.LocalOne : ConsistencyLevel.LocalQuorum);
@@ -118,7 +124,9 @@ namespace Cassandra.IntegrationTests.Data
                 {
                     when.WithConsistency(expectedConsistency);
                     if (prepared)
+                    {
                         when.WithParam(1);
+                    }
                 })
                 .ThenRowsSuccess(new[] { "[applied]" }, rows => rows.WithRow(true)));
 
@@ -145,9 +153,13 @@ namespace Cassandra.IntegrationTests.Data
                 {
                     command.CommandText = prepared ? query.Replace("?", ":id") : query;
                     if (prepared)
+                    {
                         command.Parameters.Add("id", 1);
+                    }
                     if (commandConsistency.HasValue)
+                    {
                         command.ConsistencyLevel = commandConsistency.Value;
+                    }
 
                     command.Prepare();
                     Assert.AreEqual(expectedConsistency, command.ConsistencyLevel);
