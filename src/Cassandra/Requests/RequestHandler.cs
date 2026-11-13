@@ -39,6 +39,9 @@ namespace Cassandra.Requests
         private static readonly Logger Logger = new Logger(typeof(Session));
         public const long StateInit = 0;
         public const long StateCompleted = 1;
+        private const int DiagnosticsCollecting = 0;
+        private const int DiagnosticsCompleting = 1;
+        private const int DiagnosticsCompleted = 2;
 
         private readonly IRequest _request;
         private readonly IInternalSession _session;
@@ -50,6 +53,10 @@ namespace Cassandra.Requests
         private readonly IEnumerator<RoutingTarget> _queryPlan;
         private readonly Lock _queryPlanLock = new Lock();
         private readonly ICollection<IRequestExecution> _running = new CopyOnWriteList<IRequestExecution>();
+        private ConsumedConnectionFailures.Collector _connectionFailures;
+        private Exception _returnedError;
+        private Exception _callerCancellation;
+        private int _diagnosticsCompleted = DiagnosticsCollecting;
         private ISpeculativeExecutionPlan _executionPlan;
         private volatile HashedWheelTimer.ITimeout _nextExecutionTimeout;
         private readonly IRequestObserver _requestObserver;
@@ -258,7 +265,7 @@ namespace Cassandra.Requests
 
             if (ex != null)
             {
-                await _requestResultHandler.TrySetExceptionAsync(ex, _sessionRequestInfo).ConfigureAwait(false);
+                await CompleteRequestAsync(ex, null).ConfigureAwait(false);
                 return true;
             }
             if (action != null)
@@ -268,43 +275,136 @@ namespace Cassandra.Requests
                 {
                     try
                     {
-                        await action().ConfigureAwait(false);
-                    }
-                    catch (Exception actionEx)
-                    {
-                        await ClearNodeExecutionsAndCompleteAsync(actionEx, null).ConfigureAwait(false);
-                        return;
-                    }
+                        try
+                        {
+                            await action().ConfigureAwait(false);
+                        }
+                        catch (Exception actionEx)
+                        {
+                            await ClearNodeExecutionsAndCompleteRequestAsync(actionEx, null).ConfigureAwait(false);
+                            return;
+                        }
 
-                    await ClearNodeExecutionsAndCompleteAsync(null, result).ConfigureAwait(false);
+                        await ClearNodeExecutionsAndCompleteRequestAsync(null, result).ConfigureAwait(false);
+                    }
+                    catch (Exception completionFailure) when (Utils.IsFatalException(completionFailure))
+                    {
+                        // The detached owner has unwound, even if aborting a node failed
+                        // before result completion. Let this and later fatal records drain.
+                        Interlocked.Exchange(ref _diagnosticsCompleted, DiagnosticsCompleted);
+                        try
+                        {
+                            RecordConnectionFailure(result?.Info.QueriedHost, completionFailure);
+                        }
+                        catch (Exception)
+                        {
+                            // Keep the detached completion's fatal error if its diagnostic also fails.
+                        }
+
+                        throw;
+                    }
                 }, CancellationToken.None).Forget();
                 return true;
             }
 
-            await ClearNodeExecutionsAndCompleteAsync(null, result).ConfigureAwait(false);
+            await ClearNodeExecutionsAndCompleteRequestAsync(null, result).ConfigureAwait(false);
             return true;
         }
 
-        /// <summary>
-        /// Reports the node executions still running as aborted, then completes the task with the error or the
-        /// result. The task is completed even when a request observer throws.
-        /// </summary>
-        private async Task ClearNodeExecutionsAndCompleteAsync(Exception ex, RowSet result)
+        private async Task ClearNodeExecutionsAndCompleteRequestAsync(Exception error, RowSet result)
         {
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo abortFailure = null;
             try
             {
                 await ClearNodeExecutionsAsync().ConfigureAwait(false);
             }
+            catch (Exception failure)
+            {
+                abortFailure = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure);
+            }
+
+            try
+            {
+                // An abort observer must not replace the caller's selected result or leave it waiting.
+                await CompleteRequestAsync(error, result).ConfigureAwait(false);
+            }
+            catch (Exception) when (Utils.IsFatalException(abortFailure?.SourceException))
+            {
+                // Keep the original fatal abort failure if completion diagnostics also fail.
+            }
+
+            abortFailure?.Throw();
+        }
+
+        private async Task CompleteRequestAsync(Exception error, RowSet result)
+        {
+            Volatile.Write(ref _returnedError, error);
+            // Completion owns the drain until its final result is selected. Reentrant
+            // and concurrent recorders enqueue without filtering against a tentative error.
+            Interlocked.Exchange(ref _diagnosticsCompleted, DiagnosticsCompleting);
+            try
+            {
+                Volatile.Read(ref _connectionFailures)?.Report(error);
+            }
+            catch (Exception diagnosticFailure)
+            {
+                // Complete a claimed request without replacing an already-selected fatal failure.
+                if (!Utils.IsFatalException(error))
+                {
+                    error = diagnosticFailure;
+                    Volatile.Write(ref _returnedError, error);
+                }
+            }
+
+            Exception completionFailure = null;
+            try
+            {
+                // Result observers can record more failures, including after an await.
+                // Keep their diagnostics deferred until the result handler settles, even if it fails.
+                await (error == null
+                    ? _requestResultHandler.TrySetResultAsync(result, _sessionRequestInfo)
+                    : _requestResultHandler.TrySetExceptionAsync(error, _sessionRequestInfo)).ConfigureAwait(false);
+            }
+            catch (Exception failure)
+            {
+                completionFailure = failure;
+                throw;
+            }
             finally
             {
-                if (ex != null)
+                Interlocked.Exchange(ref _diagnosticsCompleted, DiagnosticsCompleted);
+                try
                 {
-                    await _requestResultHandler.TrySetExceptionAsync(ex, _sessionRequestInfo).ConfigureAwait(false);
+                    // Pair state publication with enqueue, including failures queued
+                    // after the first drain or by a failing result observer.
+                    Volatile.Read(ref _connectionFailures)?.Report(error, canReplaceReturnedError: false);
                 }
-                else
+                catch (Exception) when (Utils.IsFatalException(completionFailure))
                 {
-                    await _requestResultHandler.TrySetResultAsync(result, _sessionRequestInfo).ConfigureAwait(false);
+                    // A diagnostic must not replace an already-selected fatal observer failure.
                 }
+            }
+        }
+
+        public void RecordConnectionFailure(IPEndPoint host, Exception failure)
+        {
+            var failures = Volatile.Read(ref _connectionFailures);
+            if (failures == null)
+            {
+                var created = new ConsumedConnectionFailures.Collector();
+                failures = Interlocked.CompareExchange(ref _connectionFailures, created, null) ?? created;
+            }
+
+            failures.Record(host, failure);
+            var cancellation = Volatile.Read(ref _callerCancellation);
+            if (cancellation != null)
+            {
+                failures.SelectCallerCancellation(cancellation);
+            }
+
+            if (cancellation != null || Volatile.Read(ref _diagnosticsCompleted) == DiagnosticsCompleted)
+            {
+                failures.Report(cancellation ?? Volatile.Read(ref _returnedError), canReplaceReturnedError: false);
             }
         }
 
@@ -344,26 +444,44 @@ namespace Cassandra.Requests
         /// </summary>
         private async Task NotifyCanceledAsync(CancellationToken cancellationToken, bool completedNow)
         {
-            // Nothing awaits this method: a failing request observer is logged, and the task is still cancelled
-            try
+            if (completedNow)
             {
-                if (completedNow)
-                {
-                    await ClearNodeExecutionsAsync().ConfigureAwait(false);
-                }
-            }
-            catch (Exception ex)
-            {
-                RequestHandler.Logger.Warning("A request observer failed while the request was being cancelled: {0}", ex);
+                Volatile.Write(ref _returnedError, new OperationCanceledException(cancellationToken));
+                Interlocked.Exchange(ref _diagnosticsCompleted, DiagnosticsCompleting);
             }
 
             try
             {
-                await _requestResultHandler.TrySetCanceledAsync(cancellationToken, _sessionRequestInfo).ConfigureAwait(false);
+                // Nothing awaits this method: a failing observer must still allow cancellation to finish.
+                try
+                {
+                    if (completedNow)
+                    {
+                        await ClearNodeExecutionsAsync().ConfigureAwait(false);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    RequestHandler.Logger.Warning("A request observer failed while the request was being cancelled: {0}", ex);
+                }
+
+                try
+                {
+                    await _requestResultHandler.TrySetCanceledAsync(cancellationToken, _sessionRequestInfo).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    RequestHandler.Logger.Warning("A request observer failed while the request was being cancelled: {0}", ex);
+                }
             }
-            catch (Exception ex)
+            finally
             {
-                RequestHandler.Logger.Warning("A request observer failed while the request was being cancelled: {0}", ex);
+                if (completedNow)
+                {
+                    Interlocked.Exchange(ref _diagnosticsCompleted, DiagnosticsCompleted);
+                    Volatile.Read(ref _connectionFailures)?.Report(
+                        Volatile.Read(ref _returnedError), canReplaceReturnedError: false);
+                }
             }
         }
 
@@ -436,7 +554,7 @@ namespace Cassandra.Requests
             }
         }
 
-        public Task SetNoMoreHostsAsync(NoHostAvailableException ex, IRequestExecution execution)
+        public async Task SetNoMoreHostsAsync(NoHostAvailableException ex, IRequestExecution execution)
         {
             //An execution ended with a NoHostAvailableException (retrying or starting).
             //If there is a running execution, do not yield it to the user
@@ -444,9 +562,10 @@ namespace Cassandra.Requests
             if (_running.Count > 0)
             {
                 RequestHandler.Logger.Info("Could not obtain an available host for speculative execution");
-                return TaskHelper.Completed;
+                return;
             }
-            return SetCompletedAsync(ex);
+
+            await SetCompletedAsync(ex).ConfigureAwait(false);
         }
 
         public bool HasCompleted()
@@ -505,18 +624,35 @@ namespace Cassandra.Requests
         /// <inheritdoc />
         public async Task<IConnection> GetNextConnectionAsync(Dictionary<IPEndPoint, Exception> triedHosts)
         {
-            // While there is an available host
-            while (TryGetNextHost(out var target))
+            ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>> connectionFailures = null;
+            try
             {
-                var c = await ValidateHostAndGetConnectionAsync(target, triedHosts).ConfigureAwait(false);
-                if (c == null)
+                // While there is an available host
+                while (TryGetNextHost(out var target))
                 {
-                    continue;
-                }
-                return c;
-            }
+                    var c = await ValidateHostAndGetConnectionAsync(target, triedHosts).ConfigureAwait(false);
+                    if (c == null)
+                    {
+                        if (triedHosts.TryGetValue(target.Host.Address, out var failure) && failure != null)
+                        {
+                            connectionFailures ??= new ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>>();
+                            connectionFailures.Enqueue(new KeyValuePair<IPEndPoint, Exception>(target.Host.Address, failure));
+                        }
 
-            throw new NoHostAvailableException(triedHosts);
+                        continue;
+                    }
+
+                    ConsumedConnectionFailures.Report(connectionFailures, null);
+                    return c;
+                }
+
+                throw new NoHostAvailableException(triedHosts);
+            }
+            catch (Exception ex)
+            {
+                ConsumedConnectionFailures.Report(connectionFailures, ex);
+                throw;
+            }
         }
 
         /// <inheritdoc />
@@ -691,6 +827,19 @@ namespace Cassandra.Requests
             if (result.IsCompleted)
             {
                 return await result.ConfigureAwait(false);
+            }
+
+            var cancellation = new OperationCanceledException(cancellationToken);
+            Volatile.Write(ref _callerCancellation, cancellation);
+            var failures = Volatile.Read(ref _connectionFailures);
+            if (failures != null)
+            {
+                failures.SelectCallerCancellation(cancellation);
+                // Diagnostics must not keep the cancelled caller waiting behind another callback.
+                _ = Task.Run(() => failures.Report(cancellation, canReplaceReturnedError: false), CancellationToken.None)
+                    .ContinueWith(completed => RequestHandler.Logger.Warning(
+                            "A diagnostic failed after caller cancellation: {0}", completed.Exception),
+                        CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
             }
 
             return await Task.FromCanceled<RowSet>(cancellationToken).ConfigureAwait(false);

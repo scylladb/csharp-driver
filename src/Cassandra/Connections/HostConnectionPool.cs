@@ -85,6 +85,7 @@ namespace Cassandra.Connections
         private readonly Lock _connectionHandoffLock = new Lock();
         private readonly Queue<(NodeStatus Status, Action<NodeStatus> Subscribers)> _statusNotifications =
             new Queue<(NodeStatus, Action<NodeStatus>)>();
+        private readonly Lock _connectionOpenLock = new Lock();
         private volatile HostDistance _distance;
         private readonly HashedWheelTimer _timer;
         private readonly SemaphoreSlim _allConnectionClosedEventLock = new SemaphoreSlim(1, 1);
@@ -98,7 +99,7 @@ namespace Cassandra.Connections
         private int _poolResizing;
         private int _state = PoolState.Init;
         private HashedWheelTimer.ITimeout _newConnectionTimeout;
-        private TaskCompletionSource<IConnection> _connectionOpenTcs;
+        private ConnectionOpenOperation _connectionOpenOperation;
         private int _connectionIndex;
         private readonly int _maxRequestsPerConnection;
         private readonly PoolingOptions _poolingOptions;
@@ -107,10 +108,13 @@ namespace Cassandra.Connections
 
         private sealed class ConnectionAttemptFailure
         {
-            internal ConnectionAttemptFailure(Exception exception)
+            internal ConnectionAttemptFailure(IConnectionEndPoint endPoint, Exception exception)
             {
+                EndPoint = endPoint;
                 Exception = ExceptionDispatchInfo.Capture(exception);
             }
+
+            internal IConnectionEndPoint EndPoint { get; }
 
             internal ExceptionDispatchInfo Exception { get; }
         }
@@ -185,6 +189,29 @@ namespace Cassandra.Connections
             }
 
             return BorrowLeastBusyConnection(connections, routingKey, shardID);
+        }
+
+        private static void LogRecoveredRouteFailures(IEnumerable<ConnectionAttemptFailure> failures)
+        {
+            foreach (var failure in failures)
+            {
+                if (!(failure.EndPoint is ClientRouteConnectionEndPoint))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    HostConnectionPool.Logger.Info(
+                        "Failed to open a connection to {0}. Exception: {1}",
+                        failure.EndPoint.EndpointFriendlyName,
+                        failure.Exception.SourceException);
+                }
+                catch (Exception ex) when (!Utils.IsFatalException(ex))
+                {
+                    // Diagnostic handlers must not discard an already admitted connection.
+                }
+            }
         }
 
         private IConnection BorrowLeastBusyConnection(ShardedList<IConnection> connections, RoutingKey routingKey = null, int shardID = -1)
@@ -291,26 +318,31 @@ namespace Cassandra.Connections
                 // The requests in-flight are normal
                 return;
             }
+
             if (_expectedConnectionLength >= _maxConnectionLength)
             {
                 // We can not add more connections
                 return;
             }
+
             if (_connections.Count < _expectedConnectionLength)
             {
                 // The pool is still trying to acquire the correct size
                 return;
             }
+
             var canResize = Interlocked.Exchange(ref _poolResizing, 1) == 0;
             if (!canResize)
             {
                 // There is already another thread resizing the pool
                 return;
             }
+
             if (IsClosing)
             {
                 return;
             }
+
             _expectedConnectionLength++;
             HostConnectionPool.Logger.Info("Increasing pool #{0} size to {1}, as in-flight requests are above threshold ({2})",
                 GetHashCode(), _expectedConnectionLength, _maxInflightThresholdToConsiderResizing);
@@ -468,6 +500,7 @@ namespace Cassandra.Connections
                         }
 
                         resolutionPlan.AcknowledgeConnectionSuccess();
+                        LogRecoveredRouteFailures(attemptFailures);
                         return c;
                     }
                     catch (Exception ex)
@@ -483,13 +516,22 @@ namespace Cassandra.Connections
                                 _connections.Remove(c);
                                 UpdateStatus();
                             }
-                            if (!c.IsDisposed)
+
+                            try
                             {
-                                c.Dispose();
+                                if (!c.IsDisposed)
+                                {
+                                    c.Dispose();
+                                }
+                            }
+                            catch (Exception cleanupFailure) when (Utils.CanSuppressException(cleanupFailure, ex))
+                            {
+                                Utils.LogSecondaryException(cleanupFailure, ex, HostConnectionPool.Logger,
+                                    "after a connection candidate failed");
                             }
                         }
 
-                        var attemptFailure = new ConnectionAttemptFailure(ex);
+                        var attemptFailure = new ConnectionAttemptFailure(endPoint, ex);
                         attemptFailures.Add(attemptFailure);
                         if (Utils.IsFatalException(ex) || IsClosing)
                         {
@@ -963,19 +1005,80 @@ namespace Cassandra.Connections
                 return;
             }
 
+            ConnectionOpenOperation openOperation = null;
+            var notifyingHostUp = false;
             try
             {
-                var t = await CreateOpenConnection(false, schedule != null).ConfigureAwait(false);
+                var t = await CreateOpenConnectionCore(
+                        false,
+                        schedule != null,
+                        false,
+                        operation => openOperation = operation)
+                    .ConfigureAwait(false);
                 UpdateShardingInfo(t);
                 StartCreatingConnection(null);
+                notifyingHostUp = true;
                 _host.BringUpIfDown();
             }
-            catch (Exception)
+            catch (Exception ex) when (Utils.IsFatalException(ex))
             {
-                // The connection could not be opened
+                if (openOperation == null || !openOperation.Completion.Task.IsFaulted || openOperation.TryObserveConsumedFailure())
+                {
+                    ReportFatalBackgroundFailure(ex);
+                }
+
+                // Background tasks are fire-and-forget; record consumed fatal failures without retrying them.
+                throw;
+            }
+            catch (Exception ex) when (!Utils.IsFatalException(ex))
+            {
+                // A shared background failure is consumed once, including during teardown.
+                if (openOperation != null && openOperation.TryObserveConsumedFailure())
+                {
+                    try
+                    {
+                        HostConnectionPool.Logger.Info(
+                            IsClosing
+                                ? "Connection to {0} could not be created while the pool was closing: {1}"
+                                : "Connection to {0} could not be created and will be retried: {1}",
+                            _host.Address,
+                            ex);
+                    }
+                    catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
+                    {
+                        // Failed diagnostics must not prevent the consumed failure from being retried.
+                    }
+                    catch (Exception fatalDiagnosticFailure)
+                    {
+                        // A fatal callback from this catch body cannot reach the sibling fatal catch.
+                        ReportFatalBackgroundFailure(fatalDiagnosticFailure);
+                        throw;
+                    }
+                }
+                else if (openOperation != null && openOperation.Completion.Task.IsCompletedSuccessfully)
+                {
+                    try
+                    {
+                        HostConnectionPool.Logger.Warning(
+                            notifyingHostUp
+                                ? "Host-up notification for {0} failed during background connection maintenance: {1}"
+                                : "Background connection maintenance for {0} failed: {1}",
+                            _host.Address, ex);
+                    }
+                    catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
+                    {
+                        // Keep ordinary diagnostic failures from interrupting connection maintenance.
+                    }
+                    catch (Exception fatalDiagnosticFailure)
+                    {
+                        // A fatal callback from this catch body cannot reach the sibling fatal catch.
+                        ReportFatalBackgroundFailure(fatalDiagnosticFailure);
+                        throw;
+                    }
+                }
+
                 if (IsClosing)
                 {
-                    // don't mind, the pool is not supposed to be open
                     return;
                 }
 
@@ -996,6 +1099,20 @@ namespace Cassandra.Connections
             }
         }
 
+        private void ReportFatalBackgroundFailure(Exception failure)
+        {
+            try
+            {
+                HostConnectionPool.Logger.Error(
+                    "Fatal background connection maintenance failure for {0}; this attempt will not be retried: {1}",
+                    _host.Address, failure);
+            }
+            catch (Exception)
+            {
+                // Preserve the already-selected fatal failure if its diagnostic sink also fails.
+            }
+        }
+
         /// <summary>
         /// Opens one connection.
         /// If a connection is being opened it yields the same task, preventing creation in parallel.
@@ -1009,25 +1126,53 @@ namespace Cassandra.Connections
         /// <exception cref="UnsupportedProtocolVersionException" />
         private async Task<IConnection> CreateOpenConnection(bool satisfyWithAnOpenConnection, bool isReconnection)
         {
-            var concurrentOpenTcs = Volatile.Read(ref _connectionOpenTcs);
-            // Try to exit early (cheap) as there could be another thread creating / finishing creating
-            if (concurrentOpenTcs != null)
+            return await CreateOpenConnectionCore(
+                    satisfyWithAnOpenConnection,
+                    isReconnection,
+                    true,
+                    null)
+                .ConfigureAwait(false);
+        }
+
+        private async Task<IConnection> CreateOpenConnectionCore(
+            bool satisfyWithAnOpenConnection,
+            bool isReconnection,
+            bool failureObservedByCaller,
+            Action<ConnectionOpenOperation> operationSelected)
+        {
+            ConnectionOpenOperation openOperation;
+            var ownsOpenOperation = false;
+            lock (_connectionOpenLock)
             {
-                // There is another thread opening a new connection
-                return await concurrentOpenTcs.Task.ConfigureAwait(false);
+                openOperation = _connectionOpenOperation;
+                if (openOperation == null)
+                {
+                    openOperation = new ConnectionOpenOperation();
+                    _connectionOpenOperation = openOperation;
+                    ownsOpenOperation = true;
+                }
+
+                if (failureObservedByCaller)
+                {
+                    openOperation.MarkFailureObservedByCaller();
+                }
+
+                operationSelected?.Invoke(openOperation);
             }
-            var tcs = new TaskCompletionSource<IConnection>();
-            // Try to set the creation task source
-            concurrentOpenTcs = Interlocked.CompareExchange(ref _connectionOpenTcs, tcs, null);
-            if (concurrentOpenTcs != null)
+
+            if (!ownsOpenOperation)
             {
                 // There is another thread opening a new connection
-                return await concurrentOpenTcs.Task.ConfigureAwait(false);
+                return await openOperation.Completion.Task.ConfigureAwait(false);
             }
 
             if (IsClosing)
             {
-                return await FinishOpen(tcs, false, HostConnectionPool.GetNotConnectedException()).ConfigureAwait(false);
+                return await FinishOpen(
+                        openOperation,
+                        false,
+                        HostConnectionPool.GetNotConnectedException())
+                    .ConfigureAwait(false);
             }
 
             // Before creating, make sure that its still needed
@@ -1044,9 +1189,10 @@ namespace Cassandra.Connections
                         UpdateStatus(initializationCompleted: true);
                     }
 
-                    return await FinishOpen(tcs, false, HostConnectionPool.GetNotConnectedException()).ConfigureAwait(false);
+                    return await FinishOpen(openOperation, false, HostConnectionPool.GetNotConnectedException()).ConfigureAwait(false);
                 }
-                return await FinishOpen(tcs, true, null, connectionsSnapshot[0]).ConfigureAwait(false);
+
+                return await FinishOpen(openOperation, true, null, connectionsSnapshot[0]).ConfigureAwait(false);
             }
 
             if (satisfyWithAnOpenConnection && !_canCreateForeground)
@@ -1056,9 +1202,14 @@ namespace Cassandra.Connections
                 if (connectionsSnapshot.Length == 0)
                 {
                     // When creating in foreground, it failed
-                    return await FinishOpen(tcs, false, HostConnectionPool.GetNotConnectedException()).ConfigureAwait(false);
+                    return await FinishOpen(
+                            openOperation,
+                            false,
+                            HostConnectionPool.GetNotConnectedException())
+                        .ConfigureAwait(false);
                 }
-                return await FinishOpen(tcs, false, null, connectionsSnapshot[0]).ConfigureAwait(false);
+
+                return await FinishOpen(openOperation, false, null, connectionsSnapshot[0]).ConfigureAwait(false);
             }
 
             HostConnectionPool.Logger.Info("Creating a new connection to {0}", _host.Address);
@@ -1113,8 +1264,7 @@ namespace Cassandra.Connections
                     UpdateStatus(initializationCompleted: true);
                 }
 
-                HostConnectionPool.Logger.Info("Connection to {0} could not be created: {1}", _host.Address, ex);
-                return await FinishOpen(tcs, true, ex).ConfigureAwait(false);
+                return await FinishOpen(openOperation, true, ex).ConfigureAwait(false);
             }
 
             if (!TryAddConnectionToPool(c, !addedDuringOpen, out newLength))
@@ -1130,16 +1280,24 @@ namespace Cassandra.Connections
                     GetHashCode());
                 c.Dispose();
                 return await FinishOpen(
-                        tcs,
+                        openOperation,
                         !IsClosing,
                         HostConnectionPool.GetNotConnectedException())
                     .ConfigureAwait(false);
             }
 
-            HostConnectionPool.Logger.Info("Connection to {0} opened successfully, pool #{1} length: {2}",
-                _host.Address, GetHashCode(), newLength);
+            var opened = await FinishOpen(openOperation, true, null, c).ConfigureAwait(false);
+            try
+            {
+                HostConnectionPool.Logger.Info("Connection to {0} opened successfully, pool #{1} length: {2}",
+                    _host.Address, GetHashCode(), newLength);
+            }
+            catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
+            {
+                // A diagnostic sink must not invalidate an already published connection.
+            }
 
-            return await FinishOpen(tcs, true, null, c).ConfigureAwait(false);
+            return opened;
         }
 
         private int GetLeastRepresentedShard(int shardCount)
@@ -1172,7 +1330,7 @@ namespace Cassandra.Connections
         }
 
         private Task<IConnection> FinishOpen(
-            TaskCompletionSource<IConnection> tcs,
+            ConnectionOpenOperation openOperation,
             bool preventForeground,
             Exception ex,
             IConnection c = null)
@@ -1182,9 +1340,17 @@ namespace Cassandra.Connections
             {
                 _canCreateForeground = false;
             }
-            Interlocked.Exchange(ref _connectionOpenTcs, null);
-            tcs.TrySet(ex, c);
-            return tcs.Task;
+
+            lock (_connectionOpenLock)
+            {
+                if (ReferenceEquals(_connectionOpenOperation, openOperation))
+                {
+                    _connectionOpenOperation = null;
+                }
+            }
+
+            openOperation.Completion.TrySet(ex, c);
+            return openOperation.Completion.Task;
         }
 
         private static SocketException GetNotConnectedException()
@@ -1332,18 +1498,18 @@ namespace Cassandra.Connections
                     ex.MaxRequestsPerConnection, ex.ConnectionLength);
                 triedHosts[_host.Address] = ex;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (!Utils.IsFatalException(ex))
             {
                 // Probably a SocketException/AuthenticationException, move along
                 if (!_canCreateForeground && createIfNeeded)
                 {
-                    HostConnectionPool.Logger.Verbose("Could not open a connection to {0} " +
-                                                      "because the pool is not allowing creation of connections in the foreground. " +
-                                                      "Exception: {1}", _host.Address, ex.ToString());
+                    HostConnectionPool.Logger.Verbose("Could not open a connection to {0}: {1}. " +
+                                                      "Further foreground connection creation is disabled for this pool.",
+                                                      _host.Address, ex);
                 }
                 else
                 {
-                    HostConnectionPool.Logger.Warning("Exception while trying borrow a connection from a pool: {0}", ex.ToString());
+                    HostConnectionPool.Logger.Warning("Exception while trying borrow a connection from a pool: {0}", ex);
                 }
                 triedHosts[_host.Address] = ex;
             }
@@ -1434,19 +1600,64 @@ namespace Cassandra.Connections
                 }
                 catch (Exception ex) when (!Utils.IsFatalException(ex))
                 {
-                    HostConnectionPool.Logger.Warning(
-                        "Pool #{0} for host {1} failed to open a warmup connection: {2} of {3} open, " +
-                        "attempted shard: {4}, shard count: {5}, error: {6}",
-                        GetHashCode(), _host.Address, _connections.Count, _expectedConnectionLength,
-                        shardingInfo == null ? "unknown" : lastAttemptedShard.ToString(),
-                        shardingInfo == null ? "unknown" : shardingInfo.ScyllaNrShards.ToString(), ex);
+                    if (!IsClosing)
+                    {
+                        try
+                        {
+                            HostConnectionPool.Logger.Warning(
+                                "Pool #{0} for host {1} failed to open a warmup connection: {2} of {3} open, " +
+                                "attempted shard: {4}, shard count: {5}, error: {6}",
+                                GetHashCode(), _host.Address, _connections.Count, _expectedConnectionLength,
+                                shardingInfo == null ? "unknown" : lastAttemptedShard.ToString(),
+                                shardingInfo == null ? "unknown" : shardingInfo.ScyllaNrShards.ToString(), ex);
+                        }
+                        catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
+                        {
+                            // A diagnostic sink must not prevent recovery of the retained connections.
+                        }
+                    }
+
                     OnConnectionClosing();
                     break;
                 }
             }
             if (!IsClosing && _connections.Count > 0)
             {
-                _host.BringUpIfDown();
+                try
+                {
+                    _host.BringUpIfDown();
+                }
+                catch (Exception notificationFailure) when (!Utils.IsFatalException(notificationFailure))
+                {
+                    try
+                    {
+                        HostConnectionPool.Logger.Warning("Host-up notification for {0} failed after successful pool warmup: {1}",
+                            _host.Address, notificationFailure);
+                    }
+                    catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
+                    {
+                        // Ordinary notification diagnostics must not invalidate the open pool.
+                    }
+                }
+            }
+        }
+
+        private sealed class ConnectionOpenOperation
+        {
+            private int _failureObserved;
+
+            internal TaskCompletionSource<IConnection> Completion { get; } =
+                new TaskCompletionSource<IConnection>();
+
+            internal bool TryObserveConsumedFailure()
+            {
+                return Completion.Task.IsFaulted &&
+                       Interlocked.CompareExchange(ref _failureObserved, 1, 0) == 0;
+            }
+
+            internal void MarkFailureObservedByCaller()
+            {
+                Interlocked.Exchange(ref _failureObserved, 1);
             }
         }
 

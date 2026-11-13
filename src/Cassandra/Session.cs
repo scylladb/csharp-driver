@@ -43,6 +43,13 @@ namespace Cassandra
 
         [ThreadStatic]
         private static List<Action> _deferredMetricsRetirements;
+
+        [ThreadStatic]
+        private static Queue<Action> _deferredMetricsRetirementDiagnostics;
+
+        [ThreadStatic]
+        private static bool _isDrainingMetricsRetirements;
+
         [ThreadStatic]
         private static Stack<Session> _activePoolLookups;
 
@@ -273,89 +280,211 @@ namespace Cassandra
         /// <summary>
         /// Creates the required connections on all hosts in the local DC.
         /// Returns a Task that is marked as completed after all pools were warmed up.
-        /// If all host pool warmups fail with recoverable errors, it logs an error.
-        /// Fatal errors propagate to the caller.
+        /// Unless disposed, reports consumed failures from started host warmup tasks at Info,
+        /// excluding causes returned to the caller. Setup and fatal failures keep priority;
+        /// pending co-host diagnostics do not delay a synchronous fatal setup failure.
+        /// Logs an additional error when all started host warmups fail recoverably.
         /// </summary>
         private async Task Warmup()
         {
             var hosts = _cluster.AllHosts().Where(h => _cluster.RetrieveAndSetDistance(h) == HostDistance.Local).ToArray();
             var poolCreations = new Task<Task>[hosts.Length];
-            for (var i = 0; i < hosts.Length; i++)
-            {
-                try
-                {
-                    poolCreations[i] = WarmupHost(hosts[i]);
-                }
-                catch (Exception failure) when (!Utils.IsFatalException(failure))
-                {
-                    // Include ordinary synchronous setup in the fatal-priority aggregation.
-                    poolCreations[i] = Task.FromException<Task>(failure);
-                }
-            }
-
-            // Keep setup failures outside the recoverable asynchronous-warmup catch,
-            // including setup retried after the previous metrics bucket retires.
-            var allCreations = Task.WhenAll(poolCreations);
-            Task[] hostWarmups;
+            var reportingStarted = false;
             try
             {
-                hostWarmups = await allCreations.ConfigureAwait(false);
-            }
-            catch
-            {
-                var fatal = allCreations.Exception?.Flatten().InnerExceptions.FirstOrDefault(Utils.IsFatalException);
-                if (fatal != null)
+                for (var i = 0; i < hosts.Length; i++)
                 {
-                    ExceptionDispatchInfo.Capture(fatal).Throw();
+                    try
+                    {
+                        poolCreations[i] = WarmupHost(hosts[i]);
+                    }
+                    catch (Exception failure) when (!Utils.IsFatalException(failure))
+                    {
+                        // Include ordinary synchronous setup in the fatal-priority aggregation.
+                        poolCreations[i] = Task.FromException<Task>(failure);
+                    }
                 }
 
-                // Setup may fail after other hosts have started opening. Observe
-                // those warmups too, so their fatal failures keep priority.
-                var completedCreations = await Task.WhenAll(poolCreations
-                    .Where(creation => creation.Status == TaskStatus.RanToCompletion)).ConfigureAwait(false);
-                var startedWarmups = Task.WhenAll(completedCreations.Where(warmup => warmup != null));
+                // Keep setup failures outside the recoverable asynchronous-warmup catch,
+                // including setup retried after the previous metrics bucket retires.
+                var allCreations = Task.WhenAll(poolCreations);
+                Task[] hostWarmups;
                 try
                 {
-                    await startedWarmups.ConfigureAwait(false);
+                    hostWarmups = await allCreations.ConfigureAwait(false);
                 }
-                catch (Exception failure) when (!Utils.IsFatalException(failure))
+                catch
                 {
-                    fatal = startedWarmups.Exception?.Flatten().InnerExceptions.FirstOrDefault(Utils.IsFatalException);
+                    var fatal = allCreations.Exception?.Flatten().InnerExceptions.FirstOrDefault(Utils.IsFatalException);
                     if (fatal != null)
                     {
                         ExceptionDispatchInfo.Capture(fatal).Throw();
                     }
+
+                    // Setup may fail after other hosts have started opening. Observe
+                    // those warmups too, so their fatal failures keep priority.
+                    var completedCreations = await Task.WhenAll(poolCreations
+                        .Where(creation => creation.Status == TaskStatus.RanToCompletion)).ConfigureAwait(false);
+                    var startedWarmups = Task.WhenAll(completedCreations.Where(warmup => warmup != null));
+                    try
+                    {
+                        await startedWarmups.ConfigureAwait(false);
+                    }
+                    catch (Exception failure) when (!Utils.IsFatalException(failure))
+                    {
+                        fatal = startedWarmups.Exception?.Flatten().InnerExceptions.FirstOrDefault(Utils.IsFatalException);
+                        if (fatal != null)
+                        {
+                            ExceptionDispatchInfo.Capture(fatal).Throw();
+                        }
+                    }
+
+                    throw;
                 }
+
+                var tasks = hostWarmups.Where(task => task != null).ToArray();
+                var allWarmups = Task.WhenAll(tasks);
+                try
+                {
+                    await allWarmups.ConfigureAwait(false);
+                }
+                catch
+                {
+                    var fatal = allWarmups.Exception?.Flatten().InnerExceptions.FirstOrDefault(Utils.IsFatalException);
+                    if (fatal != null)
+                    {
+                        ExceptionDispatchInfo.Capture(fatal).Throw();
+                    }
+
+                    if (IsDisposed)
+                    {
+                        // Shutdown may close connections while initial warmup is still pending.
+                        return;
+                    }
+
+                    reportingStarted = true;
+                    await ReportConsumedWarmupFailures(hosts, poolCreations, null).ConfigureAwait(false);
+                    if (IsDisposed)
+                    {
+                        return;
+                    }
+
+                    if (tasks.Any(t => t.Status == TaskStatus.RanToCompletion))
+                    {
+                        // At least 1 of the warmup tasks completed
+                        return;
+                    }
+
+                    // Log and continue as the ControlConnection is connected
+                    Session.Logger.Error($"Connection pools for {tasks.Length} host(s) failed to be warmed up");
+                }
+            }
+            catch (Exception failure)
+            {
+                if (!reportingStarted)
+                {
+                    // Preserve the selected outcome before diagnostics can invoke user callbacks.
+                    // An immediate fatal setup must not start waiting for a co-host's open.
+                    var reporting = ReportConsumedWarmupFailures(hosts, poolCreations, failure);
+                    if (reporting.IsCompleted)
+                    {
+                        await reporting.ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        reporting.Forget();
+                    }
+                }
+
                 throw;
             }
-            var tasks = hostWarmups.Where(task => task != null).ToArray();
-            var allWarmups = Task.WhenAll(tasks);
-            try
+        }
+
+        private async Task ReportConsumedWarmupFailures(Host[] hosts, Task<Task>[] poolCreations, Exception returnedError)
+        {
+            Exception fatalDiagnosticFailure = null;
+            for (var i = 0; i < poolCreations.Length; i++)
             {
-                await allWarmups.ConfigureAwait(false);
-            }
-            catch
-            {
-                var fatal = allWarmups.Exception?.Flatten().InnerExceptions.FirstOrDefault(Utils.IsFatalException);
-                if (fatal != null)
+                var creation = poolCreations[i];
+                if (creation == null)
                 {
-                    ExceptionDispatchInfo.Capture(fatal).Throw();
+                    continue;
+                }
+
+                Task warmup;
+                try
+                {
+                    warmup = await creation.ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
+                    // Setup failures are selected by Warmup, not failed initial opens.
+                    continue;
+                }
+
+                if (warmup == null)
+                {
+                    continue;
+                }
+
+                Exception failure;
+                try
+                {
+                    await warmup.ConfigureAwait(false);
+                    continue;
+                }
+                catch (Exception observed)
+                {
+                    // Canceled tasks have no Exception property; preserve their original cause.
+                    failure = warmup.Exception ?? observed;
                 }
 
                 if (IsDisposed)
                 {
-                    // Shutdown may close connections while initial warmup is still pending.
-                    return;
+                    break;
                 }
 
-                if (tasks.Any(t => t.Status == TaskStatus.RanToCompletion))
+                failure = ConsumedConnectionFailures.ExcludeReturnedCauses(failure, returnedError);
+                if (failure != null && fatalDiagnosticFailure != null)
                 {
-                    // At least 1 of the warmup tasks completed
-                    return;
+                    failure = ConsumedConnectionFailures.ExcludeReturnedCauses(failure, fatalDiagnosticFailure);
                 }
 
-                // Log and continue as the ControlConnection is connected
-                Session.Logger.Error($"Connection pools for {tasks.Length} host(s) failed to be warmed up");
+                if (failure == null)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    Session.Logger.Info("Connection pool for host {0} failed to warm up: {1}", hosts[i].Address, failure);
+                }
+                catch (Exception diagnosticFailure) when (Utils.CanSuppressException(diagnosticFailure, fatalDiagnosticFailure ?? returnedError))
+                {
+                    // Keep ordinary diagnostics from changing the result, and retain an earlier fatal.
+                }
+                catch (Exception diagnosticFailure)
+                {
+                    // Keep the first fatal callback, but visit the remaining consumed causes
+                    // before propagating it. A later fatal callback cannot replace it.
+                    fatalDiagnosticFailure = diagnosticFailure;
+                    if (returnedError != null)
+                    {
+                        // Only a new fatal diagnostic can replace an ordinary selected setup error.
+                        Utils.LogSecondaryException(returnedError, diagnosticFailure, Session.Logger,
+                            "after a warmup diagnostic failed");
+                    }
+                }
+
+                if (IsDisposed)
+                {
+                    break;
+                }
+            }
+
+            if (fatalDiagnosticFailure != null)
+            {
+                ExceptionDispatchInfo.Capture(fatalDiagnosticFailure).Throw();
             }
         }
 
@@ -548,6 +677,14 @@ namespace Cassandra
             _deferredMetricsRetirements.Add(retirement);
         }
 
+        private static void DeferFailedMetricsRetirementDiagnostic(Host host, Exception cleanupFailure)
+        {
+            _deferredMetricsRetirementDiagnostics ??= new Queue<Action>();
+            _deferredMetricsRetirementDiagnostics.Enqueue(() =>
+                Logger.Error("Could not retire failed pool metrics for {0}; this host is blocked for the rest of this session: {1}",
+                    host.Address, cleanupFailure));
+        }
+
         private IHostConnectionPool GetOrCreateConnectionPool(Host host, HostDistance distance, bool allowDownHost)
         {
             var clientRoutesEnabled = Configuration.ClientRoutesRuntime != null;
@@ -601,8 +738,7 @@ namespace Cassandra
                             }
                             catch (Exception cleanupFailure) when (Utils.CanSuppressException(cleanupFailure, primaryFailure))
                             {
-                                Utils.LogSecondaryException(cleanupFailure, primaryFailure, Logger,
-                                    "while retiring node metrics after pool initialization failed");
+                                DeferFailedMetricsRetirementDiagnostic(host, cleanupFailure);
                             }
                         });
                     }
@@ -628,54 +764,139 @@ namespace Cassandra
 
         private void RunOrDeferMetricsRetirement(Action retirement)
         {
-            if (!IsPoolLifecycleLockHeld())
-            {
-                retirement();
-                return;
-            }
-
-            // Metrics/policy callbacks can remove a host or shut down a session beneath
-            // a recursive creation lock. Keep the terminal state, but run teardown after
-            // the outer lookup unwinds. The thread owns this queue across sessions.
+            // The drain owns inline teardown too: nested lookups must finish their
+            // cleanup before diagnostics can interrupt the outer provider callback.
+            // A held creation lock or active drain defers this work to its outer owner.
             DeferMetricsRetirement(retirement);
+            DrainDeferredMetricsRetirements(null);
         }
 
         private void DrainDeferredMetricsRetirements(Exception primaryFailure)
         {
-            if (_deferredMetricsRetirements == null || IsPoolLifecycleLockHeld())
+            if (_isDrainingMetricsRetirements || IsPoolLifecycleLockHeld())
             {
                 return;
             }
 
-            var pending = _deferredMetricsRetirements;
-            _deferredMetricsRetirements = null;
             Exception failure = null;
-            foreach (var retirement in pending)
+            Exception diagnosticFailure = null;
+            List<Exception> retirementFailures = null;
+            Queue<Action> diagnostics = null;
+            var reportedRetirementFailure = false;
+            _isDrainingMetricsRetirements = true;
+            try
             {
-                try
+                do
                 {
-                    retirement();
-                }
-                catch (Exception error)
-                {
-                    // Settle every queued barrier, retaining fatal failure priority.
-                    if (failure == null || !Utils.CanSuppressException(error, failure))
+                    reportedRetirementFailure = false;
+                    // Reentrant provider callbacks may queue more cleanup. The outer drain
+                    // owns it until every queued retirement has settled, across sessions.
+                    while (_deferredMetricsRetirements != null)
                     {
-                        failure = error;
+                        var pending = _deferredMetricsRetirements;
+                        _deferredMetricsRetirements = null;
+                        foreach (var retirement in pending)
+                        {
+                            try
+                            {
+                                retirement();
+                            }
+                            catch (Exception error)
+                            {
+                                retirementFailures ??= new List<Exception>();
+                                retirementFailures.Add(error);
+                                // Settle every queued barrier, retaining fatal failure priority.
+                                if (failure == null || !Utils.CanSuppressException(error, failure))
+                                {
+                                    failure = error;
+                                }
+                            }
+                        }
+                    }
+
+                    // Diagnostic sinks run after cleanup and outside pool locks. Reentrant
+                    // lookups cannot drain them early or promote their failures to cleanup.
+                    if (diagnostics == null || diagnostics.Count == 0)
+                    {
+                        diagnostics = _deferredMetricsRetirementDiagnostics;
+                        _deferredMetricsRetirementDiagnostics = null;
+                    }
+
+                    if (diagnostics != null && diagnostics.TryDequeue(out var diagnostic))
+                    {
+                        try
+                        {
+                            diagnostic();
+                        }
+                        catch (Exception error)
+                        {
+                            if (diagnosticFailure == null && Utils.IsFatalException(error))
+                            {
+                                diagnosticFailure = error;
+                            }
+                        }
+                    }
+
+                    if (retirementFailures != null && _deferredMetricsRetirements == null &&
+                        _deferredMetricsRetirementDiagnostics == null && (diagnostics == null || diagnostics.Count == 0))
+                    {
+                        var selectedFailure = Utils.IsFatalException(primaryFailure) ? primaryFailure
+                            : Utils.IsFatalException(failure) ? failure : diagnosticFailure ?? primaryFailure ?? failure;
+                        for (var i = 0; i < retirementFailures.Count; i++)
+                        {
+                            var secondaryFailure = retirementFailures[i];
+                            if (ReferenceEquals(secondaryFailure, selectedFailure))
+                            {
+                                continue;
+                            }
+
+                            // Remove before invoking listeners. Reentrant cleanup must finish
+                            // before another warning, and a fatal warning can change the result.
+                            retirementFailures.RemoveAt(i);
+                            reportedRetirementFailure = true;
+                            try
+                            {
+                                Utils.LogSecondaryException(secondaryFailure, selectedFailure, Logger,
+                                    "while draining metrics retirement");
+                            }
+                            catch (Exception error)
+                            {
+                                if (diagnosticFailure == null && Utils.IsFatalException(error))
+                                {
+                                    diagnosticFailure = error;
+                                }
+                            }
+
+                            break;
+                        }
                     }
                 }
+                while (_deferredMetricsRetirements != null || _deferredMetricsRetirementDiagnostics != null ||
+                    diagnostics?.Count > 0 || reportedRetirementFailure);
             }
-            if (failure != null)
+            finally
             {
-                if (primaryFailure != null && Utils.CanSuppressException(failure, primaryFailure))
-                {
-                    Utils.LogSecondaryException(failure, primaryFailure, Logger,
-                        "while draining metrics retirement after pool initialization failed");
-                }
-                else
-                {
-                    ExceptionDispatchInfo.Capture(failure).Throw();
-                }
+                _isDrainingMetricsRetirements = false;
+            }
+
+            if (Utils.IsFatalException(primaryFailure))
+            {
+                return;
+            }
+
+            if (Utils.IsFatalException(failure))
+            {
+                ExceptionDispatchInfo.Capture(failure).Throw();
+            }
+
+            if (diagnosticFailure != null)
+            {
+                ExceptionDispatchInfo.Capture(diagnosticFailure).Throw();
+            }
+
+            if (failure != null && primaryFailure == null)
+            {
+                ExceptionDispatchInfo.Capture(failure).Throw();
             }
         }
 
@@ -842,8 +1063,7 @@ namespace Cassandra
                     }
                     catch (Exception cleanupFailure) when (Utils.CanSuppressException(cleanupFailure, initializationFailure))
                     {
-                        Utils.LogSecondaryException(cleanupFailure, initializationFailure, Logger,
-                            "while detaching node metrics after pool initialization failed");
+                        DeferFailedMetricsRetirementDiagnostic(host, cleanupFailure);
                     }
                 }
                 throw;
@@ -1171,6 +1391,14 @@ namespace Cassandra
                         new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously));
                     retiredMetrics = _metricsManager.DetachNodeMetrics(host);
                 }
+            }
+
+            if (retirePoolOnly && !IsPoolLifecycleLockHeld())
+            {
+                // An in-progress metrics retirement already owns teardown. Explicit removal
+                // must still close its detached pool before that provider callback returns.
+                DisposeRemovedPool(entry);
+                return;
             }
 
             RunOrDeferMetricsRetirement(() =>
