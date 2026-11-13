@@ -38,13 +38,14 @@ namespace Cassandra
     /// <inheritdoc cref="ISession" />
     public class Session : IInternalSession
     {
+        private static readonly Logger Logger = new Logger(typeof(Session));
+
         [ThreadStatic]
         private static List<Action> _deferredMetricsRetirements;
         [ThreadStatic]
         private static Stack<Session> _activePoolLookups;
 
         private readonly ISerializerManager _serializerManager;
-        private static readonly Logger Logger = new Logger(typeof(Session));
         private readonly IThreadSafeDictionary<IPEndPoint, HostPool> _connectionPool;
         private readonly IThreadSafeDictionary<IPEndPoint, TaskCompletionSource<bool>> _metricsRetirements =
             new CopyOnWriteDictionary<IPEndPoint, TaskCompletionSource<bool>>();
@@ -466,6 +467,12 @@ namespace Cassandra
             return false;
         }
 
+        private static void DeferMetricsRetirement(Action retirement)
+        {
+            _deferredMetricsRetirements ??= new List<Action>();
+            _deferredMetricsRetirements.Add(retirement);
+        }
+
         private IHostConnectionPool GetOrCreateConnectionPool(Host host, HostDistance distance, bool allowDownHost)
         {
             var clientRoutesEnabled = Configuration.ClientRoutesRuntime != null;
@@ -535,12 +542,6 @@ namespace Cassandra
             // lock. Retain the address barrier, but run teardown after the outer lookup
             // unwinds. The thread owns this queue, including removals in other sessions.
             DeferMetricsRetirement(retirement);
-        }
-
-        private static void DeferMetricsRetirement(Action retirement)
-        {
-            _deferredMetricsRetirements ??= new List<Action>();
-            _deferredMetricsRetirements.Add(retirement);
         }
 
         private void DrainDeferredMetricsRetirements(Exception primaryFailure)
