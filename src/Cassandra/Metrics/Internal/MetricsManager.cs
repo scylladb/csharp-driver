@@ -113,13 +113,19 @@ namespace Cassandra.Metrics.Internal
         /// <inheritdoc />
         public void RemoveNodeMetrics(Host host)
         {
+            DetachNodeMetrics(host)?.Dispose();
+        }
+
+        /// <inheritdoc />
+        public INodeMetrics DetachNodeMetrics(Host host)
+        {
             if (!_nodeMetricsCollection.TryRemove(host, out var nodeMetrics))
             {
-                return;
+                return null;
             }
 
             _nodeMetricsRegistryCollection.TryRemove(host, out _);
-            nodeMetrics.Dispose();
+            return nodeMetrics;
         }
 
         /// <inheritdoc />

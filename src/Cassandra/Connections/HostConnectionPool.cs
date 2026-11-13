@@ -1387,6 +1387,10 @@ namespace Cassandra.Connections
                     break;
                 }
             }
+            if (!IsClosing && _connections.Count > 0)
+            {
+                _host.BringUpIfDown();
+            }
         }
     }
 }
