@@ -459,10 +459,12 @@ namespace Cassandra
                     newPool.AllConnectionClosed += InternalRef.OnAllConnectionClosed;
                     newPool.SetDistance(distance);
                     _metricsManager.GetOrCreateNodeMetrics(host).InitializePoolGauges(newPool);
-                    // Revalidate after user metrics callbacks, which can change host state.
-                    if (clientRoutesEnabled && !allowDownHost && !host.IsUp)
+                    // Revalidate after metrics registration, which can invoke user callbacks
+                    // or overlap another request's policy-distance evaluation.
+                    if (!IsPoolHostEligible(host, clientRoutesEnabled, allowDownHost, ref distance))
                     {
-                        throw new HostConnectionPoolNotEligibleException("it is down");
+                        throw new HostConnectionPoolNotEligibleException(
+                            distance == HostDistance.Ignored ? "its policy distance is ignored" : "it is down");
                     }
                     lock (_connectionPoolPublicationLock)
                     {

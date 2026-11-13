@@ -533,6 +533,98 @@ namespace Cassandra.Tests
             }
         }
 
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public async Task Should_RejectPoolPublicationWhenHostBecomesIgnoredDuringMetricsRegistration(
+            bool warmup, bool metricsCleanupThrows)
+        {
+            using var registering = new ManualResetEventSlim();
+            using var completeRegistration = new ManualResetEventSlim();
+            var metricsProvider = CreateMetricsProviderForRemovalTests();
+            metricsProvider.Setup(value => value.Gauge(
+                    It.IsAny<string>(), It.IsAny<IMetric>(), It.IsAny<Func<double?>>()))
+                .Returns((string _, IMetric metric, Func<double?> __) =>
+                {
+                    if (metric is NodeMetric)
+                    {
+                        registering.Set();
+                        Assert.IsTrue(completeRegistration.Wait(5000), "Metrics registration was not released.");
+                    }
+                    return Mock.Of<IDriverGauge>();
+                });
+            if (metricsCleanupThrows)
+            {
+                metricsProvider.Setup(value => value.ShutdownMetricsBucket(It.Is<string>(bucket => bucket.Contains(".nodes."))))
+                    .Throws(new InvalidOperationException("node metrics cleanup failed"));
+            }
+            var pool = new Mock<IHostConnectionPool>();
+            var factory = new Mock<IHostConnectionPoolFactory>();
+            factory.Setup(value => value.Create(
+                    It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>())).Returns(pool.Object);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = factory.Object,
+                MetricsProvider = metricsProvider.Object,
+                ClientRoutesOptions = new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+            }.Build();
+            using var metadata = new Metadata(config);
+            var host = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
+            host.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var policyDistance = (int)HostDistance.Local;
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            cluster.Setup(value => value.AllHosts()).Returns(() => metadata.AllHosts());
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns((Host selectedHost) =>
+            {
+                var distance = (HostDistance)Volatile.Read(ref policyDistance);
+                selectedHost.SetDistance(distance);
+                return distance;
+            });
+            try
+            {
+                using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "ignored-during-metrics-test");
+                var internalSession = (IInternalSession)session;
+                var attempt = Task.Run(async () =>
+                {
+                    if (warmup)
+                    {
+                        await internalSession.Init().ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        var error = Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
+                            internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+                        StringAssert.Contains("its policy distance is ignored", error.Message);
+                    }
+                });
+                try
+                {
+                    Assert.IsTrue(registering.Wait(5000), "Pool creation did not reach metrics registration.");
+                    Volatile.Write(ref policyDistance, (int)HostDistance.Ignored);
+                    // Another request evaluates the policy while registration is pending.
+                    Assert.AreEqual(HostDistance.Ignored, cluster.Object.RetrieveAndSetDistance(host));
+                }
+                finally
+                {
+                    completeRegistration.Set();
+                    await attempt.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+                Assert.IsTrue(host.IsUp);
+                Assert.AreEqual(HostDistance.Ignored, host.GetDistanceUnsafe());
+                Assert.IsEmpty(internalSession.GetPools());
+                Assert.IsEmpty(session.GetMetrics().NodeMetrics);
+                pool.Verify(value => value.Warmup(), Times.Never);
+                pool.Verify(value => value.Dispose(), Times.Once);
+            }
+            finally
+            {
+                config.Timer.Dispose();
+            }
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         public void Should_PreservePublishedPoolMetricsWhenOuterInitializationFails(bool clientRoutesEnabled)
@@ -1014,7 +1106,7 @@ namespace Cassandra.Tests
                 var expectedDistance = clientRoutesEnabled ? HostDistance.Remote : HostDistance.Local;
                 Mock.Get(replacementPool).Verify(value => value.SetDistance(expectedDistance), Times.Once);
                 cluster.Verify(value => value.RetrieveAndSetDistance(It.Is<Host>(host => ReferenceEquals(host, replacementHost))),
-                    clientRoutesEnabled ? Times.Once() : Times.Never());
+                    clientRoutesEnabled ? Times.Exactly(2) : Times.Never());
                 Mock.Get(oldPool).Verify(value => value.OnHostRemoved(), Times.Once);
                 Mock.Get(oldPool).Verify(value => value.Dispose(), Times.Once);
             }
