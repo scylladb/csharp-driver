@@ -2809,15 +2809,16 @@ namespace Cassandra.Tests.Connections
         }
 
         [NonParallelizable]
-        [TestCase(true, true, false)]
-        [TestCase(false, true, false)]
-        [TestCase(false, false, true)]
+        [TestCase(true, true, false, false)]
+        [TestCase(false, true, false, false)]
+        [TestCase(false, false, true, false)]
+        [TestCase(false, false, true, true)]
         public async Task Should_CompleteRejectedOpenForAllWaiters_WhenCleanupOrDiagnosticFails(
-            bool failShardPublication, bool failDisposal, bool failDiagnostic)
+            bool failShardPublication, bool failDisposal, bool failDiagnostic, bool fatalDiagnostic)
         {
             var shardingReadStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var releaseShardingRead = new ManualResetEventSlim(false);
-            var fatalFailure = new OutOfMemoryException("rejected connection disposal failed");
+            var fatalFailure = new OutOfMemoryException("rejected connection cleanup failed");
             var attempts = 0;
             Mock<IConnection> rejectedConnection = null;
             var target = CreatePool(
@@ -2855,7 +2856,7 @@ namespace Cassandra.Tests.Connections
             {
                 listener.Setup(value => value.WriteLine(It.Is<string>(message =>
                         message.Contains("was removed or closed while publishing shard state"))))
-                    .Throws(new InvalidOperationException("post-publication diagnostic failed"));
+                    .Throws(fatalDiagnostic ? fatalFailure : new InvalidOperationException("post-publication diagnostic failed"));
             }
             Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
             Trace.Listeners.Add(listener.Object);
@@ -2871,7 +2872,7 @@ namespace Cassandra.Tests.Connections
 
                 foreach (var waiter in new[] { opening, joining })
                 {
-                    if (failDisposal)
+                    if (failDisposal || fatalDiagnostic)
                     {
                         var failure = await Assert.ThrowsAsync<OutOfMemoryException>(async () =>
                             await waiter.WaitToCompleteAsync(5000).ConfigureAwait(false));

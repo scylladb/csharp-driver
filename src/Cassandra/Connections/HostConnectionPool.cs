@@ -1276,8 +1276,11 @@ namespace Cassandra.Connections
                     {
                         // Failed diagnostics must not prevent cleanup or completion of a rejected open.
                     }
-                    c.Closing -= OnConnectionClosing;
-                    TryDisposeRejectedConnection(c, "post-publication validation failed");
+                    finally
+                    {
+                        c.Closing -= OnConnectionClosing;
+                        TryDisposeRejectedConnection(c, "post-publication validation failed");
+                    }
                 }
                 catch (Exception cleanupFailure)
                 {
