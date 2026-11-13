@@ -99,14 +99,20 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             var existingEntries = await GetAsync(_nodeUris[0]).ConfigureAwait(false);
             if (existingEntries.Count == 0)
             {
-                await WaitUntilAllNodesSeeAsync(new ClientRouteApiEntry[0]).ConfigureAwait(false);
-                return;
+                foreach (var nodeUri in _nodeUris.Skip(1))
+                {
+                    existingEntries.AddRange(await GetAsync(nodeUri).ConfigureAwait(false));
+                }
             }
 
             var keys = existingEntries
                 .Select(entry => entry.Key)
+                .Distinct()
                 .ToArray();
-            await SendAsync(_nodeUris[0], HttpMethod.Delete, keys).ConfigureAwait(false);
+            if (keys.Length > 0)
+            {
+                await SendAsync(_nodeUris[0], HttpMethod.Delete, keys).ConfigureAwait(false);
+            }
             await WaitUntilAllNodesSeeAsync(new ClientRouteApiEntry[0]).ConfigureAwait(false);
         }
 
@@ -159,7 +165,6 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                             if (!EntriesMatch(actualEntries, expectedEntries, requireExactMatch))
                             {
                                 allNodesMatch = false;
-                                break;
                             }
                         }
                         catch (Exception ex) when (
@@ -172,7 +177,6 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                         {
                             failuresByNode[nodeUri] = ex;
                             allNodesMatch = false;
-                            break;
                         }
                     }
 
@@ -211,7 +215,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 }
 
                 return JsonConvert.DeserializeObject<List<ClientRouteApiEntry>>(responseBody) ??
-                       new List<ClientRouteApiEntry>();
+                       throw new JsonSerializationException("The client-routes response must be a JSON array.");
             }
         }
 
@@ -229,7 +233,9 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                     if (!response.IsSuccessStatusCode)
                     {
                         throw new HttpRequestException(
-                            $"{method} {request.RequestUri} returned {(int)response.StatusCode}: {responseBody}");
+                            $"{method} {request.RequestUri} returned {(int)response.StatusCode}: {responseBody}",
+                            null,
+                            response.StatusCode);
                     }
                 }
             }

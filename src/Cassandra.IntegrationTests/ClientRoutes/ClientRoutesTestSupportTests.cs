@@ -204,6 +204,36 @@ namespace Cassandra.IntegrationTests.ClientRoutes
         }
 
         [Test]
+        public async Task EarlierMismatchDoesNotRetainALaterNodesRecoveredFailure()
+        {
+            var entries = Entries();
+            var firstRequests = 0;
+            var laterRequests = 0;
+            using var client = new HttpClient(new CallbackHandler((request, _) =>
+            {
+                if (request.Method == HttpMethod.Post)
+                {
+                    return Task.FromResult(Response(HttpStatusCode.OK, ""));
+                }
+                if (request.RequestUri.Host == "127.0.0.1")
+                {
+                    return Task.FromResult(Response(HttpStatusCode.OK,
+                        ++firstRequests == 1 ? JsonConvert.SerializeObject(entries) : "[]"));
+                }
+                if (++laterRequests == 1)
+                {
+                    throw new HttpRequestException("later node recovers");
+                }
+                return Task.FromResult(Response(HttpStatusCode.OK, JsonConvert.SerializeObject(entries)));
+            }));
+            using var api = new ClientRoutesRestApi(new[] { "127.0.0.1", "127.0.0.2" }, client, TimeSpan.FromSeconds(1));
+            var failure = await Assert.ThrowsAsync<TimeoutException>(() =>
+                api.UpsertAsync(entries).WaitAsync(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
+            Assert.GreaterOrEqual(laterRequests, 2);
+            Assert.IsNull(failure.InnerException);
+        }
+
+        [Test]
         public async Task HttpClientTimeoutIsRetriedWhilePropagationDeadlineRemainsLive()
         {
             var entries = Entries();
@@ -235,6 +265,83 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             await api.UpsertAsync(entries).WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
             Assert.AreEqual(2, getAttempts);
             Assert.IsTrue(requestCanceled);
+        }
+
+        [TestCase("null")]
+        [TestCase("")]
+        public async Task InvalidRouteListCannotSatisfyCleanup(string responseBody)
+        {
+            var requests = 0;
+            using var client = new HttpClient(new CallbackHandler((_, _) =>
+            {
+                requests++;
+                return Task.FromResult(Response(HttpStatusCode.OK, responseBody));
+            }));
+            using var api = new ClientRoutesRestApi(new[] { "127.0.0.1" }, client);
+            await Assert.ThrowsAsync<JsonSerializationException>(() => api.DeleteAllAsync()).ConfigureAwait(false);
+            Assert.AreEqual(1, requests);
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task EarlierNodeDoesNotHidePermanentFailureOnLaterNode(bool earlierNodeFails)
+        {
+            var laterRequests = 0;
+            using var client = new HttpClient(new CallbackHandler((request, _) =>
+            {
+                if (request.Method == HttpMethod.Post)
+                {
+                    return Task.FromResult(Response(HttpStatusCode.OK, ""));
+                }
+                if (request.RequestUri.Host == "127.0.0.1")
+                {
+                    return Task.FromResult(Response(
+                        earlierNodeFails ? HttpStatusCode.ServiceUnavailable : HttpStatusCode.OK, "[]"));
+                }
+                laterRequests++;
+                return Task.FromResult(Response(HttpStatusCode.Forbidden, "forbidden"));
+            }));
+            using var api = new ClientRoutesRestApi(new[] { "127.0.0.1", "127.0.0.2" }, client);
+            var failure = await Assert.ThrowsAsync<HttpRequestException>(() => api.UpsertAsync(Entries())).ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.Forbidden, failure.StatusCode);
+            Assert.AreEqual(1, laterRequests);
+        }
+
+        [TestCase(HttpStatusCode.Forbidden)]
+        [TestCase(HttpStatusCode.ServiceUnavailable)]
+        public async Task MutatingRequestFailsImmediatelyWithItsStatus(HttpStatusCode statusCode)
+        {
+            var requests = 0;
+            using var client = new HttpClient(new CallbackHandler((_, _) =>
+            {
+                requests++;
+                return Task.FromResult(Response(statusCode, "mutation failed"));
+            }));
+            using var api = new ClientRoutesRestApi(new[] { "127.0.0.1" }, client);
+            var failure = await Assert.ThrowsAsync<HttpRequestException>(() => api.UpsertAsync(Entries())).ConfigureAwait(false);
+            Assert.AreEqual(statusCode, failure.StatusCode);
+            Assert.AreEqual(1, requests);
+        }
+
+        [Test]
+        public async Task CleanupDeletesRoutesFoundOnlyOnAnotherNode()
+        {
+            var entries = Entries();
+            var deleted = false;
+            using var client = new HttpClient(new CallbackHandler(async (request, _) =>
+            {
+                if (request.Method == HttpMethod.Delete)
+                {
+                    StringAssert.Contains(entries[0].Key.ConnectionId, await request.Content.ReadAsStringAsync().ConfigureAwait(false));
+                    deleted = true;
+                    return Response(HttpStatusCode.OK, "");
+                }
+                return Response(HttpStatusCode.OK,
+                    request.RequestUri.Host == "127.0.0.2" && !deleted ? JsonConvert.SerializeObject(entries) : "[]");
+            }));
+            using var api = new ClientRoutesRestApi(new[] { "127.0.0.1", "127.0.0.2" }, client);
+            await api.DeleteAllAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.IsTrue(deleted);
         }
 
         private static ClientRouteApiEntry[] Entries()
