@@ -192,7 +192,7 @@ namespace Cassandra.Tests.Connections
         }
 
         [Test]
-        public async Task Should_UseDirectFallbackWithoutInvokingDefaultControlFactory_WhenHostHasNoRoutes()
+        public async Task Should_UseFallbackWithoutInvokingDefaultControlFactory_WhenHostHasNoClientRoutes()
         {
             var host = CreateHost("192.0.2.14", Guid.NewGuid());
             var runtime = await CreateRuntimeAsync(
@@ -200,10 +200,10 @@ namespace Cassandra.Tests.Connections
                 false,
                 new[] { host.HostId },
                 new IRow[0]).ConfigureAwait(false);
-            var direct = new ConnectionEndPoint(host.Address, Mock.Of<IServerNameResolver>(), null);
+            var endPointWithoutClientRoutes = new ConnectionEndPoint(host.Address, Mock.Of<IServerNameResolver>(), null);
             var fallback = new Mock<IEndPointResolver>(MockBehavior.Strict);
             fallback.Setup(resolver => resolver.GetConnectionEndPointsAsync(host, false))
-                    .ReturnsAsync(new IConnectionEndPoint[] { direct });
+                    .ReturnsAsync(new IConnectionEndPoint[] { endPointWithoutClientRoutes });
             var target = new ClientRoutesEndPointResolver(runtime, Mock.Of<IDnsResolver>(), fallback.Object);
             var expected = new ConnectionEndPointResolutionPlan(
                 new Func<Task<IReadOnlyList<IConnectionEndPoint>>>[0]);
@@ -223,7 +223,7 @@ namespace Cassandra.Tests.Connections
             fallback.VerifyNoOtherCalls();
 
             CollectionAssert.AreEqual(
-                new[] { direct },
+                new[] { endPointWithoutClientRoutes },
                 await actual.ResolveNextAsync().ConfigureAwait(false));
             Assert.IsNull(await actual.ResolveNextAsync().ConfigureAwait(false));
             Assert.AreEqual(0, factoryCalls);
@@ -234,7 +234,7 @@ namespace Cassandra.Tests.Connections
         }
 
         [Test]
-        public async Task Should_NotUseDirectControlFallbackForSameAddressReplacement()
+        public async Task Should_NotUseControlFallbackWithoutClientRoutesForSameAddressReplacement()
         {
             var coveredHost = CreateHost("192.0.2.15", Guid.NewGuid());
             var replacementHost = CreateHost("192.0.2.15", Guid.NewGuid());
@@ -328,22 +328,22 @@ namespace Cassandra.Tests.Connections
                 false,
                 new[] { host.HostId },
                 new IRow[0]).ConfigureAwait(false);
-            var direct = new ConnectionEndPoint(host.Address, Mock.Of<IServerNameResolver>(), null);
+            var endPointWithoutClientRoutes = new ConnectionEndPoint(host.Address, Mock.Of<IServerNameResolver>(), null);
             var fallback = new Mock<IEndPointResolver>(MockBehavior.Strict);
             fallback.Setup(resolver => resolver.GetConnectionEndPointsAsync(host, false))
-                    .ReturnsAsync(new IConnectionEndPoint[] { direct });
+                    .ReturnsAsync(new IConnectionEndPoint[] { endPointWithoutClientRoutes });
             var target = new ClientRoutesEndPointResolver(runtime, Mock.Of<IDnsResolver>(), fallback.Object);
 
             var candidates = await target.GetConnectionEndPointsAsync(host, false).ConfigureAwait(false);
 
             Assert.AreEqual(1, candidates.Count);
-            Assert.AreSame(direct, candidates.Single());
+            Assert.AreSame(endPointWithoutClientRoutes, candidates.Single());
             fallback.Verify(resolver => resolver.GetConnectionEndPointsAsync(host, false), Times.Once);
             fallback.VerifyNoOtherCalls();
         }
 
         [Test]
-        public async Task Should_NotIncludeDirectCandidate_WhenHostHasRoutes()
+        public async Task Should_NotIncludeCandidateWithoutClientRoutes_WhenHostHasClientRoutes()
         {
             var host = CreateHost("192.0.2.40", Guid.NewGuid());
             var runtime = await CreateRuntimeAsync(
@@ -363,7 +363,7 @@ namespace Cassandra.Tests.Connections
         }
 
         [Test]
-        public async Task Should_NotFallBackDirectly_WhenAllRouteDnsResolutionsFail()
+        public async Task Should_NotFallBackToConnectionsWithoutClientRoutes_WhenAllClientRouteDnsResolutionsFail()
         {
             var host = CreateHost("192.0.2.50", Guid.NewGuid());
             var runtime = await CreateRuntimeAsync(
@@ -563,7 +563,7 @@ namespace Cassandra.Tests.Connections
         public async Task Should_UsePositiveTargetedRouteOutsideFullSnapshotCoverage()
         {
             var coveredHostId = Guid.NewGuid();
-            var routedHost = CreateHost("192.0.2.86", Guid.NewGuid());
+            var hostWithClientRoutes = CreateHost("192.0.2.86", Guid.NewGuid());
             var queryCount = 0;
             var runtime = new ClientRoutesRuntime(
                 new ClientRoutesOptions(new[] { new ClientRouteProxy("route-a") }, AdvertisedPort, false),
@@ -573,7 +573,7 @@ namespace Cassandra.Tests.Connections
                     .ReturnsAsync(() => Interlocked.Increment(ref queryCount) == 1
                         ? new IRow[0]
                         : new[] { Route(
-                            routedHost.HostId,
+                            hostWithClientRoutes.HostId,
                             "198.51.100.86",
                             9086,
                             9186,
@@ -591,18 +591,18 @@ namespace Cassandra.Tests.Connections
                 await cache.RefreshAsync(new ClientRoutesChangeEventArgs
                 {
                     ConnectionIds = new[] { "route-a" },
-                    HostIds = new[] { routedHost.HostId }
+                    HostIds = new[] { hostWithClientRoutes.HostId }
                 }).ConfigureAwait(false);
 
                 Assert.IsTrue(runtime.TryGetHostSnapshot(
-                    routedHost.HostId,
+                    hostWithClientRoutes.HostId,
                     out _,
                     out var isComplete,
                     out var isCovered));
                 Assert.IsTrue(isComplete);
                 Assert.IsFalse(isCovered);
 
-                var candidate = (await target.GetConnectionEndPointsAsync(routedHost, false).ConfigureAwait(false))
+                var candidate = (await target.GetConnectionEndPointsAsync(hostWithClientRoutes, false).ConfigureAwait(false))
                     .Single();
 
                 Assert.AreEqual(
@@ -610,7 +610,7 @@ namespace Cassandra.Tests.Connections
                     candidate.SocketIpEndPoint);
 
                 var controlPlan = target.GetControlConnectionEndPointResolutionPlan(
-                    routedHost,
+                    hostWithClientRoutes,
                     false,
                     () => throw new AssertionException("The default control factory must not be used."));
                 Assert.AreEqual(
@@ -717,7 +717,7 @@ namespace Cassandra.Tests.Connections
                     .ReturnsAsync(new IRow[0]);
             var cache = runtime.Bind(provider.Object);
             await cache.FullRefreshBarrierAsync(new[] { knownHostId }, false).ConfigureAwait(false);
-            var direct = new ConnectionEndPoint(newHost.Address, Mock.Of<IServerNameResolver>(), null);
+            var endPointWithoutClientRoutes = new ConnectionEndPoint(newHost.Address, Mock.Of<IServerNameResolver>(), null);
             var fallback = new Mock<IEndPointResolver>(MockBehavior.Strict);
             var target = new ClientRoutesEndPointResolver(
                 runtime,
@@ -734,13 +734,13 @@ namespace Cassandra.Tests.Connections
             fallback.VerifyNoOtherCalls();
 
             fallback.Setup(resolver => resolver.GetConnectionEndPointsAsync(newHost, false))
-                    .ReturnsAsync(new IConnectionEndPoint[] { direct });
+                    .ReturnsAsync(new IConnectionEndPoint[] { endPointWithoutClientRoutes });
             await cache.FullRefreshBarrierAsync(
                 new[] { knownHostId, newHost.HostId },
                 false).ConfigureAwait(false);
 
             CollectionAssert.AreEqual(
-                new[] { direct },
+                new[] { endPointWithoutClientRoutes },
                 await target.GetConnectionEndPointsAsync(newHost, false).ConfigureAwait(false));
             fallback.Verify(resolver => resolver.GetConnectionEndPointsAsync(newHost, false), Times.Once);
         }

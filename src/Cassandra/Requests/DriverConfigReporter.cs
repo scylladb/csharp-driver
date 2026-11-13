@@ -313,13 +313,20 @@ namespace Cassandra.Requests
             return new JObject { ["in-flight"] = inFlight, ["orphaned"] = orphaned };
         }
 
-        private static JObject Pool(PoolingOptions pooling)
+        private JObject Pool(PoolingOptions pooling)
         {
-            // Reports configuration intent. At runtime the shard-aware port must also be advertised by the
-            // server and be reachable, otherwise the driver falls back to the regular port transparently.
+            // Reports configuration intent. Without client routes, the shard-aware port must also be advertised
+            // by the server and be reachable, otherwise the driver falls back to the regular port transparently.
+            // Connections using client routes retain the client route's destination port and require an explicit
+            // shard-awareness opt-in because the proxy must preserve the selected source port. Report false when
+            // that opt-in is disabled, even if connections to hosts without client routes remain shard-aware.
             return new JObject
             {
-                ["shard-aware"] = new JObject { ["enabled"] = !pooling.GetDisableShardAwareness() }
+                ["shard-aware"] = new JObject
+                {
+                    ["enabled"] = ClientRoutesOptions.ShouldUseShardAwareness(
+                        pooling, _configuration.ClientRoutesRuntime?.Options, true)
+                }
             };
         }
 
