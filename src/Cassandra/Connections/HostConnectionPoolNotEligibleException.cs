@@ -14,6 +14,8 @@
 //   limitations under the License.
 //
 
+using System.Threading.Tasks;
+
 namespace Cassandra.Connections
 {
     /// <summary>
@@ -21,9 +23,12 @@ namespace Cassandra.Connections
     /// </summary>
     internal sealed class HostConnectionPoolNotEligibleException : DriverException
     {
-        internal HostConnectionPoolNotEligibleException(string reason)
+        internal Task<bool> MetricsRetirement { get; }
+
+        internal HostConnectionPoolNotEligibleException(string reason, Task<bool> metricsRetirement = null)
             : base("The host is not eligible for a connection pool: " + reason + ".")
         {
+            MetricsRetirement = metricsRetirement;
         }
     }
 }

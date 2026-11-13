@@ -41,8 +41,10 @@ namespace Cassandra
         private readonly ISerializerManager _serializerManager;
         private static readonly Logger Logger = new Logger(typeof(Session));
         private readonly IThreadSafeDictionary<IPEndPoint, HostPool> _connectionPool;
-        private readonly IThreadSafeDictionary<IPEndPoint, bool> _metricsRetirements =
-            new CopyOnWriteDictionary<IPEndPoint, bool>();
+        private readonly IThreadSafeDictionary<IPEndPoint, TaskCompletionSource<bool>> _metricsRetirements =
+            new CopyOnWriteDictionary<IPEndPoint, TaskCompletionSource<bool>>();
+        private readonly TaskCompletionSource<bool> _shutdown =
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly Lock _connectionPoolLifecycleLock = new Lock();
         private readonly Lock _connectionPoolPublicationLock = new Lock();
         private readonly IInternalCluster _cluster;
@@ -192,6 +194,7 @@ namespace Cassandra
                 pools = _connectionPool.ToArray();
                 _connectionPool.Clear();
             }
+            _shutdown.TrySetResult(true);
 
             if (Interlocked.Read(ref _initialized) == 1)
             {
@@ -235,6 +238,12 @@ namespace Cassandra
             Interlocked.Exchange(ref _initialized, 1);
         }
 
+        private static async Task<bool> CompletePoolWarmup(Task warmup)
+        {
+            await warmup.ConfigureAwait(false);
+            return true;
+        }
+
         /// <summary>
         /// Creates the required connections on all hosts in the local DC.
         /// Returns a Task that is marked as completed after all pools were warmed up.
@@ -245,7 +254,7 @@ namespace Cassandra
         private async Task Warmup()
         {
             var hosts = _cluster.AllHosts().Where(h => _cluster.RetrieveAndSetDistance(h) == HostDistance.Local).ToArray();
-            var tasks = new Task[hosts.Length];
+            var tasks = new Task<bool>[hosts.Length];
             for (var i = 0; i < hosts.Length; i++)
             {
                 tasks[i] = WarmupHost(hosts[i]);
@@ -302,18 +311,19 @@ namespace Cassandra
                     }
                 }
 
-                if (tasks.Any(t => t.Status == TaskStatus.RanToCompletion))
+                if (tasks.Any(t => t.Status == TaskStatus.RanToCompletion && t.Result))
                 {
                     // At least 1 of the warmup tasks completed
                     return;
                 }
 
                 // Log and continue as the ControlConnection is connected
-                Session.Logger.Error($"Connection pools for {tasks.Length} host(s) failed to be warmed up");
+                var attemptedHosts = tasks.Count(t => t.Status != TaskStatus.RanToCompletion || t.Result);
+                Session.Logger.Error($"Connection pools for {attemptedHosts} host(s) failed to be warmed up");
             }
         }
 
-        private Task WarmupHost(Host host)
+        private Task<bool> WarmupHost(Host host)
         {
             IHostConnectionPool pool;
             try
@@ -321,9 +331,13 @@ namespace Cassandra
                 // A down host still needs a pool to own its background reconnection.
                 pool = GetOrCreateConnectionPool(host, HostDistance.Local, allowDownHost: true);
             }
+            catch (HostConnectionPoolNotEligibleException failure) when (failure.MetricsRetirement != null)
+            {
+                return WarmupAfterMetricsRetirement(host, failure.MetricsRetirement);
+            }
             catch (HostConnectionPoolNotEligibleException)
             {
-                // Host state or unfinished metrics retirement prevents this host from owning a pool.
+                // Host state prevents this host from owning a pool.
                 // Exclude skipped hosts from the completed-pool success check.
                 return null;
             }
@@ -333,9 +347,26 @@ namespace Cassandra
                 return null;
             }
 
-            // Do not introduce an async boundary here. Synchronous failures from pool creation,
-            // metrics initialization, and Warmup() must retain their original propagation behavior.
-            return pool.Warmup();
+            // Invoke Warmup synchronously, like pool creation and metrics initialization above,
+            // so synchronous failures retain their original propagation behavior.
+            return CompletePoolWarmup(pool.Warmup());
+        }
+
+        private async Task<bool> WarmupAfterMetricsRetirement(Host host, Task<bool> retirement)
+        {
+            // Request lookups still fail immediately so metrics callbacks can wait for them.
+            // Initial warmup retains the selected host and retries after the bucket is retired.
+            await Task.WhenAny(retirement, _shutdown.Task).ConfigureAwait(false);
+            if (IsDisposed)
+            {
+                return false;
+            }
+            if (!await retirement.ConfigureAwait(false))
+            {
+                throw new HostConnectionPoolNotEligibleException("its previous metrics could not be retired");
+            }
+            var warmup = WarmupHost(host);
+            return warmup != null && await warmup.ConfigureAwait(false);
         }
 
         /// <inheritdoc />
@@ -520,7 +551,8 @@ namespace Cassandra
                         // A metrics callback may have published another pool at this address.
                         if (!_connectionPool.ContainsKey(host.Address))
                         {
-                            _metricsRetirements.Add(host.Address, true);
+                            _metricsRetirements.Add(host.Address,
+                                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously));
                             var retiredMetrics = _metricsManager.DetachNodeMetrics(host);
                             DisposeRetiredMetrics(host, retiredMetrics);
                         }
@@ -686,11 +718,11 @@ namespace Cassandra
 
         private void ThrowIfMetricsRetirementBlocksPool(IPEndPoint address)
         {
-            if (_metricsRetirements.TryGetValue(address, out var active))
+            if (_metricsRetirements.TryGetValue(address, out var retirement))
             {
-                throw new HostConnectionPoolNotEligibleException(active
+                throw new HostConnectionPoolNotEligibleException(!retirement.Task.IsCompleted
                     ? "its previous metrics are being retired"
-                    : "its previous metrics could not be retired");
+                    : "its previous metrics could not be retired", retirement.Task);
             }
         }
 
@@ -706,17 +738,14 @@ namespace Cassandra
             {
                 lock (_connectionPoolLifecycleLock)
                 {
+                    _metricsRetirements.TryGetValue(host.Address, out var retirement);
                     if (succeeded)
                     {
                         _metricsRetirements.Remove(host.Address);
                     }
-                    else
-                    {
-                        // A failed provider shutdown leaves the bucket's state unknown.
-                        // Keep new pool registrations out of it for this session.
-                        _metricsRetirements.CompareAndUpdate(
-                            host.Address, (_, active) => active, (_, __) => false);
-                    }
+                    // A failed provider shutdown leaves the bucket's state unknown.
+                    // Retain its completed barrier to keep new pool registrations out for this session.
+                    retirement?.TrySetResult(succeeded);
                 }
             }
         }
@@ -748,7 +777,8 @@ namespace Cassandra
                 }
                 // Detach under the owner check so a concurrent retirement cannot
                 // replace the registry before we remove it.
-                _metricsRetirements.Add(host.Address, true);
+                _metricsRetirements.Add(host.Address,
+                    new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously));
                 retiredMetrics = _metricsManager.DetachNodeMetrics(host);
             }
 

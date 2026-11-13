@@ -1154,6 +1154,131 @@ namespace Cassandra.Tests
             }
         }
 
+        [TestCase(false, "success")]
+        [TestCase(true, "success")]
+        [TestCase(false, "failure")]
+        [TestCase(true, "failure")]
+        [TestCase(false, "shutdown")]
+        [TestCase(true, "shutdown")]
+        [TestCase(true, "ignored")]
+        [NonParallelizable]
+        public async Task Should_RetrySelectedWarmupAfterMetricsRetirement(bool clientRoutesEnabled, string outcome)
+        {
+            using var retirementStarted = new ManualResetEventSlim();
+            using var finishRetirement = new ManualResetEventSlim();
+            var oldPool = new Mock<IHostConnectionPool>();
+            var replacementPool = new Mock<IHostConnectionPool>();
+            replacementPool.Setup(value => value.Warmup()).Returns(Task.CompletedTask);
+            var factory = new Mock<IHostConnectionPoolFactory>();
+            factory.SetupSequence(value => value.Create(
+                    It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>()))
+                .Returns(oldPool.Object).Returns(replacementPool.Object);
+            var provider = CreateMetricsProviderForRemovalTests();
+            var pauseRetirement = 0;
+            provider.Setup(value => value.ShutdownMetricsBucket(It.Is<string>(bucket => bucket.Contains(".nodes."))))
+                .Callback(() =>
+                {
+                    if (Interlocked.Exchange(ref pauseRetirement, 1) == 0)
+                    {
+                        retirementStarted.Set();
+                        Assert.IsTrue(finishRetirement.Wait(5000), "Metrics retirement was not released.");
+                        if (outcome == "failure")
+                        {
+                            throw new InvalidOperationException("Failed retirement");
+                        }
+                    }
+                });
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = factory.Object,
+                MetricsProvider = provider.Object,
+                ClientRoutesOptions = clientRoutesEnabled
+                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    : null
+            }.Build();
+            using var metadata = new Metadata(config);
+            var address = new IPEndPoint(IPAddress.Loopback, 9042);
+            var oldHost = metadata.AddHost(address);
+            oldHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            cluster.Setup(value => value.AllHosts()).Returns(() => metadata.AllHosts());
+            var distance = HostDistance.Local;
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(() => distance);
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new LoggingTests.TestTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
+            Trace.Listeners.Add(listener);
+            Task removal = null;
+            Task initialization = null;
+            try
+            {
+                using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "retiring-warmup-test");
+                var internalSession = (IInternalSession)session;
+                internalSession.GetOrCreateConnectionPool(oldHost, HostDistance.Local);
+                metadata.RemoveHost(address);
+                var replacementHost = metadata.AddHost(address);
+                replacementHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+                replacementHost.SetDown();
+                removal = Task.Run(() => cluster.Raise(value => value.HostRemoved += null, oldHost));
+                try
+                {
+                    Assert.IsTrue(retirementStarted.Wait(5000), "Metrics retirement did not start.");
+                    initialization = internalSession.Init();
+                    Assert.IsFalse(initialization.IsCompleted, "Warmup dropped the selected host during retirement.");
+                    replacementPool.Verify(value => value.Warmup(), Times.Never);
+                    if (outcome == "shutdown")
+                    {
+                        await session.ShutdownAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                        await initialization.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                        Assert.IsEmpty(internalSession.GetPools());
+                    }
+                    if (outcome == "ignored")
+                    {
+                        distance = HostDistance.Ignored;
+                    }
+                }
+                finally
+                {
+                    finishRetirement.Set();
+                    try
+                    {
+                        await removal.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                        Assert.AreNotEqual("failure", outcome, "Expected metrics retirement to fail.");
+                    }
+                    catch (InvalidOperationException failure) when (outcome == "failure")
+                    {
+                        Assert.AreEqual("Failed retirement", failure.Message);
+                    }
+                    if (initialization != null)
+                    {
+                        await initialization.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    }
+                }
+                replacementPool.Verify(value => value.Warmup(), outcome == "success" ? Times.Once() : Times.Never());
+                if (outcome == "success")
+                {
+                    Assert.AreSame(replacementPool.Object, internalSession.GetPools().Single().Value);
+                    Assert.AreSame(replacementHost, session.GetMetrics().NodeMetrics.Keys.Single());
+                }
+                if (outcome == "failure")
+                {
+                    var failure = Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
+                        internalSession.GetOrCreateConnectionPool(replacementHost, HostDistance.Local));
+                    StringAssert.Contains("metrics could not be retired", failure.Message);
+                    Assert.IsTrue(listener.Messages.Values.Any(message => message.Contains("metrics could not be retired")));
+                }
+            }
+            finally
+            {
+                finishRetirement.Set();
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                config.Timer.Dispose();
+            }
+        }
+
         [TestCase(false, false)]
         [TestCase(false, true)]
         [TestCase(true, false)]
