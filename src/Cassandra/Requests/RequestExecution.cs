@@ -17,6 +17,7 @@
 //
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
@@ -38,6 +39,7 @@ namespace Cassandra.Requests
         private readonly IInternalSession _session;
         private readonly IRequest _request;
         private readonly Dictionary<IPEndPoint, Exception> _triedHosts = new Dictionary<IPEndPoint, Exception>();
+        private ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>> _connectionFailures;
         private volatile IConnection _connection;
         private volatile int _retryCount;
         private volatile OperationState _operation;
@@ -104,6 +106,7 @@ namespace Cassandra.Requests
                     return;
                 }
 
+                RecordConnectionFailure(host);
                 RequestExecution.Logger.Warning("RequestHandler could not obtain a connection while attempting to retry with the current host.");
             }
             catch (Exception ex)
@@ -131,6 +134,7 @@ namespace Cassandra.Requests
                     connection = await _parent.GetConnectionToValidHostAsync(validHost, _triedHosts).ConfigureAwait(false);
                     if (connection == null)
                     {
+                        RecordConnectionFailure(validHost.Host);
                         validHost = _parent.GetNextValidHost(_triedHosts);
                     }
                 }
@@ -146,6 +150,27 @@ namespace Cassandra.Requests
                 _host = validHost.Host;
                 await HandleResponseAsync(RequestError.CreateClientError(ex, true), null, new NodeRequestInfo(validHost.Host, _sessionRequestInfo.PrepareRequest)).ConfigureAwait(false);
             }
+        }
+
+        private void RecordConnectionFailure(Host host)
+        {
+            if (_triedHosts.TryGetValue(host.Address, out var failure) && failure != null)
+            {
+                if (_connectionFailures == null)
+                {
+                    _connectionFailures = new ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>>();
+                }
+                _connectionFailures.Enqueue(new KeyValuePair<IPEndPoint, Exception>(host.Address, failure));
+                if (_parent.HasCompleted())
+                {
+                    ReportConnectionFailures(null);
+                }
+            }
+        }
+
+        public void ReportConnectionFailures(Exception returnedError)
+        {
+            ConsumedConnectionFailures.Report(Volatile.Read(ref _connectionFailures), returnedError);
         }
 
         /// <summary>
