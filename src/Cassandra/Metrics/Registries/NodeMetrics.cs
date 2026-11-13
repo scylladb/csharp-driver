@@ -30,6 +30,7 @@ namespace Cassandra.Metrics.Registries
 
         private IHostConnectionPool _hostConnectionPool = null;
         private int _retired;
+        private int _disposed;
 
         public NodeMetrics(
             IDriverMetricsProvider driverMetricsProvider, DriverMetricsOptions metricOptions, bool metricsEnabled, string bucketName,
@@ -126,6 +127,10 @@ namespace Cassandra.Metrics.Registries
 
         public void Dispose()
         {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
             MarkRetired();
             _driverMetricsProvider.ShutdownMetricsBucket(_bucketName);
         }
