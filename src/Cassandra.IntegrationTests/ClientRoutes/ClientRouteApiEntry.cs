@@ -33,10 +33,10 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             TlsPort = tlsPort;
         }
 
-        [JsonProperty("connection_id")]
+        [JsonProperty("connection_id", Required = Required.Always)]
         public string ConnectionId { get; set; }
 
-        [JsonProperty("host_id")]
+        [JsonProperty("host_id", Required = Required.Always)]
         public Guid HostId { get; set; }
 
         [JsonProperty("address")]

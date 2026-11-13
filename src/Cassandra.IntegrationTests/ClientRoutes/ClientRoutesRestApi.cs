@@ -211,8 +211,13 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                         response.StatusCode);
                 }
 
-                return JsonConvert.DeserializeObject<List<ClientRouteApiEntry>>(responseBody) ??
-                       throw new JsonSerializationException("The client-routes response must be a JSON array.");
+                var entries = JsonConvert.DeserializeObject<List<ClientRouteApiEntry>>(responseBody) ??
+                              throw new JsonSerializationException("The client-routes response must be a JSON array.");
+                if (entries.Any(entry => entry == null))
+                {
+                    throw new JsonSerializationException("The client-routes response must not contain null entries.");
+                }
+                return entries;
             }
         }
 

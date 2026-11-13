@@ -21,12 +21,14 @@ using System.Threading;
 using System.Threading.Tasks;
 
 using Cassandra.Tests;
+using Cassandra.Tests.ClientRoutes;
 
 using Newtonsoft.Json;
 
 using NUnit.Framework;
 
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
+using CollectionAssert = NUnit.Framework.CollectionAssert;
 using StringAssert = NUnit.Framework.StringAssert;
 
 namespace Cassandra.IntegrationTests.ClientRoutes
@@ -141,6 +143,37 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             using var api = new ClientRoutesRestApi(new[] { "127.0.0.1" }, client);
             await Assert.ThrowsAsync<JsonReaderException>(() => api.UpsertAsync(Entries())).ConfigureAwait(false);
             Assert.AreEqual(1, getAttempts);
+        }
+
+        [TestCase("[null]")]
+        [TestCase("[{}]")]
+        [TestCase("[{\"connection_id\":\"test\"}]")]
+        [TestCase("[{\"host_id\":\"01234567-89ab-cdef-0123-456789abcdef\"}]")]
+        [TestCase("[{\"connection_id\":null,\"host_id\":\"01234567-89ab-cdef-0123-456789abcdef\"}]")]
+        [TestCase("[{\"connection_id\":\"test\",\"host_id\":null}]")]
+        public async Task MalformedRouteEntriesFailWithoutRetryOrDeletion(string response)
+        {
+            var getAttempts = 0;
+            var deleteAttempts = 0;
+            using var client = new HttpClient(new CallbackHandler((request, _) =>
+            {
+                if (request.Method == HttpMethod.Get)
+                {
+                    getAttempts++;
+                    return Task.FromResult(Response(HttpStatusCode.OK, response));
+                }
+                if (request.Method == HttpMethod.Delete)
+                {
+                    deleteAttempts++;
+                }
+                return Task.FromResult(Response(HttpStatusCode.OK, ""));
+            }));
+            using var api = new ClientRoutesRestApi(new[] { "127.0.0.1" }, client);
+            await Assert.ThrowsAsync<JsonSerializationException>(() => api.UpsertAsync(Entries())).ConfigureAwait(false);
+            Assert.AreEqual(1, getAttempts);
+            await Assert.ThrowsAsync<JsonSerializationException>(() => api.DeleteAllAsync()).ConfigureAwait(false);
+            Assert.AreEqual(2, getAttempts);
+            Assert.AreEqual(0, deleteAttempts);
         }
 
         [Test]
@@ -334,8 +367,10 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             {
                 if (request.Method == HttpMethod.Delete)
                 {
-                    StringAssert.Contains(entries[0].Key.ConnectionId, await request.Content.ReadAsStringAsync().ConfigureAwait(false));
-                    StringAssert.Contains(laterEntry.Key.ConnectionId, await request.Content.ReadAsStringAsync().ConfigureAwait(false));
+                    var keys = JsonConvert.DeserializeObject<ClientRouteApiKey[]>(
+                        await request.Content.ReadAsStringAsync().ConfigureAwait(false));
+                    Assert.AreEqual(2, keys.Length);
+                    CollectionAssert.AreEquivalent(new[] { entries[0].Key, laterEntry.Key }, keys);
                     deleted = true;
                     return Response(HttpStatusCode.OK, "");
                 }
