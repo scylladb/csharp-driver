@@ -63,6 +63,12 @@ namespace Cassandra.Tests
         [TestCase("fatal-terminal-aggregate", TraceLevel.Verbose, false)]
         [TestCase("fatal-terminal-aggregate", TraceLevel.Verbose, true)]
         [TestCase("late-acquisition", TraceLevel.Verbose, false)]
+        [TestCase("init-fatal-oom", TraceLevel.Verbose, false)]
+        [TestCase("init-fatal-oom", TraceLevel.Verbose, true)]
+        [TestCase("init-fatal-bad-image", TraceLevel.Verbose, false)]
+        [TestCase("init-fatal-bad-image", TraceLevel.Verbose, true)]
+        [TestCase("init-fatal-aggregate", TraceLevel.Verbose, false)]
+        [TestCase("init-fatal-aggregate", TraceLevel.Verbose, true)]
         [TestCase("init-recovered", TraceLevel.Verbose, false)]
         [TestCase("init-all-failed", TraceLevel.Verbose, false)]
         [TestCase("init-later-error", TraceLevel.Verbose, false)]
@@ -93,9 +99,9 @@ namespace Cassandra.Tests
             Exception failure = composite
                 ? new ConnectionFailure(preferredFailure, new[] { superseded }, new[] { unresolved })
                 : preferredFailure;
-            Exception terminalError = scenario == "fatal-terminal-oom" ? new OutOfMemoryException("Original fatal request")
-                : scenario == "fatal-terminal-bad-image" ? new BadImageFormatException("Original fatal request")
-                : scenario == "fatal-terminal-aggregate" ? new AggregateException(new OutOfMemoryException("Original fatal request"))
+            Exception terminalError = (scenario == "fatal-terminal-oom" || scenario == "init-fatal-oom") ? new OutOfMemoryException("Original fatal request")
+                : (scenario == "fatal-terminal-bad-image" || scenario == "init-fatal-bad-image") ? new BadImageFormatException("Original fatal request")
+                : (scenario == "fatal-terminal-aggregate" || scenario == "init-fatal-aggregate") ? new AggregateException(new OutOfMemoryException("Original fatal request"))
                 : new InvalidQueryException("query failed after connection failover");
             var acquisitionStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var acquisitionResult = new TaskCompletionSource<IConnection>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -150,7 +156,7 @@ namespace Cassandra.Tests
                             }
                             return Task.FromResult<IConnection>(null);
                         }
-                        return scenario == "init-later-error"
+                        return scenario == "init-later-error" || scenario.StartsWith("init-fatal-")
                             ? Task.FromException<IConnection>(terminalError)
                             : Task.FromResult(connection.Object);
                     });
@@ -163,7 +169,7 @@ namespace Cassandra.Tests
                 new QueryRequest(serializer, statement.QueryString, QueryProtocolOptions.Default, false, null),
                 new SessionRequestInfo(statement, null), config.DefaultRequestOptions, NullRequestObserver.Instance);
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
-            using var listener = new RecoveredConnectionTraceListener(throwFromDiagnostic, scenario.Contains("fatal-diagnostic") || scenario.StartsWith("fatal-terminal-"));
+            using var listener = new RecoveredConnectionTraceListener(throwFromDiagnostic, scenario.Contains("fatal-diagnostic") || scenario.StartsWith("fatal-terminal-") || scenario.StartsWith("init-fatal-"));
             Task<RowSet> responseTask = null;
             Diagnostics.CassandraTraceSwitch.Level = traceLevel;
             Trace.Listeners.Add(listener);
@@ -179,9 +185,9 @@ namespace Cassandra.Tests
                         Assert.AreSame(preferredFailure, error.Errors[hosts[0].Address]);
                         Assert.AreSame(preferredFailure, error.Errors[hosts[1].Address]);
                     }
-                    else if (scenario == "init-later-error")
+                    else if (scenario == "init-later-error" || scenario.StartsWith("init-fatal-"))
                     {
-                        var error = await Assert.ThrowsAsync<InvalidQueryException>(() => connectionTask);
+                        var error = await Assert.CatchAsync(() => connectionTask);
                         Assert.AreSame(terminalError, error);
                     }
                     else

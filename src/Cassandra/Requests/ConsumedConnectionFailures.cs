@@ -68,9 +68,9 @@ namespace Cassandra.Requests
                 {
                     Logger.Verbose("Request consumed a failure to obtain a connection to {0}: {1}", failure.Key, diagnosticError);
                 }
-                catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
+                catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure) || Utils.IsFatalException(returnedError))
                 {
-                    // A diagnostic sink must not discard the request result or its original error.
+                    // Ordinary diagnostic failures are optional; a fatal one must not replace an already-selected fatal error.
                 }
             }
         }
