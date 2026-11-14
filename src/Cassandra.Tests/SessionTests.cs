@@ -1950,7 +1950,7 @@ namespace Cassandra.Tests
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
             using var listener = new ConsumedWarmupTraceListener(false, message =>
             {
-                if (message.Contains("initial warmup failure at "))
+                if (message.Contains("failed to warm up:"))
                 {
                     diagnosticCalls++;
                     diagnosticSession.Dispose();
@@ -2020,13 +2020,19 @@ namespace Cassandra.Tests
             {
                 finishRetirement.Set();
                 provider.Setup(value => value.ShutdownMetricsBucket(It.IsAny<string>()));
-                if (removal != null)
+                try
                 {
-                    await removal.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    if (removal != null)
+                    {
+                        await removal.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    }
                 }
-                Trace.Listeners.Remove(listener);
-                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
-                config.Timer.Dispose();
+                finally
+                {
+                    Trace.Listeners.Remove(listener);
+                    Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                    config.Timer.Dispose();
+                }
             }
         }
 
