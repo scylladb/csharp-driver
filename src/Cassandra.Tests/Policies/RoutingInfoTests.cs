@@ -42,8 +42,35 @@ namespace Cassandra.Tests.Policies
             Assert.AreEqual("ks1", routing.Keyspace);
             Assert.AreEqual("tbl", routing.Table);
             Assert.AreSame(routingKey, routing.RoutingKey);
-            Assert.AreSame(statement.Object, routing.Statement);
+            Assert.AreEqual(ConsistencyLevel.LocalOne, routing.Consistency);
+            Assert.AreEqual(ConsistencyLevel.LocalSerial, routing.SerialConsistency);
             Assert.IsFalse(routing.IsConfirmedLwt);
+            Assert.IsFalse(routing.ShouldRouteAsLwt);
+        }
+
+        [Test]
+        public void ForStatement_Should_Use_The_Consistency_Levels_Of_The_Statement_Over_The_Profile()
+        {
+            var statement = new SimpleStatement("SELECT * FROM tbl")
+                .SetConsistencyLevel(ConsistencyLevel.Quorum)
+                .SetSerialConsistencyLevel(ConsistencyLevel.Serial);
+
+            var routing = RoutingInfo.ForStatement(statement, null, GetRequestOptions(ConsistencyLevel.LocalOne));
+
+            Assert.AreEqual(ConsistencyLevel.Quorum, routing.Consistency);
+            Assert.AreEqual(ConsistencyLevel.Serial, routing.SerialConsistency);
+            // The serial consistency level alone doesn't make a statement a lightweight transaction
+            Assert.IsFalse(routing.ShouldRouteAsLwt);
+        }
+
+        [Test]
+        public void ForKeyspace_Should_Have_No_Consistency_Levels()
+        {
+            var routing = RoutingInfo.ForKeyspace("ks1");
+
+            Assert.AreEqual("ks1", routing.Keyspace);
+            Assert.IsNull(routing.Consistency);
+            Assert.IsNull(routing.SerialConsistency);
             Assert.IsFalse(routing.ShouldRouteAsLwt);
         }
 
@@ -82,7 +109,6 @@ namespace Cassandra.Tests.Policies
         {
             var statement = new Mock<IStatement>();
             statement.Setup(s => s.IsLwt()).Returns(true);
-            statement.Setup(s => s.ShouldRouteAsLwt()).Returns(true);
 
             var routing = RoutingInfo.ForStatement(statement.Object, null, GetRequestOptions(ConsistencyLevel.LocalOne));
 
@@ -90,62 +116,11 @@ namespace Cassandra.Tests.Policies
             Assert.IsTrue(routing.ShouldRouteAsLwt);
         }
 
-        [Test]
-        public void ClusterState_Should_Require_A_Cluster()
-        {
-            Assert.Throws<ArgumentNullException>(() => new ClusterState(null));
-        }
-
-        [Test]
-        public void ClusterState_Hosts_Should_Be_The_Hosts_Of_The_Cluster()
-        {
-            var hosts = new List<Host> { new Host(new IPEndPoint(IPAddress.Loopback, 9042), contactPoint: null) };
-            var cluster = new Mock<IInternalCluster>();
-            cluster.Setup(c => c.AllHosts()).Returns(hosts);
-
-            Assert.AreSame(hosts, new ClusterState(cluster.Object).Hosts);
-        }
-
-        [Test]
-        public void ClusterState_GetReplicas_Should_Be_Empty_Without_A_Routing_Key()
-        {
-            var cluster = new Mock<IInternalCluster>(MockBehavior.Strict);
-            var state = new ClusterState(cluster.Object);
-
-            CollectionAssert.IsEmpty(state.GetReplicas(new RoutingInfo { Keyspace = "ks1" }));
-            CollectionAssert.IsEmpty(state.GetReplicas(null));
-        }
-
-        [Test]
-        public void ClusterState_GetReplicas_Should_Return_The_Routing_Replicas_With_Their_Shard()
-        {
-            var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), contactPoint: null);
-            var replicas = new List<RoutingTarget> { new RoutingTarget(host, 3) };
-            var cluster = new Mock<IInternalCluster>();
-            cluster.Setup(c => c.GetRoutingReplicas("ks1", "tbl1", new byte[] { 1 })).Returns(replicas);
-            var routing = new RoutingInfo
-            {
-                Keyspace = "ks1",
-                Table = "tbl1",
-                RoutingKey = new RoutingKey { RawRoutingKey = new byte[] { 1 } }
-            };
-
-            CollectionAssert.AreEqual(replicas, new ClusterState(cluster.Object).GetReplicas(routing));
-        }
-
-        [Test]
-        public void ClusterState_GetReplicas_Should_Be_Empty_When_The_Replicas_Are_Unknown()
-        {
-            var cluster = new Mock<IInternalCluster>();
-            var routing = new RoutingInfo { Keyspace = "ks1", RoutingKey = new RoutingKey { RawRoutingKey = new byte[] { 1 } } };
-
-            CollectionAssert.IsEmpty(new ClusterState(cluster.Object).GetReplicas(routing));
-        }
-
         private static IRequestOptions GetRequestOptions(ConsistencyLevel consistency)
         {
             var options = new Mock<IRequestOptions>();
             options.SetupGet(o => o.ConsistencyLevel).Returns(consistency);
+            options.SetupGet(o => o.SerialConsistencyLevel).Returns(ConsistencyLevel.LocalSerial);
             return options.Object;
         }
     }

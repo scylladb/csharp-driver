@@ -317,7 +317,7 @@ namespace Cassandra.Tests.MetadataTests
             _metadata.TabletMap.AddTablet(keyspace, table, new Tablet(long.MinValue, long.MaxValue, replicas.ToList()));
         }
 
-        private void AssertTokenMapReplicas(ICollection<RoutingTarget> replicas)
+        private void AssertTokenMapReplicas(IEnumerable<RoutingTarget> replicas)
         {
             CollectionAssert.AreEquivalent(_hosts, replicas.Select(r => r.Host));
             Assert.That(replicas.Select(r => r.Shard), Is.All.Null);

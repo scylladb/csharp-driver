@@ -35,12 +35,17 @@ namespace Cassandra
     /// </summary>
     public class RoundRobinPolicy : ILoadBalancingPolicy
     {
-        ICluster _cluster;
+        // Separate rotations: requests that need their fallback targets don't move the first target of the next
+        // requests, and the fallback order rotates even when Pick isn't called, for instance by a wrapping policy
+        // that picks a replica
         int _index;
+        int _fallbackIndex;
 
+        /// <summary>
+        /// Does nothing: the policy reads the hosts from the metadata snapshot of each query plan.
+        /// </summary>
         public void Initialize(ICluster cluster)
         {
-            this._cluster = cluster;
         }
 
         /// <summary>
@@ -57,36 +62,53 @@ namespace Cassandra
         }
 
         /// <summary>
-        ///  Returns the hosts to use for a new query. <p> The returned plan will try each
-        ///  known host of the cluster. Upon each call to this method, the ith host of the
-        ///  plans returned will cycle over all the host of the cluster in a round-robin
-        ///  fashion.</p>
+        ///  Returns the next host of the cluster in a round-robin fashion, or the first one when the request should
+        ///  be routed as a lightweight transaction.
         /// </summary>
         /// <param name="routing">The routing information of the request.</param>
-        /// <param name="cluster">The view of the cluster.</param>
-        /// <returns>a new query plan, i.e. an iterator indicating which host to try
-        ///  first for querying, which one to use as failover, etc...</returns>
-        public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
+        /// <param name="metadata">The snapshot of the cluster metadata, which gives the hosts.</param>
+        public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot metadata)
         {
-            var routeAsLwt = routing?.ShouldRouteAsLwt == true;
-            //shallow copy the all hosts
-            var hosts = (from h in _cluster.AllHosts() select h).ToArray();
-            var startIndex = 0;
-            if (!routeAsLwt)
+            var hosts = (metadata ?? MetadataSnapshot.Empty).Hosts;
+            if (hosts.Count == 0)
             {
-                startIndex = Interlocked.Increment(ref _index);
-
-                //Simplified overflow protection
-                if (startIndex > int.MaxValue - 10000)
-                {
-                    Interlocked.Exchange(ref _index, 0);
-                }
+                return null;
             }
+            return new RoutingTarget(hosts.ElementAt(NextStartIndex(routing, ref _index) % hosts.Count), null);
+        }
 
+        /// <summary>
+        ///  Returns every known host of the cluster. Upon each call to this method, the ith host of the returned
+        ///  targets cycles over all the hosts of the cluster in a round-robin fashion, separately from
+        ///  <see cref="Pick"/>.
+        /// </summary>
+        /// <param name="routing">The routing information of the request.</param>
+        /// <param name="metadata">The snapshot of the cluster metadata, which gives the hosts.</param>
+        public IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot metadata)
+        {
+            var hosts = (metadata ?? MetadataSnapshot.Empty).Hosts.ToArray();
+            var startIndex = NextStartIndex(routing, ref _fallbackIndex);
             for (var i = 0; i < hosts.Length; i++)
             {
                 yield return new RoutingTarget(hosts[(startIndex + i) % hosts.Length], null);
             }
+        }
+
+        // A request routed as a lightweight transaction tries the hosts in the same order every time
+        private int NextStartIndex(RoutingInfo routing, ref int index)
+        {
+            if (routing?.ShouldRouteAsLwt == true)
+            {
+                return 0;
+            }
+
+            var startIndex = Interlocked.Increment(ref index);
+            //Simplified overflow protection
+            if (startIndex > int.MaxValue - 10000)
+            {
+                Interlocked.Exchange(ref index, 0);
+            }
+            return startIndex;
         }
     }
 }

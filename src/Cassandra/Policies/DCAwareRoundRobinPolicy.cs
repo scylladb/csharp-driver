@@ -34,14 +34,19 @@ namespace Cassandra
     {
         private static readonly Logger Logger = new Logger(typeof(DCAwareRoundRobinPolicy));
 
-        private string _localDc;
+        private volatile string _localDc;
         private readonly bool _localDcIsExplicit;
 
         private readonly int _maxIndex = Int32.MaxValue - 10000;
-        private volatile List<Host> _hosts;
-        private readonly Lock _hostCreationLock = new Lock();
+        // The local hosts, computed from a snapshot's host collection, which is a new instance whenever hosts change
+        private volatile LocalHosts _localHosts;
+        private readonly Lock _localHostsLock = new Lock();
         ICluster _cluster;
+        // Separate rotations: requests that need their fallback targets don't move the first target of the next
+        // requests, and the fallback order rotates even when Pick isn't called, for instance by a wrapping policy
+        // that picks a replica
         int _index;
+        int _fallbackIndex;
 
         /// <summary>
         /// Creates a new datacenter aware round robin policy that auto-discover the local data-center.
@@ -90,10 +95,6 @@ namespace Cassandra
         public void Initialize(ICluster cluster)
         {
             _cluster = cluster;
-
-            //When the pool changes, it should clear the local cache
-            _cluster.HostAdded += _ => ClearHosts();
-            _cluster.HostRemoved += _ => ClearHosts();
 
             var availableDcs = _cluster.AllHosts().Select(h => h.Datacenter).Where(dc => dc != null).Distinct().ToList();
             var availableDcsStr = string.Join(", ", availableDcs);
@@ -161,28 +162,31 @@ namespace Cassandra
         }
 
         /// <summary>
-        ///  Returns the hosts to use for a new query. <p> The returned plan contains each
-        ///  known host in the local datacenter, in an order that follows a Round-robin
-        ///  algorithm.</p>
+        ///  Returns the next host of the local datacenter in a round-robin fashion, or the first one when the request
+        ///  should be routed as a lightweight transaction.
         /// </summary>
         /// <param name="routing">The routing information of the request.</param>
-        /// <param name="cluster">The view of the cluster.</param>
-        /// <returns>a new query plan, i.e. an iterator indicating which host to try
-        ///  first for querying, which one to use as failover, etc...</returns>
-        public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
+        /// <param name="metadata">The snapshot of the cluster metadata, which gives the hosts.</param>
+        public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot metadata)
         {
-            var routeAsLwt = routing?.ShouldRouteAsLwt == true;
-            var startIndex = 0;
-            if (!routeAsLwt)
+            var localHosts = GetHosts((metadata ?? MetadataSnapshot.Empty).Hosts);
+            if (localHosts.Count == 0)
             {
-                startIndex = Interlocked.Increment(ref _index);
-                //Simplified overflow protection
-                if (startIndex > _maxIndex)
-                {
-                    Interlocked.Exchange(ref _index, 0);
-                }
+                return null;
             }
-            var localHosts = GetHosts();
+            return new RoutingTarget(localHosts[NextStartIndex(routing, ref _index) % localHosts.Count], null);
+        }
+
+        /// <summary>
+        ///  Returns each known host in the local datacenter, in an order that follows a round-robin algorithm,
+        ///  separately from <see cref="Pick"/>.
+        /// </summary>
+        /// <param name="routing">The routing information of the request.</param>
+        /// <param name="metadata">The snapshot of the cluster metadata, which gives the hosts.</param>
+        public IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot metadata)
+        {
+            var startIndex = NextStartIndex(routing, ref _fallbackIndex);
+            var localHosts = GetHosts((metadata ?? MetadataSnapshot.Empty).Hosts);
             //Round-robin through local nodes
             for (var i = 0; i < localHosts.Count; i++)
             {
@@ -190,9 +194,21 @@ namespace Cassandra
             }
         }
 
-        private void ClearHosts()
+        // A request routed as a lightweight transaction tries the hosts in the same order every time
+        private int NextStartIndex(RoutingInfo routing, ref int index)
         {
-            _hosts = null;
+            if (routing?.ShouldRouteAsLwt == true)
+            {
+                return 0;
+            }
+
+            var startIndex = Interlocked.Increment(ref index);
+            //Simplified overflow protection
+            if (startIndex > _maxIndex)
+            {
+                Interlocked.Exchange(ref index, 0);
+            }
+            return startIndex;
         }
 
         private string GetDatacenter(Host host)
@@ -202,42 +218,87 @@ namespace Cassandra
         }
 
         /// <summary>
-        /// Gets the nodes of the local datacenter
+        /// Gets the nodes of the local datacenter among <paramref name="hosts"/>, reusing the previous result while
+        /// the snapshots share the same host collection and the local datacenter is the same.
         /// </summary>
-        internal List<Host> GetHosts()
+        internal IReadOnlyList<Host> GetHosts(IReadOnlyCollection<Host> hosts)
         {
-            var hosts = _hosts;
-            if (hosts != null)
+            var localDc = _localDc;
+            var cached = _localHosts;
+            if (cached != null && cached.IsFor(hosts, localDc))
             {
-                return hosts;
+                return cached.Hosts;
             }
-            lock (_hostCreationLock)
+
+            lock (_localHostsLock)
             {
-                //Check that if it has been updated since we were waiting for the lock
-                hosts = _hosts;
-                if (hosts != null)
+                // Another plan may have computed them while this one waited for the lock
+                cached = _localHosts;
+                if (cached != null && cached.IsFor(hosts, localDc))
                 {
-                    return hosts;
+                    return cached.Hosts;
                 }
+
                 var localHosts = new List<Host>();
-
-                //Do not reorder instructions, the host list must be up to date now, not earlier
-                Thread.MemoryBarrier();
-
-                //shallow copy the nodes
-                var allNodes = _cluster.AllHosts().ToArray();
-
-                foreach (var h in allNodes)
+                List<Host> hostsWithoutDatacenter = null;
+                foreach (var host in hosts)
                 {
-                    if (GetDatacenter(h) == _localDc)
+                    if (host.Datacenter == null)
                     {
-                        localHosts.Add(h);
+                        (hostsWithoutDatacenter ??= new List<Host>()).Add(host);
+                    }
+                    if ((host.Datacenter ?? localDc) == localDc)
+                    {
+                        localHosts.Add(host);
                     }
                 }
-                hosts = localHosts;
-                _hosts = hosts;
+
+                // Before Initialize infers the local datacenter, the list is built for a null one, which the local
+                // datacenter of the cache then tells apart
+                _localHosts = new LocalHosts(hosts, localDc, localHosts, hostsWithoutDatacenter);
+                return localHosts;
             }
-            return hosts;
+        }
+
+        private sealed class LocalHosts
+        {
+            // A host is added before the driver reads its datacenter, which then doesn't create a new host collection,
+            // and a peer can stay without a datacenter. The hosts without one are kept to tell when one gets it.
+            private readonly IReadOnlyList<Host> _hostsWithoutDatacenter;
+
+            public LocalHosts(
+                IReadOnlyCollection<Host> source, string localDc, IReadOnlyList<Host> hosts, IReadOnlyList<Host> hostsWithoutDatacenter)
+            {
+                Source = source;
+                LocalDc = localDc;
+                Hosts = hosts;
+                _hostsWithoutDatacenter = hostsWithoutDatacenter;
+            }
+
+            public IReadOnlyCollection<Host> Source { get; }
+
+            public string LocalDc { get; }
+
+            public IReadOnlyList<Host> Hosts { get; }
+
+            public bool IsFor(IReadOnlyCollection<Host> hosts, string localDc)
+            {
+                if (!ReferenceEquals(Source, hosts) || LocalDc != localDc)
+                {
+                    return false;
+                }
+                if (_hostsWithoutDatacenter != null)
+                {
+                    foreach (var host in _hostsWithoutDatacenter)
+                    {
+                        if (host.Datacenter != null)
+                        {
+                            return false;
+                        }
+                    }
+                }
+                return true;
+            }
         }
     }
 }

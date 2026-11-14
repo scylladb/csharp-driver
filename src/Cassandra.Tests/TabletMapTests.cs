@@ -25,7 +25,7 @@ namespace Cassandra.Tests
                 ClientOptions = new ClientOptions(false, 12345, null)
             }.Build();
             var metadata = new Metadata(config);
-            _tabletMap = new TabletMap(metadata, new ConcurrentDictionary<TabletMap.KeyspaceTableNamePair, TabletMap.TabletSet>(), new Hosts());
+            _tabletMap = new TabletMap(metadata, new Hosts());
             _hostId1 = Guid.NewGuid();
             _hostId2 = Guid.NewGuid();
         }
@@ -156,6 +156,23 @@ namespace Cassandra.Tests
             key = new TabletMap.KeyspaceTableNamePair(keyspace, table2);
             Assert.IsTrue(mapping.ContainsKey(key), "Mapping for table2 should still exist after removing table1 tablets.");
             Assert.AreEqual(2, mapping[key].Tablets.Count, "There should be 2 tablets left for table2 after removing table1 tablets.");
+        }
+
+        [Test]
+        public void AddTablet_ReplacesOverlappingTablets()
+        {
+            _tabletMap.AddTablet("ks", "tbl", CreateTablet(0, 100, _hostId1));
+            _tabletMap.AddTablet("ks", "tbl", CreateTablet(101, 200, _hostId1));
+            var snapshot = _tabletMap.GetMapping();
+
+            // Overlaps the first tablet only
+            _tabletMap.AddTablet("ks", "tbl", CreateTablet(50, 80, _hostId2));
+
+            var tablets = _tabletMap.GetMapping()[new TabletMap.KeyspaceTableNamePair("ks", "tbl")].Tablets;
+            CollectionAssert.AreEquivalent(new[] { (50L, 80L), (101L, 200L) }, tablets.Select(t => (t.FirstToken, t.LastToken)));
+            // A mapping taken before doesn't change
+            Assert.AreEqual(2, snapshot[new TabletMap.KeyspaceTableNamePair("ks", "tbl")].Tablets.Count);
+            Assert.IsTrue(snapshot[new TabletMap.KeyspaceTableNamePair("ks", "tbl")].Tablets.Any(t => t.FirstToken == 0));
         }
     }
 }

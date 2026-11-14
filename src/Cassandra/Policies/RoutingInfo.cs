@@ -13,6 +13,7 @@
 //   See the License for the specific language governing permissions and
 //   limitations under the License.
 //
+using System.Threading;
 using Cassandra.ExecutionProfiles;
 
 namespace Cassandra
@@ -21,7 +22,7 @@ namespace Cassandra
     /// What a load balancing policy knows about a request when it builds its query plan.
     /// <para>
     /// New routing inputs are added as properties, so that adding one doesn't change the signature of
-    /// <see cref="ILoadBalancingPolicy.NewQueryPlan"/>.
+    /// <see cref="ILoadBalancingPolicy.Pick"/> and <see cref="ILoadBalancingPolicy.Fallback"/>.
     /// </para>
     /// </summary>
     public sealed class RoutingInfo
@@ -49,19 +50,65 @@ namespace Cassandra
         public bool IsConfirmedLwt { get; init; }
 
         /// <summary>
-        /// Gets whether the request should be routed as a lightweight transaction: it is a confirmed LWT, or its
-        /// effective consistency level is <see cref="ConsistencyLevel.Serial"/> or
-        /// <see cref="ConsistencyLevel.LocalSerial"/>, including when only the execution profile sets it. A policy
-        /// should then try the replicas in the same order for every request, so that concurrent LWTs on a
-        /// partition reach the same coordinator first.
+        /// Gets the effective consistency level of the request: the statement's, or else the one of the execution
+        /// profile or the cluster. It is null for a request issued by the driver itself, such as a prepare request.
+        /// <para>
+        /// It is the consistency level of the first attempt. The retry policy can retry with another one.
+        /// </para>
         /// </summary>
-        public bool ShouldRouteAsLwt { get; init; }
+        public ConsistencyLevel? Consistency { get; init; }
 
         /// <summary>
-        /// Gets the statement of the request, or null for a request issued by the driver itself, such as a prepare
-        /// request.
+        /// Gets the effective serial consistency level of the request, used for the serial phase of a lightweight
+        /// transaction: the statement's, or else the one of the execution profile or the cluster. It is null for a
+        /// request issued by the driver itself.
+        /// <para>
+        /// The driver sends it with every statement, so it doesn't tell whether the request is a lightweight
+        /// transaction and doesn't affect <see cref="ShouldRouteAsLwt"/>.
+        /// </para>
         /// </summary>
-        public IStatement Statement { get; init; }
+        public ConsistencyLevel? SerialConsistency { get; init; }
+
+        /// <summary>
+        /// Gets whether the request should be routed as a lightweight transaction: it is a confirmed LWT
+        /// (<see cref="IsConfirmedLwt"/>), or its <see cref="Consistency"/> is <see cref="ConsistencyLevel.Serial"/>
+        /// or <see cref="ConsistencyLevel.LocalSerial"/>, which reads the result of lightweight transactions. A
+        /// policy should then try the replicas in the same order for every request, so that concurrent LWTs on a
+        /// partition reach the same coordinator first.
+        /// </summary>
+        public bool ShouldRouteAsLwt => IsConfirmedLwt || Consistency?.IsSerialConsistencyLevel() == true;
+
+        private TokenCache _token;
+
+        /// <summary>
+        /// Gets the token of <see cref="RoutingKey"/> for the partitioner of <paramref name="factory"/>, computing
+        /// it once: the policies of a request and their replica lookups reuse it.
+        /// </summary>
+        internal IToken GetToken(TokenFactory factory)
+        {
+            var cached = Volatile.Read(ref _token);
+            if (cached != null && ReferenceEquals(cached.Factory, factory))
+            {
+                return cached.Token;
+            }
+
+            var token = factory.Hash(RoutingKey.RawRoutingKey);
+            Volatile.Write(ref _token, new TokenCache(factory, token));
+            return token;
+        }
+
+        private sealed class TokenCache
+        {
+            public TokenCache(TokenFactory factory, IToken token)
+            {
+                Factory = factory;
+                Token = token;
+            }
+
+            public TokenFactory Factory { get; }
+
+            public IToken Token { get; }
+        }
 
         /// <summary>
         /// Builds the routing information of a statement executed by a session.
@@ -73,20 +120,17 @@ namespace Cassandra
                 return ForKeyspace(sessionKeyspace);
             }
 
-            // Either the statement itself says so, or the effective consistency level, from the request options or
-            // execution profile, is serial
-            var routeAsLwt = statement.ShouldRouteAsLwt()
-                || (statement is Statement stmt
-                    && stmt.ConsistencyLevel == null
-                    && requestOptions.ConsistencyLevel.IsSerialConsistencyLevel());
             return new RoutingInfo
             {
                 Keyspace = statement.Keyspace ?? sessionKeyspace,
                 Table = statement.TableName,
                 RoutingKey = statement.RoutingKey,
                 IsConfirmedLwt = statement.IsLwt(),
-                ShouldRouteAsLwt = routeAsLwt,
-                Statement = statement
+                Consistency = statement.ConsistencyLevel ?? requestOptions.ConsistencyLevel,
+                // ConsistencyLevel.Any is the statement's "not set" value, as when the driver builds the request
+                SerialConsistency = statement.SerialConsistencyLevel != ConsistencyLevel.Any
+                    ? statement.SerialConsistencyLevel
+                    : requestOptions.SerialConsistencyLevel
             };
         }
 

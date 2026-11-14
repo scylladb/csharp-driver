@@ -192,7 +192,8 @@ namespace Cassandra.IntegrationTests.MetadataTests
                 Assert.AreEqual(3, newCluster.Metadata.GetReplicas(keyspaceName, null, Encoding.UTF8.GetBytes("123")).Count);
 
                 Assert.AreEqual(3, newCluster.Metadata.Hosts.Count(h => h.IsUp));
-                Assert.IsTrue(object.ReferenceEquals(newCluster.Metadata.TokenToReplicasMap, oldTokenMap));
+                // Updated for the keyspace, without rebuilding the ring
+                Assert.IsTrue(((TokenMap)newCluster.Metadata.TokenToReplicasMap).SharesRingWith((TokenMap)oldTokenMap));
             }
         }
 

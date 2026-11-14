@@ -275,7 +275,16 @@ namespace Cassandra.IntegrationTests.Core
                 return HostDistance.Local;
             }
 
-            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
+            public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot cluster)
+            {
+                foreach (var target in Fallback(routing, cluster))
+                {
+                    return target;
+                }
+                return null;
+            }
+
+            public IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot cluster)
             {
                 var hosts = _cluster.AllHosts().ToArray();
                 foreach (var addr in _addresses)

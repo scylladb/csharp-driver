@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Linq;
 using Cassandra.Connections.Control;
@@ -24,6 +25,10 @@ using Cassandra.MetadataHelpers;
 
 namespace Cassandra
 {
+    /// <summary>
+    /// The replicas of each token, per keyspace. An instance never changes: updating a keyspace creates a new
+    /// instance that shares the ring, so a <see cref="MetadataSnapshot"/> can keep a reference to it.
+    /// </summary>
     internal class TokenMap : IReadOnlyTokenMap
     {
         internal readonly TokenFactory Factory;
@@ -34,7 +39,9 @@ namespace Cassandra
         private readonly IReadOnlyDictionary<IToken, Host> _primaryReplicas;
         private readonly IReadOnlyDictionary<string, DatacenterInfo> _datacenters;
         private readonly int _numberOfHostsWithTokens;
-        private readonly ConcurrentDictionary<string, IReadOnlyDictionary<IToken, ISet<Host>>> _tokenToHostsByKeyspace;
+        private readonly ImmutableDictionary<string, IReadOnlyDictionary<IToken, ISet<Host>>> _tokenToHostsByKeyspace;
+
+        // A cache of computed replicas, shared by the instances derived from the same ring. Its values never change.
         private readonly ConcurrentDictionary<IReplicationStrategy, IReadOnlyDictionary<IToken, ISet<Host>>> _keyspaceTokensCache;
         private static readonly Logger Logger = new Logger(typeof(ControlConnection));
 
@@ -48,7 +55,7 @@ namespace Cassandra
             int numberOfHostsWithTokens)
         {
             Factory = factory;
-            _tokenToHostsByKeyspace = new ConcurrentDictionary<string, IReadOnlyDictionary<IToken, ISet<Host>>>(tokenToHostsByKeyspace);
+            _tokenToHostsByKeyspace = tokenToHostsByKeyspace.ToImmutableDictionary();
             _ring = ring;
             _primaryReplicas = primaryReplicas;
             _keyspaceTokensCache = new ConcurrentDictionary<IReplicationStrategy, IReadOnlyDictionary<IToken, ISet<Host>>>(keyspaceTokensCache);
@@ -56,28 +63,60 @@ namespace Cassandra
             _numberOfHostsWithTokens = numberOfHostsWithTokens;
         }
 
+        private TokenMap(TokenMap source, ImmutableDictionary<string, IReadOnlyDictionary<IToken, ISet<Host>>> tokenToHostsByKeyspace)
+        {
+            Factory = source.Factory;
+            _tokenToHostsByKeyspace = tokenToHostsByKeyspace;
+            _ring = source._ring;
+            _primaryReplicas = source._primaryReplicas;
+            _keyspaceTokensCache = source._keyspaceTokensCache;
+            _datacenters = source._datacenters;
+            _numberOfHostsWithTokens = source._numberOfHostsWithTokens;
+        }
+
+        /// <summary>
+        /// Gets whether this instance was derived from <paramref name="other"/> by keyspace updates, without
+        /// rebuilding the ring.
+        /// </summary>
+        internal bool SharesRingWith(TokenMap other) => other != null && ReferenceEquals(_ring, other._ring);
+
         public IReadOnlyDictionary<IToken, ISet<Host>> GetByKeyspace(string keyspaceName)
         {
             _tokenToHostsByKeyspace.TryGetValue(keyspaceName, out var value);
             return value;
         }
 
-        public void UpdateKeyspace(KeyspaceMetadata ks)
+        /// <summary>
+        /// Returns a token map with the replicas of <paramref name="ks"/> computed for its current replication.
+        /// </summary>
+        public TokenMap WithKeyspace(KeyspaceMetadata ks)
         {
             var sw = new Stopwatch();
             sw.Start();
 
-            TokenMap.UpdateKeyspace(
-                ks, _tokenToHostsByKeyspace, _ring, _primaryReplicas, _keyspaceTokensCache, _datacenters, _numberOfHostsWithTokens);
+            var replicas = TokenMap.ComputeReplicas(
+                ks, _ring, _primaryReplicas, _keyspaceTokensCache, _datacenters, _numberOfHostsWithTokens);
+            var updated = new TokenMap(this, _tokenToHostsByKeyspace.SetItem(ks.Name, replicas));
 
             sw.Stop();
             TokenMap.Logger.Info(
                 "Finished updating TokenMap for the '{0}' keyspace. It took {1:0} milliseconds.",
                 ks.Name,
                 sw.Elapsed.TotalMilliseconds);
+            return updated;
         }
 
-        public ICollection<RoutingTarget> GetReplicas(string keyspaceName, IToken token)
+        /// <summary>
+        /// Returns a token map without the replicas of the keyspace <paramref name="name"/>.
+        /// </summary>
+        public TokenMap WithoutKeyspace(string name)
+        {
+            return _tokenToHostsByKeyspace.ContainsKey(name)
+                ? new TokenMap(this, _tokenToHostsByKeyspace.Remove(name))
+                : this;
+        }
+
+        public IReadOnlyList<RoutingTarget> GetReplicas(string keyspaceName, IToken token)
         {
             IReadOnlyList<IToken> readOnlyRing = _ring;
 
@@ -157,7 +196,8 @@ namespace Cassandra
             var numberOfHostsWithTokens = hosts.Count(h => h.Tokens.Any());
             foreach (var ks in keyspaces)
             {
-                TokenMap.UpdateKeyspace(ks, tokenToHosts, ring, primaryReplicas, ksTokensCache, datacenters, numberOfHostsWithTokens);
+                tokenToHosts[ks.Name] = TokenMap.ComputeReplicas(
+                    ks, ring, primaryReplicas, ksTokensCache, datacenters, numberOfHostsWithTokens);
             }
 
             sw.Stop();
@@ -169,9 +209,8 @@ namespace Cassandra
             return new TokenMap(factory, tokenToHosts, ring, primaryReplicas, ksTokensCache, datacenters, numberOfHostsWithTokens);
         }
 
-        private static void UpdateKeyspace(
+        private static IReadOnlyDictionary<IToken, ISet<Host>> ComputeReplicas(
             KeyspaceMetadata ks,
-            IDictionary<string, IReadOnlyDictionary<IToken, ISet<Host>>> tokenToHostsByKeyspace,
             IReadOnlyList<IToken> ring,
             IReadOnlyDictionary<IToken, Host> primaryReplicas,
             IDictionary<IReplicationStrategy, IReadOnlyDictionary<IToken, ISet<Host>>> keyspaceTokensCache,
@@ -189,12 +228,7 @@ namespace Cassandra
                 keyspaceTokensCache[ks.Strategy] = replicas;
             }
 
-            tokenToHostsByKeyspace[ks.Name] = replicas;
-        }
-
-        public void RemoveKeyspace(string name)
-        {
-            _tokenToHostsByKeyspace.TryRemove(name, out _);
+            return replicas;
         }
     }
 }

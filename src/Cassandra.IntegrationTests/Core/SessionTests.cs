@@ -343,9 +343,14 @@ namespace Cassandra.IntegrationTests.Core
                 return HostDistance.Local;
             }
 
-            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
+            public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot cluster)
             {
-                return _childPolicy.NewQueryPlan(routing, cluster);
+                return _childPolicy.Pick(routing, cluster);
+            }
+
+            public IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot cluster)
+            {
+                return _childPolicy.Fallback(routing, cluster);
             }
         }
 

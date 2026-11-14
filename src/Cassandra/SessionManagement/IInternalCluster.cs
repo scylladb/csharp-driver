@@ -56,10 +56,10 @@ namespace Cassandra.SessionManagement
         IReadOnlyDictionary<IContactPoint, IEnumerable<IConnectionEndPoint>> GetResolvedEndpoints();
 
         /// <summary>
-        /// Gets the replicas used for token-aware routing, falling back to the token map when no tablet of the
-        /// table is cached.
+        /// Gets the current metadata snapshot. Unlike <see cref="ICluster.Metadata"/>, it doesn't wait for the
+        /// cluster to be initialized, so the control connection can use it while initializing.
         /// </summary>
-        ICollection<RoutingTarget> GetRoutingReplicas(string keyspace, string table, byte[] partitionKey);
+        MetadataSnapshot GetMetadataSnapshot();
 
         /// <summary>
         /// Helper method to retrieve the aggregate distance from all configured LoadBalancingPolicies and set it at Host level.

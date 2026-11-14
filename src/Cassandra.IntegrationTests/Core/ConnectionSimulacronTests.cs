@@ -388,9 +388,18 @@ namespace Cassandra.IntegrationTests.Core
                 return _parent.Distance(host);
             }
 
-            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
+            public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot cluster)
             {
-                var plan = _parent.NewQueryPlan(routing, cluster);
+                foreach (var target in Fallback(routing, cluster))
+                {
+                    return target;
+                }
+                return null;
+            }
+
+            public IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot cluster)
+            {
+                var plan = _parent.Fallback(routing, cluster);
                 return plan.Where(h => !_disallowed.Contains(h.Host.Address));
             }
         }

@@ -8,12 +8,16 @@ using System.Threading.Tasks;
 
 namespace Cassandra
 {
+    /// <summary>
+    /// The tablets the driver learned, per table. The mapping and its tablet sets never change: each update
+    /// replaces the mapping atomically, so a <see cref="MetadataSnapshot"/> can keep a reference to it.
+    /// </summary>
     internal class TabletMap
     {
         private static readonly Logger Logger = new Logger(typeof(TabletMap));
-        private static readonly ICollection<RoutingTarget> EMPTY_LIST = new RoutingTarget[0];
+        private static readonly IReadOnlyList<RoutingTarget> EMPTY_LIST = Array.Empty<RoutingTarget>();
 
-        private readonly ConcurrentDictionary<KeyspaceTableNamePair, TabletSet> _mapping;
+        private ImmutableDictionary<KeyspaceTableNamePair, TabletSet> _mapping = ImmutableDictionary<KeyspaceTableNamePair, TabletSet>.Empty;
         private readonly Metadata _metadata;
         private readonly Lazy<Task> _initTask;
 
@@ -22,12 +26,11 @@ namespace Cassandra
         private readonly SemaphoreSlim _updateQueueSignal = new SemaphoreSlim(0);
         private volatile bool _disposed;
 
-        public TabletMap(Metadata metadata, ConcurrentDictionary<KeyspaceTableNamePair, TabletSet> mapping, Hosts hosts)
+        public TabletMap(Metadata metadata, Hosts hosts)
         {
             _metadata = metadata;
             _initTask = new Lazy<Task>(InitializeAsync);
             _metadata.SchemaChangedEvent += SchemaCHangedEventHandler;
-            _mapping = mapping;
             OnTabletMapUpdate = request =>
             {
                 _updateQueue.Enqueue(request);
@@ -100,24 +103,34 @@ namespace Cassandra
 
         public static TabletMap EmptyMap(Metadata metadata, Hosts hosts)
         {
-            return new TabletMap(metadata, new ConcurrentDictionary<KeyspaceTableNamePair, TabletSet>(), hosts);
+            return new TabletMap(metadata, hosts);
         }
 
-        public IDictionary<KeyspaceTableNamePair, TabletSet> GetMapping() => _mapping;
+        /// <summary>
+        /// Gets the current tablets. The returned mapping never changes.
+        /// </summary>
+        public IReadOnlyDictionary<KeyspaceTableNamePair, TabletSet> GetMapping() => Volatile.Read(ref _mapping);
 
         /// <summary>
-        /// Gets the tablet replicas owning the token for the provided table.
+        /// Gets the tablet replicas owning the token for the provided table, from a mapping returned by
+        /// <see cref="GetMapping"/> and the hosts known at the same time.
         /// </summary>
         /// <returns>
         /// <c>false</c> when there is no tablet mapping for the table. Otherwise <c>true</c>, with
         /// <paramref name="replicas"/> empty when no cached tablet owns the token or one of its replica hosts is unknown.
         /// </returns>
-        public bool TryGetReplicas(string keyspace, string table, IToken token, out ICollection<RoutingTarget> replicas)
+        public static bool TryGetReplicas(
+            IReadOnlyDictionary<KeyspaceTableNamePair, TabletSet> mapping,
+            IEnumerable<Host> hosts,
+            string keyspace,
+            string table,
+            IToken token,
+            out IReadOnlyList<RoutingTarget> replicas)
         {
             replicas = EMPTY_LIST;
             var key = new KeyspaceTableNamePair(keyspace, table);
 
-            if (!_mapping.TryGetValue(key, out var tabletSet))
+            if (!mapping.TryGetValue(key, out var tabletSet))
             {
                 return false;
             }
@@ -137,7 +150,7 @@ namespace Cassandra
             var tabletReplicas = new List<RoutingTarget>();
             foreach (var hostShardPair in row.Replicas)
             {
-                Host replica = _metadata.Hosts.ToCollection().FirstOrDefault(h => h.HostId == hostShardPair.HostID);
+                Host replica = hosts.FirstOrDefault(h => h.HostId == hostShardPair.HostID);
                 if (replica == null)
                 {
                     Logger.Verbose("Could not find host {0} owning a tablet replica for {1}.{2}.", hostShardPair.HostID, keyspace, table);
@@ -150,63 +163,50 @@ namespace Cassandra
             return true;
         }
 
-        public void RemoveTableMappings(KeyspaceTableNamePair key) => _mapping.TryRemove(key, out _);
+        public void RemoveTableMappings(KeyspaceTableNamePair key) => ImmutableInterlocked.TryRemove(ref _mapping, key, out _);
 
         public void RemoveTableMappings(Host h)
         {
-            foreach (var kvp in _mapping.ToList())
+            ImmutableInterlocked.Update(ref _mapping, mapping =>
             {
-                var key = kvp.Key;
-                var tabletSet = kvp.Value;
-                tabletSet.UpdateTablets(currentTablets =>
+                var updated = mapping;
+                foreach (var kvp in mapping)
                 {
                     // Remove tablets that have a replica with the specified host
-                    var tabletsToRemove = currentTablets
-                        .Where(t => t.Replicas.Any(r => r.HostID == h.HostId))
-                        .ToList();
-                    var updated = currentTablets;
-                    foreach (var tabletToRemove in tabletsToRemove)
-                    {
-                        updated = updated.Remove(tabletToRemove);
-                    }
-                    return updated;
-                });
+                    var tablets = kvp.Value.Tablets.Except(
+                        kvp.Value.Tablets.Where(t => t.Replicas.Any(r => r.HostID == h.HostId)));
 
-                // If no tablets remain, remove the whole mapping
-                if (!tabletSet.Tablets.Any())
-                {
-                    _mapping.TryRemove(key, out _);
+                    // If no tablets remain, remove the whole mapping
+                    updated = tablets.IsEmpty
+                        ? updated.Remove(kvp.Key)
+                        : updated.SetItem(kvp.Key, new TabletSet(tablets));
                 }
-            }
+                return updated;
+            });
         }
 
         public void RemoveTableMappings(string keyspace, string table) => RemoveTableMappings(new KeyspaceTableNamePair(keyspace, table));
 
         public void RemoveTableMappings(string keyspace)
         {
-            foreach (var key in _mapping.Keys.Where(k => k.Keyspace == keyspace).ToList())
-            {
-                _mapping.TryRemove(key, out _);
-            }
+            ImmutableInterlocked.Update(
+                ref _mapping, mapping => mapping.RemoveRange(mapping.Keys.Where(k => k.Keyspace == keyspace)));
         }
 
         public void AddTablet(string keyspace, string table, Tablet t)
         {
             var ktPair = new KeyspaceTableNamePair(keyspace, table);
-            var tabletSet = _mapping.GetOrAdd(ktPair, k => new TabletSet());
-            tabletSet.UpdateTablets(currentTablets =>
+            ImmutableInterlocked.Update(ref _mapping, mapping =>
             {
-                // Remove any existing tablets that overlap with the new one
-                var overlappingTablets = currentTablets.Where(existingTablet =>
-                    existingTablet.FirstToken < t.LastToken && existingTablet.LastToken > t.FirstToken).ToList();
-                var updated = currentTablets;
-                foreach (var tabletToRemove in overlappingTablets)
-                {
-                    updated = updated.Remove(tabletToRemove);
-                }
-                // Add the new tablet
-                updated = updated.Add(t);
-                return updated;
+                var currentTablets = mapping.TryGetValue(ktPair, out var tabletSet)
+                    ? tabletSet.Tablets
+                    : ImmutableSortedSet<Tablet>.Empty;
+                // Remove any existing tablets that overlap with the new one, then add the new tablet
+                var updated = currentTablets
+                    .Except(currentTablets.Where(existingTablet =>
+                        existingTablet.FirstToken < t.LastToken && existingTablet.LastToken > t.FirstToken))
+                    .Add(t);
+                return mapping.SetItem(ktPair, new TabletSet(updated));
             });
         }
 
@@ -235,20 +235,17 @@ namespace Cassandra
             public override int GetHashCode() => HashCode.Combine(Keyspace, TableName);
         }
 
+        /// <summary>
+        /// The tablets of a table, sorted by token. An instance never changes.
+        /// </summary>
         public class TabletSet
         {
-            private ImmutableSortedSet<Tablet> _tablets = ImmutableSortedSet<Tablet>.Empty;
-            public ImmutableSortedSet<Tablet> Tablets => _tablets;
-
-            public void UpdateTablets(Func<ImmutableSortedSet<Tablet>, ImmutableSortedSet<Tablet>> updateFunc)
+            public TabletSet(ImmutableSortedSet<Tablet> tablets)
             {
-                ImmutableSortedSet<Tablet> oldSet, newSet;
-                do
-                {
-                    oldSet = _tablets;
-                    newSet = updateFunc(oldSet);
-                } while (System.Threading.Interlocked.CompareExchange(ref _tablets, newSet, oldSet) != oldSet);
+                Tablets = tablets;
             }
+
+            public ImmutableSortedSet<Tablet> Tablets { get; }
         }
     }
 }

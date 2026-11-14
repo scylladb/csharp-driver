@@ -697,23 +697,66 @@ namespace Cassandra.Tests
 
         /// <summary>
         /// Builds a query plan the way the driver does for a statement executed with <paramref name="keyspace"/> as
-        /// the session keyspace. <paramref name="routeAsLwt"/> overrides the statement's own LWT routing.
+        /// the session keyspace. <paramref name="routeAsLwt"/> overrides the statement's own LWT routing, as a
+        /// confirmed LWT or a statement with a non-serial consistency level. The metadata snapshot is the cluster's
+        /// when it has metadata; otherwise it has the cluster's hosts and the replicas of <paramref name="replicas"/>.
         /// </summary>
-        internal static IEnumerable<RoutingTarget> NewQueryPlan(
-            this ILoadBalancingPolicy policy, ICluster cluster, string keyspace, IStatement statement, bool? routeAsLwt = null)
+        internal static IEnumerable<RoutingTarget> Plan(
+            this ILoadBalancingPolicy policy,
+            ICluster cluster,
+            string keyspace,
+            IStatement statement,
+            bool? routeAsLwt = null,
+            Func<RoutingInfo, IReadOnlyList<RoutingTarget>> replicas = null)
         {
             var routing = statement == null
-                ? new RoutingInfo { Keyspace = keyspace, ShouldRouteAsLwt = routeAsLwt == true }
+                ? new RoutingInfo { Keyspace = keyspace, IsConfirmedLwt = routeAsLwt == true }
                 : new RoutingInfo
                 {
                     Keyspace = statement.Keyspace ?? keyspace,
                     Table = statement.TableName,
                     RoutingKey = statement.RoutingKey,
-                    IsConfirmedLwt = statement.IsLwt(),
-                    ShouldRouteAsLwt = routeAsLwt ?? statement.ShouldRouteAsLwt(),
-                    Statement = statement
+                    IsConfirmedLwt = routeAsLwt ?? statement.IsLwt(),
+                    Consistency = routeAsLwt == null ? statement.ConsistencyLevel : ConsistencyLevel.LocalOne
                 };
-            return policy.NewQueryPlan(routing, new ClusterState(cluster));
+            return policy.Plan(routing, TestHelper.Snapshot(cluster, replicas));
+        }
+
+        /// <summary>
+        /// Builds the query plan of <paramref name="policy"/> as the driver does: its pick, then its fallback targets.
+        /// </summary>
+        internal static IEnumerable<RoutingTarget> Plan(this ILoadBalancingPolicy policy, RoutingInfo routing, MetadataSnapshot metadata)
+        {
+            return QueryPlan.Create(policy, routing, metadata);
+        }
+
+        private static Metadata TryGetMetadata(ICluster cluster)
+        {
+            try
+            {
+                return cluster?.Metadata;
+            }
+            catch (MockException)
+            {
+                // A strict mock without metadata
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Gets the metadata snapshot of <paramref name="cluster"/> when it has metadata, or else a snapshot with its
+        /// hosts and the replicas of <paramref name="replicas"/>.
+        /// </summary>
+        internal static MetadataSnapshot Snapshot(ICluster cluster, Func<RoutingInfo, IReadOnlyList<RoutingTarget>> replicas = null)
+        {
+            if (replicas == null && TryGetMetadata(cluster) is { } metadata)
+            {
+                return metadata.GetSnapshot();
+            }
+            var hosts = cluster?.AllHosts();
+            return new MetadataSnapshot(
+                hosts as IReadOnlyCollection<Host> ?? hosts?.ToList() ?? new List<Host>(),
+                replicas ?? (_ => Array.Empty<RoutingTarget>()));
         }
 
         /// <summary>
@@ -753,9 +796,18 @@ namespace Cassandra.Tests
                 return _childPolicy.Distance(host);
             }
 
-            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
+            public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot cluster)
             {
-                return !_useRoundRobin ? _hosts.Select(h => new RoutingTarget(h, null)) : _childPolicy.NewQueryPlan(routing, cluster);
+                foreach (var target in Fallback(routing, cluster))
+                {
+                    return target;
+                }
+                return null;
+            }
+
+            public IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot cluster)
+            {
+                return !_useRoundRobin ? _hosts.Select(h => new RoutingTarget(h, null)) : _childPolicy.Fallback(routing, cluster);
             }
         }
 
@@ -767,13 +819,13 @@ namespace Cassandra.Tests
         {
             private ICluster _cluster;
             private readonly Func<ICluster, Host, HostDistance> _distanceHandler;
-            private readonly Func<ICluster, string, IStatement, IEnumerable<Host>> _queryPlanHandler;
+            private readonly Func<ICluster, RoutingInfo, IEnumerable<Host>> _queryPlanHandler;
 
             public CustomLoadBalancingPolicy(
-                Func<ICluster, string, IStatement, IEnumerable<Host>> queryPlanHandler = null,
+                Func<ICluster, RoutingInfo, IEnumerable<Host>> queryPlanHandler = null,
                 Func<ICluster, Host, HostDistance> distanceHandler = null)
             {
-                _queryPlanHandler = queryPlanHandler ?? ((cluster, ks, statement) => cluster.AllHosts());
+                _queryPlanHandler = queryPlanHandler ?? ((cluster, routing) => cluster.AllHosts());
                 _distanceHandler = distanceHandler ?? ((_, __) => HostDistance.Local);
             }
 
@@ -787,9 +839,18 @@ namespace Cassandra.Tests
                 return _distanceHandler(_cluster, host);
             }
 
-            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
+            public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot cluster)
             {
-                return _queryPlanHandler(_cluster, routing?.Keyspace, routing?.Statement).Select(h => new RoutingTarget(h, null));
+                foreach (var target in Fallback(routing, cluster))
+                {
+                    return target;
+                }
+                return null;
+            }
+
+            public IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot cluster)
+            {
+                return _queryPlanHandler(_cluster, routing).Select(h => new RoutingTarget(h, null));
             }
         }
     }

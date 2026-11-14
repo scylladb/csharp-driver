@@ -1296,7 +1296,7 @@ namespace Cassandra.Tests.Connections.Control
                 .Returns(TaskHelper.Completed);
             var cluster = new Mock<IInternalCluster>();
             var loadBalancingPolicy = new TestHelper.CustomLoadBalancingPolicy(
-                queryPlanHandler: (currentCluster, keyspace, statement) => Enumerable.Empty<Host>());
+                queryPlanHandler: (currentCluster, routing) => Enumerable.Empty<Host>());
             var createResult = NewInstance(
                 cluster: cluster.Object,
                 eventDebouncer: debouncer.Object,
@@ -2766,7 +2766,7 @@ namespace Cassandra.Tests.Connections.Control
                     });
                 var cluster = new Mock<IInternalCluster>();
                 var policy = new TestHelper.CustomLoadBalancingPolicy(
-                    queryPlanHandler: (currentCluster, keyspace, statement) => Enumerable.Empty<Host>());
+                    queryPlanHandler: (currentCluster, routing) => Enumerable.Empty<Host>());
                 _created = fixture.NewInstance(
                     cluster: cluster.Object,
                     eventDebouncer: debouncer.Object,

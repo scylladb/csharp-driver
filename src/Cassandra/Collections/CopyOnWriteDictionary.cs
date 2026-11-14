@@ -44,6 +44,11 @@ namespace Cassandra.Collections
 
         public ICollection<TValue> Values => _map.Values;
 
+        /// <summary>
+        /// Gets the current values. The collection never changes: writes replace the underlying dictionary.
+        /// </summary>
+        public IReadOnlyCollection<TValue> ValuesSnapshot => _map.Values;
+
         public CopyOnWriteDictionary(IDictionary<TKey, TValue> toCopy)
         {
             _map = new Dictionary<TKey, TValue>(toCopy);

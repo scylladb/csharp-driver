@@ -210,13 +210,49 @@ namespace Cassandra
         }
 
         /// <summary>
+        /// Replaces the token map with the result of <paramref name="update"/>, unless there is no token map yet. The
+        /// token map never changes in place, so that a <see cref="MetadataSnapshot"/> can keep a reference to it.
+        /// <para>
+        /// If a rebuild publishes its token map while the update is computed, the update is applied again to the
+        /// rebuilt one. A rebuild that read the keyspaces before the update and publishes after it still replaces
+        /// the update, as before token maps were immutable.
+        /// </para>
+        /// </summary>
+        private void UpdateTokenMap(Func<TokenMap, TokenMap> update)
+        {
+            TokenMap current, updated;
+            do
+            {
+                current = _tokenMap;
+                if (current == null)
+                {
+                    return;
+                }
+                updated = update(current);
+            } while (Interlocked.CompareExchange(ref _tokenMap, updated, current) != current);
+        }
+
+        /// <summary>
+        /// Gets an immutable view of the current hosts, token map and tablets, which a query plan uses.
+        /// </summary>
+        internal MetadataSnapshot GetSnapshot()
+        {
+            // The tablets are read before the hosts, so a tablet learned after one of its replica hosts was added has
+            // that host in the snapshot. A tablet can still name a host the driver doesn't know yet; its replicas are
+            // then empty, as when the tablet is looked up
+            var tablets = TabletMap.GetMapping();
+            var tokenMap = _tokenMap;
+            return new MetadataSnapshot(Hosts.Snapshot(), tokenMap, tablets);
+        }
+
+        /// <summary>
         /// this method should be called by the event debouncer
         /// </summary>
         internal bool RemoveKeyspaceFromTokenMap(string name)
         {
             Metadata.Logger.Verbose("Removing keyspace metadata: " + name);
             var dropped = _keyspaces.TryRemove(name, out _);
-            _tokenMap?.RemoveKeyspace(name);
+            UpdateTokenMap(tokenMap => tokenMap.WithoutKeyspace(name));
             return dropped;
         }
 
@@ -235,7 +271,7 @@ namespace Cassandra
             {
                 Metadata.Logger.Verbose("Removing keyspace metadata: " + name);
                 dropped = _keyspaces.TryRemove(name, out _);
-                _tokenMap?.RemoveKeyspace(name);
+                UpdateTokenMap(tokenMap => tokenMap.WithoutKeyspace(name));
             }
             else
             {
@@ -251,7 +287,7 @@ namespace Cassandra
                     throw new DriverInternalError("Partitioner can not be null");
                 }
 
-                _tokenMap.UpdateKeyspace(keyspaceMetadata);
+                UpdateTokenMap(tokenMap => tokenMap.WithKeyspace(keyspaceMetadata));
             }
 
             if (Configuration.MetadataSyncOptions.MetadataSyncEnabled)
@@ -294,16 +330,20 @@ namespace Cassandra
         /// </returns>
         public ICollection<RoutingTarget> GetReplicas(string keyspaceName, string tableName, byte[] partitionKey)
         {
-            if (_tokenMap == null)
+            var tokenMap = _tokenMap;
+            if (tokenMap == null)
             {
                 Metadata.Logger.Warning("Metadata.GetReplicas was called but there was no token map.");
                 return new RoutingTarget[0];
             }
 
-            var token = _tokenMap.Factory.Hash(partitionKey);
-            if (TryGetTabletReplicas(keyspaceName, tableName, token, out var tabletReplicas))
+            var token = tokenMap.Factory.Hash(partitionKey);
+            if (!string.IsNullOrEmpty(keyspaceName)
+                && !string.IsNullOrEmpty(tableName)
+                && TabletMap.TryGetReplicas(
+                    TabletMap.GetMapping(), Hosts.ToCollection(), keyspaceName, tableName, token, out var tabletReplicas))
             {
-                return tabletReplicas;
+                return AsCollection(tabletReplicas);
             }
 
             var tokenMapUnusableReason = string.IsNullOrEmpty(keyspaceName)
@@ -316,7 +356,13 @@ namespace Cassandra
                 return new RoutingTarget[0];
             }
 
-            return _tokenMap.GetReplicas(keyspaceName, token);
+            return AsCollection(tokenMap.GetReplicas(keyspaceName, token));
+        }
+
+        // The replica lists are arrays or lists created for the caller, or the shared read-only empty array
+        private static ICollection<RoutingTarget> AsCollection(IReadOnlyList<RoutingTarget> replicas)
+        {
+            return replicas as ICollection<RoutingTarget> ?? replicas.ToList();
         }
 
         /// <summary>
@@ -345,17 +391,14 @@ namespace Cassandra
         /// to a non-replica with the tablet owning the partition key, which makes the following queries routed
         /// correctly.
         /// </summary>
-        internal ICollection<RoutingTarget> GetRoutingReplicas(string keyspaceName, string tableName, byte[] partitionKey)
+        internal IReadOnlyList<RoutingTarget> GetRoutingReplicas(string keyspaceName, string tableName, byte[] partitionKey)
         {
-            if (_tokenMap == null)
+            return GetSnapshot().GetReplicas(new RoutingInfo
             {
-                return new RoutingTarget[0];
-            }
-
-            var token = _tokenMap.Factory.Hash(partitionKey);
-            return TryGetTabletReplicas(keyspaceName, tableName, token, out var tabletReplicas)
-                ? tabletReplicas
-                : _tokenMap.GetReplicas(keyspaceName, token);
+                Keyspace = keyspaceName,
+                Table = tableName,
+                RoutingKey = new RoutingKey { RawRoutingKey = partitionKey }
+            });
         }
 
         /// <summary>
@@ -386,14 +429,6 @@ namespace Cassandra
                 default:
                     return null;
             }
-        }
-
-        private bool TryGetTabletReplicas(string keyspaceName, string tableName, IToken token, out ICollection<RoutingTarget> replicas)
-        {
-            replicas = null;
-            return !string.IsNullOrEmpty(keyspaceName)
-                   && !string.IsNullOrEmpty(tableName)
-                   && TabletMap.TryGetReplicas(keyspaceName, tableName, token, out replicas);
         }
 
         /// <summary>

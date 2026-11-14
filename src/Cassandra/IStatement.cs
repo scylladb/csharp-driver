@@ -149,9 +149,15 @@ namespace Cassandra
         bool IsLwt();
 
         /// <summary>
-        /// Returns whether this statement should be routed as an LWT.
-        /// This considers both <see cref="IsLwt()"/> and whether the statement's
-        /// consistency level is serial (<c>SERIAL</c> or <c>LOCAL_SERIAL</c>).
+        /// Returns whether this statement should be routed as an LWT, considering only the statement itself: whether
+        /// it is a confirmed LWT (<see cref="IsLwt()"/>) or its own consistency level is serial (<c>SERIAL</c> or
+        /// <c>LOCAL_SERIAL</c>).
+        /// <para>
+        /// The driver doesn't call this method to route requests, so overriding it has no effect on routing. The
+        /// load balancing policy receives <see cref="RoutingInfo.ShouldRouteAsLwt"/>, computed from
+        /// <see cref="IsLwt()"/> and the effective consistency level, which includes the one of the execution
+        /// profile.
+        /// </para>
         /// </summary>
         bool ShouldRouteAsLwt();
 
