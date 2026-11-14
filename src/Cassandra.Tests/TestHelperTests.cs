@@ -20,6 +20,7 @@ using System.Diagnostics;
 using System.Threading.Tasks;
 
 using NUnit.Framework;
+using NUnit.Framework.Internal;
 
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 using CollectionAssert = NUnit.Framework.CollectionAssert;
@@ -53,6 +54,26 @@ namespace Cassandra.Tests
                 TimeSpan.FromMilliseconds(milliseconds),
                 "The condition was never satisfied.").WaitAsync(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
             Assert.AreEqual("interval", exception.ParamName);
+        }
+
+        [Test]
+        public async Task WaitUntilReportsTimeoutWithinMultipleAssertScope()
+        {
+            using (new TestExecutionContext.IsolatedContext())
+            {
+                var exception = await Assert.ThrowsAsync<MultipleAssertException>(async () =>
+                {
+                    using (NUnit.Framework.Assert.EnterMultipleScope())
+                    {
+                        await TestHelper.WaitUntilOrFailAsync(
+                            () => false,
+                            TimeSpan.Zero,
+                            TimeSpan.Zero,
+                            "Timed out inside multiple assertions.").WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    }
+                }).ConfigureAwait(false);
+                StringAssert.Contains("Timed out inside multiple assertions.", exception.Message);
+            }
         }
 
         [TestCase(-1)]
