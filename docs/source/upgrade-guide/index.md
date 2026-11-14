@@ -13,9 +13,10 @@ so its linearizability guarantee is scoped to the local datacenter. The quorum d
 require more replicas to be available than the previous default.
 
 Explicit statement, execution-profile and query-option settings keep their existing precedence.
-ADO.NET `Cassandra.Data.CqlCommand` now inherits these session defaults when its
-`ConsistencyLevel` property is unset; it previously forced `ONE`. An explicitly assigned
-command consistency still takes precedence over the session defaults.
+ADO.NET `Cassandra.Data.CqlCommand` now inherits prepared-statement settings or session defaults
+when its `ConsistencyLevel` property is unset; it previously forced `ONE`. This includes settings
+on a prepared statement in the shared cluster cache. An explicitly assigned command consistency
+still takes precedence over both.
 
 To retain the previous `ISession` defaults on clusters other than DataStax Apollo, configure the cluster
 explicitly:
@@ -59,13 +60,13 @@ Choose a distinct name for this configuration before opening connections, or ove
 `CreateCluster` to control cluster creation and caching.
 
 The command consistency getter is a snapshot of currently known settings. It reads an existing
-completed prepared-statement cache entry in the current cache generation without sending a prepare
-request; a cache miss or in-flight preparation reports the current session default. After a concurrent
-invalidation, the getter can temporarily report the session default even though preparation can reuse
-an older completed entry unaffected by that invalidation. Call `Prepare()` first to observe that entry's
-setting. A custom `CreatePreparedStatement` override can select a different statement during
-preparation. Call `Prepare()` first when
-relying on settings selected by such an override, then read the getter again.
+completed prepared-statement cache entry in the current cache generation without sending a
+prepare request; a cache miss or in-flight preparation reports the current session default.
+After a concurrent invalidation, the getter can temporarily report the session default even
+though preparation can reuse an older completed entry unaffected by that invalidation. A custom
+`CreatePreparedStatement` override can also select a different statement during preparation.
+
+Call `Prepare()` first, then read the getter to observe the statement selected by either path.
 
 `QueryOptions.DefaultConsistencyLevel` and `QueryOptions.DefaultSerialConsistencyLevel` are
 public constants. Applications that explicitly use these constants must be recompiled against
