@@ -36,8 +36,8 @@ namespace Cassandra.Observers.Metrics
 
         private readonly IMetricsManager _manager;
         private readonly IDriverTimer _requestTimer;
-        private readonly ConditionalWeakTable<Host, MetricsSnapshot> _speculativeMetrics =
-            new ConditionalWeakTable<Host, MetricsSnapshot>();
+        private MetricsSnapshot _firstSpeculativeMetrics;
+        private ConditionalWeakTable<Host, MetricsSnapshot> _additionalSpeculativeMetrics;
         private long _startTimestamp;
 
         public MetricsRequestObserver(IMetricsManager manager, IDriverTimer requestTimer)
@@ -50,7 +50,7 @@ namespace Cassandra.Observers.Metrics
         {
             if (metrics != null)
             {
-                _speculativeMetrics.GetValue(host, _ => new MetricsSnapshot(metrics)).Set(metrics);
+                GetOrCreateSnapshot(host, metrics).Set(metrics);
             }
         }
 
@@ -61,7 +61,11 @@ namespace Cassandra.Observers.Metrics
 
         public Action CreateSpeculativeExecutionCallback(Host host, long delay)
         {
-            var metrics = _speculativeMetrics.TryGetValue(host, out var snapshot) ? snapshot.Get() : null;
+            var first = Volatile.Read(ref _firstSpeculativeMetrics);
+            var additional = Volatile.Read(ref _additionalSpeculativeMetrics);
+            var metrics = first != null && ReferenceEquals(first.Host, host)
+                ? first.Get()
+                : additional != null && additional.TryGetValue(host, out var snapshot) ? snapshot.Get() : null;
             return () =>
             {
                 if (metrics != null && !metrics.IsRetired)
@@ -242,7 +246,7 @@ namespace Cassandra.Observers.Metrics
             // Keep a connection-only observer usable without replacing a newer pool binding.
             if (nodeRequestInfo.NodeMetrics != null)
             {
-                _speculativeMetrics.GetValue(nodeRequestInfo.Host, _ => new MetricsSnapshot(nodeRequestInfo.NodeMetrics));
+                GetOrCreateSnapshot(nodeRequestInfo.Host, nodeRequestInfo.NodeMetrics);
             }
             return TaskHelper.Completed;
         }
@@ -258,12 +262,33 @@ namespace Cassandra.Observers.Metrics
             return metrics != null && !metrics.IsRetired ? metrics : null;
         }
 
+        private MetricsSnapshot GetOrCreateSnapshot(Host host, INodeMetrics metrics)
+        {
+            var first = Volatile.Read(ref _firstSpeculativeMetrics);
+            if (first == null)
+            {
+                var candidate = new MetricsSnapshot(host, metrics);
+                first = Interlocked.CompareExchange(ref _firstSpeculativeMetrics, candidate, null) ?? candidate;
+            }
+            if (ReferenceEquals(first.Host, host))
+            {
+                return first;
+            }
+
+            // A request usually selects one host. Allocate weak-key storage only when it selects another.
+            var additional = LazyInitializer.EnsureInitialized(ref _additionalSpeculativeMetrics);
+            return additional.GetValue(host, _ => new MetricsSnapshot(host, metrics));
+        }
+
         private sealed class MetricsSnapshot
         {
             private INodeMetrics _metrics;
 
-            internal MetricsSnapshot(INodeMetrics metrics)
+            internal Host Host { get; }
+
+            internal MetricsSnapshot(Host host, INodeMetrics metrics)
             {
+                Host = host;
                 _metrics = metrics;
             }
 

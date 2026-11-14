@@ -96,6 +96,61 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public async Task Should_CountScheduledSpeculationBeforeConnectionAcquisitionCompletes()
+        {
+            var session = GetMockInternalSession();
+            var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), contactPoint: null);
+            var lbp = new Mock<ILoadBalancingPolicy>();
+            lbp.Setup(value => value.NewQueryPlan(It.IsAny<RoutingInfo>(), It.IsAny<ClusterState>()))
+                .Returns(new[] { new RoutingTarget(host, null) });
+            var config = new TestConfigurationBuilder
+            {
+                Policies = new Cassandra.Policies(lbp.Object, null, null,
+                    new ConstantSpeculativeExecutionPolicy(50, 1), null, null),
+                RequestExecutionFactory = new RequestExecutionFactory()
+            }.Build();
+            Mock.Get(session).SetupGet(value => value.Cluster.Configuration).Returns(config);
+            Mock.Get(session.InternalCluster).Setup(value => value.RetrieveAndSetDistance(host)).Returns(HostDistance.Local);
+            var speculation = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var counter = new Mock<IDriverCounter>();
+            counter.Setup(value => value.Increment(1)).Callback(() => speculation.TrySetResult(true));
+            var metrics = Mock.Of<INodeMetrics>(value => value.SpeculativeExecutions == counter.Object);
+            var connection = new TaskCompletionSource<IConnection>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var pool = new Mock<IHostConnectionPool>();
+            pool.SetupGet(value => value.NodeMetrics).Returns(metrics);
+            pool.Setup(value => value.GetConnectionFromHostAsync(
+                    It.IsAny<IDictionary<IPEndPoint, Exception>>(), It.IsAny<Func<string>>(), It.IsAny<RoutingKey>(), -1))
+                .Returns(connection.Task);
+            Mock.Get(session).Setup(value => value.GetOrCreateConnectionPool(host, HostDistance.Local)).Returns(pool.Object);
+            var observer = new MetricsRequestObserver(Mock.Of<IMetricsManager>(), Mock.Of<IDriverTimer>());
+            var statement = new SimpleStatement("SELECT key FROM system.local").SetIdempotence(true);
+            var handler = new RequestHandler(session, SerializerManager.Default.GetCurrentSerializer(),
+                new SessionRequestInfo(statement, null), config.DefaultRequestOptions, observer);
+            Task<RowSet> request = null;
+            try
+            {
+                request = handler.SendAsync();
+                await speculation.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+                Assert.IsFalse(connection.Task.IsCompleted);
+                Assert.IsFalse(request.IsCompleted);
+                counter.Verify(value => value.Increment(1), Times.Once);
+                pool.Verify(value => value.GetConnectionFromHostAsync(
+                    It.IsAny<IDictionary<IPEndPoint, Exception>>(), It.IsAny<Func<string>>(), It.IsAny<RoutingKey>(), -1), Times.Once);
+            }
+            finally
+            {
+                await handler.SetCompletedAsync(null, new RowSet()).ConfigureAwait(false);
+                connection.TrySetCanceled();
+                if (request != null)
+                {
+                    await request.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                }
+                config.Timer.Dispose();
+            }
+        }
+
+        [Test]
         public void Should_NotifyCompositeSpeculativeObserversOnlyWhenCapturedCallbackRuns()
         {
             var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), contactPoint: null);
