@@ -1017,6 +1017,20 @@ namespace Cassandra.Connections
                     }
                 }
 
+                else if (openOperation != null && openOperation.Completion.Task.IsCompletedSuccessfully)
+                {
+                    try
+                    {
+                        HostConnectionPool.Logger.Warning(
+                            "Post-connection maintenance for {0} failed after a successful open: {1}",
+                            _host.Address, ex);
+                    }
+                    catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
+                    {
+                        // Keep ordinary diagnostic failures from interrupting connection maintenance.
+                    }
+                }
+
                 if (IsClosing)
                 {
                     return;
