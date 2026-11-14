@@ -167,6 +167,22 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                         TimeSpan.FromSeconds(5),
                         TimeSpan.FromMilliseconds(10),
                         "The enabled relay did not accept a new connection.").ConfigureAwait(false);
+
+                    using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    var clientStream = nextClient.GetStream();
+                    var upstreamStream = nextUpstream.GetStream();
+                    var request = Encoding.UTF8.GetBytes("forwarding recovered");
+                    await clientStream.WriteAsync(request, deadline.Token).ConfigureAwait(false);
+                    var received = new byte[request.Length];
+                    await upstreamStream.ReadExactlyAsync(received, deadline.Token).ConfigureAwait(false);
+                    Assert.That(received, Is.EqualTo(request));
+
+                    var response = Encoding.UTF8.GetBytes("response recovered");
+                    await upstreamStream.WriteAsync(response, deadline.Token).ConfigureAwait(false);
+                    received = new byte[response.Length];
+                    await clientStream.ReadExactlyAsync(received, deadline.Token).ConfigureAwait(false);
+                    Assert.That(received, Is.EqualTo(response));
+                    Assert.IsEmpty(relay.Failures);
                 }
             }
         }
