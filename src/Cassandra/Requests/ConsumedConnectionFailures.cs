@@ -18,6 +18,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net;
+using System.Threading;
 using Cassandra.Connections;
 
 namespace Cassandra.Requests
@@ -30,7 +31,8 @@ namespace Cassandra.Requests
         private static readonly Logger Logger = new Logger(typeof(ConsumedConnectionFailures));
 
         internal static void Report(
-            ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>> failures, Exception returnedError)
+            ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>> failures, Exception returnedError,
+            ConcurrentDictionary<Exception, byte> reportedFailures = null)
         {
             if (failures == null || failures.IsEmpty)
             {
@@ -38,12 +40,13 @@ namespace Cassandra.Requests
             }
 
             var returnedCauses = returnedError == null ? null : GetReturnedCauses(returnedError);
+            reportedFailures ??= new ConcurrentDictionary<Exception, byte>(ReferenceEqualityComparer.Instance);
             while (failures.TryDequeue(out var failure))
             {
                 var diagnosticError = returnedCauses == null
                     ? failure.Value
                     : GetUnreturnedFailure(failure.Value, returnedCauses);
-                if (diagnosticError == null)
+                if (diagnosticError == null || !reportedFailures.TryAdd(failure.Value, 0))
                 {
                     continue;
                 }
@@ -159,6 +162,37 @@ namespace Cassandra.Requests
             if (cause != null)
             {
                 unreturned.Add(cause);
+            }
+        }
+
+        /// <summary>
+        /// Retains observation identity across completion and late speculative failures.
+        /// Allocated only when a request encounters a connection failure.
+        /// </summary>
+        internal sealed class Collector
+        {
+            private readonly ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>> _failures =
+                new ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>>();
+            private ConcurrentDictionary<Exception, byte> _reported;
+
+            internal void Record(IPEndPoint host, Exception failure)
+            {
+                _failures.Enqueue(new KeyValuePair<IPEndPoint, Exception>(host, failure));
+            }
+
+            internal void Report(Exception returnedError)
+            {
+                if (_failures.IsEmpty)
+                {
+                    return;
+                }
+                var reported = Volatile.Read(ref _reported);
+                if (reported == null)
+                {
+                    var created = new ConcurrentDictionary<Exception, byte>(ReferenceEqualityComparer.Instance);
+                    reported = Interlocked.CompareExchange(ref _reported, created, null) ?? created;
+                }
+                ConsumedConnectionFailures.Report(_failures, returnedError, reported);
             }
         }
     }

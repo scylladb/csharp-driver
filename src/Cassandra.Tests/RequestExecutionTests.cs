@@ -280,12 +280,15 @@ namespace Cassandra.Tests
             }
         }
 
-        [TestCase(false)]
-        [TestCase(true)]
+        [TestCase(false, false)]
+        [TestCase(true, false)]
+        [TestCase(false, true)]
+        [TestCase(true, true)]
         [NonParallelizable]
-        public async Task Should_DeferSpeculativeConnectionDiagnosticsUntilTheRequestCompletes(bool sharedCause)
+        public async Task Should_DeferSpeculativeConnectionDiagnosticsUntilTheRequestCompletes(bool sharedCause, bool requestSucceeds)
         {
             var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), contactPoint: null);
+            var winningHost = new Host(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042), contactPoint: null);
             var firstFailure = new InvalidOperationException("first speculative connection failure");
             var failures = new[]
             {
@@ -314,7 +317,7 @@ namespace Cassandra.Tests
 
             var policy = new Mock<ILoadBalancingPolicy>();
             policy.Setup(value => value.NewQueryPlan(It.IsAny<RoutingInfo>(), It.IsAny<ClusterState>()))
-                .Returns(new[] { new RoutingTarget(host, null), new RoutingTarget(host, null) });
+                .Returns((requestSucceeds ? new[] { host, host, winningHost } : new[] { host, host }).Select(value => new RoutingTarget(value, null)));
             var config = new TestConfigurationBuilder
             {
                 Policies = new Cassandra.Policies(policy.Object, null, null,
@@ -331,6 +334,16 @@ namespace Cassandra.Tests
             session.SetupGet(value => value.Cluster).Returns(cluster.Object);
             session.SetupGet(value => value.InternalCluster).Returns(cluster.Object);
             session.Setup(value => value.GetOrCreateConnectionPool(host, HostDistance.Local)).Returns(pool.Object);
+            var winningResponse = new TaskCompletionSource<Func<IRequestError, Response, Task>>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var connection = new Mock<IConnection>();
+            connection.Setup(value => value.SendWithKeyspace(It.IsAny<IRequest>(), It.IsAny<string>(),
+                    It.IsAny<Func<IRequestError, Response, Task>>(), It.IsAny<int>(), It.IsAny<bool>()))
+                .Callback<IRequest, string, Func<IRequestError, Response, Task>, int, bool>((_, __, callback, ___, ____) => winningResponse.TrySetResult(callback))
+                .ReturnsAsync((OperationState)null);
+            var winningPool = new Mock<IHostConnectionPool>();
+            winningPool.Setup(value => value.GetConnectionFromHostAsync(It.IsAny<IDictionary<IPEndPoint, Exception>>(),
+                    It.IsAny<Func<string>>(), It.IsAny<RoutingKey>(), -1)).ReturnsAsync(connection.Object);
+            session.Setup(value => value.GetOrCreateConnectionPool(winningHost, HostDistance.Local)).Returns(winningPool.Object);
             var statement = new SimpleStatement("SELECT * FROM table1").SetIdempotence(true);
             var handler = new RequestHandler(session.Object, SerializerManager.Default.GetCurrentSerializer(),
                 new SessionRequestInfo(statement, null), config.DefaultRequestOptions, NullRequestObserver.Instance);
@@ -344,17 +357,29 @@ namespace Cassandra.Tests
                 response = handler.SendAsync();
                 await bothStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
                 releases[0].TrySetResult(true);
-                await listener.SpeculativeExecutionExhausted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-                Assert.IsFalse(listener.Messages.Values.Any(message => message.Contains("Request consumed")));
-                releases[1].TrySetResult(true);
-                var error = await Assert.ThrowsAsync<NoHostAvailableException>(() => response.WaitAsync(TimeSpan.FromSeconds(5)));
-                Assert.AreSame(failures[1], error.Errors[host.Address]);
+                if (requestSucceeds)
+                {
+                    var callback = await winningResponse.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    releases[1].TrySetResult(true);
+                    await listener.SpeculativeExecutionExhausted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    Assert.IsFalse(listener.Messages.Values.Any(message => message.Contains("Request consumed")));
+                    await callback(null, new ProxyResultResponse(ResultResponse.ResultResponseKind.Void)).ConfigureAwait(false);
+                    Assert.IsNotNull(await response.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+                }
+                else
+                {
+                    await listener.SpeculativeExecutionExhausted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    Assert.IsFalse(listener.Messages.Values.Any(message => message.Contains("Request consumed")));
+                    releases[1].TrySetResult(true);
+                    var error = await Assert.ThrowsAsync<NoHostAvailableException>(() => response.WaitAsync(TimeSpan.FromSeconds(5)));
+                    Assert.AreSame(failures[1], error.Errors[host.Address]);
+                }
                 var diagnostics = listener.Messages.Values.Where(message => message.Contains("Request consumed")).ToArray();
-                Assert.AreEqual(sharedCause ? 0 : 1, diagnostics.Length);
+                Assert.AreEqual(requestSucceeds ? sharedCause ? 1 : 2 : sharedCause ? 0 : 1, diagnostics.Length);
                 if (!sharedCause)
                 {
-                    Assert.IsTrue(diagnostics[0].Contains(firstFailure.Message));
-                    Assert.IsFalse(diagnostics[0].Contains(failures[1].Message));
+                    Assert.IsTrue(diagnostics.Any(message => message.Contains(firstFailure.Message)));
+                    Assert.AreEqual(requestSucceeds, diagnostics.Any(message => message.Contains(failures[1].Message)));
                 }
             }
             finally
@@ -378,6 +403,41 @@ namespace Cassandra.Tests
                     Diagnostics.CassandraTraceSwitch.Level = previousLevel;
                     config.Timer.Dispose();
                 }
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        [NonParallelizable]
+        public async Task Should_DeduplicateLateConsumedFailuresByIdentity(bool sharedCause)
+        {
+            var host = new IPEndPoint(IPAddress.Loopback, 9042);
+            var firstFailure = new InvalidOperationException("Identical diagnostic message");
+            var secondFailure = sharedCause ? firstFailure : new InvalidOperationException(firstFailure.Message);
+            var config = new TestConfigurationBuilder().Build();
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Configuration).Returns(config);
+            var session = new Mock<IInternalSession>();
+            session.SetupGet(value => value.Cluster).Returns(cluster.Object);
+            session.SetupGet(value => value.InternalCluster).Returns(cluster.Object);
+            var handler = new RequestHandler(session.Object, SerializerManager.Default.GetCurrentSerializer(),
+                new SessionRequestInfo(new SimpleStatement("SELECT * FROM table1"), null), config.DefaultRequestOptions, NullRequestObserver.Instance);
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new RecoveredConnectionTraceListener(false, false);
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                handler.RecordConnectionFailure(host, firstFailure);
+                Assert.IsTrue(await handler.SetCompletedAsync(null, new RowSet()).ConfigureAwait(false));
+                handler.RecordConnectionFailure(host, secondFailure);
+                Assert.AreEqual(sharedCause ? 1 : 2, listener.Messages.Values.Count(message => message.Contains("Request consumed")));
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                config.Timer.Dispose();
             }
         }
 

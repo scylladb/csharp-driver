@@ -48,7 +48,7 @@ namespace Cassandra.Requests
         private readonly IEnumerator<RoutingTarget> _queryPlan;
         private readonly Lock _queryPlanLock = new Lock();
         private readonly ICollection<IRequestExecution> _running = new CopyOnWriteList<IRequestExecution>();
-        private ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>> _connectionFailures;
+        private ConsumedConnectionFailures.Collector _connectionFailures;
         private Exception _returnedError;
         private int _diagnosticsCompleted;
         private ISpeculativeExecutionPlan _executionPlan;
@@ -304,7 +304,7 @@ namespace Cassandra.Requests
             Volatile.Write(ref _diagnosticsCompleted, 1);
             try
             {
-                ConsumedConnectionFailures.Report(Volatile.Read(ref _connectionFailures), error);
+                Volatile.Read(ref _connectionFailures)?.Report(error);
             }
             catch (Exception diagnosticFailure)
             {
@@ -322,14 +322,14 @@ namespace Cassandra.Requests
             var failures = Volatile.Read(ref _connectionFailures);
             if (failures == null)
             {
-                var created = new ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>>();
+                var created = new ConsumedConnectionFailures.Collector();
                 failures = Interlocked.CompareExchange(ref _connectionFailures, created, null) ?? created;
             }
 
-            failures.Enqueue(new KeyValuePair<IPEndPoint, Exception>(host, failure));
+            failures.Record(host, failure);
             if (Volatile.Read(ref _diagnosticsCompleted) != 0)
             {
-                ConsumedConnectionFailures.Report(failures, Volatile.Read(ref _returnedError));
+                failures.Report(Volatile.Read(ref _returnedError));
             }
         }
 
