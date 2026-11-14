@@ -142,7 +142,8 @@ namespace Cassandra.Requests
             NodeRequestInfo nodeRequestInfo = null;
             if (observer != null)
             {
-                nodeRequestInfo = new NodeRequestInfo(poolKvp.Key, sessionRequestInfo.PrepareRequest ?? new PrepareRequest(ps.Cql, ps.Keyspace));
+                nodeRequestInfo = new NodeRequestInfo(
+                    poolKvp.Key, sessionRequestInfo.PrepareRequest ?? new PrepareRequest(ps.Cql, ps.Keyspace), poolKvp.Value.NodeMetrics);
                 await observer.OnNodeStartAsync(sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
             }
 
@@ -160,6 +161,7 @@ namespace Cassandra.Requests
 
                 if (connection != null)
                 {
+                    nodeRequestInfo?.CaptureNodeMetrics(connection.NodeMetrics);
                     var response = await connection.SendWithKeyspace(request, connectionKeyspace).ConfigureAwait(false);
                     var outputPrepared = ReprepareHandler.ValidatePreparedResponse(response);
                     if (!outputPrepared.QueryId.SequenceEqual(ps.Id))

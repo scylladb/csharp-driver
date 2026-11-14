@@ -1077,12 +1077,22 @@ namespace Cassandra.Connections.Control
                 var currentHost = await _topologyRefresher.RefreshNodeListAsync(
                     currentEndPoint, currentConnection, _serializer.GetCurrentSerializer()).ConfigureAwait(false);
 
+                Host downHost = null;
                 lock (_connectionHandoffLock)
                 {
-                    if (ReferenceEquals(_connection, currentConnection))
+                    if (!IsShutdown && ReferenceEquals(_connection, currentConnection))
                     {
+                        var hostChanged = !ReferenceEquals(_host, currentHost);
                         SetCurrentConnectionEndpoint(currentHost, currentEndPoint);
+                        if (hostChanged && !currentHost.IsUp)
+                        {
+                            downHost = currentHost;
+                        }
                     }
+                }
+                if (downHost != null)
+                {
+                    OnHostDown(downHost);
                 }
 
                 await _metadata.RebuildTokenMapAsync(false, _config.MetadataSyncOptions.MetadataSyncEnabled).ConfigureAwait(false);
@@ -1298,6 +1308,14 @@ namespace Cassandra.Connections.Control
 
         private void SetCurrentConnectionEndpoint(Host host, IConnectionEndPoint endPoint)
         {
+            if (!ReferenceEquals(_host, host))
+            {
+                if (_host != null)
+                {
+                    _host.Down -= OnHostDown;
+                }
+                host.Down += OnHostDown;
+            }
             _host = host;
             _currentConnectionEndPoint = endPoint;
             _metadata.SetCassandraVersion(host.CassandraVersion);
@@ -1310,6 +1328,11 @@ namespace Cassandra.Connections.Control
         {
             if (host != null)
             {
+                if (_host != null)
+                {
+                    // Refresh may have transferred this subscription while Open was pending.
+                    _host.Down -= OnHostDown;
+                }
                 _host = host;
                 _metadata.SetCassandraVersion(host.CassandraVersion);
             }

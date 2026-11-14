@@ -21,6 +21,7 @@ using System.Net;
 
 using Cassandra.Collections;
 using Cassandra.Metrics.Abstractions;
+using Cassandra.Metrics.Providers.Null;
 using Cassandra.Metrics.Registries;
 using Cassandra.SessionManagement;
 
@@ -30,6 +31,8 @@ namespace Cassandra.Metrics.Internal
     internal class MetricsManager : IMetricsManager
     {
         private static readonly Logger Logger = new Logger(typeof(MetricsManager));
+        private static readonly INodeMetrics InactiveNodeMetrics =
+            new NodeMetrics(new NullDriverMetricsProvider(), new DriverMetricsOptions(), false, "inactive");
 
         private readonly IDriverMetricsProvider _driverMetricsProvider;
         private readonly DriverMetricsOptions _metricsOptions;
@@ -38,6 +41,8 @@ namespace Cassandra.Metrics.Internal
         private readonly ISessionMetrics _sessionMetrics;
         private readonly CopyOnWriteDictionary<Host, IMetricsRegistry<NodeMetric>> _nodeMetricsRegistryCollection;
         private readonly CopyOnWriteDictionary<Host, INodeMetrics> _nodeMetricsCollection;
+        private readonly CopyOnWriteDictionary<Host, INodeMetrics> _failedNodeMetricsCollection =
+            new CopyOnWriteDictionary<Host, INodeMetrics>();
         private readonly bool _disabledSessionTimerMetrics;
         private readonly bool _disabledNodeTimerMetrics;
 
@@ -113,13 +118,23 @@ namespace Cassandra.Metrics.Internal
         /// <inheritdoc />
         public void RemoveNodeMetrics(Host host)
         {
-            if (!_nodeMetricsCollection.TryRemove(host, out var nodeMetrics))
+            DetachNodeMetrics(host)?.Dispose();
+        }
+
+        /// <inheritdoc />
+        public INodeMetrics DetachNodeMetrics(Host host)
+        {
+            var published = _nodeMetricsCollection.TryRemove(host, out var nodeMetrics);
+            _failedNodeMetricsCollection.TryRemove(host, out var failedMetrics);
+            nodeMetrics?.MarkRetired();
+            failedMetrics?.MarkRetired();
+            if (!published && failedMetrics == null)
             {
-                return;
+                return null;
             }
 
             _nodeMetricsRegistryCollection.TryRemove(host, out _);
-            nodeMetrics.Dispose();
+            return nodeMetrics ?? failedMetrics;
         }
 
         /// <inheritdoc />
@@ -137,17 +152,39 @@ namespace Cassandra.Metrics.Internal
         /// <inheritdoc />
         public INodeMetrics GetOrCreateNodeMetrics(Host host)
         {
-            var value = _nodeMetricsCollection.GetOrAdd(host, h =>
-            {
-                var nodeBucket = $"{_sessionBucket}.nodes.{MetricsManager.BuildHostAddressMetricPath(host.Address)}";
+            return _nodeMetricsCollection.GetOrAdd(host, h => CreateNodeMetrics(h));
+        }
 
-                var newRegistry = new NodeMetrics(_driverMetricsProvider, _metricsOptions, _metricsEnabled, nodeBucket);
-                _nodeMetricsRegistryCollection.Add(host, newRegistry.MetricsRegistry);
+        /// <inheritdoc />
+        public INodeMetrics GetNodeMetrics(Host host)
+        {
+            // Observers can outlive their pool. They must not recreate a detached
+            // address bucket, or attach a removed Host to its replacement's registry.
+            return !host.IsRemoved && _nodeMetricsCollection.TryGetValue(host, out var metrics) &&
+                ReferenceEquals(metrics.Owner, host) && !metrics.IsRetired
+                ? metrics
+                : InactiveNodeMetrics;
+        }
 
-                return newRegistry;
-            });
+        /// <inheritdoc />
+        public INodeMetrics GetOrCreateNodeMetricsForPool(Host host)
+        {
+            // A reentrant removal may already own deferred retirement when the
+            // constructor fails. Its later detach must recover partial registration.
+            // Nested failures share one bucket. Keeping its first partial registry
+            // preserves each constructor's original setup exception.
+            return _nodeMetricsCollection.GetOrAdd(host, h =>
+                CreateNodeMetrics(h, metrics => _failedNodeMetricsCollection.GetOrAdd(h, metrics)));
+        }
 
-            return value;
+        private INodeMetrics CreateNodeMetrics(Host host, Action<INodeMetrics> initializationFailed = null)
+        {
+            var nodeBucket = $"{_sessionBucket}.nodes.{MetricsManager.BuildHostAddressMetricPath(host.Address)}";
+            var newRegistry = new NodeMetrics(
+                _driverMetricsProvider, _metricsOptions, _metricsEnabled, nodeBucket, initializationFailed, host);
+            _nodeMetricsRegistryCollection.Add(host, newRegistry.MetricsRegistry);
+
+            return newRegistry;
         }
 
         private static string BuildHostAddressMetricPath(IPEndPoint address)

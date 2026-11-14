@@ -14,6 +14,7 @@
 //   limitations under the License.
 //
 
+using Cassandra.Metrics.Registries;
 using Cassandra.Observers.Abstractions;
 
 namespace Cassandra.Observers.Composite
@@ -31,6 +32,12 @@ namespace Cassandra.Observers.Composite
         public IConnectionObserver CreateConnectionObserver(Host host)
         {
             return new CompositeConnectionObserver(_f1.CreateConnectionObserver(host), _f2.CreateConnectionObserver(host));
+        }
+
+        public IConnectionObserver CreateConnectionObserver(Host host, INodeMetrics nodeMetrics)
+        {
+            return new CompositeConnectionObserver(
+                _f1.CreateConnectionObserver(host, nodeMetrics), _f2.CreateConnectionObserver(host, nodeMetrics));
         }
 
         public IRequestObserver CreateRequestObserver()

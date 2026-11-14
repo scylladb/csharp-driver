@@ -19,6 +19,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Threading.Tasks;
 using Cassandra.Collections;
+using Cassandra.Metrics.Registries;
 using Cassandra.Requests;
 using Cassandra.Responses;
 using Cassandra.Serialization;
@@ -49,6 +50,8 @@ namespace Cassandra.Connections
         /// Event that gets raised the connection is being closed.
         /// </summary>
         event Action<IConnection> Closing;
+
+        INodeMetrics NodeMetrics { get; }
 
         ISerializer Serializer { get; }
 

@@ -34,6 +34,8 @@ namespace Cassandra.Observers.Metrics
             _enabledNodeTimerMetrics = enabledNodeTimerMetrics;
         }
 
+        public INodeMetrics NodeMetrics => _nodeMetrics;
+
         public void OnBytesSent(long size)
         {
             try

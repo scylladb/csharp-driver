@@ -16,6 +16,7 @@
 
 using System;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Connections;
@@ -35,6 +36,8 @@ namespace Cassandra.Observers.Metrics
 
         private readonly IMetricsManager _manager;
         private readonly IDriverTimer _requestTimer;
+        private MetricsSnapshot _firstSpeculativeMetrics;
+        private ConditionalWeakTable<Host, MetricsSnapshot> _additionalSpeculativeMetrics;
         private long _startTimestamp;
 
         public MetricsRequestObserver(IMetricsManager manager, IDriverTimer requestTimer)
@@ -43,15 +46,43 @@ namespace Cassandra.Observers.Metrics
             _requestTimer = requestTimer;
         }
 
+        public void OnNodePoolSelected(Host host, INodeMetrics metrics)
+        {
+            if (metrics != null)
+            {
+                GetOrCreateSnapshot(host, metrics).Set(metrics);
+            }
+        }
+
         public void OnSpeculativeExecution(Host host, long delay)
         {
-            _manager.GetOrCreateNodeMetrics(host).SpeculativeExecutions.Increment(1);
+            CreateSpeculativeExecutionCallback(host, delay)();
+        }
+
+        public Action CreateSpeculativeExecutionCallback(Host host, long delay)
+        {
+            var first = Volatile.Read(ref _firstSpeculativeMetrics);
+            var additional = Volatile.Read(ref _additionalSpeculativeMetrics);
+            var metrics = first != null && ReferenceEquals(first.Host, host)
+                ? first.Get()
+                : additional != null && additional.TryGetValue(host, out var snapshot) ? snapshot.Get() : null;
+            return () =>
+            {
+                if (metrics != null && !metrics.IsRetired)
+                {
+                    metrics.SpeculativeExecutions.Increment(1);
+                }
+            };
         }
 
         public Task OnNodeRequestErrorAsync(
             RequestErrorType errorType, RetryDecision.RetryDecisionType decision, SessionRequestInfo r, NodeRequestInfo nodeRequestInfo, Exception ex)
         {
-            var nodeMetrics = _manager.GetOrCreateNodeMetrics(nodeRequestInfo.Host);
+            var nodeMetrics = GetCapturedMetrics(nodeRequestInfo);
+            if (nodeMetrics == null)
+            {
+                return TaskHelper.Completed;
+            }
             OnRequestError(nodeMetrics.Errors, errorType);
             switch (decision)
             {
@@ -69,7 +100,11 @@ namespace Cassandra.Observers.Metrics
 
         public Task OnNodeRequestErrorAsync(IRequestError error, SessionRequestInfo r, NodeRequestInfo nodeRequestInfo)
         {
-            var nodeMetrics = _manager.GetOrCreateNodeMetrics(nodeRequestInfo.Host);
+            var nodeMetrics = GetCapturedMetrics(nodeRequestInfo);
+            if (nodeMetrics == null)
+            {
+                return TaskHelper.Completed;
+            }
             var errorType = RequestExecution.GetErrorType(error);
             OnRequestError(nodeMetrics.Errors, errorType);
             return TaskHelper.Completed;
@@ -143,7 +178,11 @@ namespace Cassandra.Observers.Metrics
 
         public Task OnNodeRequestAbortedAsync(SessionRequestInfo sessionRequestInfo, NodeRequestInfo nodeRequestInfo)
         {
-            var nodeMetrics = _manager.GetOrCreateNodeMetrics(nodeRequestInfo.Host);
+            var nodeMetrics = GetCapturedMetrics(nodeRequestInfo);
+            if (nodeMetrics == null)
+            {
+                return TaskHelper.Completed;
+            }
             OnRequestError(nodeMetrics.Errors, RequestErrorType.Aborted);
             return TaskHelper.Completed;
         }
@@ -203,12 +242,59 @@ namespace Cassandra.Observers.Metrics
 
         public Task OnNodeStartAsync(SessionRequestInfo sessionRequestInfo, NodeRequestInfo nodeRequestInfo)
         {
+            // The normal request handler binds the pool before acquisition awaits.
+            // Keep a connection-only observer usable without replacing a newer pool binding.
+            if (nodeRequestInfo.NodeMetrics != null)
+            {
+                GetOrCreateSnapshot(nodeRequestInfo.Host, nodeRequestInfo.NodeMetrics);
+            }
             return TaskHelper.Completed;
         }
 
         public Task OnNodeSuccessAsync(SessionRequestInfo sessionRequestInfo, NodeRequestInfo nodeRequestInfo)
         {
             return TaskHelper.Completed;
+        }
+
+        private static INodeMetrics GetCapturedMetrics(NodeRequestInfo nodeRequestInfo)
+        {
+            var metrics = nodeRequestInfo.NodeMetrics;
+            return metrics != null && !metrics.IsRetired ? metrics : null;
+        }
+
+        private MetricsSnapshot GetOrCreateSnapshot(Host host, INodeMetrics metrics)
+        {
+            var first = Volatile.Read(ref _firstSpeculativeMetrics);
+            if (first == null)
+            {
+                var candidate = new MetricsSnapshot(host, metrics);
+                first = Interlocked.CompareExchange(ref _firstSpeculativeMetrics, candidate, null) ?? candidate;
+            }
+            if (ReferenceEquals(first.Host, host))
+            {
+                return first;
+            }
+
+            // A request usually selects one host. Allocate weak-key storage only when it selects another.
+            var additional = LazyInitializer.EnsureInitialized(ref _additionalSpeculativeMetrics);
+            return additional.GetValue(host, _ => new MetricsSnapshot(host, metrics));
+        }
+
+        private sealed class MetricsSnapshot
+        {
+            private INodeMetrics _metrics;
+
+            internal Host Host { get; }
+
+            internal MetricsSnapshot(Host host, INodeMetrics metrics)
+            {
+                Host = host;
+                _metrics = metrics;
+            }
+
+            internal INodeMetrics Get() => Volatile.Read(ref _metrics);
+
+            internal void Set(INodeMetrics metrics) => Volatile.Write(ref _metrics, metrics);
         }
     }
 }

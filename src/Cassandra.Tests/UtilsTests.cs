@@ -28,6 +28,15 @@ namespace Cassandra.Tests
     [TestFixture]
     public class UtilsTests
     {
+        [TestCase(false)]
+        [TestCase(true)]
+        public void IsFatalExceptionChecksNestedAggregates(bool fatal)
+        {
+            Exception cause = fatal ? new OutOfMemoryException() : new InvalidOperationException();
+            var aggregate = new AggregateException(new ArgumentException(), new AggregateException(cause));
+            Assert.AreEqual(fatal, Utils.IsFatalException(aggregate));
+        }
+
         [Test]
         public void ReadAllBytes_Should_ReadFromNonzeroPosition()
         {
