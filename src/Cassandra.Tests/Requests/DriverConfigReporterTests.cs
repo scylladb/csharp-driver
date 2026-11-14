@@ -178,7 +178,7 @@ namespace Cassandra.Tests.Requests
                 "\"queries\":{\"system\":{\"timeout\":{\"client-side-ms\":300000}}}," +
                 "\"schema\":{\"agreement\":{\"timeout-ms\":10000}}}," +
                 "\"query\":{" +
-                "\"defaults\":{\"page\":{\"size\":5000},\"consistency\":\"LOCAL_ONE\",\"serial-consistency\":\"SERIAL\"," +
+                "\"defaults\":{\"page\":{\"size\":5000},\"consistency\":\"LOCAL_QUORUM\",\"serial-consistency\":\"LOCAL_SERIAL\"," +
                 "\"idempotence\":false,\"client-timestamps\":true,\"request\":{\"timeout-ms\":60000}}," +
                 "\"retry\":{\"policy\":{\"type\":\"standard-error-aware\"}}," +
                 "\"load-balancing\":{\"policy\":{\"type\":\"token-aware\",\"load-distribution\":\"shuffle\",\"fallback-to-non-preferred-nodes\":false}," +

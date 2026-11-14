@@ -25,6 +25,26 @@ namespace Cassandra.Tests.ExecutionProfiles
     [TestFixture]
     public class RequestOptionsTests
     {
+        [TestCase(false, ConsistencyLevel.LocalQuorum, ConsistencyLevel.LocalSerial)]
+        [TestCase(true, ConsistencyLevel.LocalOne, ConsistencyLevel.Serial)]
+        public void Should_ResolveDefaultOrExplicitConsistency_WithDbaasFallback(
+            bool explicitSettings, ConsistencyLevel expectedConsistency, ConsistencyLevel expectedSerialConsistency)
+        {
+            var queryOptions = new QueryOptions();
+            if (explicitSettings)
+            {
+                queryOptions.SetConsistencyLevel(ConsistencyLevel.LocalOne)
+                    .SetSerialConsistencyLevel(ConsistencyLevel.Serial);
+            }
+
+            var configuration = new TestConfigurationBuilder { QueryOptions = queryOptions }.Build();
+            configuration.SetDefaultConsistencyLevel(ConsistencyLevel.LocalQuorum);
+
+            // The unconfigured case checks resolved defaults; the explicit case checks override preservation.
+            Assert.AreEqual(expectedConsistency, configuration.DefaultRequestOptions.ConsistencyLevel);
+            Assert.AreEqual(expectedSerialConsistency, configuration.DefaultRequestOptions.SerialConsistencyLevel);
+        }
+
         [Test]
         public void Should_ScaleTheQueryAbortTimeout_By_TheAmountOfQueries()
         {

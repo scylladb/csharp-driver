@@ -2,6 +2,77 @@
 
 The purpose of this guide is to detail the changes made by the successive versions of the ScyllaDB C# Driver that are relevant to for an upgrade from prior versions.
 
+## Unreleased
+
+### Local consistency defaults
+
+Statements and batches executed through `ISession` now default to `LOCAL_QUORUM`. For clusters
+other than DataStax Apollo, the previous ordinary consistency default was `LOCAL_ONE`.
+The serial phase of lightweight transactions defaults to `LOCAL_SERIAL` instead of `SERIAL`,
+so its linearizability guarantee is scoped to the local datacenter. The quorum default can
+require more replicas to be available than the previous default.
+
+Explicit statement, execution-profile and query-option settings keep their existing precedence.
+ADO.NET `Cassandra.Data.CqlCommand` now inherits prepared-statement settings or session defaults
+when its `ConsistencyLevel` property is unset; it previously forced `ONE`. This includes settings
+on a prepared statement in the shared cluster cache. An explicitly assigned command consistency
+still takes precedence over both.
+
+To retain the previous `ISession` defaults on clusters other than DataStax Apollo, configure the cluster
+explicitly:
+
+```csharp
+var cluster = Cluster.Builder()
+    .AddContactPoint("127.0.0.1")
+    .WithQueryOptions(new QueryOptions()
+        .SetConsistencyLevel(ConsistencyLevel.LocalOne)
+        .SetSerialConsistencyLevel(ConsistencyLevel.Serial))
+    .Build();
+```
+
+DataStax Apollo clusters already used `LOCAL_QUORUM` as the ordinary consistency default.
+To retain their previous `ISession` defaults, omit `.SetConsistencyLevel(...)` from the example above
+and configure only `.SetSerialConsistencyLevel(ConsistencyLevel.Serial)`.
+
+To retain the previous ADO.NET defaults, explicitly set each command's `ConsistencyLevel`
+to `ConsistencyLevel.One` and configure `QueryOptions` with serial consistency `Serial`.
+
+ADO.NET connection strings have no consistency or query-option keys. Configure those options by
+subclassing `CqlConnection` and overriding `OnBuildingCluster`, for example:
+
+```csharp
+using Cassandra;
+using Cassandra.Data;
+
+public sealed class PreviousConsistencyConnection : CqlConnection
+{
+    protected override void OnBuildingCluster(Builder builder)
+    {
+        base.OnBuildingCluster(builder);
+        builder.WithQueryOptions(new QueryOptions()
+            .SetSerialConsistencyLevel(ConsistencyLevel.Serial));
+    }
+}
+```
+
+The default connection factory caches clusters by the connection string's `Cluster Name`.
+Choose a distinct name for this configuration before opening connections, or override
+`CreateCluster` to control cluster creation and caching.
+
+The command consistency getter is a snapshot of currently known settings. It reads an existing
+completed prepared-statement cache entry in the current cache generation without sending a
+prepare request; a cache miss or in-flight preparation reports the current session default.
+After a concurrent invalidation, the getter can temporarily report the session default even
+though preparation can reuse an older completed entry unaffected by that invalidation. A custom
+`CreatePreparedStatement` override can also select a different statement during preparation.
+
+Call `Prepare()` first, then read the getter to observe the statement selected by either path.
+
+`QueryOptions.DefaultConsistencyLevel` and `QueryOptions.DefaultSerialConsistencyLevel` are
+public constants. Applications that explicitly use these constants must be recompiled against
+the upgraded driver to use their new values; existing compiled references retain the previous
+inlined values.
+
 ## Our policy regarding API changes and release versioning
 
 The driver versions follow semantic versioning.

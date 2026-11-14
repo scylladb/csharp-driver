@@ -32,7 +32,7 @@ namespace Cassandra.Data
         internal CqlConnection CqlConnection;
         internal CqlBatchTransaction CqlTransaction;
         private string _commandText;
-        private ConsistencyLevel _consistencyLevel = ConsistencyLevel.One;
+        private ConsistencyLevel? _consistencyLevel;
         private static readonly Regex RegexParseParameterName = new Regex(@"\B:[a-zA-Z][a-zA-Z0-9_]*", RegexOptions.Compiled | RegexOptions.Multiline);
         private PreparedStatement _preparedStatement;
         private readonly CqlParameterCollection _parameters = new CqlParameterCollection();
@@ -57,11 +57,27 @@ namespace Cassandra.Data
 
         /// <summary>
         /// Gets or sets the ConsistencyLevel when executing the current <see cref="CqlCommand"/>.
+        /// When unset, this command inherits the prepared statement or session defaults.
+        /// The getter reports the currently known prepared or current-generation cached statement setting,
+        /// otherwise the session default, without preparing the command. After concurrent cache invalidation,
+        /// preparation can reuse an older unaffected entry that this snapshot does not read.
+        /// Call <see cref="Prepare"/> first to observe that entry's setting.
+        /// A custom connection can select a different statement during preparation.
+        /// Before a connection is available, the default is <see cref="ConsistencyLevel.LocalQuorum"/>.
         /// </summary>
         public ConsistencyLevel ConsistencyLevel
         {
-            get { return _consistencyLevel; }
-            set { _consistencyLevel = value; }
+            get
+            {
+                return _consistencyLevel ?? GetPreparedConsistencyLevel() ??
+                       CqlConnection?.ManagedConnection?.Cluster?.Configuration?.DefaultRequestOptions.ConsistencyLevel ??
+                       QueryOptions.DefaultConsistencyLevel;
+            }
+
+            set
+            {
+                _consistencyLevel = value;
+            }
         }
 
         /// <summary>
@@ -157,13 +173,18 @@ namespace Cassandra.Data
             RowSet rowSet;
             if (_preparedStatement == null)
             {
-                rowSet = CqlConnection.ManagedConnection.Execute(_commandText, ConsistencyLevel);
+                rowSet = CqlConnection.ManagedConnection.Execute(
+                    new SimpleStatement(_commandText).SetConsistencyLevel(_consistencyLevel));
             }
             else //if _preparedStatement != null
             {
 
                 var query = _preparedStatement.Bind(GetParameterValues());
-                query.SetConsistencyLevel(ConsistencyLevel);
+                if (_consistencyLevel.HasValue)
+                {
+                    query.SetConsistencyLevel(_consistencyLevel.Value);
+                }
+
                 rowSet = CqlConnection.ManagedConnection.Execute(query);
             }
 
@@ -182,14 +203,18 @@ namespace Cassandra.Data
                 if (cm.StartsWith("CREATE ")
                     || cm.StartsWith("DROP ")
                     || cm.StartsWith("ALTER "))
-                    managedConnection.Execute(_commandText, ConsistencyLevel);
+                    managedConnection.Execute(new SimpleStatement(_commandText).SetConsistencyLevel(_consistencyLevel));
                 else
-                    managedConnection.Execute(_commandText, ConsistencyLevel);
+                    managedConnection.Execute(new SimpleStatement(_commandText).SetConsistencyLevel(_consistencyLevel));
             }
             else //if _preparedStatement != null
             {
                 var query = _preparedStatement.Bind(GetParameterValues());
-                query.SetConsistencyLevel(ConsistencyLevel);
+                if (_consistencyLevel.HasValue)
+                {
+                    query.SetConsistencyLevel(_consistencyLevel.Value);
+                }
+
                 if (cm.StartsWith("CREATE ")
                     || cm.StartsWith("DROP ")
                     || cm.StartsWith("ALTER "))
@@ -208,12 +233,17 @@ namespace Cassandra.Data
             RowSet rowSet;
             if (_preparedStatement == null)
             {
-                rowSet = CqlConnection.ManagedConnection.Execute(_commandText, ConsistencyLevel);
+                rowSet = CqlConnection.ManagedConnection.Execute(
+                    new SimpleStatement(_commandText).SetConsistencyLevel(_consistencyLevel));
             }
             else //if _preparedStatement != null
             {
                 var query = _preparedStatement.Bind(GetParameterValues());
-                query.SetConsistencyLevel(ConsistencyLevel);
+                if (_consistencyLevel.HasValue)
+                {
+                    query.SetConsistencyLevel(_consistencyLevel.Value);
+                }
+
                 rowSet = CqlConnection.ManagedConnection.Execute(query);
             }
 
@@ -247,6 +277,24 @@ namespace Cassandra.Data
                 var cqlQuery = RegexParseParameterName.Replace(CommandText, "?");
                 _preparedStatement = CqlConnection.CreatePreparedStatement(cqlQuery);
             }
+        }
+
+        private ConsistencyLevel? GetPreparedConsistencyLevel()
+        {
+            if (_preparedStatement != null)
+            {
+                return _preparedStatement.ConsistencyLevel;
+            }
+
+            var session = CqlConnection?.ManagedConnection;
+            var cluster = session?.Cluster as Cluster;
+            if (cluster == null || Parameters.Count == 0 || CommandText == null)
+            {
+                return null;
+            }
+
+            var cqlQuery = RegexParseParameterName.Replace(CommandText, "?");
+            return cluster.GetCachedPreparedStatement(cqlQuery, session.Keyspace)?.ConsistencyLevel;
         }
 
         private object[] GetParameterValues()
