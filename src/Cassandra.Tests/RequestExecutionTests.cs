@@ -56,6 +56,12 @@ namespace Cassandra.Tests
         [TestCase("later-error", TraceLevel.Verbose, false)]
         [TestCase("later-error", TraceLevel.Verbose, true)]
         [TestCase("external-timeout", TraceLevel.Verbose, false)]
+        [TestCase("fatal-terminal-oom", TraceLevel.Verbose, false)]
+        [TestCase("fatal-terminal-oom", TraceLevel.Verbose, true)]
+        [TestCase("fatal-terminal-bad-image", TraceLevel.Verbose, false)]
+        [TestCase("fatal-terminal-bad-image", TraceLevel.Verbose, true)]
+        [TestCase("fatal-terminal-aggregate", TraceLevel.Verbose, false)]
+        [TestCase("fatal-terminal-aggregate", TraceLevel.Verbose, true)]
         [TestCase("late-acquisition", TraceLevel.Verbose, false)]
         [TestCase("init-recovered", TraceLevel.Verbose, false)]
         [TestCase("init-all-failed", TraceLevel.Verbose, false)]
@@ -87,7 +93,10 @@ namespace Cassandra.Tests
             Exception failure = composite
                 ? new ConnectionFailure(preferredFailure, new[] { superseded }, new[] { unresolved })
                 : preferredFailure;
-            var terminalError = new InvalidQueryException("query failed after connection failover");
+            Exception terminalError = scenario == "fatal-terminal-oom" ? new OutOfMemoryException("Original fatal request")
+                : scenario == "fatal-terminal-bad-image" ? new BadImageFormatException("Original fatal request")
+                : scenario == "fatal-terminal-aggregate" ? new AggregateException(new OutOfMemoryException("Original fatal request"))
+                : new InvalidQueryException("query failed after connection failover");
             var acquisitionStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var acquisitionResult = new TaskCompletionSource<IConnection>(TaskCreationOptions.RunContinuationsAsynchronously);
             var policy = new Mock<ILoadBalancingPolicy>();
@@ -154,7 +163,7 @@ namespace Cassandra.Tests
                 new QueryRequest(serializer, statement.QueryString, QueryProtocolOptions.Default, false, null),
                 new SessionRequestInfo(statement, null), config.DefaultRequestOptions, NullRequestObserver.Instance);
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
-            using var listener = new RecoveredConnectionTraceListener(throwFromDiagnostic, scenario.Contains("fatal-diagnostic"));
+            using var listener = new RecoveredConnectionTraceListener(throwFromDiagnostic, scenario.Contains("fatal-diagnostic") || scenario.StartsWith("fatal-terminal-"));
             Task<RowSet> responseTask = null;
             Diagnostics.CassandraTraceSwitch.Level = traceLevel;
             Trace.Listeners.Add(listener);
@@ -206,7 +215,7 @@ namespace Cassandra.Tests
                         {
                             var callback = await sent.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
                             Assert.IsFalse(listener.Messages.Values.Any(message => message.Contains("Request consumed")));
-                            if (scenario == "external-timeout")
+                            if (scenario == "external-timeout" || scenario.StartsWith("fatal-terminal-"))
                             {
                                 await handler.SetCompletedAsync(terminalError).ConfigureAwait(false);
                             }
@@ -218,7 +227,12 @@ namespace Cassandra.Tests
                                     .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
                             }
                         }
-                        if (scenario == "later-error" || scenario == "external-timeout")
+                        if (scenario.StartsWith("fatal-terminal-"))
+                        {
+                            var error = await Assert.CatchAsync(() => responseTask.WaitAsync(TimeSpan.FromSeconds(5)));
+                            Assert.AreSame(terminalError, error);
+                        }
+                        else if (scenario == "later-error" || scenario == "external-timeout")
                         {
                             var error = await Assert.ThrowsAsync<InvalidQueryException>(
                                 () => responseTask.WaitAsync(TimeSpan.FromSeconds(5)));
