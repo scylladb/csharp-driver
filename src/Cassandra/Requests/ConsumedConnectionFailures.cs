@@ -160,6 +160,10 @@ namespace Cassandra.Requests
                 {
                     return error;
                 }
+                if (Utils.IsFatalException(error))
+                {
+                    return new FilteredFatalFailure(error, remainingCause);
+                }
                 // An arbitrary wrapper cannot be reconstructed safely, and its message
                 // may include the returned cause. Keep only its unreturned inner causes.
                 return remainingCause == null ? null
@@ -218,6 +222,31 @@ namespace Cassandra.Requests
                     reported = Interlocked.CompareExchange(ref _reported, created, null) ?? created;
                 }
                 ConsumedConnectionFailures.Report(_failures, returnedError, reported);
+            }
+        }
+
+        // Retain the original fatal wrapper for identity and fatal classification while rendering only unreturned causes.
+        private sealed class FilteredFatalFailure : AggregateException
+        {
+            private readonly Exception _unreturnedCause;
+
+            internal FilteredFatalFailure(Exception original, Exception unreturnedCause)
+                : base("Consumed fatal connection failure; returned causes omitted", original)
+            {
+                _unreturnedCause = unreturnedCause;
+            }
+
+            public override string Message => "Consumed fatal connection failure; returned causes omitted";
+
+            public override string ToString()
+            {
+                var description = InnerException.GetType().FullName + ": " + Message;
+                if (_unreturnedCause != null)
+                {
+                    description += Environment.NewLine + _unreturnedCause;
+                }
+                return string.IsNullOrEmpty(InnerException.StackTrace) ? description
+                    : description + Environment.NewLine + InnerException.StackTrace;
             }
         }
     }
