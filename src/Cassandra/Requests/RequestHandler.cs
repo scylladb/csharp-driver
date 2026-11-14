@@ -309,9 +309,12 @@ namespace Cassandra.Requests
             }
             catch (Exception diagnosticFailure)
             {
-                // A fatal diagnostic failure must complete the already claimed request.
-                error = diagnosticFailure;
-                Volatile.Write(ref _returnedError, error);
+                // Complete a claimed request without replacing an already-selected fatal failure.
+                if (!Utils.IsFatalException(error))
+                {
+                    error = diagnosticFailure;
+                    Volatile.Write(ref _returnedError, error);
+                }
             }
             return error == null
                 ? _requestResultHandler.TrySetResultAsync(result, _sessionRequestInfo)
