@@ -1681,9 +1681,13 @@ namespace Cassandra.Tests.Connections
             }
         }
 
-        [Test]
+        [TestCase(TraceLevel.Warning, false, 1)]
+        [TestCase(TraceLevel.Warning, true, 1)]
+        [TestCase(TraceLevel.Info, false, 1)]
+        [TestCase(TraceLevel.Error, false, 0)]
         [NonParallelizable]
-        public async Task Should_NotLogSuccessfulOpenAsFailureWhenHostUpHandlerThrows()
+        public async Task Should_NotLogSuccessfulOpenAsFailureWhenHostUpHandlerThrows(
+            TraceLevel level, bool diagnosticThrows, int expectedWarnings)
         {
             var failure = new InvalidOperationException("host up handler failed");
             var target = CreatePool(
@@ -1697,9 +1701,18 @@ namespace Cassandra.Tests.Connections
                 throw failure;
             };
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
-            using var listener = new LoggingTests.TestTraceListener();
-            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
-            Trace.Listeners.Add(listener);
+            var listener = new Mock<TraceListener> { CallBase = true };
+            listener.Setup(value => value.WriteLine(It.Is<string>(message =>
+                    message.Contains("Post-connection maintenance"))))
+                .Callback(() =>
+                {
+                    if (diagnosticThrows)
+                    {
+                        throw new InvalidOperationException("Warning listener failed");
+                    }
+                });
+            Diagnostics.CassandraTraceSwitch.Level = level;
+            Trace.Listeners.Add(listener.Object);
             try
             {
                 await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
@@ -1710,12 +1723,17 @@ namespace Cassandra.Tests.Connections
                 var borrowing = target.BorrowConnectionAsync();
                 await borrowing.WaitToCompleteAsync(5000).ConfigureAwait(false);
                 Assert.AreSame(connection, await borrowing.ConfigureAwait(false));
-                Assert.IsFalse(listener.Messages.Values.Any(message => message.Contains("could not be created")),
+                listener.Verify(value => value.WriteLine(It.Is<string>(message =>
+                    message.Contains("Post-connection maintenance") && message.Contains(_host.Address.ToString()) &&
+                    message.Contains(failure.Message))), Times.Exactly(expectedWarnings));
+                listener.Verify(value => value.WriteLine(It.Is<string>(message =>
+                    message.Contains("could not be created"))), Times.Never,
                     "A post-open callback failure must not be reported as a failed connection open.");
             }
             finally
             {
-                Trace.Listeners.Remove(listener);
+                Trace.Listeners.Remove(listener.Object);
+                listener.Object.Dispose();
                 Diagnostics.CassandraTraceSwitch.Level = previousLevel;
                 DisposePoolAndTimer(target);
             }
