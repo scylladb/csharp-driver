@@ -346,7 +346,9 @@ namespace Cassandra.Tests
                 if (remaining <= TimeSpan.Zero)
                 {
                     Assert.Fail(failureMessage);
+                    return;
                 }
+
                 await Task.Delay(interval < remaining ? interval : remaining).ConfigureAwait(false);
             }
         }
