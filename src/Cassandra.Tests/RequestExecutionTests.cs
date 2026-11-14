@@ -527,13 +527,22 @@ namespace Cassandra.Tests
         [TestCase("preferred")]
         [TestCase("superseded")]
         [TestCase("unresolved")]
+        [TestCase("wrapper")]
+        [TestCase("wrapped-preferred")]
+        [TestCase("wrapped-superseded")]
+        [TestCase("wrapped-unresolved")]
         [NonParallelizable]
         public void Should_FilterReturnedCausesInsideNestedAggregates(string component)
         {
             var host = new IPEndPoint(IPAddress.Loopback, 9042);
             var returned = new InvalidOperationException("Returned leaf must not be logged");
             var consumed = new InvalidOperationException("Consumed leaf must remain visible");
-            var aggregate = new AggregateException(new AggregateException(returned, consumed));
+            Exception aggregate = new AggregateException(new AggregateException(returned, consumed));
+            if (component.StartsWith("wrap"))
+            {
+                aggregate = new DriverException("Earlier route resolution failed", aggregate);
+                component = component.Replace("wrapped-", "");
+            }
             Exception failure = component == "preferred" ? new ConnectionFailure(aggregate, Array.Empty<Exception>(), Array.Empty<Exception>())
                 : component == "superseded" ? new ConnectionFailure(returned, new[] { aggregate }, Array.Empty<Exception>())
                 : component == "unresolved" ? new ConnectionFailure(returned, Array.Empty<Exception>(), new[] { aggregate })
@@ -583,6 +592,40 @@ namespace Cassandra.Tests
                 var messages = listener.Messages.Values.Where(message => message.Contains("Request consumed")).ToArray();
                 Assert.AreEqual(returnedWhole ? 0 : 1, messages.Length);
                 if (!returnedWhole)
+                {
+                    StringAssert.Contains(failure.ToString(), messages[0]);
+                }
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        [NonParallelizable]
+        public void Should_FilterOrdinaryWrappersOnlyWhenTheirInnerCauseWasReturned(bool returnedInner)
+        {
+            var host = new IPEndPoint(IPAddress.Loopback, 9042);
+            var cause = new InvalidOperationException("Original wrapped cause");
+            var failure = new DriverException("Original wrapper diagnostic", cause);
+            var failures = new ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>>();
+            failures.Enqueue(new KeyValuePair<IPEndPoint, Exception>(host, failure));
+            var returnedError = returnedInner
+                ? (Exception)new DriverException("Later attempt wrapper", cause)
+                : new InvalidQueryException("Different returned failure");
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new RecoveredConnectionTraceListener(false, false);
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                ConsumedConnectionFailures.Report(failures, returnedError);
+                var messages = listener.Messages.Values.Where(message => message.Contains("Request consumed")).ToArray();
+                Assert.AreEqual(returnedInner ? 0 : 1, messages.Length);
+                if (!returnedInner)
                 {
                     StringAssert.Contains(failure.ToString(), messages[0]);
                 }

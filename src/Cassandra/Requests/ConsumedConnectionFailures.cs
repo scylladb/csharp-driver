@@ -138,7 +138,19 @@ namespace Cassandra.Requests
 
             if (!(error is ConnectionFailure connectionFailure))
             {
-                return error;
+                if (error.InnerException == null)
+                {
+                    return error;
+                }
+                var remainingCause = GetUnreturnedFailure(error.InnerException, returnedCauses);
+                if (ReferenceEquals(remainingCause, error.InnerException))
+                {
+                    return error;
+                }
+                // An arbitrary wrapper cannot be reconstructed safely, and its message
+                // may include the returned cause. Keep only its unreturned inner causes.
+                return remainingCause == null ? null
+                    : new AggregateException("Consumed connection candidate failures", remainingCause);
             }
 
             var unreturned = new List<Exception>();
