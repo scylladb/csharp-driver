@@ -26,6 +26,7 @@ using System.Threading.Tasks;
 using Cassandra.Connections;
 using Cassandra.Metrics.Abstractions;
 using Cassandra.Metrics.Registries;
+using Cassandra.Observers.Abstractions;
 using Cassandra.Observers.Null;
 using Cassandra.Requests;
 using Cassandra.Responses;
@@ -44,6 +45,12 @@ namespace Cassandra.Tests.Requests
     {
         private readonly ISerializer _serializer = new SerializerManager(ProtocolVersion.V3).GetCurrentSerializer();
 
+        [TestCase("fatal-oom", false)]
+        [TestCase("fatal-oom", true)]
+        [TestCase("fatal-bad-image", false)]
+        [TestCase("fatal-bad-image", true)]
+        [TestCase("fatal-aggregate", false)]
+        [TestCase("fatal-aggregate", true)]
         [TestCase("recovered", false)]
         [TestCase("recovered", true)]
         [TestCase("all-failed", false)]
@@ -68,7 +75,10 @@ namespace Cassandra.Tests.Requests
             Exception failure = composite
                 ? new ConnectionFailure(preferredFailure, new[] { superseded }, new[] { unresolved })
                 : preferredFailure;
-            var terminalError = new InvalidQueryException("prepare failed after connection failover");
+            Exception terminalError = scenario == "fatal-oom" ? new OutOfMemoryException("Original fatal prepare")
+                : scenario == "fatal-bad-image" ? new BadImageFormatException("Original fatal prepare")
+                : scenario == "fatal-aggregate" ? new AggregateException(new OutOfMemoryException("Original fatal prepare"))
+                : new InvalidQueryException("prepare failed after connection failover");
             var config = new TestConfigurationBuilder().Build();
             config.QueryOptions.SetPrepareOnAllHosts(false);
             var cluster = new Mock<IInternalCluster>();
@@ -76,9 +86,11 @@ namespace Cassandra.Tests.Requests
             cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
             var session = new Mock<IInternalSession>();
             session.SetupGet(value => value.Cluster).Returns(cluster.Object);
-            session.SetupGet(value => value.ObserverFactory).Returns(NullObserverFactory.Instance);
+            var observer = new Mock<IRequestObserver>();
+            session.SetupGet(value => value.ObserverFactory).Returns(Mock.Of<IObserverFactory>(value =>
+                value.CreateRequestObserver() == observer.Object));
             var connection = new Mock<IConnection>();
-            if (scenario == "later-error")
+            if (scenario == "later-error" || scenario.StartsWith("fatal-"))
             {
                 connection.Setup(value => value.SendWithKeyspace(It.IsAny<IRequest>(), It.IsAny<string>()))
                     .ThrowsAsync(terminalError);
@@ -112,7 +124,7 @@ namespace Cassandra.Tests.Requests
             }
             var handler = new PrepareHandler(SerializerManager.Default, cluster.Object, Mock.Of<IReprepareHandler>());
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
-            using var listener = new PrepareConnectionTraceListener(throwingSink);
+            using var listener = new PrepareConnectionTraceListener(throwingSink, scenario.StartsWith("fatal-"));
             Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
             Trace.Listeners.Add(listener);
             try
@@ -126,10 +138,11 @@ namespace Cassandra.Tests.Requests
                     Assert.AreSame(preferredFailure, error.Errors[hosts[0].Address]);
                     Assert.AreSame(preferredFailure, error.Errors[hosts[1].Address]);
                 }
-                else if (scenario == "later-error")
+                else if (scenario == "later-error" || scenario.StartsWith("fatal-"))
                 {
-                    var error = await Assert.ThrowsAsync<InvalidQueryException>(() => resultTask);
+                    var error = await Assert.CatchAsync(() => resultTask);
                     Assert.AreSame(terminalError, error);
+                    observer.Verify(value => value.OnRequestFailureAsync(terminalError, It.IsAny<SessionRequestInfo>()), Times.Once);
                 }
                 else
                 {
@@ -977,10 +990,12 @@ namespace Cassandra.Tests.Requests
         private sealed class PrepareConnectionTraceListener : LoggingTests.TestTraceListener
         {
             private readonly bool _throwingSink;
+            private readonly bool _fatal;
 
-            internal PrepareConnectionTraceListener(bool throwingSink)
+            internal PrepareConnectionTraceListener(bool throwingSink, bool fatal = false)
             {
                 _throwingSink = throwingSink;
+                _fatal = fatal;
             }
 
             public override void WriteLine(string message)
@@ -988,6 +1003,10 @@ namespace Cassandra.Tests.Requests
                 base.WriteLine(message);
                 if (_throwingSink && message.Contains("Request consumed"))
                 {
+                    if (_fatal)
+                    {
+                        throw new BadImageFormatException("Fatal diagnostic callback failed");
+                    }
                     throw new InvalidOperationException("diagnostic callback failed");
                 }
             }
