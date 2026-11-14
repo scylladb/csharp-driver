@@ -1530,7 +1530,22 @@ namespace Cassandra.Connections
             }
             if (!IsClosing && _connections.Count > 0)
             {
-                _host.BringUpIfDown();
+                try
+                {
+                    _host.BringUpIfDown();
+                }
+                catch (Exception notificationFailure) when (!Utils.IsFatalException(notificationFailure))
+                {
+                    try
+                    {
+                        HostConnectionPool.Logger.Warning("Host-up notification for {0} failed after successful pool warmup: {1}",
+                            _host.Address, notificationFailure);
+                    }
+                    catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
+                    {
+                        // Ordinary notification diagnostics must not invalidate the open pool.
+                    }
+                }
             }
         }
 
