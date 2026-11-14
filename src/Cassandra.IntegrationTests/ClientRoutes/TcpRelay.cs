@@ -67,7 +67,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
         private long _connectionId;
         private int _acceptedConnectionCount;
         private int _forwardedConnectionCount;
-        private int _forwardingEnabled = 1;
+        private bool _forwardingEnabled = true;
         private int _forwardingGeneration;
         private int _disposed;
 
@@ -113,7 +113,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 {
                     return;
                 }
-                Interlocked.Exchange(ref _forwardingEnabled, 0);
+                _forwardingEnabled = false;
                 AdvanceForwardingGeneration();
                 foreach (var connection in _connections.Values)
                 {
@@ -131,7 +131,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                     throw new ObjectDisposedException(nameof(TcpRelay));
                 }
                 AdvanceForwardingGeneration();
-                Interlocked.Exchange(ref _forwardingEnabled, 1);
+                _forwardingEnabled = true;
             }
         }
 
@@ -268,7 +268,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                     var connection = new RelayConnection(client, generation);
                     lock (_forwardingSync)
                     {
-                        if (generation != _forwardingGeneration || _forwardingEnabled == 0)
+                        if (generation != _forwardingGeneration || !_forwardingEnabled)
                         {
                             connection.Dispose();
                             continue;
@@ -309,7 +309,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             {
                 lock (_forwardingSync)
                 {
-                    if (_forwardingEnabled == 0 || connection.Generation != _forwardingGeneration)
+                    if (!_forwardingEnabled || connection.Generation != _forwardingGeneration)
                     {
                         return;
                     }
