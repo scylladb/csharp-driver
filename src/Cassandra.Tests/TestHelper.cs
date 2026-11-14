@@ -351,43 +351,6 @@ namespace Cassandra.Tests
             }
         }
 
-        internal static async Task RetryAssertUntilAsync(
-            Action assertion,
-            TimeSpan timeout,
-            TimeSpan interval,
-            string failureMessage,
-            Func<Exception, bool> exceptionFilter)
-        {
-            if (interval < TimeSpan.Zero)
-            {
-                throw new ArgumentOutOfRangeException(nameof(interval), "The polling interval must not be negative.");
-            }
-
-            var elapsed = Stopwatch.StartNew();
-            while (true)
-            {
-                Exception lastException;
-                using (new TestExecutionContext.IsolatedContext())
-                {
-                    try
-                    {
-                        assertion();
-                        return;
-                    }
-                    catch (Exception ex) when (exceptionFilter(ex))
-                    {
-                        lastException = ex;
-                    }
-                }
-                var remaining = timeout - elapsed.Elapsed;
-                if (remaining <= TimeSpan.Zero)
-                {
-                    throw new AssertionException(failureMessage + " " + lastException);
-                }
-                await Task.Delay(interval < remaining ? interval : remaining).ConfigureAwait(false);
-            }
-        }
-
         public static void AssertPropertiesEqual(object actual, object expected)
         {
             var properties = expected.GetType().GetProperties();
@@ -618,6 +581,43 @@ namespace Cassandra.Tests
             }
 
             return null;
+        }
+
+        internal static async Task RetryAssertUntilAsync(
+            Action assertion,
+            TimeSpan timeout,
+            TimeSpan interval,
+            string failureMessage,
+            Func<Exception, bool> exceptionFilter)
+        {
+            if (interval < TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(interval), "The polling interval must not be negative.");
+            }
+
+            var elapsed = Stopwatch.StartNew();
+            while (true)
+            {
+                Exception lastException;
+                using (new TestExecutionContext.IsolatedContext())
+                {
+                    try
+                    {
+                        assertion();
+                        return;
+                    }
+                    catch (Exception ex) when (exceptionFilter(ex))
+                    {
+                        lastException = ex;
+                    }
+                }
+                var remaining = timeout - elapsed.Elapsed;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    throw new AssertionException(failureMessage + " " + lastException);
+                }
+                await Task.Delay(interval < remaining ? interval : remaining).ConfigureAwait(false);
+            }
         }
 
         internal static void VerifyUpdateCqlColumns(string tableName, string query, string[] setColumns, string[] whereColumns,
