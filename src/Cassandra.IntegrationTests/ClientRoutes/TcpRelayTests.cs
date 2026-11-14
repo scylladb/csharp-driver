@@ -59,11 +59,13 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             using var tls = mode == TcpRelayMode.TlsTerminate ? new SslStream(clientStream, false, (_, _, _, _) => true) : null;
             if (tls != null)
             {
-                await tls.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
-                {
-                    TargetHost = "relay.test",
-                    EnabledSslProtocols = SslProtocols.Tls12
-                }, deadline.Token).ConfigureAwait(false);
+                await tls.AuthenticateAsClientAsync(
+                    new SslClientAuthenticationOptions
+                    {
+                        TargetHost = "relay.test",
+                        EnabledSslProtocols = SslProtocols.Tls12
+                    },
+                    deadline.Token).ConfigureAwait(false);
                 clientStream = tls;
             }
 

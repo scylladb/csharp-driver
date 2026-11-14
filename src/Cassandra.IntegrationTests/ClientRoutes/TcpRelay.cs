@@ -52,6 +52,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
 
         private readonly ConcurrentDictionary<long, RelayConnection> _connections =
             new ConcurrentDictionary<long, RelayConnection>();
+
         private readonly ConcurrentQueue<int> _acceptedSourcePorts = new ConcurrentQueue<int>();
         private readonly ConcurrentQueue<string> _requestedServerNames = new ConcurrentQueue<string>();
         private readonly ConcurrentQueue<Exception> _failures = new ConcurrentQueue<Exception>();
@@ -84,6 +85,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                     nameof(serverCertificate),
                     "A server certificate is required when the relay terminates TLS.");
             }
+
             _serverCertificate = serverCertificate;
             _listener = new TcpListener(IPAddress.Loopback, 0);
             _listener.Start();
@@ -113,6 +115,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 {
                     return;
                 }
+
                 _forwardingEnabled = false;
                 AdvanceForwardingGeneration();
                 foreach (var connection in _connections.Values)
@@ -130,6 +133,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 {
                     throw new ObjectDisposedException(nameof(TcpRelay));
                 }
+
                 AdvanceForwardingGeneration();
                 _forwardingEnabled = true;
             }
@@ -142,11 +146,13 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             {
                 // Drain the recorded observations.
             }
+
             string ignoredServerName;
             while (_requestedServerNames.TryDequeue(out ignoredServerName))
             {
                 // Drain the recorded observations.
             }
+
             Interlocked.Exchange(ref _acceptedConnectionCount, 0);
             Interlocked.Exchange(ref _forwardedConnectionCount, 0);
         }
@@ -184,6 +190,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 {
                     connection.Dispose();
                 }
+
                 _acceptCancellation.Dispose();
                 _cancellation.Dispose();
             }
@@ -238,6 +245,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                     generation = _forwardingGeneration;
                     acceptToken = _acceptCancellation.Token;
                 }
+
                 TcpClient client;
                 try
                 {
@@ -277,6 +285,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                             connection.Dispose();
                             continue;
                         }
+
                         _connections[connectionId] = connection;
                         _ = Task.Run(() => RelayAsync(connectionId, connection));
                     }
@@ -343,13 +352,14 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                         .ConfigureAwait(false);
                     clientStream = sslStream;
                 }
+
                 var upstreamStream = upstream.GetStream();
                 if (_mode == TcpRelayMode.ProxyProtocolV2)
                 {
                     var header = CreateProxyProtocolV2Header(
                         (IPEndPoint)connection.Client.Client.RemoteEndPoint,
                         (IPEndPoint)connection.Client.Client.LocalEndPoint);
-                    await upstreamStream.WriteAsync(header, 0, header.Length).ConfigureAwait(false);
+                    await upstreamStream.WriteAsync(header).ConfigureAwait(false);
                 }
 
                 var upstreamCopy = clientStream.CopyToAsync(upstreamStream);
@@ -429,6 +439,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                     {
                         return;
                     }
+
                     _disposed = true;
 
                     _clientStream?.Dispose();

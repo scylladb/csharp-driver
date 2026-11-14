@@ -292,6 +292,7 @@ namespace Cassandra.Tests
                     {
                         exceptions = new List<Exception>();
                     }
+
                     exceptions.Add(ex);
                 }
             }
@@ -613,11 +614,13 @@ namespace Cassandra.Tests
                         lastException = ex;
                     }
                 }
+
                 var remaining = timeout - elapsed.Elapsed;
                 if (remaining <= TimeSpan.Zero)
                 {
                     throw new AssertionException(failureMessage + " " + lastException);
                 }
+
                 await Task.Delay(interval < remaining ? interval : remaining).ConfigureAwait(false);
             }
         }
