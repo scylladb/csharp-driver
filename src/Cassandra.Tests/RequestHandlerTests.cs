@@ -88,7 +88,8 @@ namespace Cassandra.Tests
             Assert.Null(stmt.ConsistencyLevel);
             var request = (QueryRequest)RequestHandler.GetRequest(stmt, Serializer, GetRequestOptions());
             Assert.AreEqual(DefaultQueryOptions.GetPageSize(), request.PageSize);
-            Assert.AreEqual(DefaultQueryOptions.GetConsistencyLevel(), request.Consistency);
+            Assert.AreEqual(ConsistencyLevel.LocalQuorum, request.Consistency);
+            Assert.AreEqual(ConsistencyLevel.LocalSerial, request.SerialConsistency);
         }
 
         [Test]
@@ -97,7 +98,7 @@ namespace Cassandra.Tests
             var stmt = new SimpleStatement("DUMMY QUERY");
             Assert.AreEqual(0, stmt.PageSize);
             Assert.Null(stmt.ConsistencyLevel);
-            var queryOptions = new QueryOptions().SetConsistencyLevel(ConsistencyLevel.LocalQuorum).SetPageSize(100);
+            var queryOptions = new QueryOptions().SetConsistencyLevel(ConsistencyLevel.LocalOne).SetSerialConsistencyLevel(ConsistencyLevel.Serial).SetPageSize(100);
             var request = (QueryRequest)RequestHandler.GetRequest(stmt, Serializer, GetRequestOptions(queryOptions));
             Assert.AreEqual(100, request.PageSize);
             Assert.AreEqual(queryOptions.GetPageSize(), request.PageSize);
@@ -111,14 +112,14 @@ namespace Cassandra.Tests
             var stmt = new SimpleStatement("DUMMY QUERY");
             stmt.SetConsistencyLevel(ConsistencyLevel.EachQuorum);
             stmt.SetPageSize(350);
-            stmt.SetSerialConsistencyLevel(ConsistencyLevel.LocalSerial);
+            stmt.SetSerialConsistencyLevel(ConsistencyLevel.Serial);
             Assert.AreEqual(350, stmt.PageSize);
             Assert.AreEqual(ConsistencyLevel.EachQuorum, stmt.ConsistencyLevel);
-            Assert.AreEqual(ConsistencyLevel.LocalSerial, stmt.SerialConsistencyLevel);
+            Assert.AreEqual(ConsistencyLevel.Serial, stmt.SerialConsistencyLevel);
             var request = (QueryRequest)RequestHandler.GetRequest(stmt, Serializer, GetRequestOptions());
             Assert.AreEqual(350, request.PageSize);
             Assert.AreEqual(ConsistencyLevel.EachQuorum, request.Consistency);
-            Assert.AreEqual(ConsistencyLevel.LocalSerial, request.SerialConsistency);
+            Assert.AreEqual(ConsistencyLevel.Serial, request.SerialConsistency);
         }
 
         [Test]
@@ -130,7 +131,8 @@ namespace Cassandra.Tests
             Assert.Null(stmt.ConsistencyLevel);
             var request = (ExecuteRequest)RequestHandler.GetRequest(stmt, Serializer, GetRequestOptions());
             Assert.AreEqual(DefaultQueryOptions.GetPageSize(), request.PageSize);
-            Assert.AreEqual(DefaultQueryOptions.GetConsistencyLevel(), request.Consistency);
+            Assert.AreEqual(ConsistencyLevel.LocalQuorum, request.Consistency);
+            Assert.AreEqual(ConsistencyLevel.LocalSerial, request.SerialConsistency);
         }
 
         [Test]
@@ -140,12 +142,12 @@ namespace Cassandra.Tests
             var stmt = ps.Bind();
             Assert.AreEqual(0, stmt.PageSize);
             Assert.Null(stmt.ConsistencyLevel);
-            var queryOptions = new QueryOptions().SetConsistencyLevel(ConsistencyLevel.LocalQuorum).SetPageSize(100);
+            var queryOptions = new QueryOptions().SetConsistencyLevel(ConsistencyLevel.LocalOne).SetSerialConsistencyLevel(ConsistencyLevel.Serial).SetPageSize(100);
             var request = (ExecuteRequest)RequestHandler.GetRequest(stmt, Serializer, GetRequestOptions(queryOptions));
             Assert.AreEqual(100, request.PageSize);
             Assert.AreEqual(queryOptions.GetPageSize(), request.PageSize);
             Assert.AreEqual(queryOptions.GetConsistencyLevel(), request.Consistency);
-            Assert.AreEqual(QueryOptions.DefaultSerialConsistencyLevel, request.SerialConsistency);
+            Assert.AreEqual(ConsistencyLevel.Serial, request.SerialConsistency);
         }
 
         /// <summary>
@@ -196,14 +198,14 @@ namespace Cassandra.Tests
             var stmt = ps.Bind();
             stmt.SetConsistencyLevel(ConsistencyLevel.EachQuorum);
             stmt.SetPageSize(350);
-            stmt.SetSerialConsistencyLevel(ConsistencyLevel.LocalSerial);
+            stmt.SetSerialConsistencyLevel(ConsistencyLevel.Serial);
             Assert.AreEqual(350, stmt.PageSize);
             Assert.AreEqual(ConsistencyLevel.EachQuorum, stmt.ConsistencyLevel);
-            Assert.AreEqual(ConsistencyLevel.LocalSerial, stmt.SerialConsistencyLevel);
+            Assert.AreEqual(ConsistencyLevel.Serial, stmt.SerialConsistencyLevel);
             var request = (ExecuteRequest)RequestHandler.GetRequest(stmt, Serializer, GetRequestOptions());
             Assert.AreEqual(350, request.PageSize);
             Assert.AreEqual(ConsistencyLevel.EachQuorum, request.Consistency);
-            Assert.AreEqual(ConsistencyLevel.LocalSerial, request.SerialConsistency);
+            Assert.AreEqual(ConsistencyLevel.Serial, request.SerialConsistency);
         }
 
         [Test]
@@ -212,7 +214,8 @@ namespace Cassandra.Tests
             var stmt = new BatchStatement();
             Assert.Null(stmt.ConsistencyLevel);
             var request = (BatchRequest)RequestHandler.GetRequest(stmt, Serializer, GetRequestOptions());
-            Assert.AreEqual(DefaultQueryOptions.GetConsistencyLevel(), request.Consistency);
+            Assert.AreEqual(ConsistencyLevel.LocalQuorum, request.Consistency);
+            Assert.AreEqual(ConsistencyLevel.LocalSerial, request.SerialConsistency);
         }
 
         [Test]
@@ -220,9 +223,10 @@ namespace Cassandra.Tests
         {
             var stmt = new BatchStatement();
             Assert.Null(stmt.ConsistencyLevel);
-            var queryOptions = new QueryOptions().SetConsistencyLevel(ConsistencyLevel.LocalQuorum);
+            var queryOptions = new QueryOptions().SetConsistencyLevel(ConsistencyLevel.LocalOne).SetSerialConsistencyLevel(ConsistencyLevel.Serial);
             var request = (BatchRequest)RequestHandler.GetRequest(stmt, Serializer, GetRequestOptions(queryOptions));
             Assert.AreEqual(queryOptions.GetConsistencyLevel(), request.Consistency);
+            Assert.AreEqual(ConsistencyLevel.Serial, request.SerialConsistency);
         }
 
         [Test]

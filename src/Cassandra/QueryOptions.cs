@@ -29,14 +29,14 @@ namespace Cassandra
         internal static readonly QueryOptions Empty = new QueryOptions();
 
         /// <summary>
-        /// The default consistency level for queries: <c>ConsistencyLevel.LocalOne</c>.
+        /// The default consistency level for queries: <c>ConsistencyLevel.LocalQuorum</c>.
         /// </summary>
-        public const ConsistencyLevel DefaultConsistencyLevel = ConsistencyLevel.LocalOne;
+        public const ConsistencyLevel DefaultConsistencyLevel = ConsistencyLevel.LocalQuorum;
 
         /// <summary>
-        /// The default serial consistency level for conditional updates: <c>ConsistencyLevel.Serial</c>.
+        /// The default serial consistency level for conditional updates: <c>ConsistencyLevel.LocalSerial</c>.
         /// </summary>
-        public const ConsistencyLevel DefaultSerialConsistencyLevel = ConsistencyLevel.Serial;
+        public const ConsistencyLevel DefaultSerialConsistencyLevel = ConsistencyLevel.LocalSerial;
 
         /// <summary>
         /// The default page size for SELECT queries: 5000.

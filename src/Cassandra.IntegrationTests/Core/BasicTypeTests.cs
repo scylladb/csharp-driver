@@ -282,7 +282,7 @@ namespace Cassandra.IntegrationTests.Core
             }
 
             TestCluster.PrimeFluent(
-                b => b.WhenQuery($"SELECT * FROM {tableName};", when => when.WithConsistency(ConsistencyLevel.LocalOne))
+                b => b.WhenQuery($"SELECT * FROM {tableName};", when => when.WithConsistency(Session.Cluster.Configuration.QueryOptions.GetConsistencyLevel()))
                       .ThenRowsSuccess(new[] { "tweet_id", "incdec" }, r => r.WithRow(tweet_id, (Int64)50)));
 
             QueryTools.ExecuteSyncQuery(Session, $"SELECT * FROM {tableName};",
@@ -333,7 +333,7 @@ namespace Cassandra.IntegrationTests.Core
             }
 
             TestCluster.PrimeFluent(
-                b => b.WhenQuery($"SELECT * FROM {tableName};", when => when.WithConsistency(ConsistencyLevel.LocalOne))
+                b => b.WhenQuery($"SELECT * FROM {tableName};", when => when.WithConsistency(Session.Cluster.Configuration.QueryOptions.GetConsistencyLevel()))
                       .ThenRowsSuccess(new[] { "tweet_id", "value" }, r => r.WithRow(toInsert[0][0], toInsert[0][1])));
 
             QueryTools.ExecuteSyncQuery(

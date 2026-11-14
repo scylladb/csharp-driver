@@ -29,6 +29,7 @@ namespace Cassandra.Tests
         public void TestCqlCommand()
         {
             var target = new CqlCommand();
+            Assert.AreEqual(ConsistencyLevel.LocalQuorum, target.ConsistencyLevel);
 
             // test CreateDbParameter()
             var parameter = target.CreateParameter();

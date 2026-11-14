@@ -28,6 +28,11 @@ All statement types share a common set of execution attributes, that can be set 
 Note that some attributes can either be set programmatically, or inherit a default value defined in the `Builder`. We recommended setting these values in the `Builder` whenever possible (you
 can create execution profiles to capture common combinations of those options).
 
+Application statements default to `LOCAL_QUORUM` consistency. The serial phase of lightweight
+transactions defaults to `LOCAL_SERIAL`. These defaults apply to simple statements, bound
+statements and batches. An explicit statement setting takes precedence over the selected
+execution profile, then the default execution profile, then `QueryOptions`.
+
 :::{toctree}
 :hidden:
 :maxdepth: 1

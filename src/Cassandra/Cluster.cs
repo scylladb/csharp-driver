@@ -424,6 +424,13 @@ namespace Cassandra
             return session;
         }
 
+        internal PreparedStatement GetCachedPreparedStatement(string cqlQuery, string keyspace)
+        {
+            var cacheKey = new PreparedStatementCacheKey(cqlQuery, string.IsNullOrEmpty(keyspace) ? null : keyspace);
+            var completedTask = GetCompletedPreparedStatementTask(cacheKey);
+            return completedTask?.Result;
+        }
+
         private string GetNewSessionName()
         {
             var sessionCounter = GetAndIncrementSessionCounter();
@@ -656,10 +663,8 @@ namespace Cassandra
             }
 
             var cacheKey = new PreparedStatementCacheKey(request.Query, effectiveKeyspace);
-            var fastPathGeneration = Volatile.Read(ref _preparedStatementCacheGeneration);
-            if (_preparedStatementCache.TryGetValue(cacheKey, out var completedEntry)
-                && completedEntry.TryGetCompletedTask(fastPathGeneration, out var completedTask)
-                && Volatile.Read(ref _preparedStatementCacheGeneration) == fastPathGeneration)
+            var completedTask = GetCompletedPreparedStatementTask(cacheKey);
+            if (completedTask != null)
             {
                 return await completedTask.ConfigureAwait(false);
             }
@@ -712,6 +717,19 @@ namespace Cassandra
                 }
                 throw;
             }
+        }
+
+        private Task<PreparedStatement> GetCompletedPreparedStatementTask(PreparedStatementCacheKey cacheKey)
+        {
+            var generation = Volatile.Read(ref _preparedStatementCacheGeneration);
+            if (_preparedStatementCache.TryGetValue(cacheKey, out var entry)
+                && entry.TryGetCompletedTask(generation, out var completedTask)
+                && Volatile.Read(ref _preparedStatementCacheGeneration) == generation)
+            {
+                return completedTask;
+            }
+
+            return null;
         }
 
         private async Task<PreparedStatement> PrepareAsync(
