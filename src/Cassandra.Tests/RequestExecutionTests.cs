@@ -446,14 +446,20 @@ namespace Cassandra.Tests
             finally
             {
                 releaseAcquisition.TrySetResult(true);
-                if (acquisition != null)
+                try
                 {
-                    await acquisition.ContinueWith(completed => _ = completed.Exception, TaskScheduler.Default)
-                        .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    if (acquisition != null)
+                    {
+                        await acquisition.ContinueWith(completed => _ = completed.Exception, TaskScheduler.Default)
+                            .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    }
                 }
-                Trace.Listeners.Remove(listener);
-                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
-                config.Timer.Dispose();
+                finally
+                {
+                    Trace.Listeners.Remove(listener);
+                    Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                    config.Timer.Dispose();
+                }
             }
         }
 
