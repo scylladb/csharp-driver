@@ -3,6 +3,9 @@ root = true
 
 [*.cs]
 
+# Preserve the inherited attribution unless a file has a different copyright holder.
+stylecop.documentation.companyName = DataStax Inc.
+
 # CA1032: Implement standard exception constructors
 dotnet_diagnostic.CA1032.severity = silent
 
