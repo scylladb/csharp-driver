@@ -43,6 +43,31 @@ namespace Cassandra.Tests
             Assert.AreEqual(2, attempts);
         }
 
+        [TestCase(-1)]
+        [TestCase(-2)]
+        public async Task WaitUntilRejectsNegativeInterval(int milliseconds)
+        {
+            var exception = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => TestHelper.WaitUntilOrFailAsync(
+                () => false,
+                TimeSpan.FromSeconds(1),
+                TimeSpan.FromMilliseconds(milliseconds),
+                "The condition was never satisfied.").WaitAsync(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
+            Assert.AreEqual("interval", exception.ParamName);
+        }
+
+        [TestCase(-1)]
+        [TestCase(-2)]
+        public async Task RetryAssertRejectsNegativeInterval(int milliseconds)
+        {
+            var exception = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => TestHelper.RetryAssertUntilAsync(
+                () => Assert.Fail("The assertion never succeeds."),
+                TimeSpan.FromSeconds(1),
+                TimeSpan.FromMilliseconds(milliseconds),
+                "Retry timed out.",
+                ex => ex is AssertionException).WaitAsync(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
+            Assert.AreEqual("interval", exception.ParamName);
+        }
+
         [Test]
         public async Task ExhaustedRetryReportsTheLastFailure()
         {

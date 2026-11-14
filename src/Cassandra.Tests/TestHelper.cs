@@ -334,6 +334,11 @@ namespace Cassandra.Tests
             TimeSpan interval,
             string failureMessage)
         {
+            if (interval < TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(interval), "The polling interval must not be negative.");
+            }
+
             var elapsed = Stopwatch.StartNew();
             while (!condition())
             {
@@ -353,6 +358,11 @@ namespace Cassandra.Tests
             string failureMessage,
             Func<Exception, bool> exceptionFilter)
         {
+            if (interval < TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(interval), "The polling interval must not be negative.");
+            }
+
             var elapsed = Stopwatch.StartNew();
             while (true)
             {
