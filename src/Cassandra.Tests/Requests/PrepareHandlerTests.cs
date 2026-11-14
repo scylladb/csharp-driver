@@ -113,7 +113,7 @@ namespace Cassandra.Tests.Requests
             var handler = new PrepareHandler(SerializerManager.Default, cluster.Object, Mock.Of<IReprepareHandler>());
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
             using var listener = new PrepareConnectionTraceListener(throwingSink);
-            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
             Trace.Listeners.Add(listener);
             try
             {

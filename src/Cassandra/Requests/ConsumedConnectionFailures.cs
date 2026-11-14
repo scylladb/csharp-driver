@@ -50,7 +50,7 @@ namespace Cassandra.Requests
 
                 try
                 {
-                    Logger.Info("Request consumed a failure to obtain a connection to {0}: {1}", failure.Key, diagnosticError);
+                    Logger.Verbose("Request consumed a failure to obtain a connection to {0}: {1}", failure.Key, diagnosticError);
                 }
                 catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
                 {
