@@ -47,29 +47,29 @@ namespace Cassandra.Tests
     [TestFixture]
     public class RequestExecutionTests
     {
-        [TestCase("recovered", TraceLevel.Info, false)]
-        [TestCase("recovered", TraceLevel.Info, true)]
-        [TestCase("recovered", TraceLevel.Warning, false)]
         [TestCase("recovered", TraceLevel.Verbose, false)]
-        [TestCase("all-failed", TraceLevel.Info, false)]
-        [TestCase("first-success", TraceLevel.Info, false)]
-        [TestCase("fatal-diagnostic", TraceLevel.Info, true)]
-        [TestCase("later-error", TraceLevel.Info, false)]
-        [TestCase("later-error", TraceLevel.Info, true)]
-        [TestCase("external-timeout", TraceLevel.Info, false)]
-        [TestCase("late-acquisition", TraceLevel.Info, false)]
-        [TestCase("init-recovered", TraceLevel.Info, false)]
-        [TestCase("init-all-failed", TraceLevel.Info, false)]
-        [TestCase("init-later-error", TraceLevel.Info, false)]
-        [TestCase("recovered-composite", TraceLevel.Info, false)]
-        [TestCase("all-failed-composite", TraceLevel.Info, false)]
-        [TestCase("later-error-composite", TraceLevel.Info, false)]
-        [TestCase("init-recovered-composite", TraceLevel.Info, false)]
-        [TestCase("init-all-failed-composite", TraceLevel.Info, false)]
-        [TestCase("init-later-error-composite", TraceLevel.Info, false)]
-        [TestCase("inline-response", TraceLevel.Info, false)]
-        [TestCase("inline-response", TraceLevel.Info, true)]
-        [TestCase("inline-fatal-diagnostic", TraceLevel.Info, true)]
+        [TestCase("recovered", TraceLevel.Verbose, true)]
+        [TestCase("recovered", TraceLevel.Warning, false)]
+        [TestCase("all-failed", TraceLevel.Verbose, false)]
+        [TestCase("first-success", TraceLevel.Verbose, false)]
+        [TestCase("fatal-diagnostic", TraceLevel.Verbose, true)]
+        [TestCase("later-error", TraceLevel.Verbose, false)]
+        [TestCase("later-error", TraceLevel.Verbose, true)]
+        [TestCase("external-timeout", TraceLevel.Verbose, false)]
+        [TestCase("late-acquisition", TraceLevel.Verbose, false)]
+        [TestCase("init-recovered", TraceLevel.Verbose, false)]
+        [TestCase("init-all-failed", TraceLevel.Verbose, false)]
+        [TestCase("init-later-error", TraceLevel.Verbose, false)]
+        [TestCase("recovered-composite", TraceLevel.Verbose, false)]
+        [TestCase("all-failed-composite", TraceLevel.Verbose, false)]
+        [TestCase("later-error-composite", TraceLevel.Verbose, false)]
+        [TestCase("init-recovered-composite", TraceLevel.Verbose, false)]
+        [TestCase("init-all-failed-composite", TraceLevel.Verbose, false)]
+        [TestCase("init-later-error-composite", TraceLevel.Verbose, false)]
+        [TestCase("inline-response", TraceLevel.Verbose, false)]
+        [TestCase("inline-response", TraceLevel.Verbose, true)]
+        [TestCase("inline-fatal-diagnostic", TraceLevel.Verbose, true)]
+        [TestCase("recovered", TraceLevel.Info, false)]
         [NonParallelizable]
         public async Task Should_ReportConsumedConnectionFailuresAfterRequestRecovery(
             string scenario, TraceLevel traceLevel, bool throwFromDiagnostic)
@@ -241,7 +241,7 @@ namespace Cassandra.Tests
                 }
 
                 var diagnostics = listener.Messages.Values.Where(message => message.Contains("Request consumed")).ToArray();
-                var expected = scenario != "all-failed" && scenario != "init-all-failed" && scenario != "first-success" && traceLevel >= TraceLevel.Info ? 1 : 0;
+                var expected = scenario != "all-failed" && scenario != "init-all-failed" && scenario != "first-success" && traceLevel >= TraceLevel.Verbose ? 1 : 0;
                 Assert.AreEqual(expected, diagnostics.Length);
                 if (expected != 0)
                 {
@@ -337,7 +337,7 @@ namespace Cassandra.Tests
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
             using var listener = new RecoveredConnectionTraceListener(false, false);
             Task<RowSet> response = null;
-            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
             Trace.Listeners.Add(listener);
             try
             {
@@ -422,7 +422,7 @@ namespace Cassandra.Tests
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
             using var listener = new RecoveredConnectionTraceListener(true, fatalDiagnostic);
             Task acquisition = null;
-            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
             Trace.Listeners.Add(listener);
             try
             {
@@ -483,7 +483,7 @@ namespace Cassandra.Tests
             var returnedError = new NoHostAvailableException(new Dictionary<IPEndPoint, Exception> { [host] = returned });
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
             using var listener = new RecoveredConnectionTraceListener(false, false);
-            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
             Trace.Listeners.Add(listener);
             try
             {
@@ -515,7 +515,7 @@ namespace Cassandra.Tests
             var returnedError = returnedWhole ? (Exception)failure : new InvalidQueryException("Different returned failure");
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
             using var listener = new RecoveredConnectionTraceListener(false, false);
-            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
             Trace.Listeners.Add(listener);
             try
             {
@@ -555,7 +555,7 @@ namespace Cassandra.Tests
             failures.Enqueue(new KeyValuePair<IPEndPoint, Exception>(host, failure));
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
             using var listener = new RecoveredConnectionTraceListener(false, false);
-            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
             Trace.Listeners.Add(listener);
             try
             {
