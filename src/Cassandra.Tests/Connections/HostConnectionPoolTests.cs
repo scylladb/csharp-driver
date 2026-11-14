@@ -644,13 +644,19 @@ namespace Cassandra.Tests.Connections
             finally
             {
                 release.TrySetResult(true);
-                await Task.WhenAll(new[] { first, second, foreground }.Where(attempt => attempt != null))
-                    .ContinueWith(completed => _ = completed.Exception, TaskScheduler.Default)
-                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-                Trace.Listeners.Remove(listener.Object);
-                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
-                listener.Object.Dispose();
-                DisposePoolAndTimer(target);
+                try
+                {
+                    await Task.WhenAll(new[] { first, second, foreground }.Where(attempt => attempt != null))
+                        .ContinueWith(completed => _ = completed.Exception, TaskScheduler.Default)
+                        .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                }
+                finally
+                {
+                    Trace.Listeners.Remove(listener.Object);
+                    Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                    listener.Object.Dispose();
+                    DisposePoolAndTimer(target);
+                }
             }
         }
 
