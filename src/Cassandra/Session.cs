@@ -567,15 +567,15 @@ namespace Cassandra
 
         private void RunOrDeferMetricsRetirement(Action retirement)
         {
-            if (!IsPoolLifecycleLockHeld())
+            if (!_isDrainingMetricsRetirements && !IsPoolLifecycleLockHeld())
             {
                 retirement();
                 return;
             }
 
             // Metrics/policy callbacks can remove a host beneath a recursive creation
-            // lock. Retain the address barrier, but run teardown after the outer lookup
-            // unwinds. The thread owns this queue, including removals in other sessions.
+            // lock or active drain. Retain the barrier and let the outer owner classify
+            // actual cleanup separately from diagnostics, including across sessions.
             DeferMetricsRetirement(retirement);
         }
 
