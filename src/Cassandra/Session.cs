@@ -43,6 +43,10 @@ namespace Cassandra
 
         [ThreadStatic]
         private static List<Action> _deferredMetricsRetirements;
+
+        [ThreadStatic]
+        private static List<Action> _deferredMetricsRetirementDiagnostics;
+
         [ThreadStatic]
         private static Stack<Session> _activePoolLookups;
 
@@ -486,6 +490,14 @@ namespace Cassandra
             _deferredMetricsRetirements.Add(retirement);
         }
 
+        private static void DeferFailedMetricsRetirementDiagnostic(Host host, Exception cleanupFailure)
+        {
+            _deferredMetricsRetirementDiagnostics ??= new List<Action>();
+            _deferredMetricsRetirementDiagnostics.Add(() =>
+                Logger.Error("Could not retire failed pool metrics for {0}; this host is blocked for the rest of this session: {1}",
+                    host.Address, cleanupFailure));
+        }
+
         private IHostConnectionPool GetOrCreateConnectionPool(Host host, HostDistance distance, bool allowDownHost)
         {
             var clientRoutesEnabled = Configuration.ClientRoutesRuntime != null;
@@ -537,7 +549,7 @@ namespace Cassandra
                             }
                             catch (Exception cleanupFailure) when (!Utils.IsFatalException(cleanupFailure))
                             {
-                                // Keep the primary setup failure when teardown fails nonfatally.
+                                DeferFailedMetricsRetirementDiagnostic(host, cleanupFailure);
                             }
                         });
                     }
@@ -566,7 +578,7 @@ namespace Cassandra
 
         private void DrainDeferredMetricsRetirements(Exception primaryFailure)
         {
-            if (_deferredMetricsRetirements == null || IsPoolLifecycleLockHeld())
+            if (IsPoolLifecycleLockHeld())
             {
                 return;
             }
@@ -574,22 +586,60 @@ namespace Cassandra
             var pending = _deferredMetricsRetirements;
             _deferredMetricsRetirements = null;
             Exception failure = null;
-            foreach (var retirement in pending)
+            if (pending != null)
             {
-                try
+                foreach (var retirement in pending)
                 {
-                    retirement();
-                }
-                catch (Exception error)
-                {
-                    // Settle every queued barrier, retaining fatal failure priority.
-                    if (failure == null || (!Utils.IsFatalException(failure) && Utils.IsFatalException(error)))
+                    try
                     {
-                        failure = error;
+                        retirement();
+                    }
+                    catch (Exception error)
+                    {
+                        // Settle every queued barrier, retaining fatal failure priority.
+                        if (failure == null || (!Utils.IsFatalException(failure) && Utils.IsFatalException(error)))
+                        {
+                            failure = error;
+                        }
                     }
                 }
             }
-            if (failure != null && (primaryFailure == null || Utils.IsFatalException(failure)))
+
+            // Diagnostic sinks run after all cleanup and outside pool locks. Their failures
+            // must not hide a fatal cleanup/setup failure or strand another retirement.
+            var diagnostics = _deferredMetricsRetirementDiagnostics;
+            _deferredMetricsRetirementDiagnostics = null;
+            Exception diagnosticFailure = null;
+            if (diagnostics != null)
+            {
+                foreach (var diagnostic in diagnostics)
+                {
+                    try
+                    {
+                        diagnostic();
+                    }
+                    catch (Exception error)
+                    {
+                        if (diagnosticFailure == null && Utils.IsFatalException(error))
+                        {
+                            diagnosticFailure = error;
+                        }
+                    }
+                }
+            }
+            if (Utils.IsFatalException(failure))
+            {
+                ExceptionDispatchInfo.Capture(failure).Throw();
+            }
+            if (Utils.IsFatalException(primaryFailure))
+            {
+                return;
+            }
+            if (diagnosticFailure != null)
+            {
+                ExceptionDispatchInfo.Capture(diagnosticFailure).Throw();
+            }
+            if (failure != null && primaryFailure == null)
             {
                 ExceptionDispatchInfo.Capture(failure).Throw();
             }
@@ -743,7 +793,7 @@ namespace Cassandra
                     }
                     catch (Exception cleanupFailure) when (!Utils.IsFatalException(cleanupFailure))
                     {
-                        // Keep the primary failure when metrics cleanup fails nonfatally.
+                        DeferFailedMetricsRetirementDiagnostic(host, cleanupFailure);
                     }
                 }
                 throw;

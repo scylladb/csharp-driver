@@ -1297,6 +1297,162 @@ namespace Cassandra.Tests
             }
         }
 
+        [TestCase("none", false)]
+        [TestCase("ordinary", false)]
+        [TestCase("fatal", false)]
+        [TestCase("ordinary", true)]
+        [TestCase("fatal", true)]
+        [NonParallelizable]
+        public void Should_LogFailedMetricsRetirementWithoutReplacingSetupFailure(string diagnostic, bool fatalSetup)
+        {
+            Exception setupFailure = fatalSetup ? new OutOfMemoryException("Original fatal metrics setup failure")
+                : new InvalidOperationException("Original metrics setup failure");
+            Exception diagnosticFailure = diagnostic == "fatal" ? new OutOfMemoryException("Fatal retirement diagnostic listener")
+                : new InvalidOperationException("Retirement diagnostic listener failed");
+            var cleanupFailure = new InvalidOperationException("Provider could not retire failed bucket");
+            var provider = CreateMetricsProviderForRemovalTests();
+            var factory = new Mock<IHostConnectionPoolFactory>();
+            factory.Setup(value => value.Create(
+                    It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>())).Returns(() => Mock.Of<IHostConnectionPool>());
+            var config = new TestConfigurationBuilder { HostConnectionPoolFactory = factory.Object, MetricsProvider = provider.Object }.Build();
+            using var metadata = new Metadata(config);
+            var host = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
+            host.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            string failedBucket = null;
+            var failRegistration = true;
+            provider.Setup(value => value.Gauge(It.IsAny<string>(), It.IsAny<IMetric>(), It.IsAny<Func<double?>>()))
+                .Returns((string bucket, IMetric metric, Func<double?> _) =>
+                {
+                    if (metric is NodeMetric && failRegistration)
+                    {
+                        failedBucket = bucket;
+                        throw setupFailure;
+                    }
+                    return Mock.Of<IDriverGauge>();
+                });
+            provider.Setup(value => value.ShutdownMetricsBucket(It.Is<string>(bucket => bucket == failedBucket))).Throws(cleanupFailure);
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new ConsumedWarmupTraceListener(false, message =>
+            {
+                if (diagnostic != "none" && message.Contains("Could not retire failed pool metrics"))
+                {
+                    throw diagnosticFailure;
+                }
+            });
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Error;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "failed-retirement-diagnostic");
+                var internalSession = (IInternalSession)session;
+                var observed = Assert.Catch(() => internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+                Assert.AreSame(diagnostic == "fatal" && !fatalSetup ? diagnosticFailure : setupFailure, observed);
+                var messages = listener.Messages.Values.Where(message => message.Contains("Could not retire failed pool metrics")).ToArray();
+                Assert.AreEqual(1, messages.Length);
+                StringAssert.Contains(host.Address.ToString(), messages[0]);
+                StringAssert.Contains(cleanupFailure.Message, messages[0]);
+                StringAssert.Contains("blocked for the rest of this session", messages[0]);
+                failRegistration = false;
+                var rejection = Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
+                    internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+                StringAssert.Contains("metrics could not be retired", rejection.Message);
+            }
+            finally
+            {
+                provider.Setup(value => value.ShutdownMetricsBucket(It.IsAny<string>()));
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                config.Timer.Dispose();
+            }
+        }
+
+        [TestCase(false, false)]
+        [TestCase(true, false)]
+        [TestCase(false, true)]
+        [TestCase(true, true)]
+        [NonParallelizable]
+        public void Should_DrainAllFailedMetricsBeforeFatalDiagnostics(bool fatalSetup, bool fatalCleanup)
+        {
+            Exception setupFailure = fatalSetup ? new OutOfMemoryException("Fatal outer setup") : new InvalidOperationException("Ordinary outer setup");
+            var cleanupFailure = new OutOfMemoryException("Fatal actual cleanup");
+            var diagnosticFailure = new OutOfMemoryException("Fatal optional diagnostic");
+            var provider = CreateMetricsProviderForRemovalTests();
+            var factory = new Mock<IHostConnectionPoolFactory>();
+            factory.Setup(value => value.Create(
+                    It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>())).Returns(() => Mock.Of<IHostConnectionPool>());
+            var config = new TestConfigurationBuilder { HostConnectionPoolFactory = factory.Object, MetricsProvider = provider.Object }.Build();
+            using var metadata = new Metadata(config);
+            var outerHost = metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042));
+            var innerHost = metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042));
+            outerHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            innerHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            var cleanupCalls = 0;
+            var cleanupCountsAtDiagnostics = new List<int>();
+            using var listener = new ConsumedWarmupTraceListener(false, message =>
+            {
+                if (message.Contains("Could not retire failed pool metrics"))
+                {
+                    cleanupCountsAtDiagnostics.Add(cleanupCalls);
+                    throw diagnosticFailure;
+                }
+            });
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Error;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "nested-failed-retirements");
+                var internalSession = (IInternalSession)session;
+                var reentered = false;
+                provider.Setup(value => value.Gauge(It.IsAny<string>(), It.IsAny<IMetric>(), It.IsAny<Func<double?>>()))
+                    .Returns((string _, IMetric metric, Func<double?> __) =>
+                    {
+                        if (metric is NodeMetric)
+                        {
+                            if (!reentered)
+                            {
+                                reentered = true;
+                                Assert.Throws<InvalidOperationException>(() => internalSession.GetOrCreateConnectionPool(innerHost, HostDistance.Local));
+                                throw setupFailure;
+                            }
+                            throw new InvalidOperationException("Ordinary inner setup");
+                        }
+                        return Mock.Of<IDriverGauge>();
+                    });
+                provider.Setup(value => value.ShutdownMetricsBucket(It.Is<string>(bucket => bucket.Contains(".nodes."))))
+                    .Callback(() =>
+                    {
+                        cleanupCalls++;
+                        if (fatalCleanup && cleanupCalls == 2)
+                        {
+                            throw cleanupFailure;
+                        }
+                        throw new InvalidOperationException("Ordinary actual cleanup");
+                    });
+                var observed = Assert.Catch(() => internalSession.GetOrCreateConnectionPool(outerHost, HostDistance.Local));
+                Assert.AreSame(fatalCleanup ? cleanupFailure : fatalSetup ? setupFailure : diagnosticFailure, observed);
+                Assert.AreEqual(2, cleanupCalls);
+                var diagnostics = listener.Messages.Values.Count(message => message.Contains("Could not retire failed pool metrics"));
+                Assert.AreEqual(fatalCleanup ? 1 : 2, diagnostics);
+                Assert.IsTrue(cleanupCountsAtDiagnostics.All(count => count == 2), "Optional diagnostics must wait for every queued cleanup.");
+            }
+            finally
+            {
+                provider.Setup(value => value.ShutdownMetricsBucket(It.IsAny<string>()));
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                config.Timer.Dispose();
+            }
+        }
+
         [TestCase(false, true)]
         [TestCase(true, false)]
         [TestCase(false, false)]
