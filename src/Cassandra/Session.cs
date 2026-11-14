@@ -43,6 +43,13 @@ namespace Cassandra
 
         [ThreadStatic]
         private static List<Action> _deferredMetricsRetirements;
+
+        [ThreadStatic]
+        private static Queue<Action> _deferredMetricsRetirementDiagnostics;
+
+        [ThreadStatic]
+        private static bool _isDrainingMetricsRetirements;
+
         [ThreadStatic]
         private static Stack<Session> _activePoolLookups;
 
@@ -248,7 +255,8 @@ namespace Cassandra
         /// <summary>
         /// Creates the required connections on all hosts in the local DC.
         /// Returns a Task that is marked as completed after all pools were warmed up.
-        /// If all host pool warmups fail with recoverable errors, it logs an error.
+        /// Unless the session is disposed, recoverable host pool warmup failures are logged at Info,
+        /// including partial failures, with an additional error if all host pool warmups fail.
         /// Fatal errors propagate to the caller.
         /// </summary>
         private async Task Warmup()
@@ -303,6 +311,40 @@ namespace Cassandra
                 {
                     // Shutdown may close connections while initial warmup is still pending.
                     return;
+                }
+
+                for (var i = 0; i < hostWarmups.Length; i++)
+                {
+                    var warmup = hostWarmups[i];
+                    Exception failure = warmup?.Exception;
+                    if (warmup?.IsCanceled == true)
+                    {
+                        try
+                        {
+                            await warmup.ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException cancellation)
+                        {
+                            // Canceled tasks have no Exception property; retain their original cause.
+                            failure = cancellation;
+                        }
+                    }
+                    if (failure == null)
+                    {
+                        continue;
+                    }
+                    try
+                    {
+                        Session.Logger.Info("Connection pool for host {0} failed to warm up: {1}", hosts[i].Address, failure);
+                    }
+                    catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
+                    {
+                        // A diagnostic sink must not change the result of recoverable warmup.
+                    }
+                    if (IsDisposed)
+                    {
+                        return;
+                    }
                 }
 
                 if (tasks.Any(t => t.Status == TaskStatus.RanToCompletion))
@@ -451,6 +493,14 @@ namespace Cassandra
             _deferredMetricsRetirements.Add(retirement);
         }
 
+        private static void DeferFailedMetricsRetirementDiagnostic(Host host, Exception cleanupFailure)
+        {
+            _deferredMetricsRetirementDiagnostics ??= new Queue<Action>();
+            _deferredMetricsRetirementDiagnostics.Enqueue(() =>
+                Logger.Error("Could not retire failed pool metrics for {0}; this host is blocked for the rest of this session: {1}",
+                    host.Address, cleanupFailure));
+        }
+
         private IHostConnectionPool GetOrCreateConnectionPool(Host host, HostDistance distance, bool allowDownHost)
         {
             var clientRoutesEnabled = Configuration.ClientRoutesRuntime != null;
@@ -502,7 +552,7 @@ namespace Cassandra
                             }
                             catch (Exception cleanupFailure) when (!Utils.IsFatalException(cleanupFailure))
                             {
-                                // Keep the primary setup failure when teardown fails nonfatally.
+                                DeferFailedMetricsRetirementDiagnostic(host, cleanupFailure);
                             }
                         });
                     }
@@ -517,44 +567,97 @@ namespace Cassandra
 
         private void RunOrDeferMetricsRetirement(Action retirement)
         {
-            if (!IsPoolLifecycleLockHeld())
+            if (!_isDrainingMetricsRetirements && !IsPoolLifecycleLockHeld())
             {
                 retirement();
                 return;
             }
 
             // Metrics/policy callbacks can remove a host beneath a recursive creation
-            // lock. Retain the address barrier, but run teardown after the outer lookup
-            // unwinds. The thread owns this queue, including removals in other sessions.
+            // lock or active drain. Retain the barrier and let the outer owner classify
+            // actual cleanup separately from diagnostics, including across sessions.
             DeferMetricsRetirement(retirement);
         }
 
         private void DrainDeferredMetricsRetirements(Exception primaryFailure)
         {
-            if (_deferredMetricsRetirements == null || IsPoolLifecycleLockHeld())
+            if (_isDrainingMetricsRetirements || IsPoolLifecycleLockHeld())
             {
                 return;
             }
 
-            var pending = _deferredMetricsRetirements;
-            _deferredMetricsRetirements = null;
             Exception failure = null;
-            foreach (var retirement in pending)
+            Exception diagnosticFailure = null;
+            Queue<Action> diagnostics = null;
+            _isDrainingMetricsRetirements = true;
+            try
             {
-                try
+                do
                 {
-                    retirement();
-                }
-                catch (Exception error)
-                {
-                    // Settle every queued barrier, retaining fatal failure priority.
-                    if (failure == null || (!Utils.IsFatalException(failure) && Utils.IsFatalException(error)))
+                    // Reentrant provider callbacks may queue more cleanup. The outer drain
+                    // owns it until every queued retirement has settled, across sessions.
+                    while (_deferredMetricsRetirements != null)
                     {
-                        failure = error;
+                        var pending = _deferredMetricsRetirements;
+                        _deferredMetricsRetirements = null;
+                        foreach (var retirement in pending)
+                        {
+                            try
+                            {
+                                retirement();
+                            }
+                            catch (Exception error)
+                            {
+                                // Settle every queued barrier, retaining fatal failure priority.
+                                if (failure == null || (!Utils.IsFatalException(failure) && Utils.IsFatalException(error)))
+                                {
+                                    failure = error;
+                                }
+                            }
+                        }
+                    }
+
+                    // Diagnostic sinks run after cleanup and outside pool locks. Reentrant
+                    // lookups cannot drain them early or promote their failures to cleanup.
+                    if (diagnostics == null || diagnostics.Count == 0)
+                    {
+                        diagnostics = _deferredMetricsRetirementDiagnostics;
+                        _deferredMetricsRetirementDiagnostics = null;
+                    }
+                    if (diagnostics != null && diagnostics.TryDequeue(out var diagnostic))
+                    {
+                        try
+                        {
+                            diagnostic();
+                        }
+                        catch (Exception error)
+                        {
+                            if (diagnosticFailure == null && Utils.IsFatalException(error))
+                            {
+                                diagnosticFailure = error;
+                            }
+                        }
                     }
                 }
+                while (_deferredMetricsRetirements != null || _deferredMetricsRetirementDiagnostics != null || diagnostics?.Count > 0);
             }
-            if (failure != null && (primaryFailure == null || Utils.IsFatalException(failure)))
+            finally
+            {
+                _isDrainingMetricsRetirements = false;
+            }
+            if (Utils.IsFatalException(failure))
+            {
+                ExceptionDispatchInfo.Capture(failure).Throw();
+            }
+            if (Utils.IsFatalException(primaryFailure))
+            {
+                return;
+            }
+            if (diagnosticFailure != null)
+            {
+                ExceptionDispatchInfo.Capture(diagnosticFailure).Throw();
+            }
+            if (failure != null && primaryFailure == null)
             {
                 ExceptionDispatchInfo.Capture(failure).Throw();
             }
@@ -708,7 +811,7 @@ namespace Cassandra
                     }
                     catch (Exception cleanupFailure) when (!Utils.IsFatalException(cleanupFailure))
                     {
-                        // Keep the primary failure when metrics cleanup fails nonfatally.
+                        DeferFailedMetricsRetirementDiagnostic(host, cleanupFailure);
                     }
                 }
                 throw;

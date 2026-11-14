@@ -48,6 +48,9 @@ namespace Cassandra.Requests
         private readonly IEnumerator<RoutingTarget> _queryPlan;
         private readonly Lock _queryPlanLock = new Lock();
         private readonly ICollection<IRequestExecution> _running = new CopyOnWriteList<IRequestExecution>();
+        private ConsumedConnectionFailures.Collector _connectionFailures;
+        private Exception _returnedError;
+        private int _diagnosticsCompleted;
         private ISpeculativeExecutionPlan _executionPlan;
         private volatile HashedWheelTimer.ITimeout _nextExecutionTimeout;
         private readonly IRequestObserver _requestObserver;
@@ -265,7 +268,7 @@ namespace Cassandra.Requests
             }
             if (ex != null)
             {
-                await _requestResultHandler.TrySetExceptionAsync(ex, _sessionRequestInfo).ConfigureAwait(false);
+                await CompleteRequestAsync(ex, null).ConfigureAwait(false);
                 return true;
             }
             if (action != null)
@@ -280,19 +283,58 @@ namespace Cassandra.Requests
                     catch (Exception actionEx)
                     {
                         await ClearNodeExecutionsAsync().ConfigureAwait(false);
-                        await _requestResultHandler.TrySetExceptionAsync(actionEx, _sessionRequestInfo).ConfigureAwait(false);
+                        await CompleteRequestAsync(actionEx, null).ConfigureAwait(false);
                         return;
                     }
 
                     await ClearNodeExecutionsAsync().ConfigureAwait(false);
-                    await _requestResultHandler.TrySetResultAsync(result, _sessionRequestInfo).ConfigureAwait(false);
+                    await CompleteRequestAsync(null, result).ConfigureAwait(false);
                 }, CancellationToken.None).Forget();
                 return true;
             }
 
             await ClearNodeExecutionsAsync().ConfigureAwait(false);
-            await _requestResultHandler.TrySetResultAsync(result, _sessionRequestInfo).ConfigureAwait(false);
+            await CompleteRequestAsync(null, result).ConfigureAwait(false);
             return true;
+        }
+
+        private Task CompleteRequestAsync(Exception error, RowSet result)
+        {
+            Volatile.Write(ref _returnedError, error);
+            // Publish completion before checking the queue, pairing with the recorder's enqueue.
+            Interlocked.Exchange(ref _diagnosticsCompleted, 1);
+            try
+            {
+                Volatile.Read(ref _connectionFailures)?.Report(error);
+            }
+            catch (Exception diagnosticFailure)
+            {
+                // Complete a claimed request without replacing an already-selected fatal failure.
+                if (!Utils.IsFatalException(error))
+                {
+                    error = diagnosticFailure;
+                    Volatile.Write(ref _returnedError, error);
+                }
+            }
+            return error == null
+                ? _requestResultHandler.TrySetResultAsync(result, _sessionRequestInfo)
+                : _requestResultHandler.TrySetExceptionAsync(error, _sessionRequestInfo);
+        }
+
+        public void RecordConnectionFailure(IPEndPoint host, Exception failure)
+        {
+            var failures = Volatile.Read(ref _connectionFailures);
+            if (failures == null)
+            {
+                var created = new ConsumedConnectionFailures.Collector();
+                failures = Interlocked.CompareExchange(ref _connectionFailures, created, null) ?? created;
+            }
+
+            failures.Record(host, failure);
+            if (Volatile.Read(ref _diagnosticsCompleted) != 0)
+            {
+                failures.Report(Volatile.Read(ref _returnedError));
+            }
         }
 
         private async Task ClearNodeExecutionsAsync()
@@ -317,7 +359,7 @@ namespace Cassandra.Requests
             }
         }
 
-        public Task SetNoMoreHostsAsync(NoHostAvailableException ex, IRequestExecution execution)
+        public async Task SetNoMoreHostsAsync(NoHostAvailableException ex, IRequestExecution execution)
         {
             //An execution ended with a NoHostAvailableException (retrying or starting).
             //If there is a running execution, do not yield it to the user
@@ -325,9 +367,9 @@ namespace Cassandra.Requests
             if (_running.Count > 0)
             {
                 RequestHandler.Logger.Info("Could not obtain an available host for speculative execution");
-                return TaskHelper.Completed;
+                return;
             }
-            return SetCompletedAsync(ex);
+            await SetCompletedAsync(ex).ConfigureAwait(false);
         }
 
         public bool HasCompleted()
@@ -386,18 +428,33 @@ namespace Cassandra.Requests
         /// <inheritdoc />
         public async Task<IConnection> GetNextConnectionAsync(Dictionary<IPEndPoint, Exception> triedHosts)
         {
-            // While there is an available host
-            while (TryGetNextHost(out var target))
+            ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>> connectionFailures = null;
+            try
             {
-                var c = await ValidateHostAndGetConnectionAsync(target, triedHosts).ConfigureAwait(false);
-                if (c == null)
+                // While there is an available host
+                while (TryGetNextHost(out var target))
                 {
-                    continue;
+                    var c = await ValidateHostAndGetConnectionAsync(target, triedHosts).ConfigureAwait(false);
+                    if (c == null)
+                    {
+                        if (triedHosts.TryGetValue(target.Host.Address, out var failure) && failure != null)
+                        {
+                            connectionFailures ??= new ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>>();
+                            connectionFailures.Enqueue(new KeyValuePair<IPEndPoint, Exception>(target.Host.Address, failure));
+                        }
+                        continue;
+                    }
+                    ConsumedConnectionFailures.Report(connectionFailures, null);
+                    return c;
                 }
-                return c;
-            }
 
-            throw new NoHostAvailableException(triedHosts);
+                throw new NoHostAvailableException(triedHosts);
+            }
+            catch (Exception ex)
+            {
+                ConsumedConnectionFailures.Report(connectionFailures, ex);
+                throw;
+            }
         }
 
         /// <inheritdoc />
@@ -529,16 +586,21 @@ namespace Cassandra.Requests
         /// </summary>
         private async Task StartNewExecutionAsync()
         {
+            IRequestExecution execution = null;
             try
             {
-                var execution = _session.Cluster.Configuration.RequestExecutionFactory.Create(this, _session, _request, _requestObserver, _sessionRequestInfo);
-                var lastHost = execution.Start(false);
+                execution = _session.Cluster.Configuration.RequestExecutionFactory.Create(this, _session, _request, _requestObserver, _sessionRequestInfo);
                 _running.Add(execution);
+                var lastHost = execution.Start(false);
                 ScheduleNext(lastHost);
             }
             catch (NoHostAvailableException ex)
             {
-                if (_running.Count == 0)
+                if (execution != null)
+                {
+                    await SetNoMoreHostsAsync(ex, execution).ConfigureAwait(false);
+                }
+                else if (_running.Count == 0)
                 {
                     //Its the sending of the first execution
                     //There isn't any host available, yield it to the user

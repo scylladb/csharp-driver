@@ -15,6 +15,7 @@
 //
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
@@ -59,6 +60,7 @@ namespace Cassandra.Requests
             var infoAndObs = await CreateRequestObserverAsync(session, request, sessionKeyspace).ConfigureAwait(false);
             var observer = infoAndObs.Item2;
             var requestTrackingInfo = infoAndObs.Item1;
+            var connectionFailures = new ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>>();
             try
             {
                 var prepareResult = await SendRequestToOneNode(
@@ -68,7 +70,8 @@ namespace Cassandra.Requests
                     observer,
                     requestTrackingInfo,
                     sessionKeyspace,
-                    effectiveKeyspace).ConfigureAwait(false);
+                    effectiveKeyspace,
+                    connectionFailures).ConfigureAwait(false);
 
                 if (session.Cluster.Configuration.QueryOptions.IsPrepareOnAllHosts())
                 {
@@ -78,11 +81,13 @@ namespace Cassandra.Requests
                 var preparedStatement = _acceptPreparedStatement == null
                     ? prepareResult.PreparedStatement
                     : _acceptPreparedStatement(prepareResult.PreparedStatement);
+                ConsumedConnectionFailures.Report(connectionFailures, null);
                 await observer.OnRequestSuccessAsync(requestTrackingInfo).ConfigureAwait(false);
                 return preparedStatement;
             }
             catch (Exception ex)
             {
+                ConsumedConnectionFailures.Report(connectionFailures, ex);
                 await observer.OnRequestFailureAsync(ex, requestTrackingInfo).ConfigureAwait(false);
                 throw;
             }
@@ -118,7 +123,8 @@ namespace Cassandra.Requests
             IRequestObserver observer,
             SessionRequestInfo info,
             string connectionKeyspace,
-            string effectiveKeyspace)
+            string effectiveKeyspace,
+            ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>> connectionFailures)
         {
             var triedHosts = new Dictionary<IPEndPoint, Exception>();
 
@@ -126,7 +132,7 @@ namespace Cassandra.Requests
             {
                 // It may throw a NoHostAvailableException which we should yield to the caller
                 var hostConnectionTuple = await GetNextConnection(
-                    session, queryPlan, triedHosts, connectionKeyspace).ConfigureAwait(false);
+                    session, queryPlan, triedHosts, connectionKeyspace, connectionFailures).ConfigureAwait(false);
                 var connection = hostConnectionTuple.Item2;
                 var host = hostConnectionTuple.Item1;
                 var nodeRequestInfo = new NodeRequestInfo(
@@ -187,7 +193,8 @@ namespace Cassandra.Requests
             IInternalSession session,
             IEnumerator<RoutingTarget> queryPlan,
             Dictionary<IPEndPoint, Exception> triedHosts,
-            string connectionKeyspace)
+            string connectionKeyspace,
+            ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>> connectionFailures)
         {
             Host host;
             while ((host = GetNextHost(queryPlan, out HostDistance distance)) != null)
@@ -197,6 +204,10 @@ namespace Cassandra.Requests
                 if (connection != null)
                 {
                     return Tuple.Create(host, connection);
+                }
+                if (triedHosts.TryGetValue(host.Address, out var failure) && failure != null)
+                {
+                    connectionFailures.Enqueue(new KeyValuePair<IPEndPoint, Exception>(host.Address, failure));
                 }
             }
             throw new NoHostAvailableException(triedHosts);

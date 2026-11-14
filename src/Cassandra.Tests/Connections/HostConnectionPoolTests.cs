@@ -15,10 +15,13 @@
 //
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Connections;
@@ -28,6 +31,7 @@ using Cassandra.Metrics.Internal;
 using Cassandra.Metrics.Providers.Null;
 using Cassandra.Observers.Metrics;
 using Cassandra.Serialization;
+using Cassandra.Tasks;
 using Cassandra.Tests.Connections.TestHelpers;
 using Moq;
 using NUnit.Framework;
@@ -187,6 +191,10 @@ namespace Cassandra.Tests.Connections
             Assert.AreEqual(
                 "first candidate failed",
                 ((AggregateException)ex.InnerException).InnerExceptions.Single().Message);
+            firstConnection.Verify(connection => connection.Open(), Times.Once);
+            secondConnection.Verify(connection => connection.Open(), Times.Once);
+            firstConnection.Verify(connection => connection.Dispose(), Times.Once);
+            secondConnection.Verify(connection => connection.Dispose(), Times.Once);
         }
 
         [Test]
@@ -194,13 +202,16 @@ namespace Cassandra.Tests.Connections
         {
             var firstEndPoint = new FakeConnectionEndPoint("198.51.100.5", 9042);
             var secondEndPoint = new FakeConnectionEndPoint("198.51.100.6", 9042);
-            var firstConnection = CreateConnection(firstEndPoint, new AuthenticationException("bad credentials"));
-            var secondConnection = CreateConnection(secondEndPoint, new SocketException((int)SocketError.TimedOut));
+            var firstConnection = CreateConnection(
+                firstEndPoint,
+                new AuthenticationException("bad credentials"));
+            var secondConnection = CreateConnection(
+                secondEndPoint,
+                new SocketException((int)SocketError.TimedOut));
             var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
-            var target = CreatePool(
-                resolver.Object,
-                new FakeConnectionFactory((IConnectionEndPoint endPoint) =>
-                    endPoint.Equals(firstEndPoint) ? firstConnection.Object : secondConnection.Object));
+            var factory = new FakeConnectionFactory((IConnectionEndPoint endPoint) =>
+                endPoint.Equals(firstEndPoint) ? firstConnection.Object : secondConnection.Object);
+            var target = CreatePool(resolver.Object, factory);
             resolver.Setup(r => r.GetConnectionEndPointsAsync(_host, false))
                     .ReturnsAsync(new IConnectionEndPoint[] { firstEndPoint, secondEndPoint });
 
@@ -212,8 +223,807 @@ namespace Cassandra.Tests.Connections
             });
 
             Assert.IsInstanceOf<AuthenticationException>(ex.Errors[_host.Address]);
+            Assert.AreEqual("bad credentials", ex.Errors[_host.Address].Message);
             Assert.IsInstanceOf<SocketException>(
                 ((AggregateException)ex.InnerException).InnerExceptions.Single());
+            secondConnection.Verify(connection => connection.Open(), Times.Once);
+        }
+
+        [Test]
+        public async Task Should_SurfaceLaterNonSocketFailure_WhenEarlierCandidateFailsWithSocketError()
+        {
+            var firstEndPoint = new FakeConnectionEndPoint("198.51.100.61", 9042);
+            var secondEndPoint = new FakeConnectionEndPoint("198.51.100.62", 9042);
+            var socketFailure = new SocketException((int)SocketError.TimedOut);
+            var authenticationFailure = new AuthenticationException("later bad credentials");
+            var firstConnection = CreateConnection(firstEndPoint, socketFailure);
+            var secondConnection = CreateConnection(secondEndPoint, authenticationFailure);
+            var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            var target = CreatePool(
+                resolver.Object,
+                new FakeConnectionFactory((IConnectionEndPoint endPoint) =>
+                    endPoint.Equals(firstEndPoint) ? firstConnection.Object : secondConnection.Object));
+            resolver.Setup(value => value.GetConnectionEndPointsAsync(_host, false))
+                    .ReturnsAsync(new IConnectionEndPoint[] { firstEndPoint, secondEndPoint });
+
+            var failure = await Assert.ThrowsAsync<ConnectionFailure>(async () =>
+                await target.DoCreateAndOpen(false).WaitToCompleteAsync(5000).ConfigureAwait(false));
+            var ex = new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>
+            {
+                { _host.Address, failure }
+            });
+
+            Assert.AreSame(authenticationFailure, ex.Errors[_host.Address]);
+            Assert.AreSame(
+                socketFailure,
+                ((AggregateException)ex.InnerException).InnerExceptions.Single());
+        }
+
+        [Test]
+        [NonParallelizable]
+        public async Task Should_LogRouteFailureOnlyAfterAnotherCandidateOpens()
+        {
+            var firstEndPoint = CreateRouteEndPoint("198.51.100.7", "first");
+            var secondEndPoint = CreateRouteEndPoint("198.51.100.8", "second");
+            var firstConnection = CreateConnection(
+                firstEndPoint,
+                new InvalidOperationException("recovered route failure"));
+            var secondConnection = CreateConnection(secondEndPoint);
+            var backupOpenStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseBackupOpen = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            secondConnection.Setup(value => value.Open()).Returns(async () =>
+            {
+                backupOpenStarted.TrySetResult(true);
+                await releaseBackupOpen.Task.ConfigureAwait(false);
+                return (Cassandra.Responses.Response)null;
+            });
+            var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            var target = CreatePool(
+                resolver.Object,
+                new FakeConnectionFactory((IConnectionEndPoint endPoint) =>
+                    endPoint.Equals(firstEndPoint) ? firstConnection.Object : secondConnection.Object),
+                coreConnections: 1);
+            resolver.Setup(value => value.GetConnectionEndPointsAsync(It.IsAny<Host>(), false))
+                    .ReturnsAsync(new IConnectionEndPoint[] { firstEndPoint, secondEndPoint });
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new LoggingTests.TestTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener);
+            Task<IConnection> opening = null;
+            try
+            {
+                opening = target.BorrowConnectionAsync();
+                await backupOpenStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                Assert.AreEqual(0, target.OpenConnections);
+                Assert.IsFalse(listener.Messages.Values.Any(message =>
+                    message.Contains("recovered route failure")),
+                    "A failed route must not be logged as recovered before the backup opens.");
+
+                releaseBackupOpen.TrySetResult(true);
+                await opening.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreSame(secondConnection.Object, await opening.ConfigureAwait(false));
+                Assert.AreEqual(1, target.OpenConnections);
+                Assert.IsTrue(listener.Messages.Values.Any(message =>
+                    message.Contains("recovered route failure")));
+            }
+            finally
+            {
+                releaseBackupOpen.TrySetResult(true);
+                try
+                {
+                    await (opening ?? Task.CompletedTask).ContinueWith(
+                            completed => _ = completed.Exception, TaskScheduler.Default)
+                        .WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+                finally
+                {
+                    try
+                    {
+                        DisposePoolAndTimer(target);
+                    }
+                    finally
+                    {
+                        Trace.Listeners.Remove(listener);
+                        Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                    }
+                }
+            }
+        }
+
+        [TestCase(false, "borrow")]
+        [TestCase(false, "background")]
+        [TestCase(false, "request")]
+        [TestCase(true, "borrow")]
+        [TestCase(true, "background")]
+        [TestCase(true, "request")]
+        [NonParallelizable]
+        public async Task Should_PreserveRecoveredRouteDiagnosticFailureSemantics(bool fatal, string path)
+        {
+            var firstEndPoint = CreateRouteEndPoint("198.51.100.7", "first");
+            var secondEndPoint = CreateRouteEndPoint("198.51.100.8", "second");
+            var first = CreateConnection(firstEndPoint, new SocketException((int)SocketError.ConnectionRefused));
+            var second = CreateConnection(secondEndPoint);
+            var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            var pool = CreatePool(resolver.Object, new FakeConnectionFactory(
+                (IConnectionEndPoint endPoint) => endPoint.Equals(firstEndPoint) ? first.Object : second.Object),
+                coreConnections: 1,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            resolver.Setup(value => value.GetConnectionEndPointsAsync(_host, false))
+                    .ReturnsAsync(new IConnectionEndPoint[] { firstEndPoint, secondEndPoint });
+            var listener = new Mock<TraceListener> { CallBase = true };
+            Exception loggerFailure = fatal
+                ? new OutOfMemoryException("recovered route logger failed fatally")
+                : new InvalidOperationException("recovered route logger failed");
+            listener.Setup(value => value.WriteLine(It.Is<string>(message =>
+                        message.Contains("Failed to open a connection to"))))
+                .Throws(loggerFailure);
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener.Object);
+            try
+            {
+                var foreground = path == "background"
+                    ? null
+                    : path == "request"
+                        ? pool.GetConnectionFromHostAsync(new Dictionary<IPEndPoint, Exception>(), () => null, null)
+                        : pool.BorrowConnectionAsync();
+                var opening = path == "background" ? InvokeCreateOrScheduleReconnectAsync(pool) : foreground;
+                if (fatal)
+                {
+                    var actual = await Assert.ThrowsAsync<OutOfMemoryException>(
+                        () => opening.WaitAsync(TimeSpan.FromSeconds(5)));
+                    Assert.AreSame(loggerFailure, actual);
+                    Assert.AreEqual(0, pool.OpenConnections);
+                    second.Verify(value => value.Dispose(), Times.Once);
+                }
+                else
+                {
+                    await opening.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    if (foreground != null)
+                    {
+                        Assert.AreSame(second.Object, await foreground.ConfigureAwait(false));
+                    }
+                    Assert.AreEqual(1, pool.OpenConnections);
+                    second.Verify(value => value.Dispose(), Times.Never);
+                }
+                listener.Verify(value => value.WriteLine(It.Is<string>(message =>
+                    message.Contains("Failed to open a connection to"))), Times.Once);
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener.Object);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                DisposePoolAndTimer(pool);
+                listener.Object.Dispose();
+            }
+        }
+
+        [TestCase(TraceLevel.Off, false)]
+        [TestCase(TraceLevel.Info, false)]
+        [TestCase(TraceLevel.Verbose, true)]
+        [NonParallelizable]
+        public async Task Should_FormatSupplementalFailuresOnlyWhenVerboseDiagnosticsAreEnabled(
+            TraceLevel traceLevel, bool expectedFormatting)
+        {
+            var endpoint = new FakeConnectionEndPoint("198.51.100.9", 9042);
+            var supplemental = new Mock<Exception>();
+            supplemental.Setup(value => value.ToString()).Returns("supplemental connection failure");
+            var failure = new ConnectionFailure(new InvalidOperationException("preferred failure"),
+                new[] { supplemental.Object }, Array.Empty<Exception>());
+            var resolver = new Mock<IEndPointResolver>();
+            var pool = CreatePool(resolver.Object,
+                new FakeConnectionFactory((IConnectionEndPoint _) => CreateConnection(endpoint, failure).Object),
+                coreConnections: 1,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            resolver.Setup(value => value.GetConnectionEndPointsAsync(_host, false))
+                .ReturnsAsync(new IConnectionEndPoint[] { endpoint });
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            Diagnostics.CassandraTraceSwitch.Level = traceLevel;
+            try
+            {
+                var triedHosts = new Dictionary<IPEndPoint, Exception>();
+                var connection = await pool.GetConnectionFromHostAsync(triedHosts, () => null, null)
+                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.IsNull(connection);
+                Assert.IsNotNull(triedHosts[_host.Address]);
+                supplemental.Verify(value => value.ToString(), expectedFormatting ? Times.AtLeastOnce() : Times.Never());
+            }
+            finally
+            {
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                DisposePoolAndTimer(pool);
+            }
+        }
+
+        [Test]
+        [NonParallelizable]
+        public async Task Should_NotLogUnrecoveredRouteFailures()
+        {
+            var selectedEndPoint = CreateRouteEndPoint("198.51.100.9", "selected");
+            var otherEndPoint = CreateRouteEndPoint("198.51.100.10", "other");
+            var selectedConnection = CreateConnection(
+                selectedEndPoint,
+                new AuthenticationException("selected route failure"));
+            var otherConnection = CreateConnection(
+                otherEndPoint,
+                new SocketException((int)SocketError.TimedOut));
+            var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            var target = CreatePool(
+                resolver.Object,
+                new FakeConnectionFactory((IConnectionEndPoint endPoint) =>
+                    endPoint.Equals(selectedEndPoint) ? selectedConnection.Object : otherConnection.Object));
+            resolver.Setup(value => value.GetConnectionEndPointsAsync(_host, false))
+                    .ReturnsAsync(new IConnectionEndPoint[] { selectedEndPoint, otherEndPoint });
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new LoggingTests.TestTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                await Assert.ThrowsAsync<ConnectionFailure>(async () =>
+                    await target.DoCreateAndOpen(false).WaitToCompleteAsync(5000).ConfigureAwait(false));
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                DisposePoolAndTimer(target);
+            }
+
+            Assert.IsFalse(listener.Messages.Values.Any(message =>
+                message.Contains("selected route failure")));
+            Assert.IsFalse(listener.Messages.Values.Any(message =>
+                message.Contains("198.51.100.10")));
+        }
+
+        [Test]
+        [NonParallelizable]
+        public async Task Should_LogEveryRecoveredRouteFailureAfterSuccessfulOpen()
+        {
+            var selectedEndPoint = CreateRouteEndPoint("198.51.100.9", "selected");
+            var otherEndPoint = CreateRouteEndPoint("198.51.100.10", "other");
+            var selectedConnection = CreateConnection(
+                selectedEndPoint,
+                new AuthenticationException("selected route failure"));
+            var otherConnection = CreateConnection(
+                otherEndPoint,
+                new SocketException((int)SocketError.TimedOut));
+            var successfulEndPoint = CreateRouteEndPoint("198.51.100.11", "successful");
+            var successfulConnection = CreateConnection(successfulEndPoint);
+            var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            var target = CreatePool(
+                resolver.Object,
+                new FakeConnectionFactory((IConnectionEndPoint endPoint) =>
+                    endPoint.Equals(selectedEndPoint) ? selectedConnection.Object :
+                    endPoint.Equals(otherEndPoint) ? otherConnection.Object : successfulConnection.Object),
+                coreConnections: 1);
+            resolver.Setup(value => value.GetConnectionEndPointsAsync(_host, false))
+                    .ReturnsAsync(new IConnectionEndPoint[] { selectedEndPoint, otherEndPoint, successfulEndPoint });
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new LoggingTests.TestTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                var opening = target.BorrowConnectionAsync();
+                await opening.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreSame(successfulConnection.Object, await opening.ConfigureAwait(false));
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                DisposePoolAndTimer(target);
+            }
+
+            var recoveredFailures = listener.Messages.Values.Where(message =>
+                message.Contains("Failed to open a connection to")).ToArray();
+            Assert.AreEqual(2, recoveredFailures.Length);
+            Assert.AreEqual(1, recoveredFailures.Count(message => message.Contains("selected route failure")));
+            Assert.AreEqual(1, recoveredFailures.Count(message => message.Contains("198.51.100.10")));
+        }
+
+        [Test]
+        public async Task Should_InitializeShardingOnFirstLazyForegroundOpen()
+        {
+            var shardingInfo = ShardingInfo.Create(
+                "0", "2", "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin", "12", "19042", "19142");
+            var createdConnections = 0;
+            var target = CreatePool(
+                connectionFactory: new FakeConnectionFactory(endPoint =>
+                {
+                    var connection = CreateConnection(endPoint, shardingInfo: shardingInfo);
+                    connection.Object.ShardID = Interlocked.Increment(ref createdConnections) - 1;
+                    return connection.Object;
+                }),
+                coreConnections: 1,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            Mock.Get(_resolver)
+                .Setup(value => value.GetConnectionShardAwareEndPointsAsync(_host, false, 19042))
+                .ReturnsAsync(new IConnectionEndPoint[]
+                {
+                    new FakeConnectionEndPoint("127.0.0.1", 19042)
+                });
+            try
+            {
+                await target.EnsureCreate().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreSame(shardingInfo, GetShardingInfo(target));
+                Assert.AreEqual(2, GetExpectedConnectionLength(target));
+                await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreEqual(2, target.OpenConnections);
+                CollectionAssert.AreEquivalent(new[] { 0, 1 },
+                    target.ConnectionsSnapshot.Select(connection => connection.ShardID));
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [TestCase("oom", "none", false)]
+        [TestCase("oom", "ordinary", false)]
+        [TestCase("oom", "fatal", false)]
+        [TestCase("bad-image", "none", false)]
+        [TestCase("aggregate", "none", false)]
+        [TestCase("oom", "none", true)]
+        [TestCase("aggregate", "none", true)]
+        [NonParallelizable]
+        public async Task Should_ReportFatalBackgroundFailureOnceWithoutRetrying(string fatalKind, string diagnostic, bool foregroundObserves)
+        {
+            Exception failure = fatalKind == "bad-image" ? new BadImageFormatException("Fatal background open")
+                : fatalKind == "aggregate" ? new AggregateException(new OutOfMemoryException("Fatal background open"))
+                : new OutOfMemoryException("Fatal background open");
+            var started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var policy = new Mock<IReconnectionPolicy>();
+            policy.Setup(value => value.NewSchedule()).Returns(Mock.Of<IReconnectionSchedule>());
+            var target = CreatePool(connectionFactory: new FakeConnectionFactory(endPoint =>
+            {
+                var connection = CreateConnection(endPoint);
+                connection.Setup(value => value.Open()).Returns(async () =>
+                {
+                    started.TrySetResult(true);
+                    await release.Task.ConfigureAwait(false);
+                    throw failure;
+                });
+                return connection.Object;
+            }), coreConnections: 1, reconnectionPolicy: policy.Object);
+            var recoveryNotifications = 0;
+            var foregroundRecovery = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            target.AllConnectionClosed += (_, __) =>
+            {
+                Interlocked.Increment(ref recoveryNotifications);
+                foregroundRecovery.TrySetResult(true);
+            };
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            var listener = new Mock<TraceListener> { CallBase = true };
+            listener.Setup(value => value.WriteLine(It.Is<string>(message => message.Contains("Fatal background connection maintenance failure"))))
+                .Callback(() =>
+                {
+                    if (diagnostic == "fatal")
+                    {
+                        throw new OutOfMemoryException("Fatal Error listener");
+                    }
+                    if (diagnostic == "ordinary")
+                    {
+                        throw new InvalidOperationException("Ordinary Error listener");
+                    }
+                });
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Error;
+            Trace.Listeners.Add(listener.Object);
+            Task first = null;
+            Task second = null;
+            Task foreground = null;
+            try
+            {
+                first = InvokeCreateOrScheduleReconnectAsync(target);
+                await started.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                second = InvokeCreateOrScheduleReconnectAsync(target);
+                if (foregroundObserves)
+                {
+                    foreground = target.EnsureCreate();
+                }
+                release.TrySetResult(true);
+                foreach (var attempt in new[] { first, second, foreground }.Where(attempt => attempt != null))
+                {
+                    var observed = await Assert.CatchAsync(() => attempt.WaitAsync(TimeSpan.FromSeconds(5)));
+                    Assert.AreSame(failure, observed);
+                }
+                listener.Verify(value => value.WriteLine(It.Is<string>(message =>
+                    message.Contains("Fatal background connection maintenance failure") && message.Contains(_host.Address.ToString()) &&
+                    message.Contains(failure.Message) && message.Contains(failure.GetType().FullName))), foregroundObserves ? Times.Never() : Times.Once());
+                if (foregroundObserves)
+                {
+                    await foregroundRecovery.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                }
+                Assert.AreEqual(foregroundObserves ? 1 : 0, recoveryNotifications);
+                policy.Verify(value => value.NewSchedule(), Times.Once);
+            }
+            finally
+            {
+                release.TrySetResult(true);
+                try
+                {
+                    await Task.WhenAll(new[] { first, second, foreground }.Where(attempt => attempt != null))
+                        .ContinueWith(completed => _ = completed.Exception, TaskScheduler.Default)
+                        .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                }
+                finally
+                {
+                    Trace.Listeners.Remove(listener.Object);
+                    Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                    listener.Object.Dispose();
+                    DisposePoolAndTimer(target);
+                }
+            }
+        }
+
+        [Test]
+        [NonParallelizable]
+        public async Task Should_ScheduleRetryWhenConsumedFailureLoggerThrows()
+        {
+            var failure = new InvalidOperationException("background open failed");
+            var schedule = new Mock<IReconnectionSchedule>();
+            schedule.Setup(value => value.NextDelayMs()).Returns(60000);
+            var policy = new Mock<IReconnectionPolicy>();
+            policy.Setup(value => value.NewSchedule()).Returns(schedule.Object);
+            var target = CreatePool(
+                connectionFactory: new FakeConnectionFactory(endPoint => CreateConnection(endPoint, failure).Object),
+                coreConnections: 1,
+                reconnectionPolicy: policy.Object);
+            var recoveryRequested = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            target.AllConnectionClosed += (host, pool) => recoveryRequested.TrySetResult(true);
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            var throwingListener = new Mock<TraceListener> { CallBase = true };
+            throwingListener.Setup(value => value.WriteLine(It.Is<string>(message =>
+                    message.Contains("could not be created and will be retried"))))
+                .Throws(new InvalidOperationException("consumed failure sink failed"));
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(throwingListener.Object);
+            try
+            {
+                await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                await recoveryRequested.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                // The constructor creates the initial schedule; consuming this failure must replace it
+                // and notify the owner of an empty pool so reconnection can continue.
+                policy.Verify(value => value.NewSchedule(), Times.Exactly(2));
+                throwingListener.Verify(value => value.WriteLine(It.Is<string>(message =>
+                    message.Contains("could not be created and will be retried"))), Times.Once);
+            }
+            finally
+            {
+                Trace.Listeners.Remove(throwingListener.Object);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                throwingListener.Object.Dispose();
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [TestCase(TraceLevel.Info, 1)]
+        [TestCase(TraceLevel.Warning, 0)]
+        [NonParallelizable]
+        public async Task Should_LogConnectionFailureWhenBackgroundRetryConsumesIt(TraceLevel traceLevel, int expectedLogs)
+        {
+            var failure = new InvalidOperationException("background connection retry failure");
+            Mock<IConnection> openedConnection = null;
+            var createdConnections = 0;
+            var factory = new FakeConnectionFactory(endPoint =>
+            {
+                if (Interlocked.Increment(ref createdConnections) == 1)
+                {
+                    openedConnection = CreateConnection(endPoint);
+                    return openedConnection.Object;
+                }
+                return CreateConnection(endPoint, failure).Object;
+            });
+            var target = CreatePool(
+                connectionFactory: factory,
+                coreConnections: 2,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new LoggingTests.TestTraceListener();
+            try
+            {
+                await target.Warmup().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Diagnostics.CassandraTraceSwitch.Level = traceLevel;
+                Trace.Listeners.Add(listener);
+                target.OnConnectionClosing(openedConnection.Object);
+                await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                var failures = listener.Messages.Values.Where(message =>
+                    message.Contains("could not be created and will be retried") &&
+                    message.Contains("background connection retry failure")).ToArray();
+                Assert.AreEqual(expectedLogs, failures.Length);
+            }
+            finally
+            {
+                try
+                {
+                    DisposePoolAndTimer(target);
+                }
+                finally
+                {
+                    Trace.Listeners.Remove(listener);
+                    Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                }
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        [NonParallelizable]
+        public async Task Should_LogOptionalConnectionFailureSwallowedByWarmup(bool throwFromDiagnostic)
+        {
+            var failure = new InvalidOperationException("optional warmup connection failure");
+            var shardingInfo = ShardingInfo.Create(
+                "0",
+                "2",
+                "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin",
+                "12",
+                "19042",
+                "19142");
+            var resolvedEndPoint = new FakeConnectionEndPoint("198.51.100.27", 9042);
+            var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            resolver.Setup(value => value.GetConnectionEndPointsAsync(It.IsAny<Host>(), false))
+                    .ReturnsAsync(new IConnectionEndPoint[] { resolvedEndPoint });
+            resolver.Setup(value => value.GetConnectionShardAwareEndPointsAsync(
+                               It.IsAny<Host>(),
+                               false,
+                               19042))
+                    .ReturnsAsync(new IConnectionEndPoint[] { resolvedEndPoint });
+            resolver.Setup(value => value.GetConnectionShardAwareEndPointsAsync(
+                               It.IsAny<Host>(),
+                               true,
+                               19042))
+                    .ReturnsAsync(new IConnectionEndPoint[] { resolvedEndPoint });
+            var createdConnections = 0;
+            var target = CreatePool(
+                res: resolver.Object,
+                connectionFactory: new FakeConnectionFactory(endPoint =>
+                {
+                    var attempt = Interlocked.Increment(ref createdConnections);
+                    var connection = CreateConnection(
+                        endPoint,
+                        attempt == 2 ? failure : null,
+                        shardingInfo);
+                    connection.Object.ShardID = attempt == 1 ? 0 : 1;
+                    return connection.Object;
+                }),
+                coreConnections: 1,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new LoggingTests.TestTraceListener();
+            var throwingListener = new Mock<TraceListener> { CallBase = true };
+            throwingListener.Setup(value => value.WriteLine(It.Is<string>(message =>
+                    message.Contains("failed to open a warmup connection"))))
+                .Throws(new InvalidOperationException("optional warmup diagnostic sink failed"));
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener);
+            if (throwFromDiagnostic)
+            {
+                Trace.Listeners.Add(throwingListener.Object);
+            }
+            try
+            {
+                _host.SetDown();
+                await target.Warmup().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.IsTrue(_host.IsUp);
+                Assert.AreEqual(2, GetExpectedConnectionLength(target));
+                var failures = listener.Messages.Values.Where(message =>
+                    message.Contains("failed to open a warmup connection") &&
+                    message.Contains("optional warmup connection failure")).ToArray();
+                Assert.AreEqual(1, failures.Length);
+                StringAssert.Contains("#WARNING:", failures[0]);
+                if (throwFromDiagnostic)
+                {
+                    throwingListener.Verify(value => value.WriteLine(It.Is<string>(message =>
+                        message.Contains("failed to open a warmup connection"))), Times.Once);
+                }
+                Assert.AreEqual(1, target.OpenConnections);
+                await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreEqual(2, target.OpenConnections);
+                Assert.AreEqual(3, Volatile.Read(ref createdConnections));
+                CollectionAssert.AreEquivalent(
+                    new[] { 0, 1 },
+                    target.ConnectionsSnapshot.Select(connection => connection.ShardID).ToArray());
+            }
+            finally
+            {
+                try
+                {
+                    DisposePoolAndTimer(target);
+                }
+                finally
+                {
+                    Trace.Listeners.Remove(listener);
+                    Trace.Listeners.Remove(throwingListener.Object);
+                    throwingListener.Object.Dispose();
+                    Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                }
+            }
+        }
+
+        [Test]
+        [NonParallelizable]
+        public async Task Should_NotLogBackgroundFailureAlsoPropagatedToForegroundCaller()
+        {
+            var failure = new InvalidOperationException("shared background and foreground failure");
+            var openStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseOpen = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var endPoint = new FakeConnectionEndPoint("198.51.100.29", 9042);
+            var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            resolver.Setup(value => value.GetConnectionEndPointsAsync(It.IsAny<Host>(), false))
+                    .ReturnsAsync(new IConnectionEndPoint[] { endPoint });
+            var connection = CreateConnection(endPoint);
+            connection.Setup(value => value.Open()).Returns(async () =>
+            {
+                openStarted.TrySetResult(true);
+                await releaseOpen.Task.ConfigureAwait(false);
+                throw failure;
+            });
+            var target = CreatePool(
+                res: resolver.Object,
+                connectionFactory: new FakeConnectionFactory(
+                    (IConnectionEndPoint _) => connection.Object),
+                coreConnections: 1,
+                reconnectionPolicy: new ConstantReconnectionPolicy(5000));
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new LoggingTests.TestTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener);
+            Task background = null;
+            Task foreground = null;
+            try
+            {
+                background = InvokeCreateOrScheduleReconnectAsync(target);
+                await openStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                foreground = target.EnsureCreate();
+                releaseOpen.TrySetResult(true);
+
+                var propagated = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                    await foreground.WaitToCompleteAsync(5000).ConfigureAwait(false));
+                Assert.AreSame(failure, propagated);
+                await background.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.IsFalse(listener.Messages.Values.Any(message =>
+                    message.Contains("shared background and foreground failure")));
+            }
+            finally
+            {
+                releaseOpen.TrySetResult(true);
+                try
+                {
+                    DisposePoolAndTimer(target);
+                }
+                finally
+                {
+                    try
+                    {
+                        var inFlight = Task.WhenAll(background ?? Task.CompletedTask, foreground ?? Task.CompletedTask);
+                        await inFlight.ContinueWith(completed => _ = completed.Exception, TaskScheduler.Default)
+                            .WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        Trace.Listeners.Remove(listener);
+                        Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                    }
+                }
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        [NonParallelizable]
+        public async Task Should_LogSharedBackgroundFailureOnlyOnce(bool closeDuringOpen)
+        {
+            var openStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseOpen = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var failure = new InvalidOperationException("shared background open failure");
+            var target = CreatePool(
+                connectionFactory: new FakeConnectionFactory(endPoint =>
+                {
+                    var connection = CreateConnection(endPoint);
+                    connection.Setup(value => value.Open()).Returns(async () =>
+                    {
+                        openStarted.TrySetResult(true);
+                        await releaseOpen.Task.ConfigureAwait(false);
+                        throw failure;
+                    });
+                    return connection.Object;
+                }),
+                coreConnections: 1,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new LoggingTests.TestTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener);
+            Task first = null;
+            Task second = null;
+            try
+            {
+                first = InvokeCreateOrScheduleReconnectAsync(target);
+                await openStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                second = InvokeCreateOrScheduleReconnectAsync(target);
+                if (closeDuringOpen)
+                {
+                    target.Dispose();
+                }
+                releaseOpen.TrySetResult(true);
+                await Task.WhenAll(first, second).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                var failures = listener.Messages.Values.Where(message =>
+                    message.Contains("shared background open failure")).ToArray();
+                Assert.AreEqual(1, failures.Length);
+                Assert.AreEqual(closeDuringOpen, failures[0].Contains("while the pool was closing"));
+                Assert.AreEqual(!closeDuringOpen, failures[0].Contains("will be retried"));
+            }
+            finally
+            {
+                releaseOpen.TrySetResult(true);
+                try
+                {
+                    await Task.WhenAll(first ?? Task.CompletedTask, second ?? Task.CompletedTask)
+                        .ContinueWith(completed => _ = completed.Exception, TaskScheduler.Default)
+                        .WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+                finally
+                {
+                    Trace.Listeners.Remove(listener);
+                    Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                    DisposePoolAndTimer(target);
+                }
+            }
+        }
+
+        [TestCase(false, TraceLevel.Info)]
+        [TestCase(true, TraceLevel.Info)]
+        [TestCase(true, TraceLevel.Verbose)]
+        [NonParallelizable]
+        public async Task Should_KeepForegroundFailureInCallerResult(bool useRequestPath, TraceLevel traceLevel)
+        {
+            var failure = new InvalidOperationException("foreground connection failure");
+            var target = CreatePool(
+                connectionFactory: new FakeConnectionFactory(endPoint => CreateConnection(endPoint, failure).Object),
+                coreConnections: 1,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new LoggingTests.TestTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = traceLevel;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                if (useRequestPath)
+                {
+                    var triedHosts = new Dictionary<IPEndPoint, Exception>();
+                    var borrowing = target.GetConnectionFromHostAsync(triedHosts, () => null, null);
+                    await borrowing.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    Assert.IsNull(await borrowing.ConfigureAwait(false));
+                    Assert.AreSame(failure, triedHosts[_host.Address]);
+                }
+                else
+                {
+                    var propagated = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                        await target.BorrowConnectionAsync().WaitToCompleteAsync(5000).ConfigureAwait(false));
+                    Assert.AreSame(failure, propagated);
+                }
+                var failures = listener.Messages.Values.Where(message => message.Contains("foreground connection failure")).ToArray();
+                Assert.AreEqual(traceLevel == TraceLevel.Verbose ? 1 : 0, failures.Length,
+                    "Failures retained for the caller follow CONTRIBUTING's no duplicate error logging rule.");
+                if (failures.Length > 0)
+                {
+                    StringAssert.Contains("Could not open a connection to", failures[0]);
+                    StringAssert.DoesNotContain("because the pool", failures[0]);
+                }
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                DisposePoolAndTimer(target);
+            }
         }
 
         [Test]
@@ -379,6 +1189,402 @@ namespace Cassandra.Tests.Connections
         }
 
         [Test]
+        public async Task Should_NotResolveBackupClientRouteWhenPrimaryOpens()
+        {
+            var backupResolution = new TaskCompletionSource<IPHostEntry>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var dns = new Mock<IDnsResolver>(MockBehavior.Strict);
+            dns.Setup(value => value.GetHostEntryAsync("primary.proxy"))
+               .ReturnsAsync(HostEntry("198.51.100.40"));
+            dns.Setup(value => value.GetHostEntryAsync("backup.proxy"))
+               .Returns(backupResolution.Task);
+            var options = new ClientRoutesOptions(
+                new[]
+                {
+                    new ClientRouteProxy("primary"),
+                    new ClientRouteProxy("backup")
+                },
+                9042,
+                false);
+            var target = CreatePool(
+                connectionFactory: new FakeConnectionFactory(
+                    endPoint => CreateConnection(endPoint).Object),
+                clientRoutesOptions: options,
+                clientRouteRowsFactory: hostId => new[]
+                {
+                    ClientRouteRow(hostId, "backup.proxy", 9242, "backup"),
+                    ClientRouteRow(hostId, "primary.proxy", 9042, "primary")
+                },
+                dnsResolver: dns.Object);
+
+            var opening = target.DoCreateAndOpen(false);
+            try
+            {
+                var completed = await Task.WhenAny(opening, Task.Delay(5000)).ConfigureAwait(false);
+
+                Assert.AreSame(opening, completed, "A pending backup DNS lookup blocked the healthy primary route.");
+                Assert.AreEqual(
+                    new IPEndPoint(IPAddress.Parse("198.51.100.40"), 9042),
+                    opening.Result.EndPoint.SocketIpEndPoint);
+                dns.Verify(value => value.GetHostEntryAsync("primary.proxy"), Times.Once);
+                dns.Verify(value => value.GetHostEntryAsync("backup.proxy"), Times.Never);
+            }
+            finally
+            {
+                backupResolution.TrySetResult(HostEntry("198.51.100.41"));
+                try
+                {
+                    await opening.ContinueWith(completed => _ = completed.Exception, TaskScheduler.Default)
+                        .WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+                finally
+                {
+                    DisposePoolAndTimer(target);
+                }
+            }
+        }
+
+        [Test]
+        public async Task Should_RetainBackupDnsFailureWhenPrimarySocketConnectionFails()
+        {
+            var socketFailure = new SocketException((int)SocketError.ConnectionRefused);
+            var dnsFailure = new InvalidOperationException("backup route DNS failed");
+            var dns = new Mock<IDnsResolver>(MockBehavior.Strict);
+            dns.Setup(value => value.GetHostEntryAsync("primary.proxy"))
+               .ReturnsAsync(HostEntry("198.51.100.42"));
+            dns.Setup(value => value.GetHostEntryAsync("backup.proxy"))
+               .ThrowsAsync(dnsFailure);
+            var options = new ClientRoutesOptions(
+                new[]
+                {
+                    new ClientRouteProxy("primary"),
+                    new ClientRouteProxy("backup")
+                },
+                9042,
+                false);
+            var target = CreatePool(
+                connectionFactory: new FakeConnectionFactory(
+                    endPoint => CreateConnection(endPoint, socketFailure).Object),
+                clientRoutesOptions: options,
+                clientRouteRowsFactory: hostId => new[]
+                {
+                    ClientRouteRow(hostId, "backup.proxy", 9242, "backup"),
+                    ClientRouteRow(hostId, "primary.proxy", 9042, "primary")
+                },
+                dnsResolver: dns.Object);
+
+            var failure = await Assert.ThrowsAsync<ConnectionFailure>(async () =>
+                await target.DoCreateAndOpen(false).WaitToCompleteAsync(5000).ConfigureAwait(false));
+            var ex = new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>
+            {
+                { _host.Address, failure }
+            });
+
+            Assert.AreSame(socketFailure, ex.Errors[_host.Address]);
+            Assert.AreSame(
+                dnsFailure,
+                ((AggregateException)ex.InnerException).InnerExceptions.Single());
+            dns.Verify(value => value.GetHostEntryAsync("primary.proxy"), Times.Once);
+            dns.Verify(value => value.GetHostEntryAsync("backup.proxy"), Times.Once);
+        }
+
+        [Test]
+        public async Task Should_ResolveBackupClientRouteOnlyAfterAllPrimaryAddressesFail()
+        {
+            var events = new ConcurrentQueue<string>();
+            var lastPrimaryOpenStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseLastPrimaryFailure = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var firstPrimaryAddress = IPAddress.Parse("198.51.100.50");
+            var secondPrimaryAddress = IPAddress.Parse("198.51.100.51");
+            var backupAddress = IPAddress.Parse("198.51.100.52");
+            var dns = new Mock<IDnsResolver>(MockBehavior.Strict);
+            dns.Setup(value => value.GetHostEntryAsync("primary.proxy"))
+               .Callback(() => events.Enqueue("resolve-primary"))
+               .ReturnsAsync(HostEntry("198.51.100.50", "198.51.100.51"));
+            dns.Setup(value => value.GetHostEntryAsync("backup.proxy"))
+               .Callback(() => events.Enqueue("resolve-backup"))
+               .ReturnsAsync(HostEntry("198.51.100.52"));
+            var connectionFactory = new FakeConnectionFactory(endPoint =>
+            {
+                var connection = CreateConnection(endPoint);
+                var address = endPoint.SocketIpEndPoint.Address;
+                var addressText = address.Equals(firstPrimaryAddress)
+                    ? "198.51.100.50"
+                    : address.Equals(secondPrimaryAddress)
+                        ? "198.51.100.51"
+                        : "198.51.100.52";
+                if (!address.Equals(backupAddress))
+                {
+                    connection.Setup(value => value.Open()).Returns(async () =>
+                    {
+                        events.Enqueue("open-" + addressText);
+                        if (address.Equals(secondPrimaryAddress))
+                        {
+                            lastPrimaryOpenStarted.TrySetResult(true);
+                            await releaseLastPrimaryFailure.Task.ConfigureAwait(false);
+                        }
+                        throw new SocketException((int)SocketError.ConnectionRefused);
+                    });
+                }
+                else
+                {
+                    connection.Setup(value => value.Open())
+                              .Callback(() => events.Enqueue("open-" + addressText))
+                              .ReturnsAsync((Cassandra.Responses.Response)null);
+                }
+                return connection.Object;
+            });
+            var options = new ClientRoutesOptions(
+                new[]
+                {
+                    new ClientRouteProxy("primary"),
+                    new ClientRouteProxy("backup")
+                },
+                9042,
+                false);
+            var target = CreatePool(
+                connectionFactory: connectionFactory,
+                clientRoutesOptions: options,
+                clientRouteRowsFactory: hostId => new[]
+                {
+                    ClientRouteRow(hostId, "backup.proxy", 9242, "backup"),
+                    ClientRouteRow(hostId, "primary.proxy", 9042, "primary")
+                },
+                dnsResolver: dns.Object);
+
+            Task<IConnection> opening = null;
+            try
+            {
+                opening = target.DoCreateAndOpen(false);
+                await lastPrimaryOpenStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                dns.Verify(value => value.GetHostEntryAsync("backup.proxy"), Times.Never);
+
+                releaseLastPrimaryFailure.TrySetResult(true);
+                await opening.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                var opened = await opening.ConfigureAwait(false);
+
+                Assert.AreEqual(IPAddress.Parse("198.51.100.52"), opened.EndPoint.SocketIpEndPoint.Address);
+                CollectionAssert.AreEqual(
+                    new[]
+                    {
+                        "resolve-primary",
+                        "open-198.51.100.50",
+                        "open-198.51.100.51",
+                        "resolve-backup",
+                        "open-198.51.100.52"
+                    },
+                    events.ToArray());
+            }
+            finally
+            {
+                releaseLastPrimaryFailure.TrySetResult(true);
+                try
+                {
+                    await (opening ?? Task.CompletedTask).ContinueWith(
+                            completed => _ = completed.Exception, TaskScheduler.Default)
+                        .WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+                finally
+                {
+                    DisposePoolAndTimer(target);
+                }
+            }
+        }
+
+        [Test]
+        public async Task Should_ResolveBackupClientRouteWhenPrimaryClosesDuringOpen()
+        {
+            var events = new ConcurrentQueue<string>();
+            var primaryAddress = IPAddress.Parse("198.51.100.53");
+            var dns = new Mock<IDnsResolver>(MockBehavior.Strict);
+            dns.Setup(value => value.GetHostEntryAsync("primary.proxy"))
+               .Callback(() => events.Enqueue("resolve-primary"))
+               .ReturnsAsync(HostEntry("198.51.100.53"));
+            dns.Setup(value => value.GetHostEntryAsync("backup.proxy"))
+               .Callback(() => events.Enqueue("resolve-backup"))
+               .ReturnsAsync(HostEntry("198.51.100.54"));
+            Mock<IConnection> primaryConnection = null;
+            Mock<IConnection> backupConnection = null;
+            var primaryIsClosed = false;
+            var primaryWasClosedBeforeClosing = false;
+            var connectionFactory = new FakeConnectionFactory(endPoint =>
+            {
+                var connection = CreateConnection(endPoint);
+                if (endPoint.SocketIpEndPoint.Address.Equals(primaryAddress))
+                {
+                    primaryConnection = connection;
+                    connection.SetupGet(value => value.IsClosed).Returns(() => primaryIsClosed);
+                    connection.Setup(value => value.Open())
+                              .Callback(() =>
+                              {
+                                  events.Enqueue("open-primary");
+                                  primaryIsClosed = true;
+                                  events.Enqueue("close-primary");
+                                  connection.Raise(value => value.Closing += null, connection.Object);
+                              })
+                              .ReturnsAsync((Cassandra.Responses.Response)null);
+                    connection.Object.Closing += _ =>
+                    {
+                        primaryWasClosedBeforeClosing = primaryIsClosed;
+                        events.Enqueue("closing-primary");
+                    };
+                    connection.Setup(value => value.Dispose()).Callback(() =>
+                    {
+                        events.Enqueue("dispose-primary");
+                    });
+                }
+                else
+                {
+                    backupConnection = connection;
+                    connection.Setup(value => value.Open())
+                              .Callback(() => events.Enqueue("open-backup"))
+                              .ReturnsAsync((Cassandra.Responses.Response)null);
+                }
+                return connection.Object;
+            });
+            var options = new ClientRoutesOptions(
+                new[]
+                {
+                    new ClientRouteProxy("primary"),
+                    new ClientRouteProxy("backup")
+                },
+                9042,
+                false);
+            var target = CreatePool(
+                connectionFactory: connectionFactory,
+                clientRoutesOptions: options,
+                clientRouteRowsFactory: hostId => new[]
+                {
+                    ClientRouteRow(hostId, "backup.proxy", 9242, "backup"),
+                    ClientRouteRow(hostId, "primary.proxy", 9042, "primary")
+                },
+                dnsResolver: dns.Object);
+
+            var opening = target.DoCreateAndOpen(false);
+            await opening.WaitToCompleteAsync(5000).ConfigureAwait(false);
+            var opened = await opening.ConfigureAwait(false);
+
+            Assert.AreSame(backupConnection.Object, opened);
+            Assert.IsTrue(primaryWasClosedBeforeClosing);
+            primaryConnection.Verify(value => value.Dispose(), Times.Once);
+            backupConnection.Verify(value => value.Dispose(), Times.Never);
+            CollectionAssert.AreEqual(
+                new[]
+                {
+                    "resolve-primary",
+                    "open-primary",
+                    "close-primary",
+                    "closing-primary",
+                    "dispose-primary",
+                    "resolve-backup",
+                    "open-backup"
+                },
+                events.ToArray());
+        }
+
+        [Test]
+        public async Task Should_BorrowFromBackupClientRouteWhenPrimaryClosesDuringPoolAdmission()
+        {
+            var events = new ConcurrentQueue<string>();
+            var primaryAddress = IPAddress.Parse("198.51.100.55");
+            var dns = new Mock<IDnsResolver>(MockBehavior.Strict);
+            dns.Setup(value => value.GetHostEntryAsync("primary.proxy"))
+               .Callback(() => events.Enqueue("resolve-primary"))
+               .ReturnsAsync(HostEntry("198.51.100.55"));
+            dns.Setup(value => value.GetHostEntryAsync("backup.proxy"))
+               .Callback(() => events.Enqueue("resolve-backup"))
+               .ReturnsAsync(HostEntry("198.51.100.56"));
+            Mock<IConnection> primaryConnection = null;
+            Mock<IConnection> backupConnection = null;
+            var primaryIsClosed = false;
+            var primaryIsClosedReads = 0;
+            var primaryWasClosedBeforeClosing = false;
+            var primaryWasPublishedBeforeAcceptance = false;
+            HostConnectionPool target = null;
+            var connectionFactory = new FakeConnectionFactory(endPoint =>
+            {
+                var connection = CreateConnection(endPoint);
+                if (endPoint.SocketIpEndPoint.Address.Equals(primaryAddress))
+                {
+                    primaryConnection = connection;
+                    connection.SetupGet(value => value.IsClosed).Returns(() =>
+                    {
+                        var wasClosed = primaryIsClosed;
+                        if (Interlocked.Increment(ref primaryIsClosedReads) == 3)
+                        {
+                            primaryIsClosed = true;
+                            primaryWasPublishedBeforeAcceptance = target.OpenConnections != 0;
+                            events.Enqueue("close-primary-at-admission");
+                            connection.Raise(value => value.Closing += null, connection.Object);
+                        }
+                        return wasClosed;
+                    });
+                    connection.Setup(value => value.Open())
+                              .Callback(() => events.Enqueue("open-primary"))
+                              .ReturnsAsync((Cassandra.Responses.Response)null);
+                    connection.Object.Closing += _ =>
+                    {
+                        primaryWasClosedBeforeClosing = primaryIsClosed;
+                        events.Enqueue("closing-primary");
+                    };
+                    connection.Setup(value => value.Dispose())
+                              .Callback(() => events.Enqueue("dispose-primary"));
+                }
+                else
+                {
+                    backupConnection = connection;
+                    connection.Setup(value => value.Open())
+                              .Callback(() => events.Enqueue("open-backup"))
+                              .ReturnsAsync((Cassandra.Responses.Response)null);
+                }
+                return connection.Object;
+            });
+            var options = new ClientRoutesOptions(
+                new[]
+                {
+                    new ClientRouteProxy("primary"),
+                    new ClientRouteProxy("backup")
+                },
+                9042,
+                false);
+            target = CreatePool(
+                connectionFactory: connectionFactory,
+                clientRoutesOptions: options,
+                clientRouteRowsFactory: hostId => new[]
+                {
+                    ClientRouteRow(hostId, "backup.proxy", 9242, "backup"),
+                    ClientRouteRow(hostId, "primary.proxy", 9042, "primary")
+                },
+                dnsResolver: dns.Object,
+                coreConnections: 1);
+
+            var borrow = target.BorrowConnectionAsync();
+            await borrow.WaitToCompleteAsync(5000).ConfigureAwait(false);
+            var borrowed = borrow.Result;
+
+            Assert.AreSame(backupConnection.Object, borrowed);
+            Assert.AreEqual(1, target.OpenConnections);
+            Assert.AreSame(backupConnection.Object, target.ConnectionsSnapshot[0]);
+            Assert.GreaterOrEqual(primaryIsClosedReads, 3);
+            Assert.IsTrue(primaryWasClosedBeforeClosing);
+            Assert.IsFalse(primaryWasPublishedBeforeAcceptance);
+            primaryConnection.Verify(value => value.Dispose(), Times.Once);
+            backupConnection.Verify(value => value.Dispose(), Times.Never);
+            CollectionAssert.AreEqual(
+                new[]
+                {
+                    "resolve-primary",
+                    "open-primary",
+                    "close-primary-at-admission",
+                    "closing-primary",
+                    "dispose-primary",
+                    "resolve-backup",
+                    "open-backup"
+                },
+                events.ToArray());
+        }
+
+        [Test]
         public async Task Should_PropagateFatalOptionalConnectionFailureDuringWarmup()
         {
             var failure = new OutOfMemoryException("fatal optional warmup connection failure");
@@ -412,9 +1618,307 @@ namespace Cassandra.Tests.Connections
             }
         }
 
+        [Test]
+        public async Task Should_DisposeRoutedCandidate_WhenPoolIsDisposedDuringOpen()
+        {
+            var openStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseOpen = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var connections = new ConcurrentQueue<Mock<IConnection>>();
+            var factory = new FakeConnectionFactory(endPoint =>
+            {
+                var connection = CreateConnection(endPoint);
+                var disposed = 0;
+                connection.SetupGet(value => value.IsDisposed).Returns(() => Volatile.Read(ref disposed) != 0);
+                connection.Setup(value => value.Dispose()).Callback(() => Interlocked.Exchange(ref disposed, 1));
+                connection.Setup(value => value.Open()).Returns(async () =>
+                {
+                    openStarted.TrySetResult(true);
+                    await releaseOpen.Task.ConfigureAwait(false);
+                    return (Cassandra.Responses.Response)null;
+                });
+                connections.Enqueue(connection);
+                return connection.Object;
+            });
+            var options = new ClientRoutesOptions(
+                new[] { new ClientRouteProxy("route-a") },
+                9042,
+                false);
+            var target = CreatePool(
+                connectionFactory: factory,
+                clientRoutesOptions: options);
+            Task opening = null;
+            try
+            {
+                opening = target.EnsureCreate();
+                await openStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                target.Dispose();
+                releaseOpen.TrySetResult(true);
+
+                await Assert.ThrowsAsync<SocketException>(async () =>
+                    await opening.WaitToCompleteAsync(5000).ConfigureAwait(false));
+                var candidate = connections.Single();
+                Assert.IsInstanceOf<ClientRouteConnectionEndPoint>(candidate.Object.EndPoint);
+                candidate.Verify(value => value.Dispose(), Times.Once);
+                Assert.AreEqual(0, target.OpenConnections);
+                Assert.IsEmpty(target.ConnectionsSnapshot);
+                Assert.IsNull(GetConnectionOpenOperation(target));
+            }
+            finally
+            {
+                target.Dispose();
+                releaseOpen.TrySetResult(true);
+                try
+                {
+                    await (opening ?? Task.CompletedTask).ContinueWith(
+                            completed => _ = completed.Exception, TaskScheduler.Default)
+                        .WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+                finally
+                {
+                    DisposePoolAndTimer(target);
+                }
+            }
+        }
+
+        [TestCase(TraceLevel.Warning, false, 1)]
+        [TestCase(TraceLevel.Warning, true, 1)]
+        [TestCase(TraceLevel.Info, false, 1)]
+        [TestCase(TraceLevel.Error, false, 0)]
+        [NonParallelizable]
+        public async Task Should_NotLogSuccessfulOpenAsFailureWhenHostUpHandlerThrows(
+            TraceLevel level, bool diagnosticThrows, int expectedWarnings)
+        {
+            var failure = new InvalidOperationException("host up handler failed");
+            var target = CreatePool(
+                coreConnections: 1,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            var hostUpCalls = 0;
+            _host.SetDown();
+            _host.Up += _ =>
+            {
+                hostUpCalls++;
+                throw failure;
+            };
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            var listener = new Mock<TraceListener> { CallBase = true };
+            listener.Setup(value => value.WriteLine(It.Is<string>(message =>
+                    message.Contains("Post-connection maintenance"))))
+                .Callback(() =>
+                {
+                    if (diagnosticThrows)
+                    {
+                        throw new InvalidOperationException("Warning listener failed");
+                    }
+                });
+            Diagnostics.CassandraTraceSwitch.Level = level;
+            Trace.Listeners.Add(listener.Object);
+            try
+            {
+                await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                Assert.AreEqual(1, hostUpCalls);
+                Assert.AreEqual(1, target.OpenConnections);
+                var connection = target.ConnectionsSnapshot.Single();
+                var borrowing = target.BorrowConnectionAsync();
+                await borrowing.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreSame(connection, await borrowing.ConfigureAwait(false));
+                listener.Verify(value => value.WriteLine(It.Is<string>(message =>
+                    message.Contains("Post-connection maintenance") && message.Contains(_host.Address.ToString()) &&
+                    message.Contains(failure.Message))), Times.Exactly(expectedWarnings));
+                listener.Verify(value => value.WriteLine(It.Is<string>(message =>
+                    message.Contains("could not be created"))), Times.Never,
+                    "A post-open callback failure must not be reported as a failed connection open.");
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener.Object);
+                listener.Object.Dispose();
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [NonParallelizable]
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_SuppressRecoverablePoolWarmupWarningAfterDisposal(bool fatal)
+        {
+            var secondOpenStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var secondOpen = new TaskCompletionSource<Cassandra.Responses.Response>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var attempts = 0;
+            var target = CreatePool(connectionFactory: new FakeConnectionFactory(endPoint =>
+            {
+                var connection = CreateConnection(endPoint);
+                if (++attempts == 2)
+                {
+                    connection.Setup(value => value.Open()).Returns(() =>
+                    {
+                        secondOpenStarted.TrySetResult(true);
+                        return secondOpen.Task;
+                    });
+                }
+                return connection.Object;
+            }), coreConnections: 2, reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            var listener = new Mock<TraceListener> { CallBase = true };
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Warning;
+            Trace.Listeners.Add(listener.Object);
+            Task warmup = null;
+            try
+            {
+                warmup = target.Warmup();
+                await secondOpenStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreEqual(1, target.OpenConnections);
+                target.Dispose();
+                secondOpen.TrySetException(fatal ? new OutOfMemoryException("open failed") : new SocketException((int)SocketError.NotConnected));
+                if (fatal)
+                {
+                    await Assert.ThrowsAsync<OutOfMemoryException>(async () =>
+                        await warmup.WaitToCompleteAsync(5000).ConfigureAwait(false));
+                }
+                else
+                {
+                    await warmup.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+                listener.Verify(value => value.WriteLine(It.Is<string>(message =>
+                    message.Contains("failed to open a warmup connection"))), Times.Never);
+            }
+            finally
+            {
+                secondOpen.TrySetException(new SocketException((int)SocketError.NotConnected));
+                try
+                {
+                    await (warmup ?? Task.CompletedTask).ContinueWith(
+                        completed => _ = completed.Exception, TaskScheduler.Default).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+                finally
+                {
+                    Trace.Listeners.Remove(listener.Object);
+                    Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                    listener.Object.Dispose();
+                    DisposePoolAndTimer(target);
+                }
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_BringDownHostUpOnlyAfterSuccessfulWarmup(bool failOpen)
+        {
+            var target = CreatePool(
+                connectionFactory: new FakeConnectionFactory(endpoint => CreateConnection(
+                    endpoint, failOpen ? new InvalidOperationException("warmup failed") : null).Object),
+                coreConnections: 1,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            _host.SetDown();
+            try
+            {
+                if (failOpen)
+                {
+                    await Assert.ThrowsAsync<InvalidOperationException>(() => target.Warmup().WaitToCompleteAsync(5000));
+                    Assert.IsFalse(_host.IsUp);
+                }
+                else
+                {
+                    await target.Warmup().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    Assert.IsTrue(_host.IsUp);
+                    Assert.AreEqual(1, target.OpenConnections);
+                }
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        private static IRow ClientRouteRow(Guid hostId, string address, int port, string connectionId)
+        {
+            return new TestHelper.DictionaryBasedRow(new Dictionary<string, object>
+            {
+                { "host_id", hostId },
+                { "address", address },
+                { "port", port },
+                { "tls_port", port + 100 },
+                { "connection_id", connectionId }
+            });
+        }
+
+        private static ClientRouteConnectionEndPoint CreateRouteEndPoint(string address, string connectionId)
+        {
+            return new ClientRouteConnectionEndPoint(
+                new IPEndPoint(IPAddress.Parse(address), 9042),
+                new IPEndPoint(IPAddress.Loopback, 9042),
+                address,
+                connectionId);
+        }
+
+        private static IPHostEntry HostEntry(params string[] addresses)
+        {
+            var parsed = new IPAddress[addresses.Length];
+            for (var i = 0; i < addresses.Length; i++)
+            {
+                parsed[i] = IPAddress.Parse(addresses[i]);
+            }
+            return new IPHostEntry { AddressList = parsed };
+        }
+
+        private static void DisposePoolAndTimer(HostConnectionPool pool)
+        {
+            var config = (Configuration)typeof(HostConnectionPool)
+                .GetField("_config", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(pool);
+            try
+            {
+                pool.Dispose();
+            }
+            finally
+            {
+                config.Timer.Dispose();
+            }
+        }
+
+        private static int GetExpectedConnectionLength(HostConnectionPool pool)
+        {
+            var field = typeof(HostConnectionPool).GetField(
+                "_expectedConnectionLength",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.IsNotNull(field);
+            return (int)field.GetValue(pool);
+        }
+
+        private static ShardingInfo GetShardingInfo(HostConnectionPool pool)
+        {
+            var property = typeof(HostConnectionPool).GetProperty(
+                "shardingInfo",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.IsNotNull(property);
+            return (ShardingInfo)property.GetValue(pool);
+        }
+
+        private static object GetConnectionOpenOperation(HostConnectionPool pool)
+        {
+            var field = typeof(HostConnectionPool).GetField(
+                "_connectionOpenOperation",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.IsNotNull(field);
+            return field.GetValue(pool);
+        }
+
+        private static Task InvokeCreateOrScheduleReconnectAsync(HostConnectionPool pool)
+        {
+            var method = typeof(HostConnectionPool).GetMethod(
+                "CreateOrScheduleReconnectAsync",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.IsNotNull(method);
+            return (Task)method.Invoke(pool, new object[] { null });
+        }
+
         private HostConnectionPool CreatePool(
             IEndPointResolver res = null,
             IConnectionFactory connectionFactory = null,
+            ClientRoutesOptions clientRoutesOptions = null,
+            Func<Guid, IEnumerable<IRow>> clientRouteRowsFactory = null,
+            IDnsResolver dnsResolver = null,
             int coreConnections = 2,
             IReconnectionPolicy reconnectionPolicy = null)
         {
@@ -433,8 +1937,22 @@ namespace Cassandra.Tests.Connections
                     new AtomicMonotonicTimestampGenerator(),
                     null),
                 PoolingOptions = PoolingOptions.Create(ProtocolVersion.V4)
-                                               .SetCoreConnectionsPerHost(HostDistance.Local, coreConnections)
+                                                  .SetCoreConnectionsPerHost(HostDistance.Local, coreConnections),
+                ClientRoutesOptions = clientRoutesOptions,
+                DnsResolver = dnsResolver
             }.Build();
+
+            if (clientRoutesOptions != null)
+            {
+                var provider = new Mock<IMetadataQueryProvider>();
+                provider.Setup(value => value.QueryUnpagedAsync(It.IsAny<string>(), false))
+                        .ReturnsAsync(clientRouteRowsFactory == null
+                            ? new[] { ClientRouteRow(_host.HostId, "127.0.0.1", 9042, "route-a") }
+                            : clientRouteRowsFactory(_host.HostId));
+                var cache = config.ClientRoutesRuntime.Bind(provider.Object);
+                cache.FullRefreshBarrierAsync(new[] { _host.HostId }, false)
+                    .WaitToCompleteAsync(5000).GetAwaiter().GetResult();
+            }
 
             var pool = new HostConnectionPool(
                 _host,
@@ -459,17 +1977,23 @@ namespace Cassandra.Tests.Connections
 
         private static Mock<IConnection> CreateConnection(
             IConnectionEndPoint endPoint,
-            Exception openException = null)
+            Exception openException = null,
+            ShardingInfo shardingInfo = null)
         {
             var connection = new Mock<IConnection>();
             connection.SetupGet(c => c.EndPoint).Returns(endPoint);
+            connection.SetupProperty(c => c.ShardID, -1);
+            connection.Setup(c => c.ShardingInfo()).Returns(shardingInfo);
             if (openException == null)
             {
                 connection.Setup(c => c.Open()).ReturnsAsync((Cassandra.Responses.Response)null);
+                connection.Setup(c => c.Open(It.IsAny<int>(), It.IsAny<int>()))
+                          .ReturnsAsync((Cassandra.Responses.Response)null);
             }
             else
             {
                 connection.Setup(c => c.Open()).ThrowsAsync(openException);
+                connection.Setup(c => c.Open(It.IsAny<int>(), It.IsAny<int>())).ThrowsAsync(openException);
             }
             return connection;
         }

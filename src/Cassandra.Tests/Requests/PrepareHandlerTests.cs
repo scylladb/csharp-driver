@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Threading;
@@ -25,6 +26,8 @@ using System.Threading.Tasks;
 using Cassandra.Connections;
 using Cassandra.Metrics.Abstractions;
 using Cassandra.Metrics.Registries;
+using Cassandra.Observers.Abstractions;
+using Cassandra.Observers.Null;
 using Cassandra.Requests;
 using Cassandra.Responses;
 using Cassandra.Serialization;
@@ -41,6 +44,130 @@ namespace Cassandra.Tests.Requests
     public class PrepareHandlerTests
     {
         private readonly ISerializer _serializer = new SerializerManager(ProtocolVersion.V3).GetCurrentSerializer();
+
+        [TestCase("fatal-oom", false)]
+        [TestCase("fatal-oom", true)]
+        [TestCase("fatal-bad-image", false)]
+        [TestCase("fatal-bad-image", true)]
+        [TestCase("fatal-aggregate", false)]
+        [TestCase("fatal-aggregate", true)]
+        [TestCase("recovered", false)]
+        [TestCase("recovered", true)]
+        [TestCase("all-failed", false)]
+        [TestCase("later-error", false)]
+        [TestCase("later-error", true)]
+        [TestCase("recovered-composite", false)]
+        [TestCase("all-failed-composite", false)]
+        [TestCase("later-error-composite", false)]
+        [NonParallelizable]
+        public async Task Should_ReportConsumedConnectionFailuresDuringPrepare(string scenario, bool throwingSink)
+        {
+            var composite = scenario.EndsWith("-composite");
+            scenario = scenario.Replace("-composite", "");
+            var hosts = new[]
+            {
+                new Host(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042), contactPoint: null),
+                new Host(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042), contactPoint: null)
+            };
+            var preferredFailure = new InvalidOperationException("prepare connection failed");
+            var superseded = new InvalidOperationException("superseded prepare route cause");
+            var unresolved = new InvalidOperationException("unresolved prepare backup DNS");
+            Exception failure = composite
+                ? new ConnectionFailure(preferredFailure, new[] { superseded }, new[] { unresolved })
+                : preferredFailure;
+            Exception terminalError = scenario == "fatal-oom" ? new OutOfMemoryException("Original fatal prepare")
+                : scenario == "fatal-bad-image" ? new BadImageFormatException("Original fatal prepare")
+                : scenario == "fatal-aggregate" ? new AggregateException(new OutOfMemoryException("Original fatal prepare"))
+                : new InvalidQueryException("prepare failed after connection failover");
+            var config = new TestConfigurationBuilder().Build();
+            config.QueryOptions.SetPrepareOnAllHosts(false);
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Configuration).Returns(config);
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            var session = new Mock<IInternalSession>();
+            session.SetupGet(value => value.Cluster).Returns(cluster.Object);
+            var observer = new Mock<IRequestObserver>();
+            session.SetupGet(value => value.ObserverFactory).Returns(Mock.Of<IObserverFactory>(value =>
+                value.CreateRequestObserver() == observer.Object));
+            var connection = new Mock<IConnection>();
+            if (scenario == "later-error" || scenario.StartsWith("fatal-"))
+            {
+                connection.Setup(value => value.SendWithKeyspace(It.IsAny<IRequest>(), It.IsAny<string>()))
+                    .ThrowsAsync(terminalError);
+            }
+            else
+            {
+                connection.Setup(value => value.SendWithKeyspace(It.IsAny<IRequest>(), It.IsAny<string>()))
+                    .ReturnsAsync(new ProxyResultResponse(ResultResponse.ResultResponseKind.Void,
+                        new OutputPrepared(Array.Empty<byte>(),
+                            new RowSetMetadata { Columns = Array.Empty<CqlColumn>() },
+                            new RowSetMetadata { Columns = Array.Empty<CqlColumn>() })));
+            }
+            for (var i = 0; i < hosts.Length; i++)
+            {
+                var host = hosts[i];
+                var fails = i == 0 || scenario == "all-failed";
+                var pool = new Mock<IHostConnectionPool>();
+                pool.Setup(value => value.GetConnectionFromHostAsync(
+                        It.IsAny<IDictionary<IPEndPoint, Exception>>(), It.IsAny<Func<string>>(),
+                        It.IsAny<RoutingKey>(), -1))
+                    .Returns<IDictionary<IPEndPoint, Exception>, Func<string>, RoutingKey, int>((tried, _, __, ___) =>
+                    {
+                        if (fails)
+                        {
+                            tried[host.Address] = failure;
+                            return Task.FromResult<IConnection>(null);
+                        }
+                        return Task.FromResult(connection.Object);
+                    });
+                session.Setup(value => value.GetOrCreateConnectionPool(host, HostDistance.Local)).Returns(pool.Object);
+            }
+            var handler = new PrepareHandler(SerializerManager.Default, cluster.Object, Mock.Of<IReprepareHandler>());
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new PrepareConnectionTraceListener(throwingSink, scenario.StartsWith("fatal-"));
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                var resultTask = handler.Prepare(new InternalPrepareRequest(_serializer, "SELECT * FROM table1", null, null),
+                    session.Object, hosts.Select(host => new RoutingTarget(host, null)).GetEnumerator(), null, null)
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+                if (scenario == "all-failed")
+                {
+                    var error = await Assert.ThrowsAsync<NoHostAvailableException>(() => resultTask);
+                    Assert.AreSame(preferredFailure, error.Errors[hosts[0].Address]);
+                    Assert.AreSame(preferredFailure, error.Errors[hosts[1].Address]);
+                }
+                else if (scenario == "later-error" || scenario.StartsWith("fatal-"))
+                {
+                    var error = await Assert.CatchAsync(() => resultTask);
+                    Assert.AreSame(terminalError, error);
+                    observer.Verify(value => value.OnRequestFailureAsync(terminalError, It.IsAny<SessionRequestInfo>()), Times.Once);
+                }
+                else
+                {
+                    Assert.IsNotNull(await resultTask.ConfigureAwait(false));
+                }
+                var messages = listener.Messages.Values.Where(message => message.Contains("Request consumed")).ToArray();
+                Assert.AreEqual(scenario == "all-failed" ? 0 : 1, messages.Length);
+                if (messages.Length > 0)
+                {
+                    Assert.IsTrue(messages[0].Contains(preferredFailure.Message));
+                    Assert.IsTrue(messages[0].Contains(hosts[0].Address.ToString()));
+                    if (composite)
+                    {
+                        Assert.IsTrue(messages[0].Contains(superseded.Message));
+                        Assert.IsTrue(messages[0].Contains(unresolved.Message));
+                    }
+                }
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                config.Timer.Dispose();
+            }
+        }
 
         [TestCase(false)]
         [TestCase(true)]
@@ -857,6 +984,31 @@ namespace Cassandra.Tests.Requests
             foreach (var pool in poolConnections)
             {
                 Mock.Get(pool.Single()).Verify(c => c.SendWithKeyspace(request, It.IsAny<string>()), Times.Once);
+            }
+        }
+
+        private sealed class PrepareConnectionTraceListener : LoggingTests.TestTraceListener
+        {
+            private readonly bool _throwingSink;
+            private readonly bool _fatal;
+
+            internal PrepareConnectionTraceListener(bool throwingSink, bool fatal = false)
+            {
+                _throwingSink = throwingSink;
+                _fatal = fatal;
+            }
+
+            public override void WriteLine(string message)
+            {
+                base.WriteLine(message);
+                if (_throwingSink && message.Contains("Request consumed"))
+                {
+                    if (_fatal)
+                    {
+                        throw new BadImageFormatException("Fatal diagnostic callback failed");
+                    }
+                    throw new InvalidOperationException("diagnostic callback failed");
+                }
             }
         }
 

@@ -15,9 +15,13 @@
 //
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
 using System.Net;
 using System.Reflection;
+using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Connections;
 using Cassandra.ExecutionProfiles;
@@ -43,6 +47,762 @@ namespace Cassandra.Tests
     [TestFixture]
     public class RequestExecutionTests
     {
+        [TestCase("recovered", TraceLevel.Verbose, false)]
+        [TestCase("recovered", TraceLevel.Verbose, true)]
+        [TestCase("recovered", TraceLevel.Warning, false)]
+        [TestCase("all-failed", TraceLevel.Verbose, false)]
+        [TestCase("first-success", TraceLevel.Verbose, false)]
+        [TestCase("fatal-diagnostic", TraceLevel.Verbose, true)]
+        [TestCase("later-error", TraceLevel.Verbose, false)]
+        [TestCase("later-error", TraceLevel.Verbose, true)]
+        [TestCase("external-timeout", TraceLevel.Verbose, false)]
+        [TestCase("fatal-terminal-oom", TraceLevel.Verbose, false)]
+        [TestCase("fatal-terminal-oom", TraceLevel.Verbose, true)]
+        [TestCase("fatal-terminal-bad-image", TraceLevel.Verbose, false)]
+        [TestCase("fatal-terminal-bad-image", TraceLevel.Verbose, true)]
+        [TestCase("fatal-terminal-aggregate", TraceLevel.Verbose, false)]
+        [TestCase("fatal-terminal-aggregate", TraceLevel.Verbose, true)]
+        [TestCase("late-acquisition", TraceLevel.Verbose, false)]
+        [TestCase("init-fatal-oom", TraceLevel.Verbose, false)]
+        [TestCase("init-fatal-oom", TraceLevel.Verbose, true)]
+        [TestCase("init-fatal-bad-image", TraceLevel.Verbose, false)]
+        [TestCase("init-fatal-bad-image", TraceLevel.Verbose, true)]
+        [TestCase("init-fatal-aggregate", TraceLevel.Verbose, false)]
+        [TestCase("init-fatal-aggregate", TraceLevel.Verbose, true)]
+        [TestCase("init-recovered", TraceLevel.Verbose, false)]
+        [TestCase("init-all-failed", TraceLevel.Verbose, false)]
+        [TestCase("init-later-error", TraceLevel.Verbose, false)]
+        [TestCase("recovered-composite", TraceLevel.Verbose, false)]
+        [TestCase("all-failed-composite", TraceLevel.Verbose, false)]
+        [TestCase("later-error-composite", TraceLevel.Verbose, false)]
+        [TestCase("init-recovered-composite", TraceLevel.Verbose, false)]
+        [TestCase("init-all-failed-composite", TraceLevel.Verbose, false)]
+        [TestCase("init-later-error-composite", TraceLevel.Verbose, false)]
+        [TestCase("inline-response", TraceLevel.Verbose, false)]
+        [TestCase("inline-response", TraceLevel.Verbose, true)]
+        [TestCase("inline-fatal-diagnostic", TraceLevel.Verbose, true)]
+        [TestCase("recovered", TraceLevel.Info, false)]
+        [NonParallelizable]
+        public async Task Should_ReportConsumedConnectionFailuresAfterRequestRecovery(
+            string scenario, TraceLevel traceLevel, bool throwFromDiagnostic)
+        {
+            var composite = scenario.EndsWith("-composite");
+            scenario = scenario.Replace("-composite", "");
+            var hosts = new[]
+            {
+                new Host(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042), contactPoint: null),
+                new Host(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042), contactPoint: null)
+            };
+            var preferredFailure = new InvalidOperationException("initial foreground connection failed");
+            var superseded = new InvalidOperationException("superseded route cause");
+            var unresolved = new InvalidOperationException("unresolved backup DNS");
+            Exception failure = composite
+                ? new ConnectionFailure(preferredFailure, new[] { superseded }, new[] { unresolved })
+                : preferredFailure;
+            Exception terminalError = (scenario == "fatal-terminal-oom" || scenario == "init-fatal-oom") ? new OutOfMemoryException("Original fatal request")
+                : (scenario == "fatal-terminal-bad-image" || scenario == "init-fatal-bad-image") ? new BadImageFormatException("Original fatal request")
+                : (scenario == "fatal-terminal-aggregate" || scenario == "init-fatal-aggregate") ? new AggregateException(new OutOfMemoryException("Original fatal request"))
+                : new InvalidQueryException("query failed after connection failover");
+            var acquisitionStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var acquisitionResult = new TaskCompletionSource<IConnection>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var policy = new Mock<ILoadBalancingPolicy>();
+            policy.Setup(value => value.NewQueryPlan(It.IsAny<RoutingInfo>(), It.IsAny<ClusterState>()))
+                .Returns(hosts.Select(host => new RoutingTarget(host, null)));
+            var config = new TestConfigurationBuilder
+            {
+                Policies = new Cassandra.Policies(policy.Object, null, null)
+            }.Build();
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Configuration).Returns(config);
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            var session = new Mock<IInternalSession>();
+            session.SetupGet(value => value.Cluster).Returns(cluster.Object);
+            session.SetupGet(value => value.InternalCluster).Returns(cluster.Object);
+            var sent = new TaskCompletionSource<Func<IRequestError, Response, Task>>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var connection = new Mock<IConnection>();
+            connection.Setup(value => value.SendWithKeyspace(
+                    It.IsAny<IRequest>(), It.IsAny<string>(), It.IsAny<Func<IRequestError, Response, Task>>(),
+                    It.IsAny<int>(), It.IsAny<bool>()))
+                .Callback<IRequest, string, Func<IRequestError, Response, Task>, int, bool>(
+                    (_, __, callback, ___, ____) =>
+                    {
+                        sent.TrySetResult(callback);
+                        if (scenario.StartsWith("inline-"))
+                        {
+                            callback(null, new ProxyResultResponse(ResultResponse.ResultResponseKind.Void))
+                                .WaitAsync(TimeSpan.FromSeconds(5))
+                                .GetAwaiter().GetResult();
+                        }
+                    })
+                .ReturnsAsync((OperationState)null);
+            for (var i = 0; i < hosts.Length; i++)
+            {
+                var host = hosts[i];
+                var fails = scenario == "all-failed" || scenario == "init-all-failed" || (i == 0 && scenario != "first-success");
+                var pool = new Mock<IHostConnectionPool>();
+                pool.Setup(value => value.GetConnectionFromHostAsync(
+                        It.IsAny<IDictionary<IPEndPoint, Exception>>(), It.IsAny<Func<string>>(),
+                        It.IsAny<RoutingKey>(), -1))
+                    .Returns<IDictionary<IPEndPoint, Exception>, Func<string>, RoutingKey, int>((tried, _, __, ___) =>
+                    {
+                        if (fails)
+                        {
+                            tried[host.Address] = failure;
+                            if (scenario == "late-acquisition")
+                            {
+                                acquisitionStarted.TrySetResult(true);
+                                return acquisitionResult.Task;
+                            }
+                            return Task.FromResult<IConnection>(null);
+                        }
+                        return scenario == "init-later-error" || scenario.StartsWith("init-fatal-")
+                            ? Task.FromException<IConnection>(terminalError)
+                            : Task.FromResult(connection.Object);
+                    });
+                session.Setup(value => value.GetOrCreateConnectionPool(host, HostDistance.Local)).Returns(pool.Object);
+            }
+            var serializer = SerializerManager.Default.GetCurrentSerializer();
+            var statement = new SimpleStatement("SELECT * FROM table1");
+            var handler = new RequestHandler(
+                session.Object, serializer,
+                new QueryRequest(serializer, statement.QueryString, QueryProtocolOptions.Default, false, null),
+                new SessionRequestInfo(statement, null), config.DefaultRequestOptions, NullRequestObserver.Instance);
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new RecoveredConnectionTraceListener(throwFromDiagnostic, scenario.Contains("fatal-diagnostic") || scenario.StartsWith("fatal-terminal-") || scenario.StartsWith("init-fatal-"));
+            Task<RowSet> responseTask = null;
+            Diagnostics.CassandraTraceSwitch.Level = traceLevel;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                if (scenario.StartsWith("init-"))
+                {
+                    var connectionTask = handler.GetNextConnectionAsync(new Dictionary<IPEndPoint, Exception>())
+                        .WaitAsync(TimeSpan.FromSeconds(5));
+                    if (scenario == "init-all-failed")
+                    {
+                        var error = await Assert.ThrowsAsync<NoHostAvailableException>(() => connectionTask);
+                        Assert.AreSame(preferredFailure, error.Errors[hosts[0].Address]);
+                        Assert.AreSame(preferredFailure, error.Errors[hosts[1].Address]);
+                    }
+                    else if (scenario == "init-later-error" || scenario.StartsWith("init-fatal-"))
+                    {
+                        var error = await Assert.CatchAsync(() => connectionTask);
+                        Assert.AreSame(terminalError, error);
+                    }
+                    else
+                    {
+                        Assert.AreSame(connection.Object, await connectionTask.ConfigureAwait(false));
+                    }
+                }
+                else
+                {
+                    responseTask = handler.SendAsync();
+                    if (scenario == "late-acquisition")
+                    {
+                        await acquisitionStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                        await handler.SetCompletedAsync(terminalError).ConfigureAwait(false);
+                        acquisitionResult.TrySetResult(null);
+                        await listener.Reported.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                        var error = await Assert.ThrowsAsync<InvalidQueryException>(
+                            () => responseTask.WaitAsync(TimeSpan.FromSeconds(5)));
+                        Assert.AreSame(terminalError, error);
+                    }
+                    else if (scenario == "all-failed")
+                    {
+                        var error = await Assert.ThrowsAsync<NoHostAvailableException>(
+                            () => responseTask.WaitAsync(TimeSpan.FromSeconds(5)));
+                        Assert.AreSame(preferredFailure, error.Errors[hosts[0].Address]);
+                        Assert.AreSame(preferredFailure, error.Errors[hosts[1].Address]);
+                    }
+                    else
+                    {
+                        if (!scenario.StartsWith("inline-"))
+                        {
+                            var callback = await sent.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                            Assert.IsFalse(listener.Messages.Values.Any(message => message.Contains("Request consumed")));
+                            if (scenario == "external-timeout" || scenario.StartsWith("fatal-terminal-"))
+                            {
+                                await handler.SetCompletedAsync(terminalError).ConfigureAwait(false);
+                            }
+                            else
+                            {
+                                await callback(
+                                        scenario == "later-error" ? RequestError.CreateClientError(terminalError, false) : null,
+                                        new ProxyResultResponse(ResultResponse.ResultResponseKind.Void))
+                                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                            }
+                        }
+                        if (scenario.StartsWith("fatal-terminal-"))
+                        {
+                            var error = await Assert.CatchAsync(() => responseTask.WaitAsync(TimeSpan.FromSeconds(5)));
+                            Assert.AreSame(terminalError, error);
+                        }
+                        else if (scenario == "later-error" || scenario == "external-timeout")
+                        {
+                            var error = await Assert.ThrowsAsync<InvalidQueryException>(
+                                () => responseTask.WaitAsync(TimeSpan.FromSeconds(5)));
+                            Assert.AreSame(terminalError, error);
+                        }
+                        else if (scenario.Contains("fatal-diagnostic"))
+                        {
+                            var error = await Assert.ThrowsAsync<OutOfMemoryException>(
+                                () => responseTask.WaitAsync(TimeSpan.FromSeconds(5)));
+                            Assert.AreSame(listener.Failure, error);
+                        }
+                        else
+                        {
+                            var result = await responseTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                            CollectionAssert.AreEquivalent(
+                                scenario == "first-success" ? new[] { hosts[0].Address } : hosts.Select(host => host.Address),
+                                result.Info.TriedHosts);
+                        }
+                    }
+                }
+
+                var diagnostics = listener.Messages.Values.Where(message => message.Contains("Request consumed")).ToArray();
+                var expected = scenario != "all-failed" && scenario != "init-all-failed" && scenario != "first-success" && traceLevel >= TraceLevel.Verbose ? 1 : 0;
+                Assert.AreEqual(expected, diagnostics.Length);
+                if (expected != 0)
+                {
+                    Assert.IsTrue(diagnostics[0].Contains(preferredFailure.Message));
+                    Assert.IsTrue(diagnostics[0].Contains(hosts[0].Address.ToString()));
+                    if (composite)
+                    {
+                        Assert.IsTrue(diagnostics[0].Contains(superseded.Message));
+                        Assert.IsTrue(diagnostics[0].Contains(unresolved.Message));
+                    }
+                }
+            }
+            finally
+            {
+                acquisitionResult.TrySetResult(null);
+                try
+                {
+                    if (sent.Task.IsCompletedSuccessfully && responseTask?.IsCompleted == false)
+                    {
+                        var callback = await sent.Task.ConfigureAwait(false);
+                        await callback(null, new ProxyResultResponse(ResultResponse.ResultResponseKind.Void))
+                            .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    }
+                    if (responseTask != null)
+                    {
+                        await responseTask.ContinueWith(completed => _ = completed.Exception, TaskScheduler.Default)
+                            .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    }
+                }
+                finally
+                {
+                    Trace.Listeners.Remove(listener);
+                    Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                    config.Timer.Dispose();
+                }
+            }
+        }
+
+        [TestCase(false, false)]
+        [TestCase(true, false)]
+        [TestCase(false, true)]
+        [TestCase(true, true)]
+        [NonParallelizable]
+        public async Task Should_DeferSpeculativeConnectionDiagnosticsUntilTheRequestCompletes(bool sharedCause, bool requestSucceeds)
+        {
+            var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), contactPoint: null);
+            var winningHost = new Host(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042), contactPoint: null);
+            var firstFailure = new InvalidOperationException("first speculative connection failure");
+            var failures = new[]
+            {
+                firstFailure,
+                sharedCause ? firstFailure : new InvalidOperationException("last speculative connection failure")
+            };
+            var releases = new[]
+            {
+                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously),
+                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)
+            };
+            var bothStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var acquisitions = 0;
+            async Task<IConnection> Acquire(IDictionary<IPEndPoint, Exception> triedHosts)
+            {
+                var index = Interlocked.Increment(ref acquisitions) - 1;
+                if (index == 1)
+                {
+                    bothStarted.TrySetResult(true);
+                }
+
+                await releases[index].Task.ConfigureAwait(false);
+                triedHosts[host.Address] = failures[index];
+                return null;
+            }
+
+            var policy = new Mock<ILoadBalancingPolicy>();
+            policy.Setup(value => value.NewQueryPlan(It.IsAny<RoutingInfo>(), It.IsAny<ClusterState>()))
+                .Returns((requestSucceeds ? new[] { host, host, winningHost } : new[] { host, host }).Select(value => new RoutingTarget(value, null)));
+            var config = new TestConfigurationBuilder
+            {
+                Policies = new Cassandra.Policies(policy.Object, null, null,
+                    new ConstantSpeculativeExecutionPolicy(1, 1), null, null)
+            }.Build();
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Configuration).Returns(config);
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            var pool = new Mock<IHostConnectionPool>();
+            pool.Setup(value => value.GetConnectionFromHostAsync(
+                    It.IsAny<IDictionary<IPEndPoint, Exception>>(), It.IsAny<Func<string>>(), It.IsAny<RoutingKey>(), -1))
+                .Returns<IDictionary<IPEndPoint, Exception>, Func<string>, RoutingKey, int>((tried, _, __, ___) => Acquire(tried));
+            var session = new Mock<IInternalSession>();
+            session.SetupGet(value => value.Cluster).Returns(cluster.Object);
+            session.SetupGet(value => value.InternalCluster).Returns(cluster.Object);
+            session.Setup(value => value.GetOrCreateConnectionPool(host, HostDistance.Local)).Returns(pool.Object);
+            var winningResponse = new TaskCompletionSource<Func<IRequestError, Response, Task>>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var connection = new Mock<IConnection>();
+            connection.Setup(value => value.SendWithKeyspace(It.IsAny<IRequest>(), It.IsAny<string>(),
+                    It.IsAny<Func<IRequestError, Response, Task>>(), It.IsAny<int>(), It.IsAny<bool>()))
+                .Callback<IRequest, string, Func<IRequestError, Response, Task>, int, bool>((_, __, callback, ___, ____) => winningResponse.TrySetResult(callback))
+                .ReturnsAsync((OperationState)null);
+            var winningPool = new Mock<IHostConnectionPool>();
+            winningPool.Setup(value => value.GetConnectionFromHostAsync(It.IsAny<IDictionary<IPEndPoint, Exception>>(),
+                    It.IsAny<Func<string>>(), It.IsAny<RoutingKey>(), -1)).ReturnsAsync(connection.Object);
+            session.Setup(value => value.GetOrCreateConnectionPool(winningHost, HostDistance.Local)).Returns(winningPool.Object);
+            var statement = new SimpleStatement("SELECT * FROM table1").SetIdempotence(true);
+            var handler = new RequestHandler(session.Object, SerializerManager.Default.GetCurrentSerializer(),
+                new SessionRequestInfo(statement, null), config.DefaultRequestOptions, NullRequestObserver.Instance);
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new RecoveredConnectionTraceListener(false, false);
+            Task<RowSet> response = null;
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                response = handler.SendAsync();
+                await bothStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                releases[0].TrySetResult(true);
+                if (requestSucceeds)
+                {
+                    var callback = await winningResponse.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    releases[1].TrySetResult(true);
+                    await listener.SpeculativeExecutionExhausted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    Assert.IsFalse(listener.Messages.Values.Any(message => message.Contains("Request consumed")));
+                    await callback(null, new ProxyResultResponse(ResultResponse.ResultResponseKind.Void))
+                        .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    Assert.IsNotNull(await response.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+                }
+                else
+                {
+                    await listener.SpeculativeExecutionExhausted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    Assert.IsFalse(listener.Messages.Values.Any(message => message.Contains("Request consumed")));
+                    releases[1].TrySetResult(true);
+                    var error = await Assert.ThrowsAsync<NoHostAvailableException>(() => response.WaitAsync(TimeSpan.FromSeconds(5)));
+                    Assert.AreSame(failures[1], error.Errors[host.Address]);
+                }
+                var diagnostics = listener.Messages.Values.Where(message => message.Contains("Request consumed")).ToArray();
+                Assert.AreEqual(requestSucceeds ? sharedCause ? 1 : 2 : sharedCause ? 0 : 1, diagnostics.Length);
+                if (!sharedCause)
+                {
+                    Assert.IsTrue(diagnostics.Any(message => message.Contains(firstFailure.Message)));
+                    Assert.AreEqual(requestSucceeds, diagnostics.Any(message => message.Contains(failures[1].Message)));
+                }
+            }
+            finally
+            {
+                foreach (var release in releases)
+                {
+                    release.TrySetResult(true);
+                }
+
+                try
+                {
+                    if (response != null)
+                    {
+                        await response.ContinueWith(completed => _ = completed.Exception, TaskScheduler.Default)
+                            .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    }
+                }
+                finally
+                {
+                    Trace.Listeners.Remove(listener);
+                    Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                    config.Timer.Dispose();
+                }
+            }
+        }
+
+        [TestCase(false, false, false)]
+        [TestCase(true, false, false)]
+        [TestCase(false, true, false)]
+        [TestCase(true, true, false)]
+        [TestCase(false, true, true)]
+        [TestCase(true, true, true)]
+        [NonParallelizable]
+        public async Task Should_DeduplicateLateConsumedFailuresByIdentity(bool sharedCause, bool fatal, bool returned)
+        {
+            var host = new IPEndPoint(IPAddress.Loopback, 9042);
+            Exception firstFailure = fatal ? new OutOfMemoryException("Identical diagnostic message")
+                : new InvalidOperationException("Identical diagnostic message");
+            var secondFailure = sharedCause ? firstFailure : fatal ? (Exception)new OutOfMemoryException(firstFailure.Message)
+                : new InvalidOperationException(firstFailure.Message);
+            var config = new TestConfigurationBuilder().Build();
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Configuration).Returns(config);
+            var session = new Mock<IInternalSession>();
+            session.SetupGet(value => value.Cluster).Returns(cluster.Object);
+            session.SetupGet(value => value.InternalCluster).Returns(cluster.Object);
+            var handler = new RequestHandler(session.Object, SerializerManager.Default.GetCurrentSerializer(),
+                new SessionRequestInfo(new SimpleStatement("SELECT * FROM table1"), null), config.DefaultRequestOptions, NullRequestObserver.Instance);
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new RecoveredConnectionTraceListener(false, false);
+            Diagnostics.CassandraTraceSwitch.Level = fatal ? TraceLevel.Error : TraceLevel.Verbose;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                handler.RecordConnectionFailure(host, firstFailure);
+                Assert.IsTrue(await handler.SetCompletedAsync(returned ? firstFailure : null, new RowSet()).ConfigureAwait(false));
+                handler.RecordConnectionFailure(host, secondFailure);
+                Assert.AreEqual(returned ? (sharedCause ? 0 : 1) : sharedCause ? 1 : 2,
+                    listener.Messages.Values.Count(message => message.Contains("Request consumed")));
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                config.Timer.Dispose();
+            }
+        }
+
+        [TestCase(false, false, "none")]
+        [TestCase(true, false, "none")]
+        [TestCase(false, true, "none")]
+        [TestCase(false, true, "ordinary")]
+        [TestCase(false, true, "fatal")]
+        [TestCase(true, true, "none")]
+        [TestCase(true, true, "ordinary")]
+        [TestCase(true, true, "fatal")]
+        [NonParallelizable]
+        public async Task Should_PreserveLateFatalDiagnosticInAcquisitionTask(
+            bool currentHost, bool fatalDiagnostic, string errorDiagnostic)
+        {
+            var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), contactPoint: null);
+            var acquisitionStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseAcquisition = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var failure = new InvalidOperationException("Consumed late acquisition failure");
+            var policy = new Mock<ILoadBalancingPolicy>();
+            policy.Setup(value => value.NewQueryPlan(It.IsAny<RoutingInfo>(), It.IsAny<ClusterState>()))
+                .Returns(Array.Empty<RoutingTarget>());
+            var config = new TestConfigurationBuilder { Policies = new Cassandra.Policies(policy.Object, null, null) }.Build();
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Configuration).Returns(config);
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            var pool = new Mock<IHostConnectionPool>();
+            pool.Setup(value => value.GetConnectionFromHostAsync(
+                    It.IsAny<IDictionary<IPEndPoint, Exception>>(), It.IsAny<Func<string>>(), It.IsAny<RoutingKey>(), -1))
+                .Returns<IDictionary<IPEndPoint, Exception>, Func<string>, RoutingKey, int>(async (tried, _, __, ___) =>
+                {
+                    acquisitionStarted.TrySetResult(true);
+                    await releaseAcquisition.Task.ConfigureAwait(false);
+                    tried[host.Address] = failure;
+                    return null;
+                });
+            var session = new Mock<IInternalSession>();
+            session.SetupGet(value => value.Cluster).Returns(cluster.Object);
+            session.SetupGet(value => value.InternalCluster).Returns(cluster.Object);
+            session.Setup(value => value.GetOrCreateConnectionPool(host, HostDistance.Local)).Returns(pool.Object);
+            var statement = new SimpleStatement("SELECT * FROM table1");
+            var requestInfo = new SessionRequestInfo(statement, null);
+            var handler = new RequestHandler(session.Object, SerializerManager.Default.GetCurrentSerializer(),
+                requestInfo, config.DefaultRequestOptions, NullRequestObserver.Instance);
+            var execution = new RequestExecution(handler, session.Object, Mock.Of<IRequest>(), NullRequestObserver.Instance, requestInfo);
+            typeof(RequestExecution).GetField("_host", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(execution, host);
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new RecoveredConnectionTraceListener(true, fatalDiagnostic);
+            var errorListener = new Mock<TraceListener> { CallBase = true };
+            errorListener.Setup(value => value.WriteLine(It.Is<string>(message =>
+                    message.Contains("Request consumed a fatal failure to obtain a connection"))))
+                .Callback(() =>
+                {
+                    if (errorDiagnostic == "ordinary")
+                    {
+                        throw new InvalidOperationException("Error listener failed");
+                    }
+                    if (errorDiagnostic == "fatal")
+                    {
+                        throw new OutOfMemoryException("Error listener failed fatally");
+                    }
+                });
+            Task acquisition = null;
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
+            Trace.Listeners.Add(errorListener.Object);
+            Trace.Listeners.Add(listener);
+            try
+            {
+                var method = typeof(RequestExecution).GetMethod(currentHost ? "SendToCurrentHostAsync" : "SendToNextHostAsync",
+                    BindingFlags.Instance | BindingFlags.NonPublic);
+                acquisition = (Task)method.Invoke(execution, currentHost ? null : new object[] { ValidHost.New(host, HostDistance.Local) });
+                await acquisitionStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.IsTrue(await handler.SetCompletedAsync(new InvalidQueryException("Already returned error")).ConfigureAwait(false));
+                releaseAcquisition.TrySetResult(true);
+                if (fatalDiagnostic)
+                {
+                    var observed = await Assert.ThrowsAsync<OutOfMemoryException>(() => acquisition.WaitAsync(TimeSpan.FromSeconds(5)));
+                    Assert.AreSame(listener.Failure, observed);
+                }
+                else
+                {
+                    await acquisition.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                }
+                Assert.IsTrue(listener.Reported.Task.IsCompleted);
+                errorListener.Verify(value => value.WriteLine(It.Is<string>(message =>
+                    message.Contains("Request consumed a fatal failure to obtain a connection") &&
+                    message.Contains(host.Address.ToString()) && message.Contains(listener.Failure.Message))),
+                    fatalDiagnostic ? Times.Once() : Times.Never());
+            }
+            finally
+            {
+                releaseAcquisition.TrySetResult(true);
+                try
+                {
+                    if (acquisition != null)
+                    {
+                        await acquisition.ContinueWith(completed => _ = completed.Exception, TaskScheduler.Default)
+                            .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    }
+                }
+                finally
+                {
+                    Trace.Listeners.Remove(listener);
+                    Trace.Listeners.Remove(errorListener.Object);
+                    errorListener.Object.Dispose();
+                    Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                    config.Timer.Dispose();
+                }
+            }
+        }
+
+        [TestCase("aggregate")]
+        [TestCase("preferred")]
+        [TestCase("superseded")]
+        [TestCase("unresolved")]
+        [TestCase("wrapper")]
+        [TestCase("wrapped-preferred")]
+        [TestCase("wrapped-superseded")]
+        [TestCase("wrapped-unresolved")]
+        [NonParallelizable]
+        public void Should_FilterReturnedCausesInsideNestedAggregates(string component)
+        {
+            var host = new IPEndPoint(IPAddress.Loopback, 9042);
+            var returned = new InvalidOperationException("Returned leaf must not be logged");
+            var consumed = new InvalidOperationException("Consumed leaf must remain visible");
+            Exception aggregate = new AggregateException(new AggregateException(returned, consumed));
+            if (component.StartsWith("wrap"))
+            {
+                aggregate = new DriverException("Earlier route resolution failed", aggregate);
+                component = component.Replace("wrapped-", "");
+            }
+            Exception failure = component == "preferred" ? new ConnectionFailure(aggregate, Array.Empty<Exception>(), Array.Empty<Exception>())
+                : component == "superseded" ? new ConnectionFailure(returned, new[] { aggregate }, Array.Empty<Exception>())
+                : component == "unresolved" ? new ConnectionFailure(returned, Array.Empty<Exception>(), new[] { aggregate })
+                : aggregate;
+            var failures = new ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>>();
+            failures.Enqueue(new KeyValuePair<IPEndPoint, Exception>(host, failure));
+            var returnedError = new NoHostAvailableException(new Dictionary<IPEndPoint, Exception> { [host] = returned });
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new RecoveredConnectionTraceListener(false, false);
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                ConsumedConnectionFailures.Report(failures, returnedError);
+                var messages = listener.Messages.Values.Where(message => message.Contains("Request consumed")).ToArray();
+                Assert.AreEqual(1, messages.Length);
+                StringAssert.Contains(consumed.Message, messages[0]);
+                StringAssert.DoesNotContain(returned.Message, messages[0]);
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+        }
+
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        [NonParallelizable]
+        public void Should_RetainUnreturnedAggregateFailures(bool returnedWhole, bool empty)
+        {
+            var host = new IPEndPoint(IPAddress.Loopback, 9042);
+            var failure = new AggregateException("Original aggregate diagnostic", empty ? Array.Empty<Exception>()
+                : new[] { new InvalidOperationException("Original consumed cause") });
+            var failures = new ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>>();
+            failures.Enqueue(new KeyValuePair<IPEndPoint, Exception>(host, failure));
+            var returnedError = returnedWhole ? (Exception)failure : new InvalidQueryException("Different returned failure");
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new RecoveredConnectionTraceListener(false, false);
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                ConsumedConnectionFailures.Report(failures, returnedError);
+                var messages = listener.Messages.Values.Where(message => message.Contains("Request consumed")).ToArray();
+                Assert.AreEqual(returnedWhole ? 0 : 1, messages.Length);
+                if (!returnedWhole)
+                {
+                    StringAssert.Contains(failure.ToString(), messages[0]);
+                }
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+        }
+
+        [TestCase("oom", false, false, "direct")]
+        [TestCase("oom", true, false, "direct")]
+        [TestCase("bad-image", false, false, "direct")]
+        [TestCase("bad-image", true, false, "direct")]
+        [TestCase("ordinary", false, false, "direct")]
+        [TestCase("ordinary", true, false, "direct")]
+        [TestCase("oom", false, true, "direct")]
+        [TestCase("oom", true, true, "direct")]
+        [TestCase("oom", false, false, "aggregate")]
+        [TestCase("oom", false, false, "preferred")]
+        [TestCase("oom", false, false, "superseded")]
+        [TestCase("oom", false, false, "unresolved")]
+        [TestCase("oom", true, false, "aggregate")]
+        [TestCase("oom", true, false, "preferred")]
+        [TestCase("oom", true, false, "superseded")]
+        [TestCase("oom", true, false, "unresolved")]
+        [NonParallelizable]
+        public void Should_RetainDistinctFatalWrappersWhenFilteringReturnedInnerCauses(
+            string wrapper, bool partiallyReturned, bool returnedWhole, string component)
+        {
+            var host = new IPEndPoint(IPAddress.Loopback, 9042);
+            var returned = new InvalidOperationException("Returned inner cause must not be logged");
+            var consumed = new InvalidOperationException("Unreturned inner cause remains visible");
+            Exception inner = partiallyReturned ? new AggregateException(returned, consumed) : returned;
+            Exception failure = wrapper == "oom" ? new OutOfMemoryException(returned.Message, inner)
+                : wrapper == "bad-image" ? new BadImageFormatException(returned.Message, inner)
+                : new DriverException(returned.Message, inner);
+            var originalText = failure.ToString();
+            Exception recorded = component == "aggregate" ? new AggregateException(returned, failure)
+                : component == "preferred" ? new ConnectionFailure(failure, Array.Empty<Exception>(), Array.Empty<Exception>())
+                : component == "superseded" ? new ConnectionFailure(returned, new[] { failure }, Array.Empty<Exception>())
+                : component == "unresolved" ? new ConnectionFailure(returned, Array.Empty<Exception>(), new[] { failure })
+                : failure;
+            var collector = new ConsumedConnectionFailures.Collector();
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new RecoveredConnectionTraceListener(false, false);
+            Diagnostics.CassandraTraceSwitch.Level = wrapper == "ordinary" ? TraceLevel.Verbose : TraceLevel.Error;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                collector.Record(host, recorded);
+                collector.Report(returnedWhole ? failure : returned);
+                collector.Record(host, recorded);
+                collector.Report(returnedWhole ? failure : returned);
+                var messages = listener.Messages.Values.Where(message => message.Contains("Request consumed")).ToArray();
+                var expected = returnedWhole || (wrapper == "ordinary" && !partiallyReturned) ? 0 : 1;
+                Assert.AreEqual(expected, messages.Length);
+                if (expected != 0)
+                {
+                    StringAssert.DoesNotContain(returned.Message, messages[0]);
+                    if (wrapper != "ordinary")
+                    {
+                        StringAssert.Contains("Request consumed a fatal failure", messages[0]);
+                        StringAssert.Contains(failure.GetType().FullName, messages[0]);
+                    }
+                    if (partiallyReturned)
+                    {
+                        StringAssert.Contains(consumed.Message, messages[0]);
+                    }
+                }
+                Assert.AreSame(inner, failure.InnerException);
+                Assert.AreEqual(originalText, failure.ToString());
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        [NonParallelizable]
+        public void Should_FilterOrdinaryWrappersOnlyWhenTheirInnerCauseWasReturned(bool returnedInner)
+        {
+            var host = new IPEndPoint(IPAddress.Loopback, 9042);
+            var cause = new InvalidOperationException("Original wrapped cause");
+            var failure = new DriverException("Original wrapper diagnostic", cause);
+            var failures = new ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>>();
+            failures.Enqueue(new KeyValuePair<IPEndPoint, Exception>(host, failure));
+            var returnedError = returnedInner
+                ? (Exception)new DriverException("Later attempt wrapper", cause)
+                : new InvalidQueryException("Different returned failure");
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new RecoveredConnectionTraceListener(false, false);
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                ConsumedConnectionFailures.Report(failures, returnedError);
+                var messages = listener.Messages.Values.Where(message => message.Contains("Request consumed")).ToArray();
+                Assert.AreEqual(returnedInner ? 0 : 1, messages.Length);
+                if (!returnedInner)
+                {
+                    StringAssert.Contains(failure.ToString(), messages[0]);
+                }
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        [NonParallelizable]
+        public void Should_LogOnlyCompositeCausesAbsentFromTheReturnedError(bool partiallyReturned)
+        {
+            var host = new IPEndPoint(IPAddress.Loopback, 9042);
+            var preferred = new InvalidOperationException("returned preferred cause");
+            var superseded = new InvalidOperationException("returned supplemental cause");
+            var unresolved = new InvalidOperationException("consumed DNS cause");
+            var failure = new ConnectionFailure(preferred, new[] { superseded }, new[] { unresolved });
+            var terminalFailure = partiallyReturned
+                ? new ConnectionFailure(preferred, new[] { superseded }, Array.Empty<Exception>())
+                : failure;
+            var returnedError = new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>
+            {
+                [host] = terminalFailure
+            });
+            var failures = new ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>>();
+            failures.Enqueue(new KeyValuePair<IPEndPoint, Exception>(host, failure));
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new RecoveredConnectionTraceListener(false, false);
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                ConsumedConnectionFailures.Report(failures, returnedError);
+                var messages = listener.Messages.Values.Where(message => message.Contains("Request consumed")).ToArray();
+                Assert.AreEqual(partiallyReturned ? 1 : 0, messages.Length);
+                if (partiallyReturned)
+                {
+                    Assert.IsTrue(messages[0].Contains(unresolved.Message));
+                    Assert.IsFalse(messages[0].Contains(preferred.Message));
+                    Assert.IsFalse(messages[0].Contains(superseded.Message));
+                }
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+        }
+
         [TestCase(false, "abort")]
         [TestCase(true, "abort")]
         [TestCase(false, "error")]
@@ -434,6 +1194,56 @@ namespace Cassandra.Tests
 
         [TestCase(false)]
         [TestCase(true)]
+        public async Task Should_PreserveFatalAcquisitionFailure_When_RetryingCurrentHost(bool fatal)
+        {
+            var config = new TestConfigurationBuilder().Build();
+            var session = new Mock<IInternalSession>();
+            session.SetupGet(value => value.Cluster.Configuration).Returns(config);
+            var parent = new Mock<IRequestHandler>();
+            var host = new Host(new IPEndPoint(IPAddress.Loopback, 9047), new ConstantReconnectionPolicy(1));
+            var validHost = ValidHost.New(host, HostDistance.Local);
+            var initialFailure = new OverloadedException("retry current host");
+            Exception retryFailure = fatal
+                ? new OutOfMemoryException("fatal connection acquisition")
+                : new InvalidOperationException("ordinary connection acquisition");
+            var exhausted = new NoHostAvailableException("query plan exhausted");
+            var completed = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
+            parent.SetupSequence(value => value.GetNextValidHost(It.IsAny<Dictionary<IPEndPoint, Exception>>()))
+                .Returns(validHost)
+                .Throws(exhausted);
+            parent.Setup(value => value.GetConnectionToValidHostAsync(
+                    validHost, It.IsAny<IDictionary<IPEndPoint, Exception>>()))
+                .ThrowsAsync(initialFailure);
+            parent.Setup(value => value.ValidateHostAndGetConnectionAsync(
+                    new RoutingTarget(host, null), It.IsAny<Dictionary<IPEndPoint, Exception>>()))
+                .ThrowsAsync(retryFailure);
+            parent.SetupGet(value => value.RetryPolicy)
+                .Returns(Mock.Of<IExtendedRetryPolicy>(value =>
+                    value.OnRequestError(It.IsAny<IStatement>(), config, initialFailure, 0)
+                        == RetryDecision.Retry(null, true)));
+            parent.SetupGet(value => value.RequestOptions).Returns(config.DefaultRequestOptions);
+            parent.Setup(value => value.SetCompletedAsync(It.IsAny<Exception>(), It.IsAny<RowSet>()))
+                .Callback<Exception, RowSet>((error, _) => completed.TrySetResult(error))
+                .ReturnsAsync(true);
+            parent.Setup(value => value.SetNoMoreHostsAsync(It.IsAny<NoHostAvailableException>(), It.IsAny<IRequestExecution>()))
+                .Callback<NoHostAvailableException, IRequestExecution>((error, _) => completed.TrySetResult(error))
+                .Returns(Task.CompletedTask);
+            var execution = new RequestExecution(
+                parent.Object, session.Object, Mock.Of<IRequest>(), NullRequestObserver.Instance,
+                new SessionRequestInfo(Mock.Of<IStatement>(), null));
+
+            execution.Start(false);
+
+            var returnedError = await completed.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.AreSame(fatal ? retryFailure : exhausted, returnedError);
+            parent.Verify(value => value.ValidateHostAndGetConnectionAsync(
+                new RoutingTarget(host, null), It.IsAny<Dictionary<IPEndPoint, Exception>>()), Times.Once);
+            parent.Verify(value => value.GetNextValidHost(It.IsAny<Dictionary<IPEndPoint, Exception>>()),
+                Times.Exactly(fatal ? 1 : 2));
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
         public async Task Should_Not_Block_Response_Callback_When_Reprepare_Waits_For_Another_Keyspace(bool useBatch)
         {
             var serializerManager = new SerializerManager(ProtocolVersion.V4);
@@ -622,6 +1432,44 @@ namespace Cassandra.Tests
             Assert.AreEqual(1, invalidatedId[0]);
             Assert.IsInstanceOf<PreparedStatementIdMismatchException>(completedException);
             Assert.AreEqual(1, ((PreparedStatementIdMismatchException)completedException).Id[0]);
+        }
+
+        private sealed class RecoveredConnectionTraceListener : LoggingTests.TestTraceListener
+        {
+            internal Exception Failure { get; }
+
+            internal TaskCompletionSource<bool> Reported { get; } = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            internal TaskCompletionSource<bool> SpeculativeExecutionExhausted { get; } =
+                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            internal RecoveredConnectionTraceListener(bool throwFromDiagnostic, bool fatal)
+            {
+                if (throwFromDiagnostic)
+                {
+                    Failure = fatal
+                        ? (Exception)new OutOfMemoryException("fatal diagnostic callback")
+                        : new InvalidOperationException("diagnostic callback failed");
+                }
+            }
+
+            public override void WriteLine(string message)
+            {
+                base.WriteLine(message);
+                if (message.Contains("Could not obtain an available host for speculative execution"))
+                {
+                    SpeculativeExecutionExhausted.TrySetResult(true);
+                }
+
+                if (message.Contains("Request consumed"))
+                {
+                    Reported.TrySetResult(true);
+                    if (Failure != null)
+                    {
+                        throw Failure;
+                    }
+                }
+            }
         }
     }
 }

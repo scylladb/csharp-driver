@@ -104,7 +104,18 @@ namespace Cassandra.Requests
                     return;
                 }
 
+                RecordConnectionFailure(host);
                 RequestExecution.Logger.Warning("RequestHandler could not obtain a connection while attempting to retry with the current host.");
+            }
+            catch (Exception ex) when (Utils.IsFatalException(ex))
+            {
+                // A late diagnostic failure must still fault this acquisition after the caller has completed.
+                if (!await _parent.SetCompletedAsync(ex).ConfigureAwait(false))
+                {
+                    RecordLateFatalConnectionFailure(host, ex);
+                    throw;
+                }
+                return;
             }
             catch (Exception ex)
             {
@@ -131,6 +142,7 @@ namespace Cassandra.Requests
                     connection = await _parent.GetConnectionToValidHostAsync(validHost, _triedHosts).ConfigureAwait(false);
                     if (connection == null)
                     {
+                        RecordConnectionFailure(validHost.Host);
                         validHost = _parent.GetNextValidHost(_triedHosts);
                     }
                 }
@@ -140,11 +152,40 @@ namespace Cassandra.Requests
                 _host = validHost.Host;
                 await SendAsync(_request, validHost.Host, HandleResponseAsync).ConfigureAwait(false);
             }
+            catch (Exception ex) when (Utils.IsFatalException(ex))
+            {
+                if (!await _parent.SetCompletedAsync(ex).ConfigureAwait(false))
+                {
+                    RecordLateFatalConnectionFailure(validHost.Host, ex);
+                    throw;
+                }
+            }
             catch (Exception ex)
             {
                 _shard = validHost.Shard;
                 _host = validHost.Host;
                 await HandleResponseAsync(RequestError.CreateClientError(ex, true), null, new NodeRequestInfo(validHost.Host, _sessionRequestInfo.PrepareRequest)).ConfigureAwait(false);
+            }
+        }
+
+        private void RecordConnectionFailure(Host host)
+        {
+            if (_triedHosts.TryGetValue(host.Address, out var failure) && failure != null)
+            {
+                _parent.RecordConnectionFailure(host.Address, failure);
+            }
+        }
+
+        private void RecordLateFatalConnectionFailure(Host host, Exception failure)
+        {
+            try
+            {
+                // The request owns returned-cause filtering and identity across speculative executions.
+                _parent.RecordConnectionFailure(host.Address, failure);
+            }
+            catch (Exception)
+            {
+                // Keep the already-selected fatal acquisition failure if diagnostics also fail.
             }
         }
 
