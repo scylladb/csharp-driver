@@ -381,6 +381,82 @@ namespace Cassandra.Tests
             }
         }
 
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        [NonParallelizable]
+        public async Task Should_PreserveLateFatalDiagnosticInAcquisitionTask(bool currentHost, bool fatalDiagnostic)
+        {
+            var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), contactPoint: null);
+            var acquisitionStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseAcquisition = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var failure = new InvalidOperationException("Consumed late acquisition failure");
+            var policy = new Mock<ILoadBalancingPolicy>();
+            policy.Setup(value => value.NewQueryPlan(It.IsAny<RoutingInfo>(), It.IsAny<ClusterState>()))
+                .Returns(Array.Empty<RoutingTarget>());
+            var config = new TestConfigurationBuilder { Policies = new Cassandra.Policies(policy.Object, null, null) }.Build();
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Configuration).Returns(config);
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            var pool = new Mock<IHostConnectionPool>();
+            pool.Setup(value => value.GetConnectionFromHostAsync(
+                    It.IsAny<IDictionary<IPEndPoint, Exception>>(), It.IsAny<Func<string>>(), It.IsAny<RoutingKey>(), -1))
+                .Returns<IDictionary<IPEndPoint, Exception>, Func<string>, RoutingKey, int>(async (tried, _, __, ___) =>
+                {
+                    acquisitionStarted.TrySetResult(true);
+                    await releaseAcquisition.Task.ConfigureAwait(false);
+                    tried[host.Address] = failure;
+                    return null;
+                });
+            var session = new Mock<IInternalSession>();
+            session.SetupGet(value => value.Cluster).Returns(cluster.Object);
+            session.SetupGet(value => value.InternalCluster).Returns(cluster.Object);
+            session.Setup(value => value.GetOrCreateConnectionPool(host, HostDistance.Local)).Returns(pool.Object);
+            var statement = new SimpleStatement("SELECT * FROM table1");
+            var requestInfo = new SessionRequestInfo(statement, null);
+            var handler = new RequestHandler(session.Object, SerializerManager.Default.GetCurrentSerializer(),
+                requestInfo, config.DefaultRequestOptions, NullRequestObserver.Instance);
+            var execution = new RequestExecution(handler, session.Object, Mock.Of<IRequest>(), NullRequestObserver.Instance, requestInfo);
+            typeof(RequestExecution).GetField("_host", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(execution, host);
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new RecoveredConnectionTraceListener(true, fatalDiagnostic);
+            Task acquisition = null;
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                var method = typeof(RequestExecution).GetMethod(currentHost ? "SendToCurrentHostAsync" : "SendToNextHostAsync",
+                    BindingFlags.Instance | BindingFlags.NonPublic);
+                acquisition = (Task)method.Invoke(execution, currentHost ? null : new object[] { ValidHost.New(host, HostDistance.Local) });
+                await acquisitionStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.IsTrue(await handler.SetCompletedAsync(new InvalidQueryException("Already returned error")).ConfigureAwait(false));
+                releaseAcquisition.TrySetResult(true);
+                if (fatalDiagnostic)
+                {
+                    var observed = await Assert.ThrowsAsync<OutOfMemoryException>(() => acquisition.WaitAsync(TimeSpan.FromSeconds(5)));
+                    Assert.AreSame(listener.Failure, observed);
+                }
+                else
+                {
+                    await acquisition.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                }
+                Assert.IsTrue(listener.Reported.Task.IsCompleted);
+            }
+            finally
+            {
+                releaseAcquisition.TrySetResult(true);
+                if (acquisition != null)
+                {
+                    await acquisition.ContinueWith(completed => _ = completed.Exception, TaskScheduler.Default)
+                        .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                }
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                config.Timer.Dispose();
+            }
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         [NonParallelizable]
