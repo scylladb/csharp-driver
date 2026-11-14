@@ -1772,6 +1772,7 @@ namespace Cassandra.Tests
 
         [TestCase(false)]
         [TestCase(true)]
+        [NonParallelizable]
         public async Task Should_PreserveDeferredFatalSetupWhenLaterHostWarmupFailsSynchronously(bool fatalWarmup)
         {
             using var retirementStarted = new ManualResetEventSlim();
@@ -1792,9 +1793,23 @@ namespace Cassandra.Tests
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
             Task removal = null;
+            Session diagnosticSession = null;
+            var diagnosticCalls = 0;
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new ConsumedWarmupTraceListener(false, message =>
+            {
+                if (message.Contains("initial warmup failure at "))
+                {
+                    diagnosticCalls++;
+                    diagnosticSession.Dispose();
+                }
+            });
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener);
             try
             {
                 using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "mixed-deferred-setup");
+                diagnosticSession = session;
                 var internalSession = (IInternalSession)session;
                 internalSession.GetOrCreateConnectionPool(oldHost, HostDistance.Local);
                 metadata.RemoveHost(oldHost.Address);
@@ -1847,6 +1862,7 @@ namespace Cassandra.Tests
                 var observed = await Assert.ThrowsAsync<OutOfMemoryException>(() =>
                     initialization.WaitToCompleteAsync(5000)).ConfigureAwait(false);
                 Assert.AreSame(fatalFailure, observed);
+                Assert.AreEqual(0, diagnosticCalls, "Fatal setup must propagate before a warmup diagnostic can dispose the session.");
             }
             finally
             {
@@ -1856,6 +1872,8 @@ namespace Cassandra.Tests
                 {
                     await removal.WaitToCompleteAsync(5000).ConfigureAwait(false);
                 }
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
                 config.Timer.Dispose();
             }
         }
