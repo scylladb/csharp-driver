@@ -363,7 +363,8 @@ namespace Cassandra.Tests
                     releases[1].TrySetResult(true);
                     await listener.SpeculativeExecutionExhausted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
                     Assert.IsFalse(listener.Messages.Values.Any(message => message.Contains("Request consumed")));
-                    await callback(null, new ProxyResultResponse(ResultResponse.ResultResponseKind.Void)).ConfigureAwait(false);
+                    await callback(null, new ProxyResultResponse(ResultResponse.ResultResponseKind.Void))
+                        .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
                     Assert.IsNotNull(await response.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
                 }
                 else
