@@ -153,9 +153,13 @@ namespace Cassandra.IntegrationTests.ClientRoutes
 
         public void Dispose()
         {
-            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            lock (_forwardingSync)
             {
-                return;
+                // Finish any admitted forwarding control before taking ownership of shutdown.
+                if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                {
+                    return;
+                }
             }
 
             _cancellation.Cancel();
