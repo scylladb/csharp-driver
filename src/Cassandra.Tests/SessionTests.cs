@@ -237,7 +237,8 @@ namespace Cassandra.Tests
             Trace.Listeners.Add(listener);
             try
             {
-                await ((IInternalSession)session).Init().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+                    ((IInternalSession)session).Init().WaitToCompleteAsync(5000)).ConfigureAwait(false);
 
                 Assert.IsTrue(shutdownReturned);
                 Assert.AreEqual(1, listener.Messages.Values.Count(message => message.Contains("failed to warm up:")));
