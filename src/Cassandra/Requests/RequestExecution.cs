@@ -112,6 +112,7 @@ namespace Cassandra.Requests
                 // A late diagnostic failure must still fault this acquisition after the caller has completed.
                 if (!await _parent.SetCompletedAsync(ex).ConfigureAwait(false))
                 {
+                    RecordLateFatalConnectionFailure(host, ex);
                     throw;
                 }
                 return;
@@ -155,6 +156,7 @@ namespace Cassandra.Requests
             {
                 if (!await _parent.SetCompletedAsync(ex).ConfigureAwait(false))
                 {
+                    RecordLateFatalConnectionFailure(validHost.Host, ex);
                     throw;
                 }
             }
@@ -171,6 +173,19 @@ namespace Cassandra.Requests
             if (_triedHosts.TryGetValue(host.Address, out var failure) && failure != null)
             {
                 _parent.RecordConnectionFailure(host.Address, failure);
+            }
+        }
+
+        private void RecordLateFatalConnectionFailure(Host host, Exception failure)
+        {
+            try
+            {
+                // The request owns returned-cause filtering and identity across speculative executions.
+                _parent.RecordConnectionFailure(host.Address, failure);
+            }
+            catch (Exception)
+            {
+                // Keep the already-selected fatal acquisition failure if diagnostics also fail.
             }
         }
 

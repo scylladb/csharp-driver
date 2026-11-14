@@ -51,6 +51,19 @@ namespace Cassandra.Requests
                     continue;
                 }
 
+                if (Utils.IsFatalException(diagnosticError))
+                {
+                    try
+                    {
+                        Logger.Error("Request consumed a fatal failure to obtain a connection to {0}: {1}", failure.Key, diagnosticError);
+                    }
+                    catch (Exception)
+                    {
+                        // The acquisition retains its original fatal failure if its diagnostic sink also fails.
+                    }
+                    continue;
+                }
+
                 try
                 {
                     Logger.Verbose("Request consumed a failure to obtain a connection to {0}: {1}", failure.Key, diagnosticError);
