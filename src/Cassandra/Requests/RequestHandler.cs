@@ -301,7 +301,8 @@ namespace Cassandra.Requests
         private Task CompleteRequestAsync(Exception error, RowSet result)
         {
             Volatile.Write(ref _returnedError, error);
-            Volatile.Write(ref _diagnosticsCompleted, 1);
+            // Publish completion before checking the queue, pairing with the recorder's enqueue.
+            Interlocked.Exchange(ref _diagnosticsCompleted, 1);
             try
             {
                 Volatile.Read(ref _connectionFailures)?.Report(error);
