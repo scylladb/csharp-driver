@@ -119,6 +119,79 @@ namespace Cassandra.Tests
             }
         }
 
+        [TestCase(false, "none")]
+        [TestCase(false, "ordinary")]
+        [TestCase(false, "fatal")]
+        [TestCase(true, "none")]
+        [NonParallelizable]
+        public async Task Should_DistinguishHostUpNotificationFailureFromWarmupFailure(bool fatalNotification, string diagnostic)
+        {
+            Exception notificationFailure = fatalNotification ? new OutOfMemoryException("Fatal Host.Up callback")
+                : new InvalidOperationException("Ordinary Host.Up callback");
+            Exception diagnosticFailure = diagnostic == "fatal" ? new OutOfMemoryException("Fatal Host.Up warning sink")
+                : new InvalidOperationException("Ordinary Host.Up warning sink");
+            var config = new TestConfigurationBuilder
+            {
+                ConnectionFactory = new FakeConnectionFactory(endPoint =>
+                {
+                    var connection = new Mock<IConnection>();
+                    connection.SetupGet(value => value.EndPoint).Returns(endPoint);
+                    connection.Setup(value => value.Open()).ReturnsAsync((Responses.Response)null);
+                    return connection.Object;
+                }),
+                PoolingOptions = new PoolingOptions().SetCoreConnectionsPerHost(HostDistance.Local, 1)
+            }.Build();
+            using var metadata = new Metadata(config);
+            var host = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
+            host.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            host.SetDown();
+            var callbackCalls = 0;
+            host.Up += _ =>
+            {
+                callbackCalls++;
+                throw notificationFailure;
+            };
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            cluster.Setup(value => value.AllHosts()).Returns(new[] { host });
+            cluster.Setup(value => value.RetrieveAndSetDistance(host)).Returns(HostDistance.Local);
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new ConsumedWarmupTraceListener(false, message =>
+            {
+                if (diagnostic != "none" && message.Contains("Host-up notification"))
+                {
+                    throw diagnosticFailure;
+                }
+            });
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "warmup-host-up-failure");
+                var internalSession = (IInternalSession)session;
+                var initialization = internalSession.Init();
+                if (fatalNotification || diagnostic == "fatal")
+                {
+                    var observed = await Assert.ThrowsAsync<OutOfMemoryException>(() => initialization.WaitToCompleteAsync(5000));
+                    Assert.AreSame(fatalNotification ? notificationFailure : diagnosticFailure, observed);
+                }
+                else
+                {
+                    await initialization.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+                Assert.AreEqual(1, callbackCalls);
+                Assert.AreEqual(1, internalSession.GetPools().Single().Value.OpenConnections);
+                Assert.IsFalse(listener.Messages.Values.Any(message => message.Contains("failed to warm up") || message.Contains("failed to be warmed up")));
+                Assert.AreEqual(fatalNotification ? 0 : 1, listener.Messages.Values.Count(message => message.Contains("Host-up notification")));
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                config.Timer.Dispose();
+            }
+        }
+
         [TestCase(1)]
         [TestCase(2)]
         [NonParallelizable]
