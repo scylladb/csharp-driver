@@ -585,7 +585,7 @@ namespace Cassandra
                     host = currentHost;
                     if (!IsPoolHostEligible(host, clientRoutesEnabled, allowDownHost, ref distance))
                     {
-                        // Only warmup may create a down host's recovery pool.
+                        // With client routes, only warmup may create a down host's recovery pool.
                         Session.Logger.Verbose(
                             "Not creating a connection pool for host {0}: it is {1}.",
                             host.Address, distance == HostDistance.Ignored ? "ignored" : "down");
