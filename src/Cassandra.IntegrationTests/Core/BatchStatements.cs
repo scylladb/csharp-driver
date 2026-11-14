@@ -76,11 +76,12 @@ namespace Cassandra.IntegrationTests.Core
                       .ThenRowsSuccess(new[] { "id", "label", "number" }, r => r.WithRows(expectedValues.ToArray())));
 
             // Verify results
-            var rs = async
-                ? Session.ExecuteAsync(new SimpleStatement($"SELECT * FROM {_tableName} WHERE id IN ({1}, {2}, {3})")).GetAwaiter().GetResult()
-                : Session.Execute($"SELECT * FROM {_tableName} WHERE id IN ({1}, {2}, {3})");
+            var rows = async
+                ? Session.ExecuteAsync(new SimpleStatement($"SELECT * FROM {_tableName} WHERE id IN ({1}, {2}, {3})"))
+                         .GetAwaiter().GetResult().ToListAsync().AsTask().GetAwaiter().GetResult()
+                : Session.Execute($"SELECT * FROM {_tableName} WHERE id IN ({1}, {2}, {3})").ToList();
 
-            VerifyData(rs, expectedValues);
+            VerifyData(rows, expectedValues);
         }
 
         [Test]

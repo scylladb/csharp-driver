@@ -17,6 +17,61 @@ foreach (var row in rs)
 }
 ```
 
+### Asynchronous automatic paging
+
+Iterating the `RowSet` returned by `Execute()` blocks the calling thread while each following page is retrieved.
+`ExecuteAsync()` returns an `AsyncRowSet` instead, which implements `IAsyncEnumerable<Row>`: iterate it with
+`await foreach` to retrieve the following pages without blocking.
+
+```csharp
+var ps = await session.PrepareAsync("SELECT * from tbl1 WHERE key = ?");
+var statement = ps.Bind(key).SetPageSize(1000);
+var rs = await session.ExecuteAsync(statement);
+await foreach (var row in rs)
+{
+   // The async enumerator yields all the rows from the database,
+   // retrieving them in the background in blocks of 1000.
+}
+```
+
+The asynchronous LINQ operators of .NET 10 (`System.Linq.AsyncEnumerable`) apply to an `AsyncRowSet` directly, and
+`WithCancellation()` passes a cancellation token to the enumeration. Rows are dequeued as they are read, so each of
+these alternatives reads its own result:
+
+```csharp
+// Either collect the rows
+var rs1 = await session.ExecuteAsync(statement);
+List<Row> rows = await rs1.ToListAsync(cancellationToken);
+
+// Or iterate them with a cancellation token
+var rs2 = await session.ExecuteAsync(statement);
+await foreach (var row in rs2.WithCancellation(cancellationToken))
+{
+   // ...
+}
+```
+
+An `AsyncRowSet` also exposes the `Info`, `Columns` and `PagingState` of the result, and `FetchMoreResultsAsync()`
+retrieves the following page before the current one has been consumed.
+
+Cancellation stops waiting for the following page. A page request that was already sent is not cancelled: once it
+completes, its rows are added to the `AsyncRowSet`, and the next enumerator that dequeues rows yields them. That can be
+an enumerator running concurrently rather than the next enumeration.
+
+The query abort timeout (`Builder.WithQueryTimeout()`) applies only to synchronous operations, such as `Execute()` and
+iterating a `RowSet`, which stop waiting once it expires. `ExecuteAsync()` does not apply it to the first page, and
+iterating an `AsyncRowSet` does not apply it to the following ones. The socket read timeout
+(`SocketOptions.SetReadTimeoutMillis()`) applies to each attempt of a page request on a host, not to the total wait:
+after a timeout, the retry policy can try another host, and a read timeout of 0 disables it. To bound the wait, pass a
+cancellation token.
+
+Concurrent enumerations of the same `RowSet` or `AsyncRowSet` are thread-safe: each row is yielded once, and concurrent
+enumerators share the request for the following page instead of sending it again. A page whose request failed is
+requested again by the next enumeration.
+
+Once the session is disposed, retrieving the following page throws an `ObjectDisposedException`. A page request that
+is in flight when the session is disposed fails too, usually with a `NoHostAvailableException`.
+
 ## Manual paging 
 
 If you want to retrieve the next page of results only when you ask for it (for example, in a webpager), use the
