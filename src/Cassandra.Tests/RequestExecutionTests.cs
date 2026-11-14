@@ -657,6 +657,76 @@ namespace Cassandra.Tests
             }
         }
 
+        [TestCase("oom", false, false, "direct")]
+        [TestCase("oom", true, false, "direct")]
+        [TestCase("bad-image", false, false, "direct")]
+        [TestCase("bad-image", true, false, "direct")]
+        [TestCase("ordinary", false, false, "direct")]
+        [TestCase("ordinary", true, false, "direct")]
+        [TestCase("oom", false, true, "direct")]
+        [TestCase("oom", true, true, "direct")]
+        [TestCase("oom", false, false, "aggregate")]
+        [TestCase("oom", false, false, "preferred")]
+        [TestCase("oom", false, false, "superseded")]
+        [TestCase("oom", false, false, "unresolved")]
+        [TestCase("oom", true, false, "aggregate")]
+        [TestCase("oom", true, false, "preferred")]
+        [TestCase("oom", true, false, "superseded")]
+        [TestCase("oom", true, false, "unresolved")]
+        [NonParallelizable]
+        public void Should_RetainDistinctFatalWrappersWhenFilteringReturnedInnerCauses(
+            string wrapper, bool partiallyReturned, bool returnedWhole, string component)
+        {
+            var host = new IPEndPoint(IPAddress.Loopback, 9042);
+            var returned = new InvalidOperationException("Returned inner cause must not be logged");
+            var consumed = new InvalidOperationException("Unreturned inner cause remains visible");
+            Exception inner = partiallyReturned ? new AggregateException(returned, consumed) : returned;
+            Exception failure = wrapper == "oom" ? new OutOfMemoryException(returned.Message, inner)
+                : wrapper == "bad-image" ? new BadImageFormatException(returned.Message, inner)
+                : new DriverException(returned.Message, inner);
+            var originalText = failure.ToString();
+            Exception recorded = component == "aggregate" ? new AggregateException(returned, failure)
+                : component == "preferred" ? new ConnectionFailure(failure, Array.Empty<Exception>(), Array.Empty<Exception>())
+                : component == "superseded" ? new ConnectionFailure(returned, new[] { failure }, Array.Empty<Exception>())
+                : component == "unresolved" ? new ConnectionFailure(returned, Array.Empty<Exception>(), new[] { failure })
+                : failure;
+            var collector = new ConsumedConnectionFailures.Collector();
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new RecoveredConnectionTraceListener(false, false);
+            Diagnostics.CassandraTraceSwitch.Level = wrapper == "ordinary" ? TraceLevel.Verbose : TraceLevel.Error;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                collector.Record(host, recorded);
+                collector.Report(returnedWhole ? failure : returned);
+                collector.Record(host, recorded);
+                collector.Report(returnedWhole ? failure : returned);
+                var messages = listener.Messages.Values.Where(message => message.Contains("Request consumed")).ToArray();
+                var expected = returnedWhole || (wrapper == "ordinary" && !partiallyReturned) ? 0 : 1;
+                Assert.AreEqual(expected, messages.Length);
+                if (expected != 0)
+                {
+                    StringAssert.DoesNotContain(returned.Message, messages[0]);
+                    if (wrapper != "ordinary")
+                    {
+                        StringAssert.Contains("Request consumed a fatal failure", messages[0]);
+                        StringAssert.Contains(failure.GetType().FullName, messages[0]);
+                    }
+                    if (partiallyReturned)
+                    {
+                        StringAssert.Contains(consumed.Message, messages[0]);
+                    }
+                }
+                Assert.AreSame(inner, failure.InnerException);
+                Assert.AreEqual(originalText, failure.ToString());
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         [NonParallelizable]
