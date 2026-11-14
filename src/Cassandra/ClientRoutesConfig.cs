@@ -42,7 +42,7 @@ namespace Cassandra
         /// from 1 through 65535. See <see cref="NativeTransportPort"/>.
         /// </param>
         /// <param name="shardAwarenessEnabled">
-        /// Whether shard-aware source-port selection is enabled for routed connections.
+        /// Whether shard awareness is enabled for routed connections.
         /// See <see cref="ShardAwarenessEnabled"/>.
         /// </param>
         /// <exception cref="ArgumentNullException"><paramref name="proxies"/> is null.</exception>
@@ -82,13 +82,16 @@ namespace Cassandra
         public int NativeTransportPort => _snapshot.NativeTransportPort;
 
         /// <summary>
-        /// Gets whether shard-aware source-port selection is enabled for client-routes connections.
+        /// Gets whether shard awareness is enabled for client-routes connections.
         /// The default is <c>false</c>.
         /// </summary>
         /// <remarks>
-        /// Shard-aware routing through a proxy only works when the proxy preserves the client's source port,
-        /// so it is opt-in. This setting only affects routed connections; direct connections to hosts without
-        /// a client route remain shard-aware.
+        /// Enabling this setting allows shard-aware source-port selection, token-to-shard routing and pool sizing
+        /// in shard multiples for routed connections. Source-port targeting requires the proxy to preserve the
+        /// client's source port, so routed shard awareness is opt-in. When disabled, routed connections do not
+        /// use shard metadata for routing, pool sizing or choosing a shard when opening a connection.
+        /// This setting only affects routed connections. Direct connections to hosts without a client route
+        /// remain shard-aware unless shard awareness is disabled globally.
         /// </remarks>
         public bool ShardAwarenessEnabled => _snapshot.ShardAwarenessEnabled;
 
