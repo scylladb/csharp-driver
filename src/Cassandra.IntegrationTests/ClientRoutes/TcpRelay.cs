@@ -166,9 +166,11 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             }
             catch (ObjectDisposedException)
             {
+                Trace.TraceInformation("Client-routes relay listener was disposed during shutdown.");
             }
-            catch (SocketException)
+            catch (SocketException ex)
             {
+                Trace.TraceInformation("Client-routes relay listener stopped during shutdown: {0}", ex);
             }
             finally
             {
