@@ -457,6 +457,77 @@ namespace Cassandra.Tests
             }
         }
 
+        [TestCase("aggregate")]
+        [TestCase("preferred")]
+        [TestCase("superseded")]
+        [TestCase("unresolved")]
+        [NonParallelizable]
+        public void Should_FilterReturnedCausesInsideNestedAggregates(string component)
+        {
+            var host = new IPEndPoint(IPAddress.Loopback, 9042);
+            var returned = new InvalidOperationException("Returned leaf must not be logged");
+            var consumed = new InvalidOperationException("Consumed leaf must remain visible");
+            var aggregate = new AggregateException(new AggregateException(returned, consumed));
+            Exception failure = component == "preferred" ? new ConnectionFailure(aggregate, Array.Empty<Exception>(), Array.Empty<Exception>())
+                : component == "superseded" ? new ConnectionFailure(returned, new[] { aggregate }, Array.Empty<Exception>())
+                : component == "unresolved" ? new ConnectionFailure(returned, Array.Empty<Exception>(), new[] { aggregate })
+                : aggregate;
+            var failures = new ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>>();
+            failures.Enqueue(new KeyValuePair<IPEndPoint, Exception>(host, failure));
+            var returnedError = new NoHostAvailableException(new Dictionary<IPEndPoint, Exception> { [host] = returned });
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new RecoveredConnectionTraceListener(false, false);
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                ConsumedConnectionFailures.Report(failures, returnedError);
+                var messages = listener.Messages.Values.Where(message => message.Contains("Request consumed")).ToArray();
+                Assert.AreEqual(1, messages.Length);
+                StringAssert.Contains(consumed.Message, messages[0]);
+                StringAssert.DoesNotContain(returned.Message, messages[0]);
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+        }
+
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        [NonParallelizable]
+        public void Should_RetainUnreturnedAggregateFailures(bool returnedWhole, bool empty)
+        {
+            var host = new IPEndPoint(IPAddress.Loopback, 9042);
+            var failure = new AggregateException("Original aggregate diagnostic", empty ? Array.Empty<Exception>()
+                : new[] { new InvalidOperationException("Original consumed cause") });
+            var failures = new ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>>();
+            failures.Enqueue(new KeyValuePair<IPEndPoint, Exception>(host, failure));
+            var returnedError = returnedWhole ? (Exception)failure : new InvalidQueryException("Different returned failure");
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new RecoveredConnectionTraceListener(false, false);
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                ConsumedConnectionFailures.Report(failures, returnedError);
+                var messages = listener.Messages.Values.Where(message => message.Contains("Request consumed")).ToArray();
+                Assert.AreEqual(returnedWhole ? 0 : 1, messages.Length);
+                if (!returnedWhole)
+                {
+                    StringAssert.Contains(failure.ToString(), messages[0]);
+                }
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         [NonParallelizable]
