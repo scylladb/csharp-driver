@@ -407,14 +407,20 @@ namespace Cassandra.Tests
             }
         }
 
-        [TestCase(false)]
-        [TestCase(true)]
+        [TestCase(false, false, false)]
+        [TestCase(true, false, false)]
+        [TestCase(false, true, false)]
+        [TestCase(true, true, false)]
+        [TestCase(false, true, true)]
+        [TestCase(true, true, true)]
         [NonParallelizable]
-        public async Task Should_DeduplicateLateConsumedFailuresByIdentity(bool sharedCause)
+        public async Task Should_DeduplicateLateConsumedFailuresByIdentity(bool sharedCause, bool fatal, bool returned)
         {
             var host = new IPEndPoint(IPAddress.Loopback, 9042);
-            var firstFailure = new InvalidOperationException("Identical diagnostic message");
-            var secondFailure = sharedCause ? firstFailure : new InvalidOperationException(firstFailure.Message);
+            Exception firstFailure = fatal ? new OutOfMemoryException("Identical diagnostic message")
+                : new InvalidOperationException("Identical diagnostic message");
+            var secondFailure = sharedCause ? firstFailure : fatal ? (Exception)new OutOfMemoryException(firstFailure.Message)
+                : new InvalidOperationException(firstFailure.Message);
             var config = new TestConfigurationBuilder().Build();
             var cluster = new Mock<IInternalCluster>();
             cluster.SetupGet(value => value.Configuration).Returns(config);
@@ -425,14 +431,15 @@ namespace Cassandra.Tests
                 new SessionRequestInfo(new SimpleStatement("SELECT * FROM table1"), null), config.DefaultRequestOptions, NullRequestObserver.Instance);
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
             using var listener = new RecoveredConnectionTraceListener(false, false);
-            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
+            Diagnostics.CassandraTraceSwitch.Level = fatal ? TraceLevel.Error : TraceLevel.Verbose;
             Trace.Listeners.Add(listener);
             try
             {
                 handler.RecordConnectionFailure(host, firstFailure);
-                Assert.IsTrue(await handler.SetCompletedAsync(null, new RowSet()).ConfigureAwait(false));
+                Assert.IsTrue(await handler.SetCompletedAsync(returned ? firstFailure : null, new RowSet()).ConfigureAwait(false));
                 handler.RecordConnectionFailure(host, secondFailure);
-                Assert.AreEqual(sharedCause ? 1 : 2, listener.Messages.Values.Count(message => message.Contains("Request consumed")));
+                Assert.AreEqual(returned ? (sharedCause ? 0 : 1) : sharedCause ? 1 : 2,
+                    listener.Messages.Values.Count(message => message.Contains("Request consumed")));
             }
             finally
             {
@@ -442,12 +449,17 @@ namespace Cassandra.Tests
             }
         }
 
-        [TestCase(false, false)]
-        [TestCase(false, true)]
-        [TestCase(true, false)]
-        [TestCase(true, true)]
+        [TestCase(false, false, "none")]
+        [TestCase(true, false, "none")]
+        [TestCase(false, true, "none")]
+        [TestCase(false, true, "ordinary")]
+        [TestCase(false, true, "fatal")]
+        [TestCase(true, true, "none")]
+        [TestCase(true, true, "ordinary")]
+        [TestCase(true, true, "fatal")]
         [NonParallelizable]
-        public async Task Should_PreserveLateFatalDiagnosticInAcquisitionTask(bool currentHost, bool fatalDiagnostic)
+        public async Task Should_PreserveLateFatalDiagnosticInAcquisitionTask(
+            bool currentHost, bool fatalDiagnostic, string errorDiagnostic)
         {
             var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), contactPoint: null);
             var acquisitionStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -482,8 +494,23 @@ namespace Cassandra.Tests
             typeof(RequestExecution).GetField("_host", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(execution, host);
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
             using var listener = new RecoveredConnectionTraceListener(true, fatalDiagnostic);
+            var errorListener = new Mock<TraceListener> { CallBase = true };
+            errorListener.Setup(value => value.WriteLine(It.Is<string>(message =>
+                    message.Contains("Request consumed a fatal failure to obtain a connection"))))
+                .Callback(() =>
+                {
+                    if (errorDiagnostic == "ordinary")
+                    {
+                        throw new InvalidOperationException("Error listener failed");
+                    }
+                    if (errorDiagnostic == "fatal")
+                    {
+                        throw new OutOfMemoryException("Error listener failed fatally");
+                    }
+                });
             Task acquisition = null;
             Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
+            Trace.Listeners.Add(errorListener.Object);
             Trace.Listeners.Add(listener);
             try
             {
@@ -503,6 +530,10 @@ namespace Cassandra.Tests
                     await acquisition.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
                 }
                 Assert.IsTrue(listener.Reported.Task.IsCompleted);
+                errorListener.Verify(value => value.WriteLine(It.Is<string>(message =>
+                    message.Contains("Request consumed a fatal failure to obtain a connection") &&
+                    message.Contains(host.Address.ToString()) && message.Contains(listener.Failure.Message))),
+                    fatalDiagnostic ? Times.Once() : Times.Never());
             }
             finally
             {
@@ -518,6 +549,8 @@ namespace Cassandra.Tests
                 finally
                 {
                     Trace.Listeners.Remove(listener);
+                    Trace.Listeners.Remove(errorListener.Object);
+                    errorListener.Object.Dispose();
                     Diagnostics.CassandraTraceSwitch.Level = previousLevel;
                     config.Timer.Dispose();
                 }
