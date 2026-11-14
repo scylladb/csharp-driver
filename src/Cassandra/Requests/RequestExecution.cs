@@ -109,8 +109,11 @@ namespace Cassandra.Requests
             }
             catch (Exception ex) when (Utils.IsFatalException(ex))
             {
-                // This acquisition runs in the background: complete the caller instead of retrying or dropping the error.
-                await _parent.SetCompletedAsync(ex).ConfigureAwait(false);
+                // A late diagnostic failure must still fault this acquisition after the caller has completed.
+                if (!await _parent.SetCompletedAsync(ex).ConfigureAwait(false))
+                {
+                    throw;
+                }
                 return;
             }
             catch (Exception ex)
@@ -147,6 +150,13 @@ namespace Cassandra.Requests
                 _shard = validHost.Shard;
                 _host = validHost.Host;
                 await SendAsync(_request, validHost.Host, HandleResponseAsync).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (Utils.IsFatalException(ex))
+            {
+                if (!await _parent.SetCompletedAsync(ex).ConfigureAwait(false))
+                {
+                    throw;
+                }
             }
             catch (Exception ex)
             {
