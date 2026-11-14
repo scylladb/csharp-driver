@@ -115,6 +115,24 @@ namespace Cassandra.Requests
                 return null;
             }
 
+            if (error is AggregateException aggregate)
+            {
+                var remaining = new List<Exception>();
+                var unchanged = true;
+                foreach (var cause in aggregate.InnerExceptions)
+                {
+                    var unreturnedCause = GetUnreturnedFailure(cause, returnedCauses);
+                    unchanged &= ReferenceEquals(cause, unreturnedCause);
+                    if (unreturnedCause != null)
+                    {
+                        remaining.Add(unreturnedCause);
+                    }
+                }
+                // The original aggregate message includes its inner messages, including returned causes.
+                return unchanged ? aggregate : remaining.Count == 0 ? null
+                    : new AggregateException("Consumed connection candidate failures", remaining);
+            }
+
             if (!(error is ConnectionFailure connectionFailure))
             {
                 return error;
