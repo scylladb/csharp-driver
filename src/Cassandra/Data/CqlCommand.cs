@@ -58,8 +58,11 @@ namespace Cassandra.Data
         /// <summary>
         /// Gets or sets the ConsistencyLevel when executing the current <see cref="CqlCommand"/>.
         /// When unset, this command inherits the prepared statement or session defaults.
-        /// The getter reports the currently known prepared or cached statement setting, otherwise the session default,
-        /// without preparing the command. A custom connection can select a different statement during preparation.
+        /// The getter reports the currently known prepared or current-generation cached statement setting,
+        /// otherwise the session default, without preparing the command. After concurrent cache invalidation,
+        /// preparation can reuse an older unaffected entry that this snapshot does not read.
+        /// Call <see cref="Prepare"/> first to observe that entry's setting.
+        /// A custom connection can select a different statement during preparation.
         /// Before a connection is available, the default is <see cref="ConsistencyLevel.LocalQuorum"/>.
         /// </summary>
         public ConsistencyLevel ConsistencyLevel

@@ -59,9 +59,12 @@ Choose a distinct name for this configuration before opening connections, or ove
 `CreateCluster` to control cluster creation and caching.
 
 The command consistency getter is a snapshot of currently known settings. It reads an existing
-completed prepared-statement cache entry without sending a prepare request; a cache miss or
-in-flight preparation reports the current session default. A custom `CreatePreparedStatement`
-override can select a different statement during preparation. Call `Prepare()` first when
+completed prepared-statement cache entry in the current cache generation without sending a prepare
+request; a cache miss or in-flight preparation reports the current session default. After a concurrent
+invalidation, the getter can temporarily report the session default even though preparation can reuse
+an older completed entry unaffected by that invalidation. Call `Prepare()` first to observe that entry's
+setting. A custom `CreatePreparedStatement` override can select a different statement during
+preparation. Call `Prepare()` first when
 relying on settings selected by such an override, then read the getter again.
 
 `QueryOptions.DefaultConsistencyLevel` and `QueryOptions.DefaultSerialConsistencyLevel` are
