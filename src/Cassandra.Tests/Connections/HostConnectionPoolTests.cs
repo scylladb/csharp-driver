@@ -2371,6 +2371,10 @@ namespace Cassandra.Tests.Connections
 
                 await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
                 Assert.AreEqual(3, connections.Count);
+                Assert.AreEqual(3, target.OpenConnections);
+                CollectionAssert.AreEquivalent(connections.Select(connection => connection.Object), target.ConnectionsSnapshot);
+                connections[0].Verify(value => value.Dispose(), Times.Never);
+                connections[1].Verify(value => value.Dispose(), Times.Never);
                 connections[1].Verify(value => value.Open(It.IsAny<int>(), 4), Times.Once);
                 connections[2].Verify(value => value.Open(), Times.Once);
                 connections[2].Verify(value => value.Open(It.IsAny<int>(), It.IsAny<int>()), Times.Never);
