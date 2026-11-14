@@ -45,7 +45,10 @@ namespace Cassandra
         private static List<Action> _deferredMetricsRetirements;
 
         [ThreadStatic]
-        private static List<Action> _deferredMetricsRetirementDiagnostics;
+        private static Queue<Action> _deferredMetricsRetirementDiagnostics;
+
+        [ThreadStatic]
+        private static bool _isDrainingMetricsRetirements;
 
         [ThreadStatic]
         private static Stack<Session> _activePoolLookups;
@@ -492,8 +495,8 @@ namespace Cassandra
 
         private static void DeferFailedMetricsRetirementDiagnostic(Host host, Exception cleanupFailure)
         {
-            _deferredMetricsRetirementDiagnostics ??= new List<Action>();
-            _deferredMetricsRetirementDiagnostics.Add(() =>
+            _deferredMetricsRetirementDiagnostics ??= new Queue<Action>();
+            _deferredMetricsRetirementDiagnostics.Enqueue(() =>
                 Logger.Error("Could not retire failed pool metrics for {0}; this host is blocked for the rest of this session: {1}",
                     host.Address, cleanupFailure));
         }
@@ -578,54 +581,69 @@ namespace Cassandra
 
         private void DrainDeferredMetricsRetirements(Exception primaryFailure)
         {
-            if (IsPoolLifecycleLockHeld())
+            if (_isDrainingMetricsRetirements || IsPoolLifecycleLockHeld())
             {
                 return;
             }
 
-            var pending = _deferredMetricsRetirements;
-            _deferredMetricsRetirements = null;
             Exception failure = null;
-            if (pending != null)
-            {
-                foreach (var retirement in pending)
-                {
-                    try
-                    {
-                        retirement();
-                    }
-                    catch (Exception error)
-                    {
-                        // Settle every queued barrier, retaining fatal failure priority.
-                        if (failure == null || (!Utils.IsFatalException(failure) && Utils.IsFatalException(error)))
-                        {
-                            failure = error;
-                        }
-                    }
-                }
-            }
-
-            // Diagnostic sinks run after all cleanup and outside pool locks. Their failures
-            // must not hide a fatal cleanup/setup failure or strand another retirement.
-            var diagnostics = _deferredMetricsRetirementDiagnostics;
-            _deferredMetricsRetirementDiagnostics = null;
             Exception diagnosticFailure = null;
-            if (diagnostics != null)
+            Queue<Action> diagnostics = null;
+            _isDrainingMetricsRetirements = true;
+            try
             {
-                foreach (var diagnostic in diagnostics)
+                do
                 {
-                    try
+                    // Reentrant provider callbacks may queue more cleanup. The outer drain
+                    // owns it until every queued retirement has settled, across sessions.
+                    while (_deferredMetricsRetirements != null)
                     {
-                        diagnostic();
-                    }
-                    catch (Exception error)
-                    {
-                        if (diagnosticFailure == null && Utils.IsFatalException(error))
+                        var pending = _deferredMetricsRetirements;
+                        _deferredMetricsRetirements = null;
+                        foreach (var retirement in pending)
                         {
-                            diagnosticFailure = error;
+                            try
+                            {
+                                retirement();
+                            }
+                            catch (Exception error)
+                            {
+                                // Settle every queued barrier, retaining fatal failure priority.
+                                if (failure == null || (!Utils.IsFatalException(failure) && Utils.IsFatalException(error)))
+                                {
+                                    failure = error;
+                                }
+                            }
+                        }
+                    }
+
+                    // Diagnostic sinks run after cleanup and outside pool locks. Reentrant
+                    // lookups cannot drain them early or promote their failures to cleanup.
+                    if (diagnostics == null || diagnostics.Count == 0)
+                    {
+                        diagnostics = _deferredMetricsRetirementDiagnostics;
+                        _deferredMetricsRetirementDiagnostics = null;
+                    }
+                    if (diagnostics != null && diagnostics.TryDequeue(out var diagnostic))
+                    {
+                        try
+                        {
+                            diagnostic();
+                        }
+                        catch (Exception error)
+                        {
+                            if (diagnosticFailure == null && Utils.IsFatalException(error))
+                            {
+                                diagnosticFailure = error;
+                            }
                         }
                     }
                 }
+                while (_deferredMetricsRetirements != null || _deferredMetricsRetirementDiagnostics != null || diagnostics?.Count > 0);
+            }
+            finally
+            {
+                _isDrainingMetricsRetirements = false;
             }
             if (Utils.IsFatalException(failure))
             {

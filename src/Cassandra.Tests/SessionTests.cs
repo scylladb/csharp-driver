@@ -1444,12 +1444,24 @@ namespace Cassandra.Tests
             }
         }
 
-        [TestCase(false, false)]
-        [TestCase(true, false)]
-        [TestCase(false, true)]
-        [TestCase(true, true)]
+        [TestCase(false, false, "none")]
+        [TestCase(true, false, "none")]
+        [TestCase(false, true, "none")]
+        [TestCase(true, true, "none")]
+        [TestCase(false, false, "cleanup")]
+        [TestCase(true, false, "cleanup")]
+        [TestCase(false, true, "cleanup")]
+        [TestCase(true, true, "cleanup")]
+        [TestCase(false, false, "cleanup-failure")]
+        [TestCase(true, false, "cleanup-failure")]
+        [TestCase(false, true, "cleanup-failure")]
+        [TestCase(true, true, "cleanup-failure")]
+        [TestCase(false, false, "diagnostic-failure")]
+        [TestCase(true, false, "diagnostic-failure")]
+        [TestCase(false, true, "diagnostic-failure")]
+        [TestCase(true, true, "diagnostic-failure")]
         [NonParallelizable]
-        public void Should_DrainAllFailedMetricsBeforeFatalDiagnostics(bool fatalSetup, bool fatalCleanup)
+        public void Should_DrainAllFailedMetricsBeforeFatalDiagnostics(bool fatalSetup, bool fatalCleanup, string reentry)
         {
             Exception setupFailure = fatalSetup ? new OutOfMemoryException("Fatal outer setup") : new InvalidOperationException("Ordinary outer setup");
             var cleanupFailure = new OutOfMemoryException("Fatal actual cleanup");
@@ -1463,19 +1475,47 @@ namespace Cassandra.Tests
             using var metadata = new Metadata(config);
             var outerHost = metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042));
             var innerHost = metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042));
+            var thirdHost = metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.3"), 9042));
             outerHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
             innerHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            thirdHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
             var cluster = new Mock<IInternalCluster>();
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
             var cleanupCalls = 0;
+            var cleanupCompletions = 0;
             var cleanupCountsAtDiagnostics = new List<int>();
+            var creatingThirdPool = false;
+            var nestedLookupAttempted = false;
+            Exception nestedLookupFailure = null;
+            IInternalSession internalSession = null;
+            void CreateThirdPool()
+            {
+                nestedLookupAttempted = true;
+                creatingThirdPool = true;
+                try
+                {
+                    internalSession.GetOrCreateConnectionPool(thirdHost, HostDistance.Local);
+                }
+                catch (Exception failure)
+                {
+                    nestedLookupFailure = failure;
+                }
+                finally
+                {
+                    creatingThirdPool = false;
+                }
+            }
             using var listener = new ConsumedWarmupTraceListener(false, message =>
             {
                 if (message.Contains("Could not retire failed pool metrics"))
                 {
-                    cleanupCountsAtDiagnostics.Add(cleanupCalls);
+                    if (reentry == "diagnostic-failure" && !nestedLookupAttempted)
+                    {
+                        CreateThirdPool();
+                    }
+                    cleanupCountsAtDiagnostics.Add(cleanupCompletions);
                     throw diagnosticFailure;
                 }
             });
@@ -1484,13 +1524,21 @@ namespace Cassandra.Tests
             try
             {
                 using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "nested-failed-retirements");
-                var internalSession = (IInternalSession)session;
+                internalSession = (IInternalSession)session;
                 var reentered = false;
                 provider.Setup(value => value.Gauge(It.IsAny<string>(), It.IsAny<IMetric>(), It.IsAny<Func<double?>>()))
                     .Returns((string _, IMetric metric, Func<double?> __) =>
                     {
                         if (metric is NodeMetric)
                         {
+                            if (creatingThirdPool)
+                            {
+                                if (reentry.EndsWith("-failure"))
+                                {
+                                    throw new InvalidOperationException("Ordinary reentrant third setup");
+                                }
+                                return Mock.Of<IDriverGauge>();
+                            }
                             if (!reentered)
                             {
                                 reentered = true;
@@ -1505,18 +1553,48 @@ namespace Cassandra.Tests
                     .Callback(() =>
                     {
                         cleanupCalls++;
-                        if (fatalCleanup && cleanupCalls == 2)
+                        try
                         {
-                            throw cleanupFailure;
+                            if (reentry.StartsWith("cleanup") && cleanupCalls == 2)
+                            {
+                                CreateThirdPool();
+                            }
+                            if (fatalCleanup && cleanupCalls == 2)
+                            {
+                                throw cleanupFailure;
+                            }
+                            throw new InvalidOperationException("Ordinary actual cleanup");
                         }
-                        throw new InvalidOperationException("Ordinary actual cleanup");
+                        finally
+                        {
+                            cleanupCompletions++;
+                        }
                     });
-                var observed = Assert.Catch(() => internalSession.GetOrCreateConnectionPool(outerHost, HostDistance.Local));
-                Assert.AreSame(fatalCleanup ? cleanupFailure : fatalSetup ? setupFailure : diagnosticFailure, observed);
-                Assert.AreEqual(2, cleanupCalls);
-                var diagnostics = listener.Messages.Values.Count(message => message.Contains("Could not retire failed pool metrics"));
-                Assert.AreEqual(fatalCleanup ? 1 : 2, diagnostics);
-                Assert.IsTrue(cleanupCountsAtDiagnostics.All(count => count == 2), "Optional diagnostics must wait for every queued cleanup.");
+                try
+                {
+                    var observed = Assert.Catch(() => internalSession.GetOrCreateConnectionPool(outerHost, HostDistance.Local));
+                    Assert.AreSame(fatalCleanup ? cleanupFailure : fatalSetup ? setupFailure : diagnosticFailure, observed);
+                    var hasThirdCleanup = reentry.EndsWith("-failure");
+                    Assert.AreEqual(hasThirdCleanup ? 3 : 2, cleanupCalls);
+                    Assert.AreEqual(reentry != "none", nestedLookupAttempted);
+                    if (hasThirdCleanup)
+                    {
+                        Assert.IsInstanceOf<InvalidOperationException>(nestedLookupFailure);
+                    }
+                    else
+                    {
+                        Assert.IsNull(nestedLookupFailure);
+                    }
+                    var diagnostics = listener.Messages.Values.Count(message => message.Contains("Could not retire failed pool metrics"));
+                    Assert.AreEqual((fatalCleanup ? 1 : 2) + (hasThirdCleanup ? 1 : 0), diagnostics);
+                    Assert.AreEqual(reentry == "diagnostic-failure" ? 2 : cleanupCalls, cleanupCountsAtDiagnostics[0]);
+                    Assert.IsTrue(cleanupCountsAtDiagnostics.Skip(1).All(count => count == cleanupCalls),
+                        "Even cleanup queued by a diagnostic must settle before another diagnostic runs.");
+                }
+                finally
+                {
+                    provider.Setup(value => value.ShutdownMetricsBucket(It.IsAny<string>()));
+                }
             }
             finally
             {
