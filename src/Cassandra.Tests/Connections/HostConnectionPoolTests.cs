@@ -562,6 +562,98 @@ namespace Cassandra.Tests.Connections
             }
         }
 
+        [TestCase("oom", "none", false)]
+        [TestCase("oom", "ordinary", false)]
+        [TestCase("oom", "fatal", false)]
+        [TestCase("bad-image", "none", false)]
+        [TestCase("aggregate", "none", false)]
+        [TestCase("oom", "none", true)]
+        [TestCase("aggregate", "none", true)]
+        [NonParallelizable]
+        public async Task Should_ReportFatalBackgroundFailureOnceWithoutRetrying(string fatalKind, string diagnostic, bool foregroundObserves)
+        {
+            Exception failure = fatalKind == "bad-image" ? new BadImageFormatException("Fatal background open")
+                : fatalKind == "aggregate" ? new AggregateException(new OutOfMemoryException("Fatal background open"))
+                : new OutOfMemoryException("Fatal background open");
+            var started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var policy = new Mock<IReconnectionPolicy>();
+            policy.Setup(value => value.NewSchedule()).Returns(Mock.Of<IReconnectionSchedule>());
+            var target = CreatePool(connectionFactory: new FakeConnectionFactory(endPoint =>
+            {
+                var connection = CreateConnection(endPoint);
+                connection.Setup(value => value.Open()).Returns(async () =>
+                {
+                    started.TrySetResult(true);
+                    await release.Task.ConfigureAwait(false);
+                    throw failure;
+                });
+                return connection.Object;
+            }), coreConnections: 1, reconnectionPolicy: policy.Object);
+            var recoveryNotifications = 0;
+            var foregroundRecovery = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            target.AllConnectionClosed += (_, __) =>
+            {
+                Interlocked.Increment(ref recoveryNotifications);
+                foregroundRecovery.TrySetResult(true);
+            };
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            var listener = new Mock<TraceListener> { CallBase = true };
+            listener.Setup(value => value.WriteLine(It.Is<string>(message => message.Contains("Fatal background connection maintenance failure"))))
+                .Callback(() =>
+                {
+                    if (diagnostic == "fatal")
+                    {
+                        throw new OutOfMemoryException("Fatal Error listener");
+                    }
+                    if (diagnostic == "ordinary")
+                    {
+                        throw new InvalidOperationException("Ordinary Error listener");
+                    }
+                });
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Error;
+            Trace.Listeners.Add(listener.Object);
+            Task first = null;
+            Task second = null;
+            Task foreground = null;
+            try
+            {
+                first = InvokeCreateOrScheduleReconnectAsync(target);
+                await started.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                second = InvokeCreateOrScheduleReconnectAsync(target);
+                if (foregroundObserves)
+                {
+                    foreground = target.EnsureCreate();
+                }
+                release.TrySetResult(true);
+                foreach (var attempt in new[] { first, second, foreground }.Where(attempt => attempt != null))
+                {
+                    var observed = await Assert.CatchAsync(() => attempt.WaitAsync(TimeSpan.FromSeconds(5)));
+                    Assert.AreSame(failure, observed);
+                }
+                listener.Verify(value => value.WriteLine(It.Is<string>(message =>
+                    message.Contains("Fatal background connection maintenance failure") && message.Contains(_host.Address.ToString()) &&
+                    message.Contains(failure.Message) && message.Contains(failure.GetType().FullName))), foregroundObserves ? Times.Never() : Times.Once());
+                if (foregroundObserves)
+                {
+                    await foregroundRecovery.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                }
+                Assert.AreEqual(foregroundObserves ? 1 : 0, recoveryNotifications);
+                policy.Verify(value => value.NewSchedule(), Times.Once);
+            }
+            finally
+            {
+                release.TrySetResult(true);
+                await Task.WhenAll(new[] { first, second, foreground }.Where(attempt => attempt != null))
+                    .ContinueWith(completed => _ = completed.Exception, TaskScheduler.Default)
+                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Trace.Listeners.Remove(listener.Object);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                listener.Object.Dispose();
+                DisposePoolAndTimer(target);
+            }
+        }
+
         [Test]
         [NonParallelizable]
         public async Task Should_ScheduleRetryWhenConsumedFailureLoggerThrows()

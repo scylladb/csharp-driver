@@ -979,6 +979,24 @@ namespace Cassandra.Connections
                 StartCreatingConnection(null);
                 _host.BringUpIfDown();
             }
+            catch (Exception ex) when (Utils.IsFatalException(ex))
+            {
+                if (openOperation == null || !openOperation.Completion.Task.IsFaulted || openOperation.TryObserveConsumedFailure())
+                {
+                    try
+                    {
+                        HostConnectionPool.Logger.Error(
+                            "Fatal background connection maintenance failure for {0}; this attempt will not be retried: {1}",
+                            _host.Address, ex);
+                    }
+                    catch (Exception)
+                    {
+                        // Preserve the already-selected fatal failure if its diagnostic sink also fails.
+                    }
+                }
+                // Background tasks are fire-and-forget; record consumed fatal failures without retrying them.
+                throw;
+            }
             catch (Exception ex) when (!Utils.IsFatalException(ex))
             {
                 // A shared background failure is consumed once, including during teardown.
