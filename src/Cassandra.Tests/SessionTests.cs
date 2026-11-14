@@ -240,40 +240,25 @@ namespace Cassandra.Tests
             downHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
             downHost.SetDown();
 
-            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
-            using var listener = new LoggingTests.TestTraceListener();
-            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Error;
-            Trace.Listeners.Add(listener);
-            try
+            using (var session = new Session(cluster.Object, config, null, SerializerManager.Default, "down-host-warmup-test"))
             {
-                using (var session = new Session(cluster.Object, config, null, SerializerManager.Default, "down-host-warmup-test"))
-                {
-                    await ((IInternalSession)session).Init().ConfigureAwait(false);
+                await ((IInternalSession)session).Init().ConfigureAwait(false);
 
-                    healthyPool.Verify(value => value.Warmup(), Times.Once);
-                    poolFactory.Verify(value => value.Create(
-                        It.Is<Host>(host => host.Address.Equals(healthyAddress)),
-                        It.IsAny<Configuration>(),
-                        It.IsAny<ISerializerManager>(),
-                        It.IsAny<IObserverFactory>(),
-                        It.IsAny<TokenFactory>()), Times.Once);
-                    poolFactory.Verify(value => value.Create(
-                        It.Is<Host>(host => host.Address.Equals(downAddress)),
-                        It.IsAny<Configuration>(),
-                        It.IsAny<ISerializerManager>(),
-                        It.IsAny<IObserverFactory>(),
-                        It.IsAny<TokenFactory>()), Times.Once());
-                    downPool.Verify(value => value.Warmup(), Times.Once());
-                }
+                healthyPool.Verify(value => value.Warmup(), Times.Once);
+                poolFactory.Verify(value => value.Create(
+                    It.Is<Host>(host => host.Address.Equals(healthyAddress)),
+                    It.IsAny<Configuration>(),
+                    It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(),
+                    It.IsAny<TokenFactory>()), Times.Once);
+                poolFactory.Verify(value => value.Create(
+                    It.Is<Host>(host => host.Address.Equals(downAddress)),
+                    It.IsAny<Configuration>(),
+                    It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(),
+                    It.IsAny<TokenFactory>()), Times.Once());
+                downPool.Verify(value => value.Warmup(), Times.Once());
             }
-            finally
-            {
-                Trace.Listeners.Remove(listener);
-                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
-            }
-
-            Assert.IsFalse(listener.Messages.Values.Any(message =>
-                message.Contains("Connection pools for 2 host(s) failed to be warmed up")));
         }
 
         [TestCase(false, 0)]

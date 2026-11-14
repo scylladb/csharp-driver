@@ -829,6 +829,38 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public async Task Warmup_Should_Bring_Down_Host_Up_After_Opening_Connections()
+        {
+            var host = TestHelper.CreateHost("127.0.0.9");
+            host.SetDown();
+            var opened = new TaskCompletionSource<IConnection>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _mock = GetPoolMock(host, GetConfig(1, 1));
+            _mock.Setup(pool => pool.DoCreateAndOpen(It.IsAny<bool>(), -1, 0, 0)).Returns(opened.Task);
+            var upEvents = 0;
+            host.Up += _ => Interlocked.Increment(ref upEvents);
+            var pool = _mock.Object;
+            pool.SetDistance(HostDistance.Local);
+            try
+            {
+                var warmup = pool.Warmup();
+                Assert.IsFalse(warmup.IsCompleted);
+                Assert.IsFalse(host.IsUp);
+                Assert.AreEqual(0, Volatile.Read(ref upEvents));
+
+                opened.SetResult(CreateConnection(9));
+                await warmup.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+                Assert.IsTrue(host.IsUp);
+                Assert.AreEqual(1, Volatile.Read(ref upEvents));
+                Assert.AreEqual(1, pool.OpenConnections);
+            }
+            finally
+            {
+                opened.TrySetCanceled();
+            }
+        }
+
+        [Test]
         public async Task Warmup_Should_Succeed_When_All_Connections_Can_Be_Opened()
         {
             _mock = GetPoolMock(null, GetConfig(4, 4, new ConstantReconnectionPolicy(200)));
