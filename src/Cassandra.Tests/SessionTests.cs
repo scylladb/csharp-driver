@@ -78,6 +78,7 @@ namespace Cassandra.Tests
                 Mock.Get(pools[hosts[0].Address]).Setup(pool => pool.Warmup())
                     .Returns(Task.FromException(ordinaryFailure));
             }
+
             var fatalWarmup = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             Mock.Get(pools[hosts[1].Address]).Setup(pool => pool.Warmup())
                 .Returns(delayedFatalFailure ? fatalWarmup.Task : Task.FromException(fatalFailure));
@@ -116,6 +117,7 @@ namespace Cassandra.Tests
                     Assert.IsFalse(initialization.IsCompleted);
                     fatalWarmup.SetException(fatalFailure);
                 }
+
                 var actual = await Assert.ThrowsAsync<OutOfMemoryException>(() => initialization);
 
                 Assert.AreSame(fatalFailure, actual);
