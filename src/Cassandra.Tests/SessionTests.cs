@@ -118,6 +118,44 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        [NonParallelizable]
+        public async Task Should_PropagateFatalAggregateWarmupDiagnostic()
+        {
+            var factory = new FakeConnectionFactory(endPoint =>
+            {
+                var connection = new Mock<IConnection>();
+                connection.SetupGet(value => value.EndPoint).Returns(endPoint);
+                connection.Setup(value => value.Open()).ThrowsAsync(new InvalidOperationException("host unavailable"));
+                return connection.Object;
+            });
+            var config = new TestConfigurationBuilder
+            {
+                ConnectionFactory = factory,
+                PoolingOptions = new PoolingOptions().SetCoreConnectionsPerHost(HostDistance.Local, 1),
+                Policies = new Cassandra.Policies(
+                    new RoundRobinPolicy(), new ConstantReconnectionPolicy(3600000), new DefaultRetryPolicy())
+            }.Build();
+            using var session = CreateWarmupSession(config, "fatal-warmup-diagnostic");
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new ConsumedWarmupTraceListener(false, true);
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                var failure = await Assert.ThrowsAsync<OutOfMemoryException>(async () =>
+                    await ((IInternalSession)session).Init().WaitToCompleteAsync(5000).ConfigureAwait(false))
+                    .ConfigureAwait(false);
+                StringAssert.Contains("aggregate warmup diagnostic sink failed", failure.Message);
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                config.Timer.Dispose();
+            }
+        }
+
+        [Test]
         public async Task Should_PropagateFatalWarmupFailure_WhenAnotherHostFailsNormally()
         {
             var ordinaryFailure = new InvalidOperationException("connection unavailable");
@@ -1454,16 +1492,23 @@ namespace Cassandra.Tests
         private sealed class ConsumedWarmupTraceListener : LoggingTests.TestTraceListener
         {
             private readonly bool _throwFromDiagnostic;
+            private readonly bool _fatalAggregateFailure;
 
-            public ConsumedWarmupTraceListener(bool throwFromDiagnostic)
+            public ConsumedWarmupTraceListener(bool throwFromDiagnostic, bool fatalAggregateFailure = false)
             {
                 _throwFromDiagnostic = throwFromDiagnostic;
+                _fatalAggregateFailure = fatalAggregateFailure;
             }
 
             public override void WriteLine(string message)
             {
                 base.WriteLine(message);
-                if (_throwFromDiagnostic && message.Contains("initial warmup failure at "))
+                if (_fatalAggregateFailure && message.Contains("failed to be warmed up"))
+                {
+                    throw new OutOfMemoryException("aggregate warmup diagnostic sink failed");
+                }
+                if (_throwFromDiagnostic && (message.Contains("initial warmup failure at ") ||
+                                             message.Contains("failed to be warmed up")))
                 {
                     throw new InvalidOperationException("warmup diagnostic sink failed");
                 }

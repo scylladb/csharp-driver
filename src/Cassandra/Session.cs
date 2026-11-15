@@ -304,7 +304,14 @@ namespace Cassandra
                 }
 
                 // Log and continue as the ControlConnection is connected
-                Session.Logger.Error($"Connection pools for {tasks.Length} host(s) failed to be warmed up");
+                try
+                {
+                    Session.Logger.Error($"Connection pools for {tasks.Length} host(s) failed to be warmed up");
+                }
+                catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
+                {
+                    // As with the per-host diagnostic, ordinary sink failures must not fail initialization.
+                }
             }
         }
 
