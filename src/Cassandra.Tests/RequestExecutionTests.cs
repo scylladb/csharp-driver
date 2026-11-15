@@ -786,6 +786,110 @@ namespace Cassandra.Tests
             }
         }
 
+        [TestCase(false, "fatal", false, false)]
+        [TestCase(true, "fatal", false, false)]
+        [TestCase(false, "fatal", true, false)]
+        [TestCase(true, "fatal", true, false)]
+        [TestCase(false, "fatal", false, true)]
+        [TestCase(true, "fatal", false, true)]
+        [TestCase(false, "fatal", true, true)]
+        [TestCase(true, "fatal", true, true)]
+        [TestCase(false, "ordinary", false, false)]
+        [TestCase(true, "ordinary", false, false)]
+        [TestCase(false, "ordinary", true, false)]
+        [TestCase(true, "ordinary", true, false)]
+        [TestCase(false, "returned-fatal", false, false)]
+        [TestCase(true, "returned-fatal", false, false)]
+        [TestCase(false, "returned-fatal", true, false)]
+        [TestCase(true, "returned-fatal", true, false)]
+        [NonParallelizable]
+        public async Task Should_ReportFatalNodeObserverFromAlreadyCompletedResponse(
+            bool errorResponse, string observerKind, bool asyncObserver, bool throwFromError)
+        {
+            var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), contactPoint: null);
+            Exception observerFailure = observerKind == "ordinary"
+                ? new InvalidOperationException("Ordinary late node observer") : new OutOfMemoryException("Original fatal late node observer");
+            Exception selectedError = observerKind == "returned-fatal"
+                ? new NoHostAvailableException(new Dictionary<IPEndPoint, Exception> { [host.Address] = observerFailure })
+                : new InvalidQueryException("Original completed request result");
+            var config = new TestConfigurationBuilder().Build();
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Configuration).Returns(config);
+            var session = new Mock<IInternalSession>();
+            session.SetupGet(value => value.Cluster).Returns(cluster.Object);
+            session.SetupGet(value => value.InternalCluster).Returns(cluster.Object);
+            async Task FailAsync()
+            {
+                if (asyncObserver)
+                {
+                    await Task.Yield();
+                }
+                throw observerFailure;
+            }
+            var tracker = new Mock<IRequestTracker>();
+            tracker.Setup(value => value.OnNodeSuccessAsync(It.IsAny<SessionRequestInfo>(), It.IsAny<NodeRequestInfo>())).Returns(FailAsync);
+            tracker.Setup(value => value.OnNodeErrorAsync(It.IsAny<SessionRequestInfo>(), It.IsAny<NodeRequestInfo>(), It.IsAny<Exception>())).Returns(FailAsync);
+            var observer = new RequestTrackerObserver(tracker.Object);
+            var requestInfo = new SessionRequestInfo(new SimpleStatement("SELECT * FROM table1"), null);
+            var handler = new RequestHandler(session.Object, SerializerManager.Default.GetCurrentSerializer(),
+                requestInfo, config.DefaultRequestOptions, observer);
+            var resultHandler = (IRequestResultHandler)typeof(RequestHandler)
+                .GetField("_requestResultHandler", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(handler);
+            OperationState operation = null;
+            var connection = new Mock<IConnection>();
+            connection.Setup(value => value.SendWithKeyspace(
+                    It.IsAny<IRequest>(), It.IsAny<string>(), It.IsAny<Func<IRequestError, Response, Task>>(),
+                    It.IsAny<int>(), It.IsAny<bool>()))
+                .Returns<IRequest, string, Func<IRequestError, Response, Task>, int, bool>((request, _, callback, timeout, __) =>
+                    Task.FromResult(operation = new OperationState(callback, request, timeout, NullOperationObserver.Instance)));
+            var execution = new RequestExecution(handler, session.Object, Mock.Of<IRequest>(), observer, requestInfo);
+            typeof(RequestExecution).GetField("_connection", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(execution, connection.Object);
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new RecoveredConnectionTraceListener(false, false, message =>
+            {
+                if (throwFromError && message.Contains("Request consumed a fatal execution failure"))
+                {
+                    throw new BadImageFormatException("Secondary late observer Error listener");
+                }
+            });
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Error;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                var callbackMethod = typeof(RequestExecution).GetMethod("HandleResponseAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+                var callback = (Func<IRequestError, Response, NodeRequestInfo, Task>)callbackMethod.CreateDelegate(
+                    typeof(Func<IRequestError, Response, NodeRequestInfo, Task>), execution);
+                await ((Task)typeof(RequestExecution).GetMethod("SendAsync", BindingFlags.Instance | BindingFlags.NonPublic)
+                    .Invoke(execution, new object[] { Mock.Of<IRequest>(), host, callback })).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                var extracted = operation.SetCompleted();
+                Assert.IsTrue(await handler.SetCompletedAsync(selectedError).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+                operation.Cancel();
+                var responseError = errorResponse ? RequestError.CreateClientError(new InvalidQueryException("Late response error"), false) : null;
+                await extracted(responseError,
+                    errorResponse ? null : new ProxyResultResponse(ResultResponse.ResultResponseKind.Void), 0)
+                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.AreSame(selectedError, await Assert.CatchAsync(() => resultHandler.Task.WaitAsync(TimeSpan.FromSeconds(5))));
+                tracker.Verify(value => value.OnNodeSuccessAsync(It.IsAny<SessionRequestInfo>(), It.IsAny<NodeRequestInfo>()),
+                    errorResponse ? Times.Never() : Times.Once());
+                tracker.Verify(value => value.OnNodeErrorAsync(It.IsAny<SessionRequestInfo>(), It.IsAny<NodeRequestInfo>(), It.IsAny<Exception>()),
+                    errorResponse ? Times.Once() : Times.Never());
+                var messages = listener.Messages.Values.Where(message => message.Contains("Request consumed a fatal execution failure")).ToArray();
+                Assert.AreEqual(observerKind == "fatal" ? 1 : 0, messages.Length,
+                    "An unreturned fatal late node observer must be visible with only Error logging enabled.");
+                if (messages.Length != 0)
+                {
+                    Assert.That(messages[0], Does.Contain(observerFailure.Message));
+                    Assert.That(messages[0], Does.Not.Contain("Secondary late observer Error listener"));
+                }
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                config.Timer.Dispose();
+            }
+        }
+
         [TestCase("inner", false)]
         [TestCase("preferred", false)]
         [TestCase("all", false)]

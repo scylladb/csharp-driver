@@ -297,17 +297,25 @@ namespace Cassandra.Requests
         {
             if (_parent.HasCompleted())
             {
-                //Do nothing else (except calling request observer), another execution finished already set the response
-                if (_parent.SetNodeExecutionCompleted(nodeRequestInfo.ExecutionId))
+                try
                 {
-                    if (error?.Exception != null)
+                    //Do nothing else (except calling request observer), another execution finished already set the response
+                    if (_parent.SetNodeExecutionCompleted(nodeRequestInfo.ExecutionId))
                     {
-                        await _requestObserver.OnNodeRequestErrorAsync(error, _sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
+                        if (error?.Exception != null)
+                        {
+                            await _requestObserver.OnNodeRequestErrorAsync(error, _sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            await _requestObserver.OnNodeSuccessAsync(_sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
+                        }
                     }
-                    else
-                    {
-                        await _requestObserver.OnNodeSuccessAsync(_sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
-                    }
+                }
+                catch (Exception observerFailure) when (Utils.IsFatalException(observerFailure))
+                {
+                    RecordLateFatalExecutionFailure(nodeRequestInfo.Host, observerFailure);
+                    throw;
                 }
                 return;
             }
