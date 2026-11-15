@@ -109,10 +109,10 @@ namespace Cassandra.Requests
             }
             catch (Exception ex) when (Utils.IsFatalException(ex))
             {
-                // A late diagnostic failure must still fault this acquisition after the caller has completed.
+                // A late diagnostic failure must still fault this execution after the caller has completed.
                 if (!await _parent.SetCompletedAsync(ex).ConfigureAwait(false))
                 {
-                    RecordLateFatalConnectionFailure(host, ex);
+                    RecordLateFatalExecutionFailure(host, ex);
                     throw;
                 }
                 return;
@@ -156,7 +156,7 @@ namespace Cassandra.Requests
             {
                 if (!await _parent.SetCompletedAsync(ex).ConfigureAwait(false))
                 {
-                    RecordLateFatalConnectionFailure(validHost.Host, ex);
+                    RecordLateFatalExecutionFailure(validHost.Host, ex);
                     throw;
                 }
             }
@@ -176,7 +176,7 @@ namespace Cassandra.Requests
             }
         }
 
-        private void RecordLateFatalConnectionFailure(Host host, Exception failure)
+        private void RecordLateFatalExecutionFailure(Host host, Exception failure)
         {
             try
             {

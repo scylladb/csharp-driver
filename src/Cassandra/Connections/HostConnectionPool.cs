@@ -1016,13 +1016,12 @@ namespace Cassandra.Connections
                         // Failed diagnostics must not prevent the consumed failure from being retried.
                     }
                 }
-
                 else if (openOperation != null && openOperation.Completion.Task.IsCompletedSuccessfully)
                 {
                     try
                     {
                         HostConnectionPool.Logger.Warning(
-                            "Post-connection maintenance for {0} failed after a successful open: {1}",
+                            "Host-up notification for {0} failed during background connection maintenance: {1}",
                             _host.Address, ex);
                     }
                     catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))

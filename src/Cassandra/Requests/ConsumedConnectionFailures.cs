@@ -55,11 +55,11 @@ namespace Cassandra.Requests
                 {
                     try
                     {
-                        Logger.Error("Request consumed a fatal failure to obtain a connection to {0}: {1}", failure.Key, diagnosticError);
+                        Logger.Error("Request consumed a fatal execution failure for {0}: {1}", failure.Key, diagnosticError);
                     }
                     catch (Exception)
                     {
-                        // The acquisition retains its original fatal failure if its diagnostic sink also fails.
+                        // The execution retains its original fatal failure if its diagnostic sink also fails.
                     }
                     continue;
                 }

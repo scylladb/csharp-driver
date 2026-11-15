@@ -478,7 +478,7 @@ namespace Cassandra.Tests
         [TestCase(true, true, "ordinary")]
         [TestCase(true, true, "fatal")]
         [NonParallelizable]
-        public async Task Should_PreserveLateFatalDiagnosticInAcquisitionTask(
+        public async Task Should_PreserveLateFatalDiagnosticInExecutionTask(
             bool currentHost, bool fatalDiagnostic, string errorDiagnostic)
         {
             var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), contactPoint: null);
@@ -516,7 +516,7 @@ namespace Cassandra.Tests
             using var listener = new RecoveredConnectionTraceListener(true, fatalDiagnostic);
             var errorListener = new Mock<TraceListener> { CallBase = true };
             errorListener.Setup(value => value.WriteLine(It.Is<string>(message =>
-                    message.Contains("Request consumed a fatal failure to obtain a connection"))))
+                    message.Contains("Request consumed a fatal execution failure"))))
                 .Callback(() =>
                 {
                     if (errorDiagnostic == "ordinary")
@@ -551,7 +551,7 @@ namespace Cassandra.Tests
                 }
                 Assert.IsTrue(listener.Reported.Task.IsCompleted);
                 errorListener.Verify(value => value.WriteLine(It.Is<string>(message =>
-                    message.Contains("Request consumed a fatal failure to obtain a connection") &&
+                    message.Contains("Request consumed a fatal execution failure") &&
                     message.Contains(host.Address.ToString()) && message.Contains(listener.Failure.Message))),
                     fatalDiagnostic ? Times.Once() : Times.Never());
             }

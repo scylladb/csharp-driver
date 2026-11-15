@@ -1703,7 +1703,7 @@ namespace Cassandra.Tests.Connections
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
             var listener = new Mock<TraceListener> { CallBase = true };
             listener.Setup(value => value.WriteLine(It.Is<string>(message =>
-                    message.Contains("Post-connection maintenance"))))
+                    message.Contains("Host-up notification"))))
                 .Callback(() =>
                 {
                     if (diagnosticThrows)
@@ -1724,7 +1724,7 @@ namespace Cassandra.Tests.Connections
                 await borrowing.WaitToCompleteAsync(5000).ConfigureAwait(false);
                 Assert.AreSame(connection, await borrowing.ConfigureAwait(false));
                 listener.Verify(value => value.WriteLine(It.Is<string>(message =>
-                    message.Contains("Post-connection maintenance") && message.Contains(_host.Address.ToString()) &&
+                    message.Contains("Host-up notification") && message.Contains(_host.Address.ToString()) &&
                     message.Contains(failure.Message))), Times.Exactly(expectedWarnings));
                 listener.Verify(value => value.WriteLine(It.Is<string>(message =>
                     message.Contains("could not be created"))), Times.Never,
