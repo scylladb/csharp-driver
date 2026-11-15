@@ -664,14 +664,12 @@ namespace Cassandra.Tests.Connections
         [NonParallelizable]
         public async Task Should_NotAttributeShardingInitializationFailureToHostUpNotification()
         {
-            var shardingInfo = ShardingInfo.Create(
-                "0", "0", "org.apache.cassandra.dht.Murmur3Partitioner",
-                "biased-token-round-robin", "0", "0", "0");
+            Mock<IConnection> connection = null;
             var target = CreatePool(
                 connectionFactory: new FakeConnectionFactory(endPoint =>
                 {
-                    var connection = CreateConnection(endPoint, shardingInfo: shardingInfo);
-                    connection.Object.ShardID = 0;
+                    connection = CreateConnection(endPoint);
+                    connection.Setup(value => value.ShardingInfo()).Throws(new DivideByZeroException("metadata failed"));
                     return connection.Object;
                 }),
                 coreConnections: 1,
@@ -681,15 +679,21 @@ namespace Cassandra.Tests.Connections
             _host.Up += _ => hostUpCalls++;
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
             var listener = new Mock<TraceListener> { CallBase = true };
-            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Warning;
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
             Trace.Listeners.Add(listener.Object);
             try
             {
                 await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
 
+                connection.Verify(value => value.Open(), Times.Once);
+                connection.Verify(value => value.ShardingInfo(), Times.Once);
+                connection.Verify(value => value.Dispose(), Times.Once);
+                Assert.AreEqual(0, target.OpenConnections);
+                Assert.IsNull(GetConnectionOpenOperation(target));
+                Assert.IsFalse(_host.IsUp);
                 Assert.AreEqual(0, hostUpCalls);
                 listener.Verify(value => value.WriteLine(It.Is<string>(message =>
-                    message.Contains("Background connection maintenance") &&
+                    message.Contains("could not be created") &&
                     message.Contains(_host.Address.ToString()) &&
                     message.Contains(nameof(DivideByZeroException)))), Times.Once());
                 listener.Verify(value => value.WriteLine(It.Is<string>(message =>
