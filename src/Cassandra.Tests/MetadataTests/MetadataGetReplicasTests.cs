@@ -72,10 +72,11 @@ namespace Cassandra.Tests.MetadataTests
             _hosts = new Host[tokens.Length];
             for (var i = 0; i < tokens.Length; i++)
             {
-                _hosts[i] = _metadata.Hosts.Add(new IPEndPoint(IPAddress.Parse($"127.0.0.{i + 1}"), 9042));
-                _hosts[i].SetInfo(new TestHelper.DictionaryBasedRow(new Dictionary<string, object>
+                var id = Guid.NewGuid();
+                _hosts[i] = _metadata.AddOrUpdateHost(id, new IPEndPoint(IPAddress.Parse($"127.0.0.{i + 1}"), 9042), null,
+                    new TestHelper.DictionaryBasedRow(new Dictionary<string, object>
                 {
-                    { "host_id", Guid.NewGuid() },
+                    { "host_id", id },
                     { "data_center", "dc1" },
                     { "rack", "rack1" },
                     { "release_version", "3.11.1" },

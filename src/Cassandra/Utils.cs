@@ -22,6 +22,7 @@ using System.Linq;
 using System.Net;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Threading;
 using Cassandra.Mapping;
@@ -41,6 +42,26 @@ namespace Cassandra
                    ex is AccessViolationException ||
                    ex is AppDomainUnloadedException ||
                    ex is BadImageFormatException;
+        }
+
+        /// <summary>
+        /// Retains the first failure, including an earlier refresh error, and reports later callback or cleanup failures.
+        /// </summary>
+        public static void CaptureOrLog(Exception exception, ref ExceptionDispatchInfo failure, Logger logger, string context)
+        {
+            if (failure == null)
+            {
+                failure = ExceptionDispatchInfo.Capture(exception);
+                return;
+            }
+            try
+            {
+                logger.Warning("Additional host lifecycle failure {0}: {1}", context, exception);
+            }
+            catch (Exception ex) when (!IsFatalException(ex))
+            {
+                // A diagnostic listener must not replace the original cleanup failure.
+            }
         }
 
         public static string ConvertToCqlMap(IDictionary<string, string> source)

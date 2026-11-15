@@ -13,8 +13,10 @@
 //    See the License for the specific language governing permissions and
 //    limitations under the License.
 
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Net;
 using System.Threading.Tasks;
 using Cassandra.Connections;
 using Cassandra.Connections.Control;
@@ -35,6 +37,46 @@ namespace Cassandra.Tests.Connections.TestHelpers
         public FakeMetadataRequestHandler(IDictionary<string, IEnumerable<IRow>> rows)
         {
             _rows = rows;
+        }
+
+        internal static IRow WithFixtureIdentity(IRow row)
+        {
+            if (row.ContainsColumn("host_id"))
+            {
+                return row;
+            }
+            var address = row.ContainsColumn("rpc_address") ? row.GetValue<IPAddress>("rpc_address") : null;
+            address ??= row.ContainsColumn("native_address") ? row.GetValue<IPAddress>("native_address") : null;
+            if (address == null || address.Equals(IPAddress.Any) || address.Equals(IPAddress.IPv6Any))
+            {
+                address = row.ContainsColumn("peer") ? row.GetValue<IPAddress>("peer") : null;
+                address ??= row.ContainsColumn("broadcast_address") ? row.GetValue<IPAddress>("broadcast_address") : null;
+                address ??= row.ContainsColumn("listen_address") ? row.GetValue<IPAddress>("listen_address") : null;
+                address ??= IPAddress.Loopback;
+            }
+            return new FixtureIdentityRow(row, TestHelper.CreateHostId(address));
+        }
+
+        private sealed class FixtureIdentityRow : IRow
+        {
+            private readonly IRow _row;
+            private readonly Guid _id;
+
+            public FixtureIdentityRow(IRow row, Guid id)
+            {
+                _row = row;
+                _id = id;
+            }
+
+            public T GetValue<T>(string name) => name == "host_id" ? (T)(object)_id : _row.GetValue<T>(name);
+
+            public bool ContainsColumn(string name) => name == "host_id" || _row.ContainsColumn(name);
+
+            public bool IsNull(string name) => name != "host_id" && _row.IsNull(name);
+
+            public T GetValue<T>(int index) => _row.GetValue<T>(index);
+
+            public CqlColumn GetColumn(string name) => _row.GetColumn(name);
         }
 
         internal class FakeResultResponse : ResultResponse

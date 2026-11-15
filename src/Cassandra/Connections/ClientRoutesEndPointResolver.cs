@@ -298,7 +298,8 @@ namespace Cassandra.Connections
                 new IPEndPoint(address, route.Port),
                 host.Address,
                 GetServerName(route.Address),
-                route.ConnectionId)).ToArray();
+                route.ConnectionId,
+                host.AdvertisedPort)).ToArray();
         }
 
         private void LogRecoveredRouteResolutionFailure(ClientRouteEndpoint route, Exception exception)

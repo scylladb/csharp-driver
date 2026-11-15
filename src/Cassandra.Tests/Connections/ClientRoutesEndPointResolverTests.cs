@@ -41,6 +41,11 @@ namespace Cassandra.Tests.Connections
         public async Task Should_PreserveConfiguredProxyPriority_AndReturnAllDnsAddressesBeforeNextProxy()
         {
             var host = CreateHost("192.0.2.10", Guid.NewGuid());
+            host.SetInfo(TestHelper.CreateRow(new Dictionary<string, object>
+            {
+                { "host_id", host.HostId }, { "data_center", "dc1" }, { "rack", "rack1" },
+                { "tokens", null }, { "native_port", 19042 }
+            }));
             var runtime = await CreateRuntimeAsync(
                 new[] { "primary", "secondary" },
                 false,
@@ -67,6 +72,7 @@ namespace Cassandra.Tests.Connections
             CollectionAssert.AreEqual(
                 new[] { "primary", "primary", "secondary" },
                 candidates.Cast<ClientRouteConnectionEndPoint>().Select(candidate => candidate.ConnectionId));
+            Assert.IsTrue(candidates.Cast<ClientRouteConnectionEndPoint>().All(candidate => candidate.AdvertisedPort == 19042));
             dns.Verify(resolver => resolver.GetHostEntryAsync("primary.proxy"), Times.Once);
             dns.Verify(resolver => resolver.GetHostEntryAsync("secondary.proxy"), Times.Once);
             fallback.VerifyNoOtherCalls();
@@ -810,7 +816,7 @@ namespace Cassandra.Tests.Connections
         private static Host CreateHost(string address, Guid hostId)
         {
             var host = new Host(
-                new IPEndPoint(IPAddress.Parse(address), AdvertisedPort),
+                hostId, new IPEndPoint(IPAddress.Parse(address), AdvertisedPort),
                 contactPoint: null);
             host.SetInfo(new TestHelper.DictionaryBasedRow(new Dictionary<string, object>
             {

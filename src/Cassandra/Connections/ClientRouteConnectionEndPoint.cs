@@ -34,14 +34,19 @@ namespace Cassandra.Connections
             IPEndPoint socketIpEndPoint,
             IPEndPoint hostIpEndPoint,
             string serverName,
-            string connectionId)
+            string connectionId,
+            int? advertisedPort = null)
         {
+            AdvertisedPort = advertisedPort;
             SocketIpEndPoint = socketIpEndPoint ?? throw new ArgumentNullException(nameof(socketIpEndPoint));
             _hostIpEndPoint = hostIpEndPoint ?? throw new ArgumentNullException(nameof(hostIpEndPoint));
             _serverName = serverName ?? throw new ArgumentNullException(nameof(serverName));
             ConnectionId = connectionId ?? throw new ArgumentNullException(nameof(connectionId));
             EndpointFriendlyName = $"{hostIpEndPoint} via {serverName}:{socketIpEndPoint.Port} ({socketIpEndPoint.Address})";
         }
+
+        // Raw native port before address translation, retained across topology replacement.
+        public int? AdvertisedPort { get; }
 
         public string ConnectionId { get; }
 
@@ -76,6 +81,7 @@ namespace Cassandra.Connections
             return other != null &&
                    Equals(SocketIpEndPoint, other.SocketIpEndPoint) &&
                    Equals(_hostIpEndPoint, other._hostIpEndPoint) &&
+                   AdvertisedPort == other.AdvertisedPort &&
                    string.Equals(_serverName, other._serverName, StringComparison.Ordinal) &&
                    string.Equals(ConnectionId, other.ConnectionId, StringComparison.Ordinal);
         }
@@ -89,7 +95,7 @@ namespace Cassandra.Connections
         {
             return Utils.CombineHashCodeWithNulls(new object[]
             {
-                SocketIpEndPoint, _hostIpEndPoint, _serverName, ConnectionId
+                SocketIpEndPoint, _hostIpEndPoint, _serverName, ConnectionId, AdvertisedPort
             });
         }
 

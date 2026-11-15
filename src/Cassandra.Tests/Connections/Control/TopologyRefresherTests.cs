@@ -89,9 +89,9 @@ namespace Cassandra.Tests.Connections.Control
             }
             return new FakeMetadataRequestHandler(new Dictionary<string, IEnumerable<IRow>>
             {
-                { TopologyRefresherTests.LocalQuery, new List<IRow> { row } },
-                { TopologyRefresherTests.PeersQuery, peersRows },
-                { TopologyRefresherTests.PeersV2Query, peersV2Rows }
+                { TopologyRefresherTests.LocalQuery, new[] { FakeMetadataRequestHandler.WithFixtureIdentity(row) } },
+                { TopologyRefresherTests.PeersQuery, peersRows.Select(FakeMetadataRequestHandler.WithFixtureIdentity).ToArray() },
+                { TopologyRefresherTests.PeersV2Query, peersV2Rows?.Select(FakeMetadataRequestHandler.WithFixtureIdentity).ToArray() }
             });
         }
 

@@ -33,12 +33,7 @@ namespace Cassandra.Requests
         public async Task ReprepareOnAllNodesWithExistingConnections(
             IInternalSession session, InternalPrepareRequest request, PrepareResult prepareResult, IRequestObserver observer, SessionRequestInfo sessionRequestInfo)
         {
-            var pools = session.GetPools();
-            var hosts = session.InternalCluster.AllHosts();
-            var poolsByHosts = pools.Join(
-                hosts, po => po.Key,
-                h => h.Address,
-                (pair, host) => new { host, pair.Value }).ToDictionary(k => k.host, k => k.Value);
+            var poolsByHosts = session.GetNodePools().ToDictionary(pair => pair.Key, pair => pair.Value);
 
             if (poolsByHosts.Count == 0)
             {
@@ -51,12 +46,12 @@ namespace Cassandra.Requests
                 var tasks = new List<Task>(poolsByHosts.Count);
                 foreach (var poolKvp in poolsByHosts)
                 {
-                    if (poolKvp.Key.Address.Equals(prepareResult.HostAddress))
+                    if (poolKvp.Key.Equals(prepareResult.Host))
                     {
                         continue;
                     }
 
-                    if (prepareResult.TriedHosts.TryGetValue(poolKvp.Key.Address, out var triedHostError))
+                    if (prepareResult.FailedHosts.TryGetValue(poolKvp.Key, out var triedHostError))
                     {
                         PrepareHandler.Logger.Warning(
                             $"An error occured while attempting to prepare query on {{0}}:{Environment.NewLine}{{1}}",

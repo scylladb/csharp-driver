@@ -44,6 +44,8 @@ namespace Cassandra.Connections.Control
 
         public bool CanBeResolved => false;
 
+        public int Port => _ipEndPoint?.Port ?? _protocolOptions.Port;
+
         public string StringRepresentation => _ipEndPoint != null ? _ipEndPoint.ToString() : $"{_ipAddress}";
 
         public override string ToString()

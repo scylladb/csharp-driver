@@ -137,7 +137,7 @@ namespace Cassandra
             var tabletReplicas = new List<RoutingTarget>();
             foreach (var hostShardPair in row.Replicas)
             {
-                Host replica = _metadata.Hosts.ToCollection().FirstOrDefault(h => h.HostId == hostShardPair.HostID);
+                Host replica = _metadata.GetHost(hostShardPair.HostID);
                 if (replica == null)
                 {
                     Logger.Verbose("Could not find host {0} owning a tablet replica for {1}.{2}.", hostShardPair.HostID, keyspace, table);

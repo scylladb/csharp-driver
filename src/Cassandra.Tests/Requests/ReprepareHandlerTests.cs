@@ -43,6 +43,44 @@ namespace Cassandra.Tests.Requests
         private const string Cql = "SELECT * FROM table1";
         private const string Keyspace = "ks1";
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_SkipFailedIdentityAfterAddressMove_AndPrepareDifferentIdentityAtOldAddress(bool replaceObject)
+        {
+            var context = CreateContext(new byte[] { 1 });
+            var originalAddress = new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042);
+            var movedAddress = new IPEndPoint(IPAddress.Parse("127.0.0.3"), 9042);
+            var failedHost = new Host(Guid.NewGuid(), originalAddress, null);
+            var failure = new OperationTimedOutException(originalAddress, 1000);
+            var prepareResult = new PrepareResult
+            {
+                Host = context.Pool.Key,
+                PreparedStatement = context.PreparedStatement,
+                FailedHosts = new Dictionary<Host, Exception> { { failedHost, failure } }
+            };
+            failedHost.SetEndPoint(movedAddress, null);
+            var currentHost = replaceObject ? new Host(failedHost.HostId, movedAddress, null) : failedHost;
+            var otherHost = new Host(Guid.NewGuid(), originalAddress, null);
+            var failedPool = new Mock<IHostConnectionPool>(MockBehavior.Strict);
+            var session = new Mock<IInternalSession>();
+            session.SetupGet(value => value.InternalCluster).Returns(context.Cluster.Object);
+            session.Setup(value => value.GetNodePools()).Returns(new[]
+            {
+                new KeyValuePair<Host, IHostConnectionPool>(currentHost, failedPool.Object),
+                new KeyValuePair<Host, IHostConnectionPool>(otherHost, context.Pool.Value)
+            });
+
+            await new ReprepareHandler().ReprepareOnAllNodesWithExistingConnections(
+                session.Object, context.Request, prepareResult, NullRequestObserver.Instance,
+                new SessionRequestInfo(context.Request, ReprepareHandlerTests.Keyspace)).ConfigureAwait(false);
+
+            failedPool.Verify(value => value.GetExistingConnectionFromHostAsync(
+                It.IsAny<IDictionary<IPEndPoint, Exception>>(), It.IsAny<Func<string>>(),
+                It.IsAny<RoutingKey>(), It.IsAny<int>()), Times.Never);
+            context.Connection.Verify(value => value.SendWithKeyspace(
+                context.Request, ReprepareHandlerTests.Keyspace), Times.Once);
+        }
+
         [TestCase("IN(ck)", "in(ck)", false)]
         [TestCase("in(ck)", "IN(ck)", false)]
         [TestCase("IN(ck)", "in(ck)", true)]

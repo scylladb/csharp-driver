@@ -17,7 +17,9 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
+using System.Threading;
 using Cassandra.Collections;
 using Cassandra.Connections;
 using Cassandra.Connections.Control;
@@ -26,7 +28,13 @@ namespace Cassandra
 {
     internal class Hosts : IEnumerable<Host>
     {
-        private readonly CopyOnWriteDictionary<IPEndPoint, Host> _hosts = new CopyOnWriteDictionary<IPEndPoint, Host>();
+        private readonly CopyOnWriteDictionary<Guid, Host> _hosts = new CopyOnWriteDictionary<Guid, Host>();
+
+        // Unidentified hosts are retained only for internal/test registration.
+        // Discovery never inserts a node here: it requires a server Host ID first.
+        private readonly CopyOnWriteDictionary<IPEndPoint, Host> _unidentified = new CopyOnWriteDictionary<IPEndPoint, Host>();
+        private readonly Lock _writeLock = new Lock();
+        private volatile IReadOnlyDictionary<IPEndPoint, Host> _byAddress = new Dictionary<IPEndPoint, Host>();
 
         /// <summary>
         /// Event that gets triggered when a host is considered as DOWN (not available)
@@ -53,17 +61,47 @@ namespace Cassandra
         /// </summary>
         internal int Count
         {
-            get { return _hosts.Count; }
+            get { return _hosts.Count + _unidentified.Count; }
         }
 
         public bool TryGet(IPEndPoint endpoint, out Host host)
         {
-            return _hosts.TryGetValue(endpoint, out host);
+            if (_byAddress.TryGetValue(endpoint, out host))
+            {
+                return host != null;
+            }
+            return _unidentified.TryGetValue(endpoint, out host);
+        }
+
+        public bool TrySetStatus(IPEndPoint address, Host expected, bool up)
+        {
+            Action notification;
+            lock (_writeLock)
+            {
+                if (!TryGet(address, out var current) || !ReferenceEquals(current, expected) ||
+                    !current.Address.Equals(address))
+                {
+                    return false;
+                }
+                notification = current.SetStatusWithoutNotification(up);
+            }
+            notification?.Invoke();
+            return true;
         }
 
         public ICollection<Host> ToCollection()
         {
-            return _hosts.Values;
+            var discovered = _hosts.Values;
+            var unidentified = _unidentified.Values;
+            if (unidentified.Count == 0)
+            {
+                return discovered;
+            }
+            if (discovered.Count == 0)
+            {
+                return unidentified;
+            }
+            return discovered.Concat(unidentified).ToArray();
         }
 
         /// <summary>
@@ -79,17 +117,72 @@ namespace Cassandra
         /// </summary>
         public Host Add(IPEndPoint key, IContactPoint contactPoint)
         {
-            var newHost = new Host(key, contactPoint);
-            var host = _hosts.GetOrAdd(key, newHost);
-            if (!ReferenceEquals(newHost, host))
+            Host host;
+            lock (_writeLock)
             {
-                //The host was not added, return the existing host
-                return host;
+                if (TryGet(key, out host))
+                {
+                    return host;
+                }
+
+                host = new Host(key, contactPoint);
+                _unidentified.Add(key, host);
+                Subscribe(host);
             }
-            //The node was added
-            host.Down += OnHostDown;
-            host.Up += OnHostUp;
-            Added?.Invoke(newHost);
+
+            Added?.Invoke(host);
+            return host;
+        }
+
+        public bool TryGet(Guid hostId, out Host host)
+        {
+            return _hosts.TryGetValue(hostId, out host);
+        }
+
+        public Host AddOrUpdate(Guid hostId, IPEndPoint address, IContactPoint contactPoint, IRow row, ICollection<(Host Host, Action Callback)> notifications = null, int? advertisedPort = null)
+        {
+            if (hostId == Guid.Empty)
+            {
+                throw new ArgumentException("A discovered node must have a nonempty Host ID.", nameof(hostId));
+            }
+
+            Host host;
+            Host provisional;
+            var added = false;
+            var addressChanged = false;
+            lock (_writeLock)
+            {
+                if (!_hosts.TryGetValue(hostId, out host))
+                {
+                    host = new Host(hostId, address, contactPoint);
+                    host.SetInfo(row, advertisedPort);
+                    _hosts.Add(hostId, host);
+                    added = true;
+                }
+                else
+                {
+                    addressChanged = !host.Address.Equals(address);
+                    host.SetInfo(row, advertisedPort);
+                    host.SetEndPoint(address, contactPoint);
+                }
+
+                _unidentified.TryRemove(address, out provisional);
+                if (added || addressChanged)
+                {
+                    RebuildAddressIndex();
+                }
+            }
+
+            if (provisional != null)
+            {
+                NotifyRemoved(provisional, notifications);
+            }
+
+            if (added)
+            {
+                NotifyAdded(host, notifications);
+            }
+
             return host;
         }
 
@@ -105,30 +198,105 @@ namespace Cassandra
 
         public void RemoveIfExists(IPEndPoint ep)
         {
-            if (!_hosts.TryRemove(ep, out Host host))
+            if (TryGet(ep, out var host))
             {
-                //The host does not exists
-                return;
+                Remove(host);
             }
-            host.Down -= OnHostDown;
-            host.Up -= OnHostUp;
-            host.SetAsRemoved();
-            Removed?.Invoke(host);
+        }
+
+        public void Remove(Host host, ICollection<(Host Host, Action Callback)> notifications = null)
+        {
+            lock (_writeLock)
+            {
+                if (host.HostId == Guid.Empty)
+                {
+                    if (!_unidentified.TryGetValue(host.Address, out var current) || !ReferenceEquals(host, current))
+                    {
+                        return;
+                    }
+                    _unidentified.Remove(host.Address);
+                }
+                else
+                {
+                    if (!_hosts.TryGetValue(host.HostId, out var current) || !ReferenceEquals(host, current))
+                    {
+                        return;
+                    }
+                    _hosts.Remove(host.HostId);
+                    RebuildAddressIndex();
+                }
+            }
+            NotifyRemoved(host, notifications);
         }
 
         public IEnumerable<IPEndPoint> AllEndPointsToCollection()
         {
-            return _hosts.Keys;
+            return ToCollection().Select(h => h.Address).Distinct().ToArray();
         }
 
         public IEnumerator<Host> GetEnumerator()
         {
-            return _hosts.Values.GetEnumerator();
+            return ToCollection().GetEnumerator();
         }
 
         IEnumerator IEnumerable.GetEnumerator()
         {
-            return _hosts.Values.GetEnumerator();
+            return ToCollection().GetEnumerator();
+        }
+
+        private static void Notify(Host host, Action notification, ICollection<(Host Host, Action Callback)> notifications)
+        {
+            if (notifications == null)
+            {
+                notification();
+            }
+            else
+            {
+                notifications.Add((host, notification));
+            }
+        }
+
+        private void NotifyAdded(Host host, ICollection<(Host Host, Action Callback)> notifications)
+        {
+            Notify(host, () =>
+            {
+                // Check membership and attach status forwarding under the same writer lock.
+                // Removal must not detach this Host before the queued callback subscribes it.
+                lock (_writeLock)
+                {
+                    if (!_hosts.TryGetValue(host.HostId, out var current) || !ReferenceEquals(current, host))
+                    {
+                        return;
+                    }
+                    Subscribe(host);
+                }
+                Added?.Invoke(host);
+            }, notifications);
+        }
+
+        private void RebuildAddressIndex()
+        {
+            // A null entry marks an ambiguous endpoint rather than picking a node.
+            _byAddress = _hosts.Values
+                .GroupBy(host => host.Address)
+                .ToDictionary(group => group.Key, group => group.Count() == 1 ? group.First() : null);
+        }
+
+        private void Subscribe(Host host)
+        {
+            host.Down += OnHostDown;
+            host.Up += OnHostUp;
+        }
+
+        private void NotifyRemoved(Host host, ICollection<(Host Host, Action Callback)> notifications = null)
+        {
+            host.Down -= OnHostDown;
+            host.Up -= OnHostUp;
+            Notify(host, () =>
+            {
+                host.SetAsRemoved();
+                Removed?.Invoke(host);
+            }, notifications);
         }
     }
 }

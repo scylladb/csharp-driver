@@ -17,7 +17,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Net;
 
 using Cassandra.Collections;
 using Cassandra.Metrics.Abstractions;
@@ -139,7 +138,7 @@ namespace Cassandra.Metrics.Internal
         {
             var value = _nodeMetricsCollection.GetOrAdd(host, h =>
             {
-                var nodeBucket = $"{_sessionBucket}.nodes.{MetricsManager.BuildHostAddressMetricPath(host.Address)}";
+                var nodeBucket = $"{_sessionBucket}.nodes.{host.MetricKey}";
 
                 var newRegistry = new NodeMetrics(_driverMetricsProvider, _metricsOptions, _metricsEnabled, nodeBucket);
                 _nodeMetricsRegistryCollection.Add(host, newRegistry.MetricsRegistry);
@@ -148,11 +147,6 @@ namespace Cassandra.Metrics.Internal
             });
 
             return value;
-        }
-
-        private static string BuildHostAddressMetricPath(IPEndPoint address)
-        {
-            return $"{address.ToString().Replace('.', '_')}";
         }
 
         public void Dispose()

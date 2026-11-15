@@ -257,8 +257,8 @@ namespace Cassandra.Tests.Connections
             var result = Create(_proxyEndPoint.Address);
             var target = result.EndPointResolver;
             var hostAddress = IPAddress.Parse(address);
-            var host = new Host(new IPEndPoint(hostAddress, SniContactPointAndResolverTests.Port), contactPoint: null);
-            host.SetInfo(BuildRow(Guid.NewGuid()));
+            var host = new Host(Guid.NewGuid(), new IPEndPoint(hostAddress, SniContactPointAndResolverTests.Port), contactPoint: null);
+            host.SetInfo(BuildRow(host.HostId));
             var expected = new IPEndPoint(hostAddress, 19042);
 
             var candidates = await target
@@ -538,8 +538,8 @@ namespace Cassandra.Tests.Connections
         private Host CreateHost(string ipAddress, int port, Guid? nullableHostId = null)
         {
             var hostAddress = new IPEndPoint(IPAddress.Parse("163.10.10.10"), SniContactPointAndResolverTests.Port);
-            var host = new Host(hostAddress, contactPoint: null);
             var hostId = nullableHostId ?? Guid.NewGuid();
+            var host = new Host(hostId, hostAddress, contactPoint: null);
             var row = BuildRow(hostId);
             host.SetInfo(row);
             return host;
