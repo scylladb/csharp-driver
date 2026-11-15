@@ -50,6 +50,7 @@ namespace Cassandra.Requests
                 {
                     RetainReturnedFailures(failure.Key, failure.Value, returnedCauses, filteredFailures);
                 }
+
                 var diagnosticError = returnedCauses == null
                     ? failure.Value
                     : GetUnreturnedFailure(failure.Value, returnedCauses);
@@ -68,6 +69,7 @@ namespace Cassandra.Requests
                     {
                         // The execution retains its original fatal failure if its diagnostic sink also fails.
                     }
+
                     continue;
                 }
 
@@ -90,11 +92,13 @@ namespace Cassandra.Requests
                             {
                                 failures.Enqueue(filtered);
                             }
+
                             filteredFailures.Clear();
                         }
                     }
                 }
             }
+
             if (fatalDiagnostic != null)
             {
                 ExceptionDispatchInfo.Capture(fatalDiagnostic).Throw();
@@ -116,11 +120,13 @@ namespace Cassandra.Requests
                 {
                     continue;
                 }
+
                 if (returnedCauses.Contains(error))
                 {
                     filteredFailures.Add(new KeyValuePair<IPEndPoint, Exception>(host, error));
                     continue;
                 }
+
                 PushChildCauses(error, pending);
             }
         }
@@ -152,17 +158,20 @@ namespace Cassandra.Requests
                     pending.Push(cause);
                 }
             }
+
             if (error is ConnectionFailure connectionFailure)
             {
                 foreach (var cause in connectionFailure.SupersededConnectionErrors)
                 {
                     pending.Push(cause);
                 }
+
                 foreach (var cause in connectionFailure.UnresolvedResolutionErrors)
                 {
                     pending.Push(cause);
                 }
             }
+
             if (error is AggregateException aggregate)
             {
                 foreach (var cause in aggregate.InnerExceptions)
@@ -196,6 +205,7 @@ namespace Cassandra.Requests
                         remaining.Add(unreturnedCause);
                     }
                 }
+
                 // The original aggregate message includes its inner messages, including returned causes.
                 return unchanged ? aggregate : remaining.Count == 0 ? null
                     : new AggregateException("Consumed connection candidate failures", remaining);
@@ -214,10 +224,12 @@ namespace Cassandra.Requests
                         AddUnreturnedFailure(cause, returnedCauses, remaining);
                     }
                 }
+
                 if (noHost.InnerException != null)
                 {
                     AddUnreturnedFailure(noHost.InnerException, returnedCauses, remaining);
                 }
+
                 return !hasCause ? noHost : remaining.Count == 0 ? null
                     : new AggregateException("Consumed connection candidate failures", remaining);
             }
@@ -228,15 +240,18 @@ namespace Cassandra.Requests
                 {
                     return error;
                 }
+
                 var remainingCause = GetUnreturnedFailure(error.InnerException, returnedCauses);
                 if (ReferenceEquals(remainingCause, error.InnerException))
                 {
                     return error;
                 }
+
                 if (Utils.IsFatalException(error))
                 {
                     return new FilteredFatalFailure(error, remainingCause);
                 }
+
                 // An arbitrary wrapper cannot be reconstructed safely, and its message
                 // may include the returned cause. Keep only its unreturned inner causes.
                 return remainingCause == null ? null
@@ -288,12 +303,14 @@ namespace Cassandra.Requests
                 {
                     return;
                 }
+
                 var reported = Volatile.Read(ref _reported);
                 if (reported == null)
                 {
                     var created = new ConcurrentDictionary<Exception, byte>(ReferenceEqualityComparer.Instance);
                     reported = Interlocked.CompareExchange(ref _reported, created, null) ?? created;
                 }
+
                 ConsumedConnectionFailures.Report(_failures, returnedError, reported, canReplaceReturnedError);
             }
         }
@@ -318,6 +335,7 @@ namespace Cassandra.Requests
                 {
                     description += Environment.NewLine + _unreturnedCause;
                 }
+
                 return string.IsNullOrEmpty(InnerException.StackTrace) ? description
                     : description + Environment.NewLine + InnerException.StackTrace;
             }
