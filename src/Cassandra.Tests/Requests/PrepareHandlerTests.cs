@@ -81,11 +81,14 @@ namespace Cassandra.Tests.Requests
                 : new InvalidQueryException("prepare failed after connection failover");
             var config = new TestConfigurationBuilder().Build();
             config.QueryOptions.SetPrepareOnAllHosts(false);
+            using var metadata = new Metadata(config);
             var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
             cluster.SetupGet(value => value.Configuration).Returns(config);
             cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
             var session = new Mock<IInternalSession>();
             session.SetupGet(value => value.Cluster).Returns(cluster.Object);
+            session.SetupGet(value => value.InternalCluster).Returns(cluster.Object);
             var observer = new Mock<IRequestObserver>();
             session.SetupGet(value => value.ObserverFactory).Returns(Mock.Of<IObserverFactory>(value =>
                 value.CreateRequestObserver() == observer.Object));
