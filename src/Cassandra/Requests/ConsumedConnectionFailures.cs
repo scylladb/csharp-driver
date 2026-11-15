@@ -121,6 +121,13 @@ namespace Cassandra.Requests
                     filteredFailures.Add(new KeyValuePair<IPEndPoint, Exception>(host, error));
                     continue;
                 }
+                if (error is NoHostAvailableException noHost)
+                {
+                    foreach (var cause in noHost.Errors.Values)
+                    {
+                        pending.Push(cause);
+                    }
+                }
                 if (error is ConnectionFailure connectionFailure)
                 {
                     foreach (var cause in connectionFailure.SupersededConnectionErrors)
@@ -217,6 +224,27 @@ namespace Cassandra.Requests
                 }
                 // The original aggregate message includes its inner messages, including returned causes.
                 return unchanged ? aggregate : remaining.Count == 0 ? null
+                    : new AggregateException("Consumed connection candidate failures", remaining);
+            }
+
+            if (error is NoHostAvailableException noHost && noHost.Errors.Count > 0)
+            {
+                // Normalization keeps preferred failures in Errors and supplemental causes in InnerException.
+                var remaining = new List<Exception>();
+                var hasCause = noHost.InnerException != null;
+                foreach (var cause in noHost.Errors.Values)
+                {
+                    if (cause != null)
+                    {
+                        hasCause = true;
+                        AddUnreturnedFailure(cause, returnedCauses, remaining);
+                    }
+                }
+                if (noHost.InnerException != null)
+                {
+                    AddUnreturnedFailure(noHost.InnerException, returnedCauses, remaining);
+                }
+                return !hasCause ? noHost : remaining.Count == 0 ? null
                     : new AggregateException("Consumed connection candidate failures", remaining);
             }
 

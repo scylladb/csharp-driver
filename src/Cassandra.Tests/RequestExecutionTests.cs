@@ -619,6 +619,159 @@ namespace Cassandra.Tests
             }
         }
 
+        [TestCase("inner", false)]
+        [TestCase("preferred", false)]
+        [TestCase("all", false)]
+        [TestCase("none", false)]
+        [TestCase("inner", true)]
+        [TestCase("preferred", true)]
+        [TestCase("all", true)]
+        [NonParallelizable]
+        public void Should_FilterNormalizedNoHostErrorsWithoutLosingDistinctCauses(string returnedPart, bool nested)
+        {
+            var host = new IPEndPoint(IPAddress.Loopback, 9042);
+            var preferred = new InvalidOperationException("Normalized preferred failure");
+            var superseded = new InvalidOperationException("Normalized superseded failure");
+            var normalized = new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>
+            {
+                [host] = new ConnectionFailure(preferred, new[] { superseded }, Array.Empty<Exception>()),
+                [new IPEndPoint(IPAddress.Loopback, 9043)] = null
+            });
+            Assert.AreSame(preferred, normalized.Errors[host]);
+            Assert.AreSame(superseded, ((AggregateException)normalized.InnerException).InnerExceptions.Single());
+            Exception returned = returnedPart == "inner" ? superseded : returnedPart == "preferred" ? preferred
+                : returnedPart == "all" ? normalized : new InvalidQueryException("Unrelated returned error");
+            Exception recorded = nested ? new AggregateException(new DriverException("Nested no-host failure", normalized)) : normalized;
+            var collector = new ConsumedConnectionFailures.Collector();
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new RecoveredConnectionTraceListener(false, false);
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                collector.Record(host, recorded);
+                collector.Report(returned);
+                collector.Record(host, recorded);
+                collector.Report(returned);
+                var messages = listener.Messages.Values.Where(message => message.Contains("Request consumed")).ToArray();
+                Assert.AreEqual(returnedPart == "all" ? 0 : 1, messages.Length);
+                if (messages.Length != 0)
+                {
+                    Assert.AreEqual(returnedPart != "preferred", messages[0].Contains(preferred.Message));
+                    Assert.AreEqual(returnedPart != "inner", messages[0].Contains(superseded.Message));
+                }
+                Assert.AreSame(preferred, normalized.Errors[host]);
+                Assert.AreSame(superseded, ((AggregateException)normalized.InnerException).InnerExceptions.Single());
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        [NonParallelizable]
+        public void Should_RetainNormalizedNoHostReturnedCausesAfterFatalDiagnostic(bool returnedPreferred)
+        {
+            var host = new IPEndPoint(IPAddress.Loopback, 9042);
+            var preferred = new InvalidOperationException("Preferred cause displaced by fatal diagnostic");
+            var superseded = new InvalidOperationException("Supplemental cause displaced by fatal diagnostic");
+            var failure = new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>
+            {
+                [host] = new ConnectionFailure(preferred, new[] { superseded }, Array.Empty<Exception>())
+            });
+            var collector = new ConsumedConnectionFailures.Collector();
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new RecoveredConnectionTraceListener(true, true);
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                collector.Record(host, failure);
+                Assert.AreSame(listener.Failure, Assert.Throws<OutOfMemoryException>(() =>
+                    collector.Report(returnedPreferred ? preferred : superseded)));
+                var messages = listener.Messages.Values.Where(message => message.Contains("Request consumed")).ToArray();
+                Assert.AreEqual(2, messages.Length);
+                Assert.AreEqual(1, messages.Count(message => message.Contains(preferred.Message)));
+                Assert.AreEqual(1, messages.Count(message => message.Contains(superseded.Message)));
+                collector.Record(host, failure);
+                collector.Report(listener.Failure);
+                Assert.AreEqual(2, listener.Messages.Values.Count(message => message.Contains("Request consumed")));
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        [NonParallelizable]
+        public void Should_PreserveFatalPriorityInNormalizedNoHostDiagnostics(bool fatalPreferred)
+        {
+            var host = new IPEndPoint(IPAddress.Loopback, 9042);
+            var fatal = new OutOfMemoryException("Unreturned normalized fatal failure");
+            var ordinary = new InvalidOperationException("Returned normalized ordinary failure");
+            var failure = new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>
+            {
+                [host] = new ConnectionFailure(fatalPreferred ? fatal : ordinary,
+                    new[] { fatalPreferred ? ordinary : (Exception)fatal }, Array.Empty<Exception>())
+            });
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new RecoveredConnectionTraceListener(true, true);
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Error;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                var collector = new ConsumedConnectionFailures.Collector();
+                collector.Record(host, failure);
+                collector.Report(ordinary);
+                var message = listener.Messages.Values.Single(value => value.Contains("Request consumed"));
+                StringAssert.Contains("Request consumed a fatal execution failure", message);
+                StringAssert.Contains(fatal.Message, message);
+                StringAssert.DoesNotContain(ordinary.Message, message);
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        [NonParallelizable]
+        public void Should_RetainNoHostDiagnosticsWithoutChildCauses(bool nullEntry)
+        {
+            var host = new IPEndPoint(IPAddress.Loopback, 9042);
+            var errors = new Dictionary<IPEndPoint, Exception>();
+            if (nullEntry)
+            {
+                errors[host] = null;
+            }
+            var failure = new NoHostAvailableException(errors);
+            var collector = new ConsumedConnectionFailures.Collector();
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new RecoveredConnectionTraceListener(false, false);
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                collector.Record(host, failure);
+                collector.Report(new InvalidQueryException("Different returned cause"));
+                var message = listener.Messages.Values.Single(value => value.Contains("Request consumed"));
+                StringAssert.Contains(failure.ToString(), message);
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+        }
+
         [TestCase("late")]
         [TestCase("observer")]
         [TestCase("async-observer")]
