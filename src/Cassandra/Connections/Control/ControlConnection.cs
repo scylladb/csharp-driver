@@ -386,7 +386,7 @@ namespace Cassandra.Connections.Control
                 endPointResolutionPlansLazyIterator = endPointResolutionPlansLazyIterator.Concat(
                     ContactPointResolutionPlansEnumerable(
                         attempt,
-                        totalConnectivityLoss || _config.KeepContactPointsUnresolved));
+                        _config.KeepContactPointsUnresolved));
             }
 
             // add all hosts iterator, this will contain already tried hosts but we will check for it with the concurrent dictionary
