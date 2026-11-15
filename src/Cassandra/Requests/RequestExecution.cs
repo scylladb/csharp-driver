@@ -327,7 +327,11 @@ namespace Cassandra.Requests
                     await _requestObserver.OnNodeRequestErrorAsync(
                         RequestError.CreateClientError(handlerException, false), _sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
                 }
-                await _parent.SetCompletedAsync(handlerException).ConfigureAwait(false);
+                if (!await _parent.SetCompletedAsync(handlerException).ConfigureAwait(false) && Utils.IsFatalException(handlerException))
+                {
+                    RecordLateFatalExecutionFailure(nodeRequestInfo.Host, handlerException);
+                    throw;
+                }
             }
         }
 
