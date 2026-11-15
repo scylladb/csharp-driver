@@ -207,9 +207,14 @@ namespace Cassandra
 
         internal void SetEndPoint(IPEndPoint address, IContactPoint contactPoint)
         {
-            _address = address ?? throw new ArgumentNullException(nameof(address));
-            // A contact point belongs to the endpoint through which it was discovered.
-            ContactPoint = contactPoint;
+            ArgumentNullException.ThrowIfNull(address);
+            // Peer rows omit contact points. Keep the original hostname while its
+            // endpoint is unchanged, but never carry it to a different endpoint.
+            if (contactPoint != null || !_address.Equals(address))
+            {
+                ContactPoint = contactPoint;
+            }
+            _address = address;
         }
 
         /// <summary>

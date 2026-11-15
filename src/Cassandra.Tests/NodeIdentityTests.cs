@@ -18,6 +18,7 @@ using System;
 using System.Collections.Generic;
 using System.Net;
 using Cassandra.Connections;
+using Cassandra.Connections.Control;
 using Cassandra.Metrics;
 using Cassandra.Metrics.Abstractions;
 using Cassandra.Metrics.Internal;
@@ -103,6 +104,17 @@ namespace Cassandra.Tests
             Assert.IsNull(metadata.GetHost(Address));
             Assert.AreSame(host, metadata.GetHost(OtherAddress));
             Assert.AreEqual(0, removed);
+        }
+
+        [Test]
+        public void PeerRefreshPreservesContactPointOnlyAtItsOriginalEndpoint()
+        {
+            var contactPoint = Mock.Of<IContactPoint>();
+            var host = new Host(Guid.NewGuid(), Address, contactPoint);
+            host.SetEndPoint(Address, null);
+            Assert.AreSame(contactPoint, host.ContactPoint);
+            host.SetEndPoint(OtherAddress, null);
+            Assert.IsNull(host.ContactPoint);
         }
 
         [Test]
