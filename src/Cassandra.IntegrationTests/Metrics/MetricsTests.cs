@@ -303,7 +303,8 @@ namespace Cassandra.IntegrationTests.Metrics
                         }
                         else
                         {
-                            Assert.AreEqual(0, metrics.GetNodeCounter(h, c).GetValue());
+                            Assert.AreEqual(0, metrics.GetNodeCounter(h, c).GetValue(),
+                                $"Unexpected {c} counter for healthy host {h.Address}");
                         }
                     }
 
