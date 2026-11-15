@@ -185,7 +185,7 @@ namespace Cassandra.Requests
             }
             catch (Exception)
             {
-                // Keep the already-selected fatal acquisition failure if diagnostics also fail.
+                // Keep the already-selected fatal execution failure if diagnostics also fail.
             }
         }
 
