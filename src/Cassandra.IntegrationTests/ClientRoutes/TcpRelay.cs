@@ -30,8 +30,8 @@ using System.Threading.Tasks;
 namespace Cassandra.IntegrationTests.ClientRoutes
 {
     /// <summary>
-    /// Controls what is placed in front of the upstream byte stream.
-    /// ProxyProtocolV2 prepends the accepted client's endpoint.
+    /// Selects plaintext forwarding, client-side TLS termination, or an upstream PROXY v2 header.
+    /// TLS termination forwards decrypted bytes; only ProxyProtocolV2 prepends the client's endpoint.
     /// </summary>
     internal enum TcpRelayMode
     {
@@ -107,6 +107,10 @@ namespace Cassandra.IntegrationTests.ClientRoutes
 
         public IReadOnlyCollection<Exception> Failures => _failures.ToArray();
 
+        /// <summary>
+        /// Closes existing forwarded connections and drops new connections after accepting them.
+        /// The listener stays bound, and accepted connections remain included in the observations.
+        /// </summary>
         public void DisableForwarding()
         {
             lock (_forwardingSync)
@@ -132,6 +136,11 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 if (Volatile.Read(ref _disposed) != 0)
                 {
                     throw new ObjectDisposedException(nameof(TcpRelay));
+                }
+
+                if (_forwardingEnabled)
+                {
+                    return;
                 }
 
                 AdvanceForwardingGeneration();
@@ -173,14 +182,6 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             try
             {
                 _acceptTask.GetAwaiter().GetResult();
-            }
-            catch (ObjectDisposedException)
-            {
-                Trace.TraceInformation("Client-routes relay listener was disposed during shutdown.");
-            }
-            catch (SocketException ex)
-            {
-                Trace.TraceInformation("Client-routes relay listener stopped during shutdown: {0}", ex);
             }
             finally
             {
@@ -366,6 +367,15 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 var downstreamCopy = upstreamStream.CopyToAsync(clientStream);
                 var completedCopy = await Task.WhenAny(upstreamCopy, downstreamCopy).ConfigureAwait(false);
                 await completedCopy.ConfigureAwait(false);
+                if (_mode != TcpRelayMode.TlsTerminate)
+                {
+                    // EOF closes only this direction: the peer may still owe a response.
+                    var destination = completedCopy == upstreamCopy ? upstream.Client : connection.Client.Client;
+                    destination.Shutdown(SocketShutdown.Send);
+                    await (completedCopy == upstreamCopy ? downstreamCopy : upstreamCopy).ConfigureAwait(false);
+                    var remainingDestination = completedCopy == upstreamCopy ? connection.Client.Client : upstream.Client;
+                    remainingDestination.Shutdown(SocketShutdown.Send);
+                }
             }
             catch (Exception ex) when (!Utils.IsFatalException(ex))
             {

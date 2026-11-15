@@ -108,6 +108,93 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             Assert.IsEmpty(relay.Failures);
         }
 
+        [TestCase((int)TcpRelayMode.Plaintext)]
+        [TestCase((int)TcpRelayMode.ProxyProtocolV2)]
+        public async Task ForwardsResponseAfterClientWriteShutdown(int relayMode)
+        {
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using var upstreamListener = new TcpListener(IPAddress.Loopback, 0);
+            upstreamListener.Start();
+            using var relay = new TcpRelay((IPEndPoint)upstreamListener.LocalEndpoint, (TcpRelayMode)relayMode);
+            using var client = new TcpClient();
+            await client.ConnectAsync(relay.ListenEndPoint, deadline.Token).ConfigureAwait(false);
+            using var upstream = await upstreamListener.AcceptTcpClientAsync(deadline.Token).ConfigureAwait(false);
+            var upstreamStream = upstream.GetStream();
+            if ((TcpRelayMode)relayMode == TcpRelayMode.ProxyProtocolV2)
+            {
+                await upstreamStream.ReadExactlyAsync(new byte[28], deadline.Token).ConfigureAwait(false);
+            }
+
+            var request = Encoding.UTF8.GetBytes("request before write shutdown");
+            var clientStream = client.GetStream();
+            await clientStream.WriteAsync(request, deadline.Token).ConfigureAwait(false);
+            client.Client.Shutdown(SocketShutdown.Send);
+            var received = new byte[request.Length];
+            await upstreamStream.ReadExactlyAsync(received, deadline.Token).ConfigureAwait(false);
+            Assert.That(received, Is.EqualTo(request));
+            Assert.AreEqual(0, await upstreamStream.ReadAsync(new byte[1], deadline.Token).ConfigureAwait(false));
+
+            var response = Encoding.UTF8.GetBytes("response after request EOF");
+            await upstreamStream.WriteAsync(response, deadline.Token).ConfigureAwait(false);
+            upstream.Client.Shutdown(SocketShutdown.Send);
+            received = new byte[response.Length];
+            await clientStream.ReadExactlyAsync(received, deadline.Token).ConfigureAwait(false);
+            Assert.That(received, Is.EqualTo(response));
+            Assert.AreEqual(0, await clientStream.ReadAsync(new byte[1], deadline.Token).ConfigureAwait(false));
+            await TestHelper.WaitUntilOrFailAsync(
+                () => relay.OpenConnectionCount == 0,
+                TimeSpan.FromSeconds(5),
+                TimeSpan.FromMilliseconds(10),
+                "The half-closed relay connection did not finish.").ConfigureAwait(false);
+            Assert.IsEmpty(relay.Failures);
+        }
+
+        [Test]
+        public async Task DisabledForwardingAcceptsAndRecordsThenClosesNewConnections()
+        {
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using var upstreamListener = new TcpListener(IPAddress.Loopback, 0);
+            upstreamListener.Start();
+            using var relay = new TcpRelay((IPEndPoint)upstreamListener.LocalEndpoint);
+            relay.DisableForwarding();
+            using var client = new TcpClient();
+            await client.ConnectAsync(relay.ListenEndPoint, deadline.Token).ConfigureAwait(false);
+            var sourcePort = ((IPEndPoint)client.Client.LocalEndPoint).Port;
+            Assert.AreEqual(0, await client.GetStream().ReadAsync(new byte[1], deadline.Token).ConfigureAwait(false));
+            Assert.AreEqual(1, relay.AcceptedConnectionCount);
+            Assert.That(relay.AcceptedSourcePorts, Is.EqualTo(new[] { sourcePort }));
+            Assert.AreEqual(0, relay.ForwardedConnectionCount);
+            Assert.AreEqual(0, relay.OpenConnectionCount);
+            Assert.IsFalse(upstreamListener.Pending());
+            Assert.IsEmpty(relay.Failures);
+        }
+
+        [Test]
+        public async Task EnablingForwardingAgainPreservesConnections()
+        {
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using var upstreamListener = new TcpListener(IPAddress.Loopback, 0);
+            upstreamListener.Start();
+            using var relay = new TcpRelay((IPEndPoint)upstreamListener.LocalEndpoint);
+            relay.EnableForwarding();
+            using var client = new TcpClient();
+            await client.ConnectAsync(relay.ListenEndPoint, deadline.Token).ConfigureAwait(false);
+            relay.EnableForwarding();
+            using var upstream = await upstreamListener.AcceptTcpClientAsync(deadline.Token).ConfigureAwait(false);
+            relay.EnableForwarding();
+            var request = Encoding.UTF8.GetBytes("forwarding remains enabled");
+            await client.GetStream().WriteAsync(request, deadline.Token).ConfigureAwait(false);
+            var received = new byte[request.Length];
+            await upstream.GetStream().ReadExactlyAsync(received, deadline.Token).ConfigureAwait(false);
+            Assert.That(received, Is.EqualTo(request));
+            var response = Encoding.UTF8.GetBytes("response remains enabled");
+            await upstream.GetStream().WriteAsync(response, deadline.Token).ConfigureAwait(false);
+            received = new byte[response.Length];
+            await client.GetStream().ReadExactlyAsync(received, deadline.Token).ConfigureAwait(false);
+            Assert.That(received, Is.EqualTo(response));
+            Assert.IsEmpty(relay.Failures);
+        }
+
         [Test]
         public async Task RecordsUpstreamConnectionFailure()
         {
