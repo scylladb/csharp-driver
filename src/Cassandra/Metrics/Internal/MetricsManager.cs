@@ -179,17 +179,12 @@ namespace Cassandra.Metrics.Internal
 
         private INodeMetrics CreateNodeMetrics(Host host, Action<INodeMetrics> initializationFailed = null)
         {
-            var nodeBucket = $"{_sessionBucket}.nodes.{MetricsManager.BuildHostAddressMetricPath(host.Address)}";
+            var nodeBucket = $"{_sessionBucket}.nodes.{host.MetricKey}";
             var newRegistry = new NodeMetrics(
                 _driverMetricsProvider, _metricsOptions, _metricsEnabled, nodeBucket, initializationFailed, host);
             _nodeMetricsRegistryCollection.Add(host, newRegistry.MetricsRegistry);
 
             return newRegistry;
-        }
-
-        private static string BuildHostAddressMetricPath(IPEndPoint address)
-        {
-            return $"{address.ToString().Replace('.', '_')}";
         }
 
         public void Dispose()

@@ -47,9 +47,9 @@ namespace Cassandra
         private static Stack<Session> _activePoolLookups;
 
         private readonly ISerializerManager _serializerManager;
-        private readonly IThreadSafeDictionary<IPEndPoint, HostPool> _connectionPool;
-        private readonly IThreadSafeDictionary<IPEndPoint, TaskCompletionSource<bool>> _metricsRetirements =
-            new CopyOnWriteDictionary<IPEndPoint, TaskCompletionSource<bool>>();
+        private readonly IThreadSafeDictionary<Host, HostPool> _connectionPool;
+        private readonly IThreadSafeDictionary<Host, TaskCompletionSource<bool>> _metricsRetirements =
+            new CopyOnWriteDictionary<Host, TaskCompletionSource<bool>>();
         private readonly TaskCompletionSource<bool> _shutdown =
             new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly Lock _connectionPoolLifecycleLock = new Lock();
@@ -124,7 +124,7 @@ namespace Cassandra
             Keyspace = keyspace;
             SessionName = sessionName;
             UserDefinedTypes = new UdtMappingDefinitions(this, serializerManager);
-            _connectionPool = new CopyOnWriteDictionary<IPEndPoint, HostPool>();
+            _connectionPool = new CopyOnWriteDictionary<Host, HostPool>();
             _cluster.HostRemoved += OnHostRemoved;
             _metricsManager = new MetricsManager(configuration.MetricsProvider, Configuration.MetricsOptions, Configuration.MetricsEnabled, SessionName);
             _observerFactory = configuration.ObserverFactoryBuilder.Build(_metricsManager);
@@ -188,7 +188,7 @@ namespace Cassandra
         /// <inheritdoc />
         public Task ShutdownAsync()
         {
-            KeyValuePair<IPEndPoint, HostPool>[] pools;
+            KeyValuePair<Host, HostPool>[] pools;
             // Pool initialization invokes user metrics callbacks. Shutdown must not wait
             // for those callbacks, which can themselves wait for shutdown on another thread.
             lock (_connectionPoolPublicationLock)
@@ -476,17 +476,17 @@ namespace Cassandra
             {
                 throw new ObjectDisposedException(nameof(Session));
             }
-            ThrowIfMetricsRetirementBlocksPool(host.Address);
+            ThrowIfMetricsRetirementBlocksPool(host);
             var currentHost = ResolvePoolHost(host, clientRoutesEnabled, out var customHost);
             if (!IsDisposed && currentHost != null &&
-                _connectionPool.TryGetValue(host.Address, out var entry) &&
+                _connectionPool.TryGetValue(host, out var entry) &&
                 CanReusePool(entry, currentHost, customHost) &&
                 IsPoolHostEligible(currentHost, clientRoutesEnabled, allowDownHost, ref distance))
             {
                 // Policy callbacks can retire this exact entry before selection returns.
                 if (!IsDisposed && !currentHost.IsRemoved &&
-                    !_metricsRetirements.ContainsKey(host.Address) &&
-                    _connectionPool.TryGetValue(host.Address, out var currentEntry) &&
+                    !_metricsRetirements.ContainsKey(host) &&
+                    _connectionPool.TryGetValue(host, out var currentEntry) &&
                     ReferenceEquals(currentEntry, entry))
                 {
                     return entry.Pool;
@@ -594,7 +594,7 @@ namespace Cassandra
                         throw new ObjectDisposedException(nameof(Session));
                     }
 
-                    ThrowIfMetricsRetirementBlocksPool(host.Address);
+                    ThrowIfMetricsRetirementBlocksPool(host);
                     var currentHost = ResolvePoolHost(host, clientRoutesEnabled, out var customHost);
                     if (currentHost == null)
                     {
@@ -616,13 +616,13 @@ namespace Cassandra
                     {
                         throw new ObjectDisposedException(nameof(Session));
                     }
-                    ThrowIfMetricsRetirementBlocksPool(host.Address);
+                    ThrowIfMetricsRetirementBlocksPool(host);
                     if (host.IsRemoved)
                     {
                         throw new HostConnectionPoolNotEligibleException("it was removed during pool selection");
                     }
 
-                    if (_connectionPool.TryGetValue(host.Address, out var existingEntry))
+                    if (_connectionPool.TryGetValue(host, out var existingEntry))
                     {
                         if (CanReusePool(existingEntry, host, customHost))
                         {
@@ -683,8 +683,8 @@ namespace Cassandra
                     {
                         throw new HostConnectionPoolNotEligibleException("it was removed during pool creation");
                     }
-                    ThrowIfMetricsRetirementBlocksPool(host.Address);
-                    _connectionPool.Add(host.Address, new HostPool(host, newPool));
+                    ThrowIfMetricsRetirementBlocksPool(host);
+                    _connectionPool.Add(host, new HostPool(host, newPool));
                     nodeMetrics.InitializePoolGauges(newPool);
                     poolObservers.Initialize(nodeMetrics);
                 }
@@ -707,9 +707,9 @@ namespace Cassandra
                         // A metrics callback may have published another pool at this address.
                         // An existing removal owns its barrier and will detach metrics
                         // after this in-progress constructor has returned.
-                        if (!_connectionPool.ContainsKey(host.Address) && !_metricsRetirements.ContainsKey(host.Address))
+                        if (!_connectionPool.ContainsKey(host) && !_metricsRetirements.ContainsKey(host))
                         {
-                            _metricsRetirements.Add(host.Address,
+                            _metricsRetirements.Add(host,
                                 new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously));
                             var retiredMetrics = _metricsManager.DetachNodeMetrics(host);
                             retireFailedPoolMetrics = () =>
@@ -736,8 +736,15 @@ namespace Cassandra
 
         private Host ResolvePoolHost(Host selectedHost, bool clientRoutesEnabled, out bool customHost)
         {
-            var currentHost = _cluster.Metadata.GetHost(selectedHost.Address);
-            customHost = currentHost == null && !clientRoutesEnabled && !selectedHost.IsRemoved;
+            var currentHost = selectedHost.HostId == Guid.Empty
+                ? _cluster.Metadata.GetHost(selectedHost.Address)
+                : _cluster.Metadata.GetHost(selectedHost.HostId);
+            if (selectedHost.IsRemoved)
+            {
+                customHost = false;
+                return null;
+            }
+            customHost = currentHost == null && !clientRoutesEnabled;
             return customHost ? selectedHost : currentHost;
         }
 
@@ -757,7 +764,18 @@ namespace Cassandra
         /// <inheritdoc />
         IEnumerable<KeyValuePair<IPEndPoint, IHostConnectionPool>> IInternalSession.GetPools()
         {
-            return _connectionPool.Select(kvp => new KeyValuePair<IPEndPoint, IHostConnectionPool>(kvp.Key, kvp.Value.Pool));
+            return _connectionPool.Select(kvp => new KeyValuePair<IPEndPoint, IHostConnectionPool>(kvp.Value.Host.Address, kvp.Value.Pool));
+        }
+
+        IEnumerable<KeyValuePair<Host, IHostConnectionPool>> IInternalSession.GetNodePools()
+        {
+            return _connectionPool.Select(pair => new KeyValuePair<Host, IHostConnectionPool>(pair.Value.Host, pair.Value.Pool)).ToArray();
+        }
+
+        IHostConnectionPool IInternalSession.GetExistingPool(Host host)
+        {
+            _connectionPool.TryGetValue(host, out var entry);
+            return entry?.Pool;
         }
 
         void IInternalSession.OnAllConnectionClosed(Host host, IHostConnectionPool pool)
@@ -782,7 +800,7 @@ namespace Cassandra
 
         bool IInternalSession.HasConnections(Host host)
         {
-            if (_connectionPool.TryGetValue(host.Address, out var pool))
+            if (_connectionPool.TryGetValue(host, out var pool))
             {
                 return pool.Pool.HasConnections;
             }
@@ -792,13 +810,13 @@ namespace Cassandra
         /// <inheritdoc />
         IHostConnectionPool IInternalSession.GetExistingPool(IPEndPoint address)
         {
-            _connectionPool.TryGetValue(address, out var pool);
-            return pool?.Pool;
+            var host = _cluster.Metadata.GetHost(address);
+            return host == null ? null : InternalRef.GetExistingPool(host);
         }
 
         void IInternalSession.CheckHealth(Host host, IConnection connection)
         {
-            if (!_connectionPool.TryGetValue(host.Address, out var pool))
+            if (!_connectionPool.TryGetValue(host, out var pool))
             {
                 Session.Logger.Error("Internal error: No host connection pool found");
                 return;
@@ -883,9 +901,9 @@ namespace Cassandra
             return profile;
         }
 
-        private void ThrowIfMetricsRetirementBlocksPool(IPEndPoint address)
+        private void ThrowIfMetricsRetirementBlocksPool(Host host)
         {
-            if (_metricsRetirements.TryGetValue(address, out var retirement))
+            if (_metricsRetirements.TryGetValue(host, out var retirement))
             {
                 throw new HostConnectionPoolNotEligibleException(!retirement.Task.IsCompleted
                     ? "its previous metrics are being retired"
@@ -905,10 +923,10 @@ namespace Cassandra
             {
                 lock (_connectionPoolLifecycleLock)
                 {
-                    _metricsRetirements.TryGetValue(host.Address, out var retirement);
+                    _metricsRetirements.TryGetValue(host, out var retirement);
                     if (succeeded)
                     {
-                        _metricsRetirements.Remove(host.Address);
+                        _metricsRetirements.Remove(host);
                     }
                     // A failed provider shutdown leaves the bucket's state unknown.
                     // Retain its completed barrier to keep new pool registrations out for this session.
@@ -944,11 +962,11 @@ namespace Cassandra
             IDisposable retiredMetrics;
             lock (_connectionPoolLifecycleLock)
             {
-                if (_metricsRetirements.ContainsKey(host.Address))
+                if (_metricsRetirements.ContainsKey(host))
                 {
                     return;
                 }
-                if (_connectionPool.TryGetValue(host.Address, out entry))
+                if (_connectionPool.TryGetValue(host, out entry))
                 {
                     if (!ReferenceEquals(entry.Host, host))
                     {
@@ -957,7 +975,9 @@ namespace Cassandra
                 }
                 else
                 {
-                    var currentHost = _cluster.Metadata.GetHost(host.Address);
+                    var currentHost = host.HostId == Guid.Empty
+                        ? _cluster.Metadata.GetHost(host.Address)
+                        : _cluster.Metadata.GetHost(host.HostId);
                     if (currentHost != null && !ReferenceEquals(currentHost, host))
                     {
                         return;
@@ -965,7 +985,7 @@ namespace Cassandra
                 }
                 // Detach under the owner check so a concurrent retirement cannot
                 // replace the registry before we remove it.
-                _metricsRetirements.Add(host.Address,
+                _metricsRetirements.Add(host,
                     new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously));
                 retiredMetrics = _metricsManager.DetachNodeMetrics(host);
             }
@@ -1002,10 +1022,10 @@ namespace Cassandra
                 lock (_connectionPoolPublicationLock)
                 {
                     // A callback or shutdown may already have retired this exact owner.
-                    if (_connectionPool.TryGetValue(host.Address, out var currentEntry) &&
+                    if (_connectionPool.TryGetValue(host, out var currentEntry) &&
                         ReferenceEquals(currentEntry, entry))
                     {
-                        _connectionPool.Remove(host.Address);
+                        _connectionPool.Remove(host);
                         removed = true;
                     }
                 }

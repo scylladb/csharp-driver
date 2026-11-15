@@ -192,15 +192,14 @@ namespace Cassandra.Tests.Connections.Control
                 await (replacementRefresh ?? Task.FromResult<Host>(null))
                           .WaitToCompleteAsync(5000).ConfigureAwait(false);
             }
-            var shouldRejectStaleHost = clientRoutesEnabled &&
-                ((!differentAddress && !sameHostId) || (differentAddress && !retainOldHost));
+            var shouldRejectStaleHost = (!differentAddress && !sameHostId) || (differentAddress && !retainOldHost);
             Assert.AreEqual(shouldRejectStaleHost, oldRefreshFailure != null);
             if (!shouldRejectStaleHost)
             {
                 Assert.AreEqual(oldHostId, oldRefresh.Result.HostId);
             }
             Assert.AreEqual(newAddress, replacementRefresh.Result.Address.Address);
-            Assert.AreEqual(clientRoutesEnabled ? newHostId : oldHostId, replacementRefresh.Result.HostId);
+            Assert.AreEqual(newHostId, replacementRefresh.Result.HostId);
             if (differentAddress)
             {
                 if (retainOldHost)
@@ -215,14 +214,14 @@ namespace Cassandra.Tests.Connections.Control
             }
             else
             {
-                Assert.AreEqual(clientRoutesEnabled ? newHostId : oldHostId,
+                Assert.AreEqual(newHostId,
                     _metadata.GetHost(new IPEndPoint(IPAddress.Loopback, 9042)).HostId);
             }
         }
 
         [TestCase(false)]
         [TestCase(true)]
-        public async Task Should_KeepFirstIdentityAtEachAdvertisedAddress(bool duplicatesLocalAddress)
+        public async Task Should_KeepDistinctIdentitiesAtSharedAdvertisedAddresses(bool duplicatesLocalAddress)
         {
             var localAddress = IPAddress.Parse("127.0.0.1");
             var peerAddress = IPAddress.Parse("127.0.0.2");
@@ -252,17 +251,17 @@ namespace Cassandra.Tests.Connections.Control
             var endpoint = new FakeConnectionEndPoint("127.0.0.100", 29042);
             var firstLocal = await refresher.RefreshNodeListAsync(endpoint, Mock.Of<IConnection>(), _serializer)
                                             .ConfigureAwait(false);
-            var firstPeer = _metadata.GetHost(new IPEndPoint(peerAddress, 9042));
+            var firstPeer = _metadata.GetHost(firstPeerId);
             var secondLocal = await refresher.RefreshNodeListAsync(endpoint, Mock.Of<IConnection>(), _serializer)
                                              .ConfigureAwait(false);
 
             Assert.AreSame(firstLocal, secondLocal);
-            Assert.AreSame(firstLocal, _metadata.GetHost(new IPEndPoint(localAddress, 9042)));
-            Assert.AreSame(firstPeer, _metadata.GetHost(firstPeer.Address));
+            Assert.AreSame(firstLocal, _metadata.GetHost(localId));
+            Assert.AreSame(firstPeer, _metadata.GetHost(firstPeerId));
             Assert.AreEqual(localId, firstLocal.HostId);
             Assert.AreEqual(firstPeerId, firstPeer.HostId);
             Assert.IsEmpty(removed);
-            Assert.AreEqual(2, _metadata.AllHosts().Count);
+            Assert.AreEqual(3, _metadata.AllHosts().Count);
         }
 
         [Test]
@@ -693,7 +692,7 @@ namespace Cassandra.Tests.Connections.Control
 
         [TestCase(false)]
         [TestCase(true)]
-        public async Task Should_ReplaceHostOnlyWithClientRoutesWhenAdvertisedAddressReturnsDifferentNonemptyHostId(
+        public async Task Should_ReplaceHostInBothModesWhenAdvertisedAddressReturnsDifferentNonemptyHostId(
             bool clientRoutesEnabled)
         {
             var address = new IPEndPoint(IPAddress.Parse("127.0.0.2"), ProtocolOptions.DefaultPort);
@@ -721,8 +720,8 @@ namespace Cassandra.Tests.Connections.Control
                     : null
             }.Build();
             var metadata = new Metadata(config);
-            var previousHost = metadata.AddHost(address);
-            previousHost.SetInfo(TestHelper.CreateRow(new Dictionary<string, object>
+            var previousHost = metadata.AddOrUpdateHost(previousHostId, address, null,
+                TestHelper.CreateRow(new Dictionary<string, object>
             {
                 { "host_id", previousHostId },
                 { "data_center", "previous-dc" },
@@ -743,20 +742,16 @@ namespace Cassandra.Tests.Connections.Control
 
             var replacementHost = metadata.GetHost(address);
             Assert.NotNull(replacementHost);
-            Assert.AreEqual(clientRoutesEnabled, !ReferenceEquals(previousHost, replacementHost));
+            Assert.AreNotSame(previousHost, replacementHost);
             Assert.AreEqual(replacementHostId, replacementHost.HostId);
             Assert.AreEqual("replacement-dc", replacementHost.Datacenter);
             Assert.AreEqual("replacement-rack", replacementHost.Rack);
-            Assert.AreEqual(clientRoutesEnabled, removedHosts.Contains(previousHost));
-            Assert.AreEqual(clientRoutesEnabled, addedHosts.Contains(replacementHost));
-            if (!clientRoutesEnabled)
-            {
-                Assert.IsEmpty(removedHosts);
-            }
+            Assert.IsTrue(removedHosts.Contains(previousHost));
+            Assert.IsTrue(addedHosts.Contains(replacementHost));
         }
 
         [Test]
-        public async Task Should_NotReplaceHostUnlessBothHostIdsAreNonempty()
+        public async Task Should_ReplaceUnidentifiedProvisionalHostOnDiscovery()
         {
             var address = new IPEndPoint(IPAddress.Parse("127.0.0.2"), ProtocolOptions.DefaultPort);
             var replacementHostId = Guid.NewGuid();
@@ -788,8 +783,8 @@ namespace Cassandra.Tests.Connections.Control
                 Mock.Of<IConnection>(),
                 _serializer).ConfigureAwait(false);
 
-            Assert.AreSame(existingHost, metadata.GetHost(address));
-            Assert.AreEqual(replacementHostId, existingHost.HostId);
+            Assert.AreNotSame(existingHost, metadata.GetHost(address));
+            Assert.AreEqual(replacementHostId, metadata.GetHost(address).HostId);
         }
     }
 }

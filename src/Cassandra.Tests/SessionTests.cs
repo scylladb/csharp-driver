@@ -105,7 +105,7 @@ namespace Cassandra.Tests
             var metadata = new Metadata(config);
             foreach (var host in hosts)
             {
-                metadata.AddHost(host.Address);
+                AddHost(metadata, host.Address);
             }
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             using var session = new Session(cluster.Object, config, null, SerializerManager.Default, null);
@@ -266,10 +266,8 @@ namespace Cassandra.Tests
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             cluster.Setup(value => value.AllHosts()).Returns(() => metadata.AllHosts());
             cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
-            var healthyHost = metadata.AddHost(healthyAddress);
-            healthyHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
-            var downHost = metadata.AddHost(downAddress);
-            downHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var healthyHost = AddHost(metadata, healthyAddress, Guid.NewGuid());
+            var downHost = AddHost(metadata, downAddress, Guid.NewGuid());
             downHost.SetDown();
 
             using (var session = new Session(cluster.Object, config, null, SerializerManager.Default, "down-host-warmup-test"))
@@ -380,8 +378,7 @@ namespace Cassandra.Tests
                     : null
             }.Build();
             using var metadata = new Metadata(config);
-            var host = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
-            host.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var host = AddHost(metadata, new IPEndPoint(IPAddress.Loopback, 9042), Guid.NewGuid());
             if (clientRoutesEnabled)
             {
                 var routes = new Mock<IMetadataQueryProvider>();
@@ -533,8 +530,7 @@ namespace Cassandra.Tests
                 ClientRoutesOptions = new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
             }.Build();
             using var metadata = new Metadata(config);
-            var host = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
-            host.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var host = AddHost(metadata, new IPEndPoint(IPAddress.Loopback, 9042), Guid.NewGuid());
             var cluster = new Mock<IInternalCluster>();
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             cluster.Setup(value => value.AllHosts()).Returns(() => metadata.AllHosts());
@@ -790,8 +786,7 @@ namespace Cassandra.Tests
                 ClientRoutesOptions = new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
             }.Build();
             using var metadata = new Metadata(config);
-            var host = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
-            host.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var host = AddHost(metadata, new IPEndPoint(IPAddress.Loopback, 9042), Guid.NewGuid());
             var policyDistance = (int)HostDistance.Local;
             var cluster = new Mock<IInternalCluster>();
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
@@ -875,8 +870,7 @@ namespace Cassandra.Tests
                 ClientRoutesOptions = new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
             }.Build();
             using var metadata = new Metadata(config);
-            var host = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
-            host.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var host = AddHost(metadata, new IPEndPoint(IPAddress.Loopback, 9042), Guid.NewGuid());
             var lookupThread = 0;
             var cluster = new Mock<IInternalCluster>();
             cluster.SetupGet(value => value.Metadata).Returns(() =>
@@ -983,10 +977,8 @@ namespace Cassandra.Tests
                 ClientRoutesOptions = new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
             }.Build();
             using var metadata = new Metadata(config);
-            var oldHost = metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042));
-            oldHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
-            var creatingHost = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
-            creatingHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var oldHost = AddHost(metadata, new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042), Guid.NewGuid());
+            var creatingHost = AddHost(metadata, new IPEndPoint(IPAddress.Loopback, 9042), Guid.NewGuid());
             var lookupThread = 0;
             var cluster = new Mock<IInternalCluster>();
             cluster.SetupGet(value => value.Metadata).Returns(() =>
@@ -1120,8 +1112,7 @@ namespace Cassandra.Tests
                 ClientRoutesOptions = new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
             }.Build();
             using var metadata = new Metadata(config);
-            var host = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
-            host.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var host = AddHost(metadata, new IPEndPoint(IPAddress.Loopback, 9042), Guid.NewGuid());
             var cluster = new Mock<IInternalCluster>();
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
@@ -1155,8 +1146,7 @@ namespace Cassandra.Tests
                 Assert.IsEmpty(internalSession.GetPools());
                 Assert.IsEmpty(session.GetMetrics().NodeMetrics);
                 Assert.AreEqual(1, retired);
-                var replacement = metadata.AddHost(host.Address);
-                replacement.SetInfo(CreateHostInfo(Guid.NewGuid()));
+                var replacement = AddHost(metadata, host.Address, host.HostId);
                 if (metricsCleanupThrows)
                 {
                     var blocked = Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
@@ -1199,10 +1189,8 @@ namespace Cassandra.Tests
                 ClientRoutesOptions = new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
             }.Build();
             using var metadata = new Metadata(config);
-            var oldHost = metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042));
-            oldHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
-            var creatingHost = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
-            creatingHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var oldHost = AddHost(metadata, new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042), Guid.NewGuid());
+            var creatingHost = AddHost(metadata, new IPEndPoint(IPAddress.Loopback, 9042), Guid.NewGuid());
             var cluster = new Mock<IInternalCluster>();
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
@@ -1290,10 +1278,10 @@ namespace Cassandra.Tests
                 ClientRoutesOptions = new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
             }.Build();
             using var metadata = new Metadata(config);
-            var host = metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042));
-            var otherHost = metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042));
-            host.SetInfo(CreateHostInfo(Guid.NewGuid()));
-            otherHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var host = AddHost(metadata, new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042));
+            var otherHost = AddHost(metadata, new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042));
+
+
             var cluster = new Mock<IInternalCluster>();
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
@@ -1302,7 +1290,7 @@ namespace Cassandra.Tests
             provider.Setup(value => value.Gauge(It.IsAny<string>(), It.IsAny<IMetric>(), It.IsAny<Func<double?>>()))
                 .Returns((string bucket, IMetric metric, Func<double?> _) =>
                 {
-                    if (metric is NodeMetric && bucket.Contains("127_0_0_1") && failRegistration)
+                    if (metric is NodeMetric && bucket.EndsWith(host.MetricKey) && failRegistration)
                     {
                         failedBucket = bucket;
                         if (selfRemoval)
@@ -1351,8 +1339,8 @@ namespace Cassandra.Tests
                     Assert.IsNull(nestedLookup.Result);
                     Assert.AreEqual(1, rollbackCalls, "Partially registered metrics must be retired exactly once.");
                     failRegistration = false;
-                    var retryHost = selfRemoval ? metadata.AddHost(host.Address) : host;
-                    retryHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+                    var retryHost = selfRemoval ? AddHost(metadata, host.Address, host.HostId) : host;
+
                     if (cleanup == "success")
                     {
                         Assert.IsNotNull(internalSession.GetOrCreateConnectionPool(retryHost, HostDistance.Local));
@@ -1403,13 +1391,9 @@ namespace Cassandra.Tests
             using var metadata = new Metadata(config);
             var oldHosts = new[]
             {
-                metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042)),
-                metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042))
+                AddHost(metadata, new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042)),
+                AddHost(metadata, new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042))
             };
-            foreach (var host in oldHosts)
-            {
-                host.SetInfo(CreateHostInfo(Guid.NewGuid()));
-            }
             var cluster = new Mock<IInternalCluster>();
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
@@ -1437,8 +1421,7 @@ namespace Cassandra.Tests
                 var replacements = oldHosts.Select(host =>
                 {
                     metadata.RemoveHost(host.Address);
-                    var replacement = metadata.AddHost(host.Address);
-                    replacement.SetInfo(CreateHostInfo(Guid.NewGuid()));
+                    var replacement = AddHost(metadata, host.Address, host.HostId);
                     return replacement;
                 }).ToArray();
                 cluster.Setup(value => value.AllHosts()).Returns(replacements);
@@ -1510,10 +1493,10 @@ namespace Cassandra.Tests
                     It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>())).Returns(() => Mock.Of<IHostConnectionPool>());
             var config = new TestConfigurationBuilder { HostConnectionPoolFactory = factory.Object, MetricsProvider = provider.Object }.Build();
             using var metadata = new Metadata(config);
-            var oldHost = metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042));
-            var secondHost = metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042));
-            oldHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
-            secondHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var oldHost = AddHost(metadata, new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042));
+            var secondHost = AddHost(metadata, new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042));
+
+
             var cluster = new Mock<IInternalCluster>();
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
@@ -1524,8 +1507,7 @@ namespace Cassandra.Tests
                 var internalSession = (IInternalSession)session;
                 internalSession.GetOrCreateConnectionPool(oldHost, HostDistance.Local);
                 metadata.RemoveHost(oldHost.Address);
-                var replacement = metadata.AddHost(oldHost.Address);
-                replacement.SetInfo(CreateHostInfo(Guid.NewGuid()));
+                var replacement = AddHost(metadata, oldHost.Address, Guid.NewGuid());
                 cluster.Setup(value => value.AllHosts()).Returns(new[] { replacement, secondHost });
                 provider.Setup(value => value.ShutdownMetricsBucket(It.Is<string>(bucket => bucket.Contains(".nodes."))))
                     .Callback(() =>
@@ -1926,8 +1908,7 @@ namespace Cassandra.Tests
                         pool.Verify(value => value.Dispose(), Times.Once);
                     }
                     failInitialization = false;
-                    var replacement = internalSession.InternalCluster.Metadata.AddHost(host.Address);
-                    replacement.SetInfo(CreateHostInfo(Guid.NewGuid()));
+                    var replacement = AddHost(internalSession.InternalCluster.Metadata, host.Address, Guid.NewGuid());
                     Assert.IsNotNull(internalSession.GetOrCreateConnectionPool(replacement, HostDistance.Local));
                     Assert.AreEqual(1, internalSession.GetPools().Count());
                     Assert.AreEqual(1, session.GetMetrics().NodeMetrics.Count);
@@ -2036,7 +2017,7 @@ namespace Cassandra.Tests
                 Assert.AreSame(pool, internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
                 var metrics = session.GetMetrics().NodeMetrics[host];
                 Assert.AreSame(pool, internalSession.GetOrCreateConnectionPool(nextHost, HostDistance.Local));
-                Assert.AreEqual(1, internalSession.GetPools().Count());
+                Assert.AreEqual(distinctHostInstance ? 2 : 1, internalSession.GetPools().Count());
                 Assert.AreSame(metrics, session.GetMetrics().NodeMetrics[host]);
                 Mock.Get(pool).Verify(value => value.OnHostRemoved(), Times.Never);
                 Mock.Get(pool).Verify(value => value.Dispose(), Times.Never);
@@ -2044,7 +2025,7 @@ namespace Cassandra.Tests
             factory.Verify(value => value.Create(
                 It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
                 It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>()),
-                clientRoutesEnabled ? Times.Never() : Times.Once());
+                clientRoutesEnabled ? Times.Never() : Times.Exactly(distinctHostInstance ? 2 : 1));
         }
 
         [Test]
@@ -2068,7 +2049,7 @@ namespace Cassandra.Tests
             var cluster = new Mock<IInternalCluster>();
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), new ConstantReconnectionPolicy(1000));
-            var nextHost = new Host(host.Address, new ConstantReconnectionPolicy(1000));
+            var nextHost = host;
             using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "concurrent-custom-host-test");
             var internalSession = (IInternalSession)session;
             internalSession.MetricsManager.GetOrCreateNodeMetrics(host);
@@ -2123,11 +2104,11 @@ namespace Cassandra.Tests
             using var metadata = new Metadata(config);
             var cluster = new Mock<IInternalCluster>();
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
-            var host = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
+            var host = AddHost(metadata, new IPEndPoint(IPAddress.Loopback, 9042));
             using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "removed-metrics-test");
             var internalSession = (IInternalSession)session;
             metadata.RemoveHost(host.Address);
-            var metricsHost = replacementExists ? metadata.AddHost(host.Address) : host;
+            var metricsHost = replacementExists ? AddHost(metadata, host.Address) : host;
             internalSession.MetricsManager.GetOrCreateNodeMetrics(metricsHost);
             var registry = session.GetMetrics().NodeMetrics[metricsHost];
             Assert.IsEmpty(internalSession.GetPools());
@@ -2168,10 +2149,8 @@ namespace Cassandra.Tests
                 ClientRoutesOptions = new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
             }.Build();
             var metadata = new Metadata(config);
-            var host = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
-            host.SetInfo(CreateHostInfo(Guid.NewGuid()));
-            var failedHost = metadata.AddHost(failedAddress);
-            failedHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var host = AddHost(metadata, new IPEndPoint(IPAddress.Loopback, 9042), Guid.NewGuid());
+            var failedHost = AddHost(metadata, failedAddress, Guid.NewGuid());
             var cluster = new Mock<IInternalCluster>();
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             cluster.Setup(value => value.AllHosts()).Returns(() => metadata.AllHosts());
@@ -2258,8 +2237,7 @@ namespace Cassandra.Tests
                 ClientRoutesOptions = new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
             }.Build();
             var metadata = new Metadata(config);
-            var host = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
-            host.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var host = AddHost(metadata, new IPEndPoint(IPAddress.Loopback, 9042), Guid.NewGuid());
             var cluster = new Mock<IInternalCluster>();
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             var distance = HostDistance.Local;
@@ -2345,8 +2323,7 @@ namespace Cassandra.Tests
             }.Build();
             using var metadata = new Metadata(config);
             var address = new IPEndPoint(IPAddress.Loopback, 9042);
-            var oldHost = metadata.AddHost(address);
-            oldHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var oldHost = AddHost(metadata, address, Guid.NewGuid());
             var cluster = new Mock<IInternalCluster>();
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
@@ -2356,10 +2333,8 @@ namespace Cassandra.Tests
                 var internalSession = (IInternalSession)session;
                 internalSession.GetOrCreateConnectionPool(oldHost, HostDistance.Local);
                 metadata.RemoveHost(address);
-                var replacementHost = clientRoutesEnabled
-                    ? metadata.AddHost(address)
-                    : new Host(address, new ConstantReconnectionPolicy(1000));
-                replacementHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+                var replacementHost = AddHost(metadata, address, oldHost.HostId);
+
                 var removal = Task.Run(() => cluster.Raise(value => value.HostRemoved += null, oldHost));
                 Task<IHostConnectionPool> lookup = null;
                 IHostConnectionPool candidate = null;
@@ -2450,7 +2425,7 @@ namespace Cassandra.Tests
             }.Build();
             using var metadata = new Metadata(config);
             var address = new IPEndPoint(IPAddress.Loopback, 9042);
-            var customHost = new Host(address, new ConstantReconnectionPolicy(1000));
+            var customHost = new Host(Guid.NewGuid(), address, null);
             var cluster = new Mock<IInternalCluster>();
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
@@ -2459,7 +2434,7 @@ namespace Cassandra.Tests
                 using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "custom-host-metrics");
                 var internalSession = (IInternalSession)session;
                 var originalPool = internalSession.GetOrCreateConnectionPool(customHost, HostDistance.Local);
-                var oldAlias = new Host(address, new ConstantReconnectionPolicy(1000));
+                var oldAlias = new Host(customHost.HostId, address, null);
                 Assert.AreSame(originalPool, internalSession.GetOrCreateConnectionPool(oldAlias, HostDistance.Local));
                 var observer = new MetricsRequestObserver(internalSession.MetricsManager, Mock.Of<IDriverTimer>());
                 var originalMetrics = originalPool.NodeMetrics;
@@ -2468,8 +2443,8 @@ namespace Cassandra.Tests
                 await observer.OnNodeStartAsync(null, originalInfo).ConfigureAwait(false);
                 await observer.OnNodeRequestAbortedAsync(null, originalInfo).ConfigureAwait(false);
                 abortedCounters[0].Verify(value => value.Increment(), Times.Once);
-                var replacementHost = metadata.AddHost(address);
-                replacementHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+                cluster.Raise(value => value.HostRemoved += null, customHost);
+                var replacementHost = AddHost(metadata, address, Guid.NewGuid());
                 var replacementPool = internalSession.GetOrCreateConnectionPool(replacementHost, HostDistance.Local);
                 Assert.IsFalse(customHost.IsRemoved);
                 Assert.AreEqual(2, abortedCounters.Count);
@@ -2555,8 +2530,7 @@ namespace Cassandra.Tests
             }.Build();
             using var metadata = new Metadata(config);
             var address = new IPEndPoint(IPAddress.Loopback, 9042);
-            var oldHost = metadata.AddHost(address);
-            oldHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var oldHost = AddHost(metadata, address, Guid.NewGuid());
             var cluster = new Mock<IInternalCluster>();
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             cluster.Setup(value => value.AllHosts()).Returns(() => metadata.AllHosts());
@@ -2574,8 +2548,7 @@ namespace Cassandra.Tests
                 var internalSession = (IInternalSession)session;
                 internalSession.GetOrCreateConnectionPool(oldHost, HostDistance.Local);
                 metadata.RemoveHost(address);
-                var replacementHost = metadata.AddHost(address);
-                replacementHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+                var replacementHost = AddHost(metadata, address, oldHost.HostId);
                 replacementHost.SetDown();
                 if (outcome == "factory-failure")
                 {
@@ -2692,8 +2665,7 @@ namespace Cassandra.Tests
             }.Build();
             using var metadata = new Metadata(config);
             var address = new IPEndPoint(IPAddress.Loopback, 9042);
-            var oldHost = metadata.AddHost(address);
-            oldHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var oldHost = AddHost(metadata, address, Guid.NewGuid());
             var cluster = new Mock<IInternalCluster>();
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
@@ -2703,8 +2675,7 @@ namespace Cassandra.Tests
                 var internalSession = (IInternalSession)session;
                 Assert.AreSame(oldPool.Object, internalSession.GetOrCreateConnectionPool(oldHost, HostDistance.Local));
                 metadata.RemoveHost(address);
-                var replacementHost = metadata.AddHost(address);
-                replacementHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+                var replacementHost = AddHost(metadata, address, oldHost.HostId);
                 Task replacementLookup = null;
                 var reentered = 0;
                 provider.Setup(value => value.ShutdownMetricsBucket(It.Is<string>(bucket => bucket.Contains(".nodes."))))
@@ -2727,7 +2698,7 @@ namespace Cassandra.Tests
                     if (retireDuringLookup)
                     {
                         Assert.AreSame(replacementPool.Object,
-                            internalSession.GetOrCreateConnectionPool(oldHost, HostDistance.Local));
+                            internalSession.GetOrCreateConnectionPool(replacementHost, HostDistance.Local));
                     }
                     else
                     {
@@ -2794,8 +2765,7 @@ namespace Cassandra.Tests
             var cluster = new Mock<IInternalCluster>();
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Remote);
-            var oldHost = metadata.AddHost(address);
-            oldHost.SetInfo(CreateHostInfo(oldHostId));
+            var oldHost = AddHost(metadata, address, oldHostId);
 
             using (var session = new Session(cluster.Object, config, null, SerializerManager.Default, "replacement-test"))
             {
@@ -2807,10 +2777,11 @@ namespace Cassandra.Tests
                 {
                     cluster.Raise(value => value.HostRemoved += null, oldHost);
                 }
-                var replacementHost = metadata.AddHost(address);
-                replacementHost.SetInfo(CreateHostInfo(replacementHostId));
+                var replacementHost = AddHost(metadata, address, replacementHostId);
 
-                var replacementPool = internalSession.GetOrCreateConnectionPool(oldHost, HostDistance.Local);
+                Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
+                    internalSession.GetOrCreateConnectionPool(oldHost, HostDistance.Local));
+                var replacementPool = internalSession.GetOrCreateConnectionPool(replacementHost, HostDistance.Local);
 
                 if (!poolRemovalCompleted)
                 {
@@ -2824,7 +2795,7 @@ namespace Cassandra.Tests
                 var expectedDistance = clientRoutesEnabled ? HostDistance.Remote : HostDistance.Local;
                 Mock.Get(replacementPool).Verify(value => value.SetDistance(expectedDistance), Times.Once);
                 cluster.Verify(value => value.RetrieveAndSetDistance(It.Is<Host>(host => ReferenceEquals(host, replacementHost))),
-                    clientRoutesEnabled ? Times.Exactly(poolRemovalCompleted ? 2 : 3) : Times.Never());
+                    clientRoutesEnabled ? Times.Exactly(2) : Times.Never());
                 Mock.Get(oldPool).Verify(value => value.OnHostRemoved(), Times.Once);
                 Mock.Get(oldPool).Verify(value => value.Dispose(), Times.Once);
             }
@@ -2846,8 +2817,7 @@ namespace Cassandra.Tests
                 ClientRoutesOptions = new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
             }.Build();
             using var metadata = new Metadata(config);
-            var host = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
-            host.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var host = AddHost(metadata, new IPEndPoint(IPAddress.Loopback, 9042), Guid.NewGuid());
             var cluster = new Mock<IInternalCluster>();
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             cluster.Setup(value => value.AllHosts()).Returns(new[] { host });
@@ -2912,8 +2882,7 @@ namespace Cassandra.Tests
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             var currentDistance = HostDistance.Local;
             cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(() => currentDistance);
-            var oldHost = metadata.AddHost(address);
-            oldHost.SetInfo(CreateHostInfo(oldHostId));
+            var oldHost = AddHost(metadata, address, oldHostId);
 
             using (var session = new Session(cluster.Object, config, null, SerializerManager.Default, "ignored-replacement-test"))
             {
@@ -2922,8 +2891,7 @@ namespace Cassandra.Tests
 
                 metadata.RemoveHost(address);
                 cluster.Raise(value => value.HostRemoved += null, oldHost);
-                var replacementHost = metadata.AddHost(address);
-                replacementHost.SetInfo(CreateHostInfo(replacementHostId));
+                var replacementHost = AddHost(metadata, address, replacementHostId);
                 currentDistance = replacementDistance;
                 if (!replacementIsUp)
                 {
@@ -2934,7 +2902,7 @@ namespace Cassandra.Tests
                     internalSession.GetOrCreateConnectionPool(oldHost, HostDistance.Local));
                 StringAssert.Contains("not eligible for a connection pool", ex.Message);
 
-                cluster.Verify(value => value.RetrieveAndSetDistance(It.Is<Host>(host => ReferenceEquals(host, replacementHost))), Times.Once);
+                cluster.Verify(value => value.RetrieveAndSetDistance(It.Is<Host>(host => ReferenceEquals(host, replacementHost))), Times.Never);
                 poolFactory.Verify(value => value.Create(
                     It.IsAny<Host>(),
                     It.IsAny<Configuration>(),
@@ -2971,8 +2939,7 @@ namespace Cassandra.Tests
             var metadata = new Metadata(config);
             var cluster = new Mock<IInternalCluster>();
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
-            var host = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
-            host.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var host = AddHost(metadata, new IPEndPoint(IPAddress.Loopback, 9042), Guid.NewGuid());
 
             using (var session = new Session(cluster.Object, config, null, SerializerManager.Default, "removed-host-test"))
             {
@@ -3021,7 +2988,7 @@ namespace Cassandra.Tests
             var metadata = new Metadata(config);
             var cluster = new Mock<IInternalCluster>();
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
-            var host = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
+            var host = AddHost(metadata, new IPEndPoint(IPAddress.Loopback, 9042));
             if (!isUp)
             {
                 host.SetDown();
@@ -3109,8 +3076,7 @@ namespace Cassandra.Tests
             var host = internalSession.InternalCluster.AllHosts().Single();
             internalSession.GetOrCreateConnectionPool(host, HostDistance.Local);
             internalSession.InternalCluster.Metadata.RemoveHost(host.Address);
-            var replacement = internalSession.InternalCluster.Metadata.AddHost(host.Address);
-            replacement.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var replacement = AddHost(internalSession.InternalCluster.Metadata, host.Address, host.HostId);
             metricsProvider.Setup(value => value.ShutdownMetricsBucket(It.Is<string>(bucket => bucket.Contains(".nodes."))))
                            .Throws(failure);
 
@@ -3157,8 +3123,7 @@ namespace Cassandra.Tests
                 var host = internalSession.InternalCluster.AllHosts().Single();
                 internalSession.GetOrCreateConnectionPool(host, HostDistance.Local);
                 internalSession.InternalCluster.Metadata.RemoveHost(host.Address);
-                var replacement = internalSession.InternalCluster.Metadata.AddHost(host.Address);
-                replacement.SetInfo(CreateHostInfo(Guid.NewGuid()));
+                var replacement = AddHost(internalSession.InternalCluster.Metadata, host.Address, host.HostId);
                 var callbackRan = false;
                 metricsProvider.Setup(value => value.ShutdownMetricsBucket(It.Is<string>(bucket => bucket.Contains(".nodes."))))
                                .Callback(() =>
@@ -3176,7 +3141,7 @@ namespace Cassandra.Tests
                 {
                     // A stale-owner lookup retires the old bucket before its outer
                     // lookup can publish replacement metrics in that bucket.
-                    Assert.AreSame(replacementPool.Object, internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+                    Assert.AreSame(replacementPool.Object, internalSession.GetOrCreateConnectionPool(replacement, HostDistance.Local));
                 }
                 else
                 {
@@ -3243,7 +3208,7 @@ namespace Cassandra.Tests
                     : null
             }.Build();
             using var metadata = new Metadata(config);
-            metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
+            AddHost(metadata, new IPEndPoint(IPAddress.Loopback, 9042));
             var cluster = new Mock<IInternalCluster>();
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             cluster.Setup(value => value.AllHosts()).Returns(() => metadata.AllHosts());
@@ -3387,9 +3352,89 @@ namespace Cassandra.Tests
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             cluster.Setup(value => value.AllHosts()).Returns(() => metadata.AllHosts());
             cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
-            var host = metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.11"), 9042));
-            host.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var host = AddHost(metadata, new IPEndPoint(IPAddress.Parse("127.0.0.11"), 9042), Guid.NewGuid());
             return new Session(cluster.Object, config, null, SerializerManager.Default, sessionName);
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_PublishDifferentIdentityWhileOldAddressOwnerRetires(bool clientRoutesEnabled)
+        {
+            using var started = new ManualResetEventSlim();
+            using var release = new ManualResetEventSlim();
+            var provider = CreateMetricsProviderForRemovalTests();
+            var factory = new Mock<IHostConnectionPoolFactory>();
+            factory.Setup(value => value.Create(It.IsAny<Host>(), It.IsAny<Configuration>(),
+                    It.IsAny<ISerializerManager>(), It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>()))
+                .Returns(() => Mock.Of<IHostConnectionPool>());
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = factory.Object,
+                MetricsProvider = provider.Object,
+                ClientRoutesOptions = clientRoutesEnabled
+                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false) : null
+            }.Build();
+            using var metadata = new Metadata(config);
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "identity-retirement");
+            var internalSession = (IInternalSession)session;
+            var oldHost = AddHost(metadata, new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042));
+            var oldPool = internalSession.GetOrCreateConnectionPool(oldHost, HostDistance.Local);
+            var oldBucket = "identity-retirement.nodes." + oldHost.MetricKey;
+            var activeBuckets = new HashSet<string> { oldBucket };
+            provider.Setup(value => value.Gauge(It.IsAny<string>(), It.IsAny<IMetric>(), It.IsAny<Func<double?>>()))
+                .Returns((string bucket, IMetric _, Func<double?> __) =>
+                {
+                    lock (activeBuckets)
+                    {
+                        activeBuckets.Add(bucket);
+                    }
+                    return Mock.Of<IDriverGauge>();
+                });
+            provider.Setup(value => value.ShutdownMetricsBucket(oldBucket)).Callback(() =>
+            {
+                started.Set();
+                Assert.IsTrue(release.Wait(5000));
+                lock (activeBuckets)
+                {
+                    activeBuckets.Remove(oldBucket);
+                }
+            });
+            metadata.RemoveHost(oldHost);
+            var replacement = AddHost(metadata, oldHost.Address);
+            var removal = Task.Run(() => cluster.Raise(value => value.HostRemoved += null, oldHost));
+            IHostConnectionPool replacementPool;
+            try
+            {
+                Assert.IsTrue(started.Wait(5000));
+                replacementPool = await Task.Run(() => internalSession.GetOrCreateConnectionPool(replacement, HostDistance.Local))
+                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.AreNotSame(oldPool, replacementPool);
+                Assert.IsFalse(removal.IsCompleted);
+            }
+            finally
+            {
+                release.Set();
+                await removal.WaitToCompleteAsync(5000).ConfigureAwait(false);
+            }
+            Assert.IsTrue(activeBuckets.Contains("identity-retirement.nodes." + replacement.MetricKey));
+            Assert.IsFalse(activeBuckets.Contains(oldBucket));
+            Assert.AreSame(replacementPool, internalSession.GetExistingPool(replacement));
+            Mock.Get(oldPool).Verify(value => value.Dispose(), Times.Once);
+            Mock.Get(replacementPool).Verify(value => value.Dispose(), Times.Never);
+            config.Timer.Dispose();
+        }
+
+        private static Host AddHost(Metadata metadata, IPEndPoint address, Guid? hostId = null)
+        {
+            if (hostId == null && metadata.GetHost(address) is Host existing)
+            {
+                return existing;
+            }
+            var id = hostId ?? Guid.NewGuid();
+            return metadata.AddOrUpdateHost(id, address, null, CreateHostInfo(id));
         }
 
     }

@@ -196,6 +196,14 @@ namespace Cassandra.Requests
             Host host;
             while ((host = GetNextHost(queryPlan, out HostDistance distance)) != null)
             {
+                // Custom query plans may supply an unidentified alias. Resolve it
+                // before acquisition so PREPARE and propagation retain the selected
+                // node's identity rather than treating its alias as another node.
+                var metadata = session.InternalCluster.Metadata;
+                if (!host.IsRemoved)
+                {
+                    host = (host.HostId == Guid.Empty ? metadata.GetHost(host.Address) : metadata.GetHost(host.HostId)) ?? host;
+                }
                 var connection = await RequestHandler.GetConnectionFromHostWithKeyspaceAsync(
                     host, distance, session, triedHosts, connectionKeyspace).ConfigureAwait(false);
                 if (connection != null)

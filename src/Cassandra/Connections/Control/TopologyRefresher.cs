@@ -159,8 +159,9 @@ namespace Cassandra.Connections.Control
         /// </summary>
         private Host GetAndUpdateLocalHost(IConnectionEndPoint endPoint, IRow row)
         {
-            var hostIpEndPoint = endPoint.GetHostIpEndPoint()
-                ?? GetRpcEndPoint(false, row, _config.AddressTranslator, _config.ProtocolOptions.Port);
+            var hostIpEndPoint = _config.ClientRoutesRuntime == null
+                ? endPoint.GetHostIpEndPoint() ?? GetRpcEndPoint(false, row, _config.AddressTranslator, GetAdvertisedNativeTransportPort())
+                : GetRpcEndPoint(false, row, _config.AddressTranslator, GetAdvertisedNativeTransportPort());
 
             if (hostIpEndPoint == null)
             {
@@ -188,7 +189,7 @@ namespace Cassandra.Connections.Control
             var foundPeers = new HashSet<Guid> { currentHost.HostId };
             foreach (var row in peersRs)
             {
-                var address = GetRpcEndPoint(isPeersV2, row, _config.AddressTranslator, _config.ProtocolOptions.Port);
+                var address = GetRpcEndPoint(isPeersV2, row, _config.AddressTranslator, GetAdvertisedNativeTransportPort());
                 if (address == null)
                 {
                     ControlConnection.Logger.Error("No address found for host, ignoring it.");
@@ -217,6 +218,11 @@ namespace Cassandra.Connections.Control
                     _metadata.RemoveHost(host);
                 }
             }
+        }
+
+        private int GetAdvertisedNativeTransportPort()
+        {
+            return _config.ClientRoutesRuntime?.Options.NativeTransportPort ?? _config.ProtocolOptions.Port;
         }
 
         /// <summary>
