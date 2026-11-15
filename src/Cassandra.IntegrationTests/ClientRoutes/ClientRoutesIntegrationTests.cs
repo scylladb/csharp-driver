@@ -15,6 +15,7 @@
 //
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -256,6 +257,8 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 {
                     AssertQueriesLandOnIntendedHosts(session, _nodes);
                     Assert.IsTrue(originalRelays.Values.All(relay => relay.ForwardedConnectionCount > 0));
+                    var originalConnections = ((IInternalSession)session).GetPools().ToDictionary(
+                        pool => pool.Key, pool => pool.Value.ConnectionsSnapshot.ToArray());
 
                     await _restApi
                         .UpsertAsync(CreateEntries(PrimaryConnectionId, _nodes, replacementRelays, "127.0.0.1"))
@@ -281,6 +284,16 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                             replacementRelays.Values.All(relay => relay.ForwardedConnectionCount > 0),
                             "A session created after the refresh did not use the new routes.");
                     }
+
+                    // Check again after fresh routed connections and requests have completed.
+                    // A replacement can keep a relay's count positive while losing the original sockets.
+                    AssertQueriesLandOnIntendedHosts(session, _nodes);
+                    foreach (var pool in ((IInternalSession)session).GetPools())
+                    {
+                        CollectionAssert.AreEquivalent(originalConnections[pool.Key], pool.Value.ConnectionsSnapshot,
+                            "A route update replaced healthy connections in an existing session.");
+                    }
+                    Assert.IsTrue(originalRelays.Values.All(relay => relay.OpenConnectionCount > 0));
 
                     foreach (var relay in replacementRelays.Values)
                     {
@@ -444,8 +457,10 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             }
         }
 
-        [Test]
-        public async Task TlsDiscoveryAndHostnameOverrideRoutesUseTlsPortAndPreserveSni()
+        [TestCase("localhost", true)]
+        [TestCase("127.0.0.1", false)]
+        public async Task TlsDiscoveryAndHostnameOverrideRoutesValidateNamesAndPreserveSni(
+            string routeHostname, bool certificateNameMatches)
         {
             using (var certificate = CreateServerCertificate())
             using (var tlsDiscoveryRelay = new TcpRelay(
@@ -470,18 +485,32 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                         .ToArray();
                     await _restApi.ReplaceAsync(entries).ConfigureAwait(false);
 
+                    var validationErrors = new ConcurrentBag<SslPolicyErrors>();
                     var sslOptions = new SSLOptions(
                             SslProtocols.Tls12,
                             false,
-                            (object sender, X509Certificate remoteCertificate, X509Chain chain, SslPolicyErrors errors) => true)
+                            (object sender, X509Certificate remoteCertificate, X509Chain chain, SslPolicyErrors errors) =>
+                            {
+                                validationErrors.Add(errors);
+                                // Trust this fixture's self-signed certificate, retaining platform hostname checks.
+                                return remoteCertificate?.GetCertHashString() == certificate.Thumbprint &&
+                                       (errors & ~SslPolicyErrors.RemoteCertificateChainErrors) == SslPolicyErrors.None;
+                            })
                         .SetHostNameResolver(address => DiscoveryServerName);
                     var config = new ClientRoutesConfig(new[]
                     {
-                        new ClientRouteProxy(PrimaryConnectionId, "localhost")
+                        new ClientRouteProxy(PrimaryConnectionId, routeHostname)
                     });
                     using (var cluster = BuildClient(config, tlsDiscoveryRelay.ListenEndPoint, sslOptions))
-                    using (var session = cluster.Connect())
                     {
+                        using var session = cluster.Connect();
+                        if (!certificateNameMatches)
+                        {
+                            Assert.Throws<NoHostAvailableException>(() => session.Execute("SELECT key FROM system.local"));
+                            Assert.IsTrue(validationErrors.Any(errors =>
+                                (errors & SslPolicyErrors.RemoteCertificateNameMismatch) != 0));
+                            return;
+                        }
                         AssertQueriesLandOnIntendedHosts(session, _nodes);
                         CollectionAssert.Contains(
                             tlsDiscoveryRelay.RequestedServerNames,
@@ -492,7 +521,7 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                             Assert.Greater(relay.ForwardedConnectionCount, 0);
                             CollectionAssert.Contains(
                                 relay.RequestedServerNames,
-                                "localhost",
+                                routeHostname,
                                 "The routed TLS connection did not use its hostname override as SNI.");
                         }
                     }
