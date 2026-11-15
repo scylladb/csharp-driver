@@ -43,6 +43,12 @@ namespace Cassandra.Tests
     [TestFixture]
     public class SessionTests
     {
+        private const int StartupSuccess = 0;
+        private const int StartupSetupFailure = 1;
+        private const int StartupFatalSetupFailure = 2;
+        private const int StartupSessionShutdown = 3;
+        private const int StartupPoolShutdown = 4;
+
         [Test]
         public async Task Should_PropagateFatalWarmupFailure_WhenAnotherHostFailsNormally()
         {
@@ -261,22 +267,22 @@ namespace Cassandra.Tests
             }
         }
 
-        [TestCase(false, 0)]
-        [TestCase(true, 0)]
-        [TestCase(false, 1)]
-        [TestCase(true, 1)]
-        [TestCase(false, 2)]
-        [TestCase(true, 2)]
-        [TestCase(false, 3)]
-        [TestCase(true, 3)]
-        [TestCase(false, 4)]
-        [TestCase(true, 4)]
+        [TestCase(false, StartupSuccess)]
+        [TestCase(true, StartupSuccess)]
+        [TestCase(false, StartupSetupFailure)]
+        [TestCase(true, StartupSetupFailure)]
+        [TestCase(false, StartupFatalSetupFailure)]
+        [TestCase(true, StartupFatalSetupFailure)]
+        [TestCase(false, StartupSessionShutdown)]
+        [TestCase(true, StartupSessionShutdown)]
+        [TestCase(false, StartupPoolShutdown)]
+        [TestCase(true, StartupPoolShutdown)]
         public async Task Should_BindConnectionMetricsWhenAnotherSessionBringsHostUpDuringRegistration(bool clientRoutesEnabled, int termination)
         {
             using var registrationEntered = new ManualResetEventSlim();
             using var releaseRegistration = new ManualResetEventSlim();
             var available = 0;
-            Exception setupFailure = termination == 2
+            Exception setupFailure = termination == StartupFatalSetupFailure
                 ? new OutOfMemoryException("node metrics setup failed")
                 : new InvalidOperationException("node metrics setup failed");
             var provider = CreateMetricsProviderForRemovalTests();
@@ -290,7 +296,7 @@ namespace Cassandra.Tests
                         {
                             throw new TimeoutException("Metric registration was not released");
                         }
-                        if (termination == 1 || termination == 2)
+                        if (termination == StartupSetupFailure || termination == StartupFatalSetupFailure)
                         {
                             throw setupFailure;
                         }
@@ -396,9 +402,9 @@ namespace Cassandra.Tests
                     Assert.IsFalse(pending.IsCompleted, "Connection opening must wait for pool publication.");
                     Assert.AreEqual(0, secondPool.OpenConnections);
                     var createdBeforePublication = observers.Count;
-                    if (termination == 3 || termination == 4)
+                    if (termination == StartupSessionShutdown || termination == StartupPoolShutdown)
                     {
-                        if (termination == 3)
+                        if (termination == StartupSessionShutdown)
                         {
                             shutdown = Task.Run(() => second.ShutdownAsync());
                         }
@@ -422,7 +428,7 @@ namespace Cassandra.Tests
                     {
                         initializationFailure = ex;
                     }
-                    if (termination == 0)
+                    if (termination == StartupSuccess)
                     {
                         Assert.IsNull(initializationFailure);
                         await pending.WaitToCompleteAsync(5000).ConfigureAwait(false);
@@ -434,7 +440,7 @@ namespace Cassandra.Tests
                     }
                     else
                     {
-                        if (termination == 1 || termination == 2)
+                        if (termination == StartupSetupFailure || termination == StartupFatalSetupFailure)
                         {
                             Assert.AreSame(setupFailure, initializationFailure);
                             await Assert.CatchAsync<OperationCanceledException>(async () =>
