@@ -1378,6 +1378,101 @@ namespace Cassandra.Tests
             }
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        [NonParallelizable]
+        public void Should_FinishInlineRetirementBeforeNestedFailureDiagnostics(bool clientRoutesEnabled)
+        {
+            var provider = CreateMetricsProviderForRemovalTests();
+            var pool = new Mock<IHostConnectionPool>();
+            var factory = new Mock<IHostConnectionPoolFactory>();
+            factory.Setup(value => value.Create(
+                    It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>()))
+                .Returns((Host host, Configuration _, ISerializerManager __, IObserverFactory ___, TokenFactory ____) =>
+                    host.Address.Address.Equals(IPAddress.Parse("127.0.0.1")) ? pool.Object : Mock.Of<IHostConnectionPool>());
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = factory.Object,
+                MetricsProvider = provider.Object,
+                ClientRoutesOptions = clientRoutesEnabled
+                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false) : null
+            }.Build();
+            using var metadata = new Metadata(config);
+            var removedHost = metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042));
+            var creatingHost = metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042));
+            removedHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            creatingHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            var diagnosticFailure = new OutOfMemoryException("Fatal nested retirement diagnostic");
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            string removedBucket = null;
+            var cleanupFinished = false;
+            var diagnosticsAfterCleanup = false;
+            using var listener = new ConsumedWarmupTraceListener(false, message =>
+            {
+                if (message.Contains("Could not retire failed pool metrics"))
+                {
+                    diagnosticsAfterCleanup = cleanupFinished;
+                    throw diagnosticFailure;
+                }
+            });
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Error;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "inline-nested-retirement");
+                var internalSession = (IInternalSession)session;
+                provider.Setup(value => value.Gauge(It.IsAny<string>(), It.IsAny<IMetric>(), It.IsAny<Func<double?>>()))
+                    .Returns((string bucket, IMetric metric, Func<double?> _) =>
+                    {
+                        if (metric is NodeMetric)
+                        {
+                            removedBucket = bucket;
+                        }
+                        return Mock.Of<IDriverGauge>();
+                    });
+                internalSession.GetOrCreateConnectionPool(removedHost, HostDistance.Local);
+                var setupFailure = new InvalidOperationException("Nested registration failed");
+                provider.Setup(value => value.Gauge(It.IsAny<string>(), It.IsAny<IMetric>(), It.IsAny<Func<double?>>()))
+                    .Returns((string _, IMetric metric, Func<double?> __) => metric is NodeMetric
+                        ? throw setupFailure : Mock.Of<IDriverGauge>());
+                provider.Setup(value => value.ShutdownMetricsBucket(It.Is<string>(bucket => bucket.Contains(".nodes."))))
+                    .Callback((string bucket) =>
+                    {
+                        if (bucket != removedBucket)
+                        {
+                            throw new InvalidOperationException("Nested failed-registration cleanup failed");
+                        }
+                        Assert.AreSame(setupFailure, Assert.Throws<InvalidOperationException>(() =>
+                            internalSession.GetOrCreateConnectionPool(creatingHost, HostDistance.Local)));
+                        cleanupFinished = true;
+                    });
+                metadata.RemoveHost(removedHost.Address);
+                Assert.AreSame(diagnosticFailure, Assert.Throws<OutOfMemoryException>(() =>
+                    cluster.Raise(value => value.HostRemoved += null, removedHost)));
+                Assert.IsTrue(cleanupFinished);
+                Assert.IsTrue(diagnosticsAfterCleanup);
+                pool.Verify(value => value.Dispose(), Times.Once);
+                provider.Setup(value => value.ShutdownMetricsBucket(It.IsAny<string>()));
+                provider.Setup(value => value.Gauge(It.IsAny<string>(), It.IsAny<IMetric>(), It.IsAny<Func<double?>>()))
+                    .Returns(Mock.Of<IDriverGauge>());
+                var replacement = metadata.AddHost(removedHost.Address);
+                replacement.SetInfo(CreateHostInfo(Guid.NewGuid()));
+                internalSession.GetOrCreateConnectionPool(replacement, HostDistance.Local);
+                Assert.AreSame(replacement, session.GetMetrics().NodeMetrics.Keys.Single());
+            }
+            finally
+            {
+                provider.Setup(value => value.ShutdownMetricsBucket(It.IsAny<string>()));
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                config.Timer.Dispose();
+            }
+        }
+
         [TestCase("none", false)]
         [TestCase("ordinary", false)]
         [TestCase("fatal", false)]
