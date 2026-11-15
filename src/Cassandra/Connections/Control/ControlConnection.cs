@@ -1269,7 +1269,7 @@ namespace Cassandra.Connections.Control
         private void HandleStatusChangeEvent(StatusChangeEventArgs e)
         {
             //The address in the Cassandra event message needs to be translated
-            var address = TranslateAddress(e.Address);
+            var address = TranslateAddress(e.Address) ?? e.Address;
             ControlConnection.Logger.Info("Received Node status change event: host {0} is {1}", address, e.What.ToString().ToUpperInvariant());
             if (!_metadata.Hosts.TryGet(address, out var host))
             {

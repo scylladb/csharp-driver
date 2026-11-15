@@ -373,6 +373,25 @@ namespace Cassandra.Tests.Connections.Control
             Assert.AreEqual(1, _metadata.AllHosts().Count(h => h.Address.Address.ToString() == "127.0.0.10"));
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public void NullAddressTranslationRetainsAdvertisedEndpoint(bool peersV2)
+        {
+            var address = IPAddress.Parse("127.0.0.2");
+            var row = TestHelper.CreateRow(new Dictionary<string, object>
+            {
+                { "rpc_address", address }, { "native_address", address }, { "native_port", 9142 }
+            });
+            var translator = new Mock<IAddressTranslator>();
+            translator.Setup(value => value.Translate(It.IsAny<IPEndPoint>())).Returns((IPEndPoint)null);
+            var config = new TestConfigurationBuilder().Build();
+            using var metadata = new Metadata(config);
+            var refresher = new TopologyRefresher(metadata, config);
+
+            Assert.AreEqual(new IPEndPoint(address, peersV2 ? 9142 : 9042),
+                refresher.GetRpcEndPoint(peersV2, row, translator.Object, 9042));
+        }
+
         [Test]
         public async Task UpdatePeersInfoUsesAddressTranslator()
         {

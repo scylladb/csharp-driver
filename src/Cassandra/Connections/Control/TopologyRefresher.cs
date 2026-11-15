@@ -249,7 +249,8 @@ namespace Cassandra.Connections.Control
                 }
             }
 
-            return translator.Translate(new IPEndPoint(address, rpcPort));
+            var endPoint = new IPEndPoint(address, rpcPort);
+            return translator.Translate(endPoint) ?? endPoint;
         }
 
         private IPAddress GetRpcAddressFromPeersV2(IRow row)

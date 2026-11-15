@@ -187,6 +187,58 @@ namespace Cassandra.Tests.Connections.Control
             };
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_RetainAdvertisedStatusAddressWhenTranslationReturnsNull(bool up)
+        {
+            CassandraEventHandler handler = null;
+            var subscriber = new Mock<IServerEventsSubscriber>();
+            subscriber.Setup(value => value.SubscribeToServerEvents(It.IsAny<IConnection>(), It.IsAny<CassandraEventHandler>()))
+                .Callback<IConnection, CassandraEventHandler>((_, callback) => handler = callback)
+                .Returns(Task.CompletedTask);
+            var translator = new Mock<IAddressTranslator>();
+            translator.Setup(value => value.Translate(It.IsAny<IPEndPoint>())).Returns((IPEndPoint)null);
+            var cluster = new Mock<IInternalCluster>();
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Ignored);
+            var rows = new Dictionary<IPEndPoint, IRow>();
+            foreach (var address in new[] { _endpoint1, _endpoint2 })
+            {
+                rows.Add(address, TestHelper.CreateRow(new Dictionary<string, object>
+                {
+                    { "host_id", Guid.NewGuid() }, { "data_center", "dc1" }, { "rack", "rack1" }, { "tokens", null }
+                }));
+            }
+            var created = NewInstance(rows: rows, cluster: cluster.Object, configBuilderAct: builder =>
+            {
+                builder.ServerEventsSubscriber = subscriber.Object;
+                builder.AddressTranslator = translator.Object;
+            });
+            try
+            {
+                await created.ControlConnection.InitAsync().ConfigureAwait(false);
+                var peer = created.Metadata.GetHost(_endpoint2);
+                Assert.IsNotNull(peer);
+                if (up)
+                {
+                    peer.SetDown();
+                }
+
+                handler(null, new StatusChangeEventArgs
+                {
+                    Address = _endpoint2,
+                    What = up ? StatusChangeEventArgs.Reason.Up : StatusChangeEventArgs.Reason.Down
+                });
+
+                Assert.AreEqual(up, peer.IsUp);
+                translator.Verify(value => value.Translate(_endpoint2), Times.Once);
+            }
+            finally
+            {
+                created.ControlConnection.Dispose();
+                created.Metadata.Dispose();
+            }
+        }
+
         [Test]
         public async Task Should_RemoveStaleHost_AfterReconnectMissesTopologyEvent()
         {
