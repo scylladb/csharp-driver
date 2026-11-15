@@ -709,7 +709,7 @@ namespace Cassandra.Tests
                     StringAssert.DoesNotContain(returned.Message, messages[0]);
                     if (wrapper != "ordinary")
                     {
-                        StringAssert.Contains("Request consumed a fatal failure", messages[0]);
+                        StringAssert.Contains("Request consumed a fatal execution failure", messages[0]);
                         StringAssert.Contains(failure.GetType().FullName, messages[0]);
                     }
                     if (partiallyReturned)
