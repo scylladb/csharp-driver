@@ -283,6 +283,24 @@ namespace Cassandra
                 {
                     ExceptionDispatchInfo.Capture(fatal).Throw();
                 }
+
+                // Setup may fail after other hosts have started opening. Observe
+                // those warmups too, so their fatal failures keep priority.
+                var completedCreations = await Task.WhenAll(poolCreations
+                    .Where(creation => creation.Status == TaskStatus.RanToCompletion)).ConfigureAwait(false);
+                var startedWarmups = Task.WhenAll(completedCreations.Where(warmup => warmup != null));
+                try
+                {
+                    await startedWarmups.ConfigureAwait(false);
+                }
+                catch
+                {
+                    fatal = startedWarmups.Exception?.Flatten().InnerExceptions.FirstOrDefault(Utils.IsFatalException);
+                    if (fatal != null)
+                    {
+                        ExceptionDispatchInfo.Capture(fatal).Throw();
+                    }
+                }
                 throw;
             }
             var tasks = hostWarmups.Where(task => task != null).ToArray();

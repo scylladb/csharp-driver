@@ -49,8 +49,12 @@ namespace Cassandra.Tests
         private const int StartupSessionShutdown = 3;
         private const int StartupPoolShutdown = 4;
 
-        [Test]
-        public async Task Should_PropagateFatalWarmupFailure_WhenAnotherHostFailsNormally()
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public async Task Should_PropagateFatalWarmupFailure_WhenAnotherHostFailsNormally(
+            bool synchronousSetupFailure, bool delayedFatalFailure)
         {
             var ordinaryFailure = new InvalidOperationException("connection unavailable");
             var fatalFailure = new OutOfMemoryException("fatal warmup failure");
@@ -65,10 +69,18 @@ namespace Cassandra.Tests
             {
                 pools[host.Address] = Mock.Of<IHostConnectionPool>();
             }
-            Mock.Get(pools[hosts[0].Address]).Setup(pool => pool.Warmup())
-                .Returns(Task.FromException(ordinaryFailure));
+            if (synchronousSetupFailure)
+            {
+                Mock.Get(pools[hosts[0].Address]).Setup(pool => pool.Warmup()).Throws(ordinaryFailure);
+            }
+            else
+            {
+                Mock.Get(pools[hosts[0].Address]).Setup(pool => pool.Warmup())
+                    .Returns(Task.FromException(ordinaryFailure));
+            }
+            var fatalWarmup = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             Mock.Get(pools[hosts[1].Address]).Setup(pool => pool.Warmup())
-                .Returns(Task.FromException(fatalFailure));
+                .Returns(delayedFatalFailure ? fatalWarmup.Task : Task.FromException(fatalFailure));
             Mock.Get(pools[hosts[2].Address]).Setup(pool => pool.Warmup())
                 .Returns(Task.CompletedTask);
 
@@ -95,12 +107,24 @@ namespace Cassandra.Tests
                 metadata.AddHost(host.Address);
             }
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
-            var session = new Session(cluster.Object, config, null, SerializerManager.Default, null);
+            using var session = new Session(cluster.Object, config, null, SerializerManager.Default, null);
+            try
+            {
+                var initialization = ((IInternalSession)session).Init();
+                if (delayedFatalFailure)
+                {
+                    Assert.IsFalse(initialization.IsCompleted);
+                    fatalWarmup.SetException(fatalFailure);
+                }
+                var actual = await Assert.ThrowsAsync<OutOfMemoryException>(() => initialization);
 
-            var actual = await Assert.ThrowsAsync<OutOfMemoryException>(
-                () => ((IInternalSession)session).Init());
-
-            Assert.AreSame(fatalFailure, actual);
+                Assert.AreSame(fatalFailure, actual);
+                Mock.Get(pools[hosts[1].Address]).Verify(pool => pool.Warmup(), Times.Once);
+            }
+            finally
+            {
+                fatalWarmup.TrySetResult(true);
+            }
         }
 
         [Test]
