@@ -121,35 +121,7 @@ namespace Cassandra.Requests
                     filteredFailures.Add(new KeyValuePair<IPEndPoint, Exception>(host, error));
                     continue;
                 }
-                if (error is NoHostAvailableException noHost)
-                {
-                    foreach (var cause in noHost.Errors.Values)
-                    {
-                        pending.Push(cause);
-                    }
-                }
-                if (error is ConnectionFailure connectionFailure)
-                {
-                    foreach (var cause in connectionFailure.SupersededConnectionErrors)
-                    {
-                        pending.Push(cause);
-                    }
-                    foreach (var cause in connectionFailure.UnresolvedResolutionErrors)
-                    {
-                        pending.Push(cause);
-                    }
-                }
-                if (error is AggregateException aggregate)
-                {
-                    foreach (var cause in aggregate.InnerExceptions)
-                    {
-                        pending.Push(cause);
-                    }
-                }
-                else
-                {
-                    pending.Push(error.InnerException);
-                }
+                PushChildCauses(error, pending);
             }
         }
 
@@ -165,41 +137,43 @@ namespace Cassandra.Requests
                     continue;
                 }
 
-                if (error is NoHostAvailableException noHost)
-                {
-                    foreach (var cause in noHost.Errors.Values)
-                    {
-                        pending.Push(cause);
-                    }
-                }
-
-                if (error is ConnectionFailure connectionFailure)
-                {
-                    foreach (var cause in connectionFailure.SupersededConnectionErrors)
-                    {
-                        pending.Push(cause);
-                    }
-
-                    foreach (var cause in connectionFailure.UnresolvedResolutionErrors)
-                    {
-                        pending.Push(cause);
-                    }
-                }
-
-                if (error is AggregateException aggregate)
-                {
-                    foreach (var cause in aggregate.InnerExceptions)
-                    {
-                        pending.Push(cause);
-                    }
-                }
-                else
-                {
-                    pending.Push(error.InnerException);
-                }
+                PushChildCauses(error, pending);
             }
 
             return causes;
+        }
+
+        private static void PushChildCauses(Exception error, Stack<Exception> pending)
+        {
+            if (error is NoHostAvailableException noHost)
+            {
+                foreach (var cause in noHost.Errors.Values)
+                {
+                    pending.Push(cause);
+                }
+            }
+            if (error is ConnectionFailure connectionFailure)
+            {
+                foreach (var cause in connectionFailure.SupersededConnectionErrors)
+                {
+                    pending.Push(cause);
+                }
+                foreach (var cause in connectionFailure.UnresolvedResolutionErrors)
+                {
+                    pending.Push(cause);
+                }
+            }
+            if (error is AggregateException aggregate)
+            {
+                foreach (var cause in aggregate.InnerExceptions)
+                {
+                    pending.Push(cause);
+                }
+            }
+            else
+            {
+                pending.Push(error.InnerException);
+            }
         }
 
         private static Exception GetUnreturnedFailure(Exception error, HashSet<Exception> returnedCauses)
