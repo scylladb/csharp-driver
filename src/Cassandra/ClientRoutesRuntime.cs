@@ -24,7 +24,7 @@ using Cassandra.Tasks;
 namespace Cassandra
 {
     /// <summary>
-    /// Owns the client-routes cache and lifecycle state for future connection-routing integration.
+    /// Owns the client-routes cache and lifecycle state shared by control and data connections.
     /// </summary>
     internal sealed class ClientRoutesRuntime
     {

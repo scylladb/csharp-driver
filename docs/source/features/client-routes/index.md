@@ -50,6 +50,8 @@ The explicit contact points are bootstrap-only: they establish the first control
 
 The cluster initialization wait is `max(2 * ConnectTimeoutMillis * hostCount, MetadataAbortTimeout)` milliseconds, where `hostCount` is the current metadata host count. `SocketOptions.ConnectTimeoutMillis` defaults to `5000` and can be changed with `WithSocketOptions(new SocketOptions().SetConnectTimeoutMillis(...))`. `MetadataAbortTimeout` is an internal five-minute minimum, with no public setter; increasing the socket connect timeout raises the cluster wait only when the host-count term exceeds that minimum. An expired cluster wait throws `TimeoutException` without cancelling setup. A pool connection waiting for the first complete route snapshot separately waits up to `ConnectTimeoutMillis` (five seconds by default), then fails with a `DriverException` explaining that the snapshot is not ready.
 
+After a recoverable initialization failure, the cluster retains its route cache and background refresh retries for a later `Connect` attempt. Retries can continue logging refresh failures while no control connection is available. Retry `Connect` after correcting connectivity or permissions, or dispose the cluster if it will not be reused. Terminal initialization failure and disposal stop those retries.
+
 For each new connection to a known Host ID, the driver behaves as follows:
 
 1. If routes exist for the host, it tries them in the order of the configured proxies. For a hostname, DNS is resolved for each new connection attempt and every returned address is tried before the next proxy. The driver does not cache DNS results or permanently reorder proxies based on health.
@@ -69,6 +71,8 @@ A failure while reading or checking a row rejects the entire returned refresh sc
 Route-change events refresh the endpoints used for future connections. Connections that are already healthy remain open and are replaced through the normal connection-pool lifecycle; a route update does not forcibly recycle them.
 
 Routed sessions re-evaluate the load-balancing policy distance when looking up a pool, including an existing pool. This keeps removed, down or newly ignored hosts out of request execution; custom policies should keep `Distance()` inexpensive. Recoverable per-host warmup failure causes are logged once at Info, while failure to warm any pool also produces an Error summary.
+
+Topology and host-retirement callbacks run synchronously during serialized metadata and pool updates. Keep host-event handlers, custom policy callbacks and metrics callbacks nonblocking. In particular, do not wait for another thread to finish a metadata refresh or pool lookup from one of these callbacks.
 
 In client-routes mode, non-route server events wait for control-connection lifecycle readiness. Events from a retired control connection are discarded before waiting and checked again before application. Notifications can therefore be lost when their source is retired. Events from the current connection still run concurrently, without an ordering guarantee; events already waiting remain retained until the lifecycle wait completes, including during an outage.
 
@@ -104,4 +108,4 @@ var clientRoutes = new ClientRoutesConfig(
     shardAwarenessEnabled: true);
 ```
 
-Enabling this option retains shard-aware source-port targeting, but the destination remains the route's `port` or `tls_port`. It does not replace the route-table destination port with the node's shard-aware port. The driver's global pooling configuration and the server must also permit shard awareness.
+Enabling this option retains shard-aware source-port targeting, but the destination remains the route's `port` or `tls_port`. Configure the proxy to forward that destination to the server's shard-aware listener; forwarding to its regular listener does not select the shard from the source port. The driver does not replace the route-table destination port with the node's shard-aware port. The driver's global pooling configuration and the server must also permit shard awareness.
