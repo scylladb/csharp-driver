@@ -17,6 +17,5 @@
   <ItemGroup>
     <ProjectReference Include="..\Cassandra\Cassandra.csproj" />
     <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
-    <PackageReference Include="Moq" Version="4.21.0" />
   </ItemGroup>
 </Project>
