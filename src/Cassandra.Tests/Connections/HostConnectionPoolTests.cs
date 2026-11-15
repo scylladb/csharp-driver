@@ -1681,6 +1681,50 @@ namespace Cassandra.Tests.Connections
             }
         }
 
+        [Test]
+        [NonParallelizable]
+        public async Task Should_NotAttributeShardingInitializationFailureToHostUpNotification()
+        {
+            var shardingInfo = ShardingInfo.Create(
+                "0", "0", "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin", "0", "0", "0");
+            var target = CreatePool(
+                connectionFactory: new FakeConnectionFactory(endPoint =>
+                {
+                    var connection = CreateConnection(endPoint, shardingInfo: shardingInfo);
+                    connection.Object.ShardID = 0;
+                    return connection.Object;
+                }),
+                coreConnections: 1,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            var hostUpCalls = 0;
+            _host.SetDown();
+            _host.Up += _ => hostUpCalls++;
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            var listener = new Mock<TraceListener> { CallBase = true };
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Warning;
+            Trace.Listeners.Add(listener.Object);
+            try
+            {
+                await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                Assert.AreEqual(0, hostUpCalls);
+                listener.Verify(value => value.WriteLine(It.Is<string>(message =>
+                    message.Contains("Background connection maintenance") &&
+                    message.Contains(_host.Address.ToString()) &&
+                    message.Contains(nameof(DivideByZeroException)))), Times.Once());
+                listener.Verify(value => value.WriteLine(It.Is<string>(message =>
+                    message.Contains("Host-up notification"))), Times.Never());
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener.Object);
+                listener.Object.Dispose();
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                DisposePoolAndTimer(target);
+            }
+        }
+
         [TestCase(TraceLevel.Warning, false, 1)]
         [TestCase(TraceLevel.Warning, true, 1)]
         [TestCase(TraceLevel.Info, false, 1)]

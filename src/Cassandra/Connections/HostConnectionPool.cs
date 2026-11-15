@@ -967,6 +967,7 @@ namespace Cassandra.Connections
             }
 
             ConnectionOpenOperation openOperation = null;
+            var notifyingHostUp = false;
             try
             {
                 var t = await CreateOpenConnectionCore(
@@ -977,6 +978,7 @@ namespace Cassandra.Connections
                     .ConfigureAwait(false);
                 UpdateShardingInfo(t);
                 StartCreatingConnection(null);
+                notifyingHostUp = true;
                 _host.BringUpIfDown();
             }
             catch (Exception ex) when (Utils.IsFatalException(ex))
@@ -1021,7 +1023,9 @@ namespace Cassandra.Connections
                     try
                     {
                         HostConnectionPool.Logger.Warning(
-                            "Host-up notification for {0} failed during background connection maintenance: {1}",
+                            notifyingHostUp
+                                ? "Host-up notification for {0} failed during background connection maintenance: {1}"
+                                : "Background connection maintenance for {0} failed: {1}",
                             _host.Address, ex);
                     }
                     catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
