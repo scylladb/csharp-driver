@@ -26,7 +26,6 @@ using System.Threading.Tasks;
 using Cassandra.Collections;
 using Cassandra.Connections;
 using Cassandra.ExecutionProfiles;
-using Cassandra.Metrics.Registries;
 using Cassandra.Observers.Abstractions;
 using Cassandra.Serialization;
 using Cassandra.SessionManagement;
@@ -426,7 +425,7 @@ namespace Cassandra.Requests
             return RequestHandler.GetConnectionFromHostAsync(
                 validHost.Host, validHost.Distance, _session, triedHosts,
                 Statement != null ? Statement.RoutingKey : null, shardID,
-                metrics => _requestObserver.OnNodePoolSelected(validHost.Host, metrics));
+                _requestObserver);
         }
 
         /// <summary>
@@ -439,14 +438,14 @@ namespace Cassandra.Requests
         /// <param name="triedHosts">Hosts for which there were attempts to connect and send the request.</param>
         /// <param name="routingKey">Routing key to use for the next host.</param>
         /// <param name="shardID">Shard to use.</param>
-        /// <param name="onPoolSelected">Captures the selected pool's metrics before connection acquisition can suspend.</param>
+        /// <param name="requestObserver">Captures the selected pool's metrics before connection acquisition can suspend.</param>
         /// <exception cref="InvalidQueryException">When the keyspace is not valid</exception>
         internal static Task<IConnection> GetConnectionFromHostAsync(
             Host host, HostDistance distance, IInternalSession session, IDictionary<IPEndPoint, Exception> triedHosts,
-            RoutingKey routingKey = null, int shardID = -1, Action<INodeMetrics> onPoolSelected = null)
+            RoutingKey routingKey = null, int shardID = -1, IRequestObserver requestObserver = null)
         {
             return GetConnectionFromHostInternalAsync(
-                host, distance, session, triedHosts, true, () => session.Keyspace, routingKey, shardID, onPoolSelected);
+                host, distance, session, triedHosts, true, () => session.Keyspace, routingKey, shardID, requestObserver);
         }
 
         internal static Task<IConnection> GetConnectionFromHostWithKeyspaceAsync(
@@ -471,7 +470,7 @@ namespace Cassandra.Requests
             Func<string> getKeyspaceFunc,
             RoutingKey routingKey,
             int shardID = -1,
-            Action<INodeMetrics> onPoolSelected = null)
+            IRequestObserver requestObserver = null)
         {
             IHostConnectionPool hostPool;
             try
@@ -494,7 +493,7 @@ namespace Cassandra.Requests
             try
             {
                 // Bind speculative accounting before connection acquisition waits for USE or opening.
-                onPoolSelected?.Invoke(hostPool.NodeMetrics);
+                requestObserver?.OnNodePoolSelected(host, hostPool.NodeMetrics);
                 return await hostPool.GetConnectionFromHostAsync(
                     triedHosts, getKeyspaceFunc, routingKey, shardID).ConfigureAwait(false);
             }
@@ -505,7 +504,7 @@ namespace Cassandra.Requests
                     // A socket exception on the current connection does not mean that all the pool is closed:
                     // Retry on the same host
                     return await RequestHandler.GetConnectionFromHostInternalAsync(
-                        host, distance, session, triedHosts, false, getKeyspaceFunc, routingKey, shardID, onPoolSelected).ConfigureAwait(false);
+                        host, distance, session, triedHosts, false, getKeyspaceFunc, routingKey, shardID, requestObserver).ConfigureAwait(false);
                 }
 
                 throw;
