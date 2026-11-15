@@ -267,7 +267,7 @@ namespace Cassandra.Requests
 
         /// <summary>
         /// Retains observation identity across completion and late speculative failures.
-        /// Allocated only when a request encounters a connection failure.
+        /// Allocated only when a request records an acquisition or late fatal execution failure.
         /// </summary>
         internal sealed class Collector
         {

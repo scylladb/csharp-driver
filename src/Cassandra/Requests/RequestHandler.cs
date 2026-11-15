@@ -320,7 +320,7 @@ namespace Cassandra.Requests
             try
             {
                 // Result observers can record more failures, including after an await.
-                // Keep their diagnostics deferred until the result has been published.
+                // Keep their diagnostics deferred until the result handler settles, even if it fails.
                 await (error == null
                     ? _requestResultHandler.TrySetResultAsync(result, _sessionRequestInfo)
                     : _requestResultHandler.TrySetExceptionAsync(error, _sessionRequestInfo)).ConfigureAwait(false);
