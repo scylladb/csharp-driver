@@ -33,7 +33,7 @@ namespace Cassandra.Requests
 
         internal static void Report(
             ConcurrentQueue<KeyValuePair<IPEndPoint, Exception>> failures, Exception returnedError,
-            ConcurrentDictionary<Exception, byte> reportedFailures = null)
+            ConcurrentDictionary<Exception, byte> reportedFailures = null, bool canReplaceReturnedError = true)
         {
             if (failures == null || failures.IsEmpty)
             {
@@ -46,7 +46,7 @@ namespace Cassandra.Requests
             Exception fatalDiagnostic = null;
             while (failures.TryDequeue(out var failure))
             {
-                if (returnedCauses != null && !Utils.IsFatalException(returnedError))
+                if (canReplaceReturnedError && returnedCauses != null && !Utils.IsFatalException(returnedError))
                 {
                     RetainReturnedFailures(failure.Key, failure.Value, returnedCauses, filteredFailures);
                 }
@@ -81,14 +81,17 @@ namespace Cassandra.Requests
                     {
                         // Drain every consumed failure before propagating the first fatal sink error.
                         // Causes filtered against the displaced result are now consumed as well.
-                        fatalDiagnostic = diagnosticFailure;
-                        returnedError = diagnosticFailure;
-                        returnedCauses = GetReturnedCauses(returnedError);
-                        foreach (var filtered in filteredFailures)
+                        fatalDiagnostic ??= diagnosticFailure;
+                        if (canReplaceReturnedError)
                         {
-                            failures.Enqueue(filtered);
+                            returnedError = diagnosticFailure;
+                            returnedCauses = GetReturnedCauses(returnedError);
+                            foreach (var filtered in filteredFailures)
+                            {
+                                failures.Enqueue(filtered);
+                            }
+                            filteredFailures.Clear();
                         }
-                        filteredFailures.Clear();
                     }
                 }
             }
@@ -277,7 +280,7 @@ namespace Cassandra.Requests
                 _failures.Enqueue(new KeyValuePair<IPEndPoint, Exception>(host, failure));
             }
 
-            internal void Report(Exception returnedError)
+            internal void Report(Exception returnedError, bool canReplaceReturnedError = true)
             {
                 if (_failures.IsEmpty)
                 {
@@ -289,7 +292,7 @@ namespace Cassandra.Requests
                     var created = new ConcurrentDictionary<Exception, byte>(ReferenceEqualityComparer.Instance);
                     reported = Interlocked.CompareExchange(ref _reported, created, null) ?? created;
                 }
-                ConsumedConnectionFailures.Report(_failures, returnedError, reported);
+                ConsumedConnectionFailures.Report(_failures, returnedError, reported, canReplaceReturnedError);
             }
         }
 

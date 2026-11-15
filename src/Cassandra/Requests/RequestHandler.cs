@@ -297,10 +297,11 @@ namespace Cassandra.Requests
             return true;
         }
 
-        private Task CompleteRequestAsync(Exception error, RowSet result)
+        private async Task CompleteRequestAsync(Exception error, RowSet result)
         {
             Volatile.Write(ref _returnedError, error);
-            // Publish completion before checking the queue, pairing with the recorder's enqueue.
+            // Completion owns the drain until its final result is selected. Reentrant
+            // and concurrent recorders enqueue without filtering against a tentative error.
             Interlocked.Exchange(ref _diagnosticsCompleted, 1);
             try
             {
@@ -315,9 +316,34 @@ namespace Cassandra.Requests
                     Volatile.Write(ref _returnedError, error);
                 }
             }
-            return error == null
-                ? _requestResultHandler.TrySetResultAsync(result, _sessionRequestInfo)
-                : _requestResultHandler.TrySetExceptionAsync(error, _sessionRequestInfo);
+            Exception completionFailure = null;
+            try
+            {
+                // Result observers can record more failures, including after an await.
+                // Keep their diagnostics deferred until the result has been published.
+                await (error == null
+                    ? _requestResultHandler.TrySetResultAsync(result, _sessionRequestInfo)
+                    : _requestResultHandler.TrySetExceptionAsync(error, _sessionRequestInfo)).ConfigureAwait(false);
+            }
+            catch (Exception failure)
+            {
+                completionFailure = failure;
+                throw;
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _diagnosticsCompleted, 2);
+                try
+                {
+                    // Pair state publication with enqueue, including failures queued
+                    // after the first drain or by a failing result observer.
+                    Volatile.Read(ref _connectionFailures)?.Report(error, canReplaceReturnedError: false);
+                }
+                catch (Exception) when (Utils.IsFatalException(completionFailure))
+                {
+                    // A diagnostic must not replace an already-selected fatal observer failure.
+                }
+            }
         }
 
         public void RecordConnectionFailure(IPEndPoint host, Exception failure)
@@ -330,9 +356,9 @@ namespace Cassandra.Requests
             }
 
             failures.Record(host, failure);
-            if (Volatile.Read(ref _diagnosticsCompleted) != 0)
+            if (Volatile.Read(ref _diagnosticsCompleted) == 2)
             {
-                failures.Report(Volatile.Read(ref _returnedError));
+                failures.Report(Volatile.Read(ref _returnedError), canReplaceReturnedError: false);
             }
         }
 
