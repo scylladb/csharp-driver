@@ -13,7 +13,10 @@
 //    See the License for the specific language governing permissions and
 //    limitations under the License.
 
+using System;
 using System.Collections.Concurrent;
+using System.Linq;
+using System.Net;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Cassandra.Connections;
@@ -34,7 +37,40 @@ namespace Cassandra.Tests.Connections.TestHelpers
 
         public FakeMetadataRequestHandler(IDictionary<string, IEnumerable<IRow>> rows)
         {
-            _rows = rows;
+            _rows = rows.ToDictionary(pair => pair.Key, pair =>
+                pair.Value == null ? null : (IEnumerable<IRow>)pair.Value.Select(row =>
+                    pair.Key == TopologyRefresher.SelectLocal || pair.Key == TopologyRefresher.SelectPeers || pair.Key == TopologyRefresher.SelectPeersV2
+                        ? WithFixtureIdentity(row) : row).ToArray());
+        }
+
+        private static IRow WithFixtureIdentity(IRow row)
+        {
+            if (row.ContainsColumn("host_id"))
+            {
+                return row;
+            }
+            var address = row.ContainsColumn("rpc_address") ? row.GetValue<IPAddress>("rpc_address") : null;
+            address ??= row.ContainsColumn("native_address") ? row.GetValue<IPAddress>("native_address") : null;
+            if (address == null || address.Equals(IPAddress.Any) || address.Equals(IPAddress.IPv6Any))
+            {
+                address = row.ContainsColumn("peer") ? row.GetValue<IPAddress>("peer") : null;
+                address ??= row.ContainsColumn("broadcast_address") ? row.GetValue<IPAddress>("broadcast_address") : null;
+                address ??= row.ContainsColumn("listen_address") ? row.GetValue<IPAddress>("listen_address") : null;
+                address ??= IPAddress.Loopback;
+            }
+            var id = new Guid(address.MapToIPv6().GetAddressBytes());
+            var result = new Mock<IRow>();
+            result.Setup(value => value.ContainsColumn(It.IsAny<string>()))
+                .Returns<string>(name => name == "host_id" || row.ContainsColumn(name));
+            result.Setup(value => value.GetValue<Guid?>("host_id")).Returns(id);
+            result.Setup(value => value.GetValue<Guid>("host_id")).Returns(id);
+            result.Setup(value => value.GetValue<string>(It.IsAny<string>())).Returns<string>(row.GetValue<string>);
+            result.Setup(value => value.GetValue<IPAddress>(It.IsAny<string>())).Returns<string>(row.GetValue<IPAddress>);
+            result.Setup(value => value.GetValue<int?>(It.IsAny<string>())).Returns<string>(row.GetValue<int?>);
+            result.Setup(value => value.GetValue<System.Collections.Generic.IEnumerable<string>>(It.IsAny<string>()))
+                .Returns<string>(row.GetValue<System.Collections.Generic.IEnumerable<string>>);
+            result.Setup(value => value.IsNull(It.IsAny<string>())).Returns<string>(row.IsNull);
+            return result.Object;
         }
 
         internal class FakeResultResponse : ResultResponse

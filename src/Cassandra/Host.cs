@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Generic;
 using System.Net;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using Cassandra.Connections;
 using Cassandra.Connections.Control;
@@ -75,12 +76,16 @@ namespace Cassandra
         /// <summary>
         ///  Gets the node address.
         /// </summary>
-        public IPEndPoint Address { get; }
+        public IPEndPoint Address => _address;
+
+        private volatile IPEndPoint _address;
+
+        internal string MetricKey { get; }
 
         /// <summary>
-        /// Gets the node's host id.
+        /// Gets the node's immutable server identity, or <see cref="Guid.Empty"/> for an unidentified custom host.
         /// </summary>
-        public Guid HostId { get; private set; }
+        public Guid HostId { get; }
 
         /// <summary>
         /// Tokens assigned to the host
@@ -114,19 +119,26 @@ namespace Cassandra
         /// <summary>
         /// ContactPoint from which this endpoint was resolved. It is null if it was parsed from system tables.
         /// </summary>
-        internal IContactPoint ContactPoint { get; }
+        internal IContactPoint ContactPoint { get; private set; }
 
         /// <summary>
-        /// Creates a new instance of <see cref="Host"/>.
+        /// Creates an unidentified custom host. Discovery supplies the immutable server identity separately.
+        /// Unidentified hosts compare by object identity, even when their addresses match.
         /// </summary>
         // ReSharper disable once UnusedParameter.Local : Part of the public API
         public Host(IPEndPoint address, IReconnectionPolicy reconnectionPolicy) : this(address, contactPoint: null)
         {
         }
 
-        internal Host(IPEndPoint address, IContactPoint contactPoint)
+        internal Host(IPEndPoint address, IContactPoint contactPoint) : this(Guid.Empty, address, contactPoint)
         {
-            Address = address ?? throw new ArgumentNullException(nameof(address));
+        }
+
+        internal Host(Guid hostId, IPEndPoint address, IContactPoint contactPoint)
+        {
+            HostId = hostId;
+            MetricKey = hostId == Guid.Empty ? "custom-" + Guid.NewGuid().ToString("D") : hostId.ToString("D");
+            _address = address ?? throw new ArgumentNullException(nameof(address));
             ContactPoint = contactPoint;
         }
 
@@ -173,6 +185,11 @@ namespace Cassandra
         /// </summary>
         internal void SetInfo(IRow row)
         {
+            if (row.ContainsColumn("host_id") && row.GetValue<Guid?>("host_id") is Guid incomingId &&
+                incomingId != Guid.Empty && incomingId != HostId)
+            {
+                throw new InvalidOperationException("A Host's server identity cannot be changed.");
+            }
             Datacenter = row.GetValue<string>("data_center");
             Rack = row.GetValue<string>("rack");
             Tokens = row.GetValue<IEnumerable<string>>("tokens") ?? new string[0];
@@ -186,30 +203,30 @@ namespace Cassandra
                 }
             }
 
-            if (row.ContainsColumn("host_id"))
-            {
-                var nullableHostId = row.GetValue<Guid?>("host_id");
-                if (nullableHostId.HasValue)
-                {
-                    HostId = nullableHostId.Value;
-                }
-            }
+        }
+
+        internal void SetEndPoint(IPEndPoint address, IContactPoint contactPoint)
+        {
+            _address = address ?? throw new ArgumentNullException(nameof(address));
+            // A contact point belongs to the endpoint through which it was discovered.
+            ContactPoint = contactPoint;
         }
 
         /// <summary>
-        /// The hash value of the address of the host
+        /// Returns a stable hash of the server identity. Unidentified custom hosts use object identity.
         /// </summary>
         public override int GetHashCode()
         {
-            return Address.GetHashCode();
+            return HostId == Guid.Empty ? RuntimeHelpers.GetHashCode(this) : HostId.GetHashCode();
         }
 
         /// <summary>
-        /// Determines if the this instance can be considered equal to the provided host.
+        /// Compares server identities. Unidentified custom hosts are equal only to themselves.
         /// </summary>
         public bool Equals(Host other)
         {
-            return Equals(Address, other?.Address);
+            return ReferenceEquals(this, other) ||
+                (other != null && HostId != Guid.Empty && HostId == other.HostId);
         }
 
         /// <inheritdoc />

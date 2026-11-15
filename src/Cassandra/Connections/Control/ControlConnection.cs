@@ -1208,7 +1208,16 @@ namespace Cassandra.Connections.Control
 
                 if (e is StatusChangeEventArgs args)
                 {
-                    HandleStatusChangeEvent(args);
+                    // Address-only events cannot identify a node at an ambiguous or
+                    // obsolete endpoint. Reconcile topology instead of choosing an ID.
+                    if (!_metadata.Hosts.TryGet(TranslateAddress(args.Address), out _))
+                    {
+                        await ScheduleHostsRefreshAsync().ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        HandleStatusChangeEvent(args);
+                    }
                     return;
                 }
 

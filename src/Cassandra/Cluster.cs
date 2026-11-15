@@ -954,7 +954,7 @@ namespace Cassandra
             }
 
             // Get the first pool for that host that has open connections
-            var pool = sessions.Select(s => s.GetExistingPool(host.Address)).Where(p => p != null).FirstOrDefault(p => p.HasConnections);
+            var pool = sessions.Select(s => s.GetExistingPool(host)).Where(p => p != null).FirstOrDefault(p => p.HasConnections);
             if (pool == null)
             {
                 PrepareHandler.Logger.Info($"Not re-preparing queries on {host.Address} as there wasn't an open connection to the node.");

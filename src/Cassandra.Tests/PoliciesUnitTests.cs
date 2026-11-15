@@ -598,10 +598,11 @@ namespace Cassandra.Tests
             var metadata = new Metadata(new Configuration(), new FakeSchemaParser(keyspaces)) { Partitioner = "Murmur3Partitioner" };
             var hosts = new[] { "-4611686018427387904", "4611686018427387904" }.Select((token, i) =>
             {
-                var host = metadata.Hosts.Add(new IPEndPoint(IPAddress.Parse($"127.0.0.{i + 1}"), 9042));
-                host.SetInfo(new TestHelper.DictionaryBasedRow(new Dictionary<string, object>
+                var id = Guid.NewGuid();
+                var host = metadata.AddOrUpdateHost(id, new IPEndPoint(IPAddress.Parse($"127.0.0.{i + 1}"), 9042), null,
+                    new TestHelper.DictionaryBasedRow(new Dictionary<string, object>
                 {
-                    { "host_id", Guid.NewGuid() },
+                    { "host_id", id },
                     { "data_center", "dc1" },
                     { "rack", "rack1" },
                     { "release_version", "3.11.1" },

@@ -40,7 +40,7 @@ namespace Cassandra
     {
         private readonly ISerializerManager _serializerManager;
         private static readonly Logger Logger = new Logger(typeof(Session));
-        private readonly IThreadSafeDictionary<IPEndPoint, IHostConnectionPool> _connectionPool;
+        private readonly IThreadSafeDictionary<Host, IHostConnectionPool> _connectionPool;
         private readonly IInternalCluster _cluster;
         private int _disposed;
         private long _initialized;
@@ -111,7 +111,7 @@ namespace Cassandra
             Keyspace = keyspace;
             SessionName = sessionName;
             UserDefinedTypes = new UdtMappingDefinitions(this, serializerManager);
-            _connectionPool = new CopyOnWriteDictionary<IPEndPoint, IHostConnectionPool>();
+            _connectionPool = new CopyOnWriteDictionary<Host, IHostConnectionPool>();
             _cluster.HostRemoved += OnHostRemoved;
             _metricsManager = new MetricsManager(configuration.MetricsProvider, Configuration.MetricsOptions, Configuration.MetricsEnabled, SessionName);
             _observerFactory = configuration.ObserverFactoryBuilder.Build(_metricsManager);
@@ -320,7 +320,7 @@ namespace Cassandra
         /// <inheritdoc />
         IHostConnectionPool IInternalSession.GetOrCreateConnectionPool(Host host, HostDistance distance)
         {
-            var hostPool = _connectionPool.GetOrAdd(host.Address, address =>
+            var hostPool = _connectionPool.GetOrAdd(host, owner =>
             {
                 var newPool = Configuration.HostConnectionPoolFactory.Create(
                     host, Configuration, _serializerManager, _observerFactory, Cluster.Metadata.GetTokenFactory());
@@ -335,7 +335,18 @@ namespace Cassandra
         /// <inheritdoc />
         IEnumerable<KeyValuePair<IPEndPoint, IHostConnectionPool>> IInternalSession.GetPools()
         {
-            return _connectionPool.Select(kvp => new KeyValuePair<IPEndPoint, IHostConnectionPool>(kvp.Key, kvp.Value));
+            return _connectionPool.Select(kvp => new KeyValuePair<IPEndPoint, IHostConnectionPool>(kvp.Key.Address, kvp.Value));
+        }
+
+        IEnumerable<KeyValuePair<Host, IHostConnectionPool>> IInternalSession.GetNodePools()
+        {
+            return _connectionPool.ToArray();
+        }
+
+        IHostConnectionPool IInternalSession.GetExistingPool(Host host)
+        {
+            _connectionPool.TryGetValue(host, out var pool);
+            return pool;
         }
 
         void IInternalSession.OnAllConnectionClosed(Host host, IHostConnectionPool pool)
@@ -360,7 +371,7 @@ namespace Cassandra
 
         bool IInternalSession.HasConnections(Host host)
         {
-            if (_connectionPool.TryGetValue(host.Address, out var pool))
+            if (_connectionPool.TryGetValue(host, out var pool))
             {
                 return pool.HasConnections;
             }
@@ -370,13 +381,13 @@ namespace Cassandra
         /// <inheritdoc />
         IHostConnectionPool IInternalSession.GetExistingPool(IPEndPoint address)
         {
-            _connectionPool.TryGetValue(address, out var pool);
-            return pool;
+            var host = _cluster.Metadata.GetHost(address);
+            return host == null ? null : InternalRef.GetExistingPool(host);
         }
 
         void IInternalSession.CheckHealth(Host host, IConnection connection)
         {
-            if (!_connectionPool.TryGetValue(host.Address, out var pool))
+            if (!_connectionPool.TryGetValue(host, out var pool))
             {
                 Session.Logger.Error("Internal error: No host connection pool found");
                 return;
@@ -464,7 +475,7 @@ namespace Cassandra
         private void OnHostRemoved(Host host)
         {
             _metricsManager.RemoveNodeMetrics(host);
-            if (_connectionPool.TryRemove(host.Address, out var pool))
+            if (_connectionPool.TryRemove(host, out var pool))
             {
                 pool.OnHostRemoved();
                 pool.Dispose();

@@ -56,6 +56,10 @@ namespace Cassandra.SessionManagement
         /// </summary>
         IHostConnectionPool GetExistingPool(IPEndPoint address);
 
+        IHostConnectionPool GetExistingPool(Host host);
+
+        IEnumerable<KeyValuePair<Host, IHostConnectionPool>> GetNodePools();
+
         void CheckHealth(Host host, IConnection connection);
 
         bool HasConnections(Host host);

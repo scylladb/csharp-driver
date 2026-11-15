@@ -13,6 +13,7 @@
 //    See the License for the specific language governing permissions and
 //    limitations under the License.
 
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
@@ -42,8 +43,8 @@ namespace Cassandra.Tests.Connections.TestHelpers
             {
                 if (_metadata.GetHost(h.Key) == null)
                 {
-                    var host = _metadata.AddHost(h.Key);
-                    host.SetInfo(h.Value);
+                    var id = h.Value.ContainsColumn("host_id") ? h.Value.GetValue<Guid?>("host_id") : null;
+                    _metadata.AddOrUpdateHost(id ?? Guid.NewGuid(), h.Key, null, h.Value);
                 }
             }
 

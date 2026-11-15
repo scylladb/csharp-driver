@@ -810,7 +810,7 @@ namespace Cassandra.Tests.Connections
         private static Host CreateHost(string address, Guid hostId)
         {
             var host = new Host(
-                new IPEndPoint(IPAddress.Parse(address), AdvertisedPort),
+                hostId, new IPEndPoint(IPAddress.Parse(address), AdvertisedPort),
                 contactPoint: null);
             host.SetInfo(new TestHelper.DictionaryBasedRow(new Dictionary<string, object>
             {

@@ -26,6 +26,8 @@ namespace Cassandra.Requests
 
         public IDictionary<IPEndPoint, Exception> TriedHosts { get; set; }
 
-        public IPEndPoint HostAddress { get; set; }
+        public Host Host { get; set; }
+
+        public ISet<Host> FailedHosts { get; } = new HashSet<Host>();
     }
 }

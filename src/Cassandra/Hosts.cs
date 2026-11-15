@@ -18,6 +18,8 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Net;
+using System.Linq;
+using System.Threading;
 using Cassandra.Collections;
 using Cassandra.Connections;
 using Cassandra.Connections.Control;
@@ -26,7 +28,12 @@ namespace Cassandra
 {
     internal class Hosts : IEnumerable<Host>
     {
-        private readonly CopyOnWriteDictionary<IPEndPoint, Host> _hosts = new CopyOnWriteDictionary<IPEndPoint, Host>();
+        private readonly CopyOnWriteDictionary<Guid, Host> _hosts = new CopyOnWriteDictionary<Guid, Host>();
+        // Unidentified hosts are retained only for internal/custom-host compatibility.
+        // Discovery never inserts a node here: it requires a server Host ID first.
+        private readonly CopyOnWriteDictionary<IPEndPoint, Host> _unidentified = new CopyOnWriteDictionary<IPEndPoint, Host>();
+        private readonly Lock _writeLock = new Lock();
+        private volatile CopyOnWriteDictionary<IPEndPoint, Host> _byAddress = new CopyOnWriteDictionary<IPEndPoint, Host>();
 
         /// <summary>
         /// Event that gets triggered when a host is considered as DOWN (not available)
@@ -53,17 +60,29 @@ namespace Cassandra
         /// </summary>
         internal int Count
         {
-            get { return _hosts.Count; }
+            get { return _hosts.Count + _unidentified.Count; }
         }
 
         public bool TryGet(IPEndPoint endpoint, out Host host)
         {
-            return _hosts.TryGetValue(endpoint, out host);
+            if (_byAddress.TryGetValue(endpoint, out host))
+            {
+                return host != null;
+            }
+            return _unidentified.TryGetValue(endpoint, out host);
+        }
+
+        private void RebuildAddressIndex()
+        {
+            // A null entry marks an ambiguous endpoint rather than picking a node.
+            _byAddress = new CopyOnWriteDictionary<IPEndPoint, Host>(_hosts.Values
+                .GroupBy(host => host.Address)
+                .ToDictionary(group => group.Key, group => group.Count() == 1 ? group.First() : null));
         }
 
         public ICollection<Host> ToCollection()
         {
-            return _hosts.Values;
+            return _hosts.Values.Concat(_unidentified.Values).ToArray();
         }
 
         /// <summary>
@@ -79,18 +98,68 @@ namespace Cassandra
         /// </summary>
         public Host Add(IPEndPoint key, IContactPoint contactPoint)
         {
-            var newHost = new Host(key, contactPoint);
-            var host = _hosts.GetOrAdd(key, newHost);
-            if (!ReferenceEquals(newHost, host))
+            Host host;
+            lock (_writeLock)
             {
-                //The host was not added, return the existing host
-                return host;
+                if (TryGet(key, out host))
+                {
+                    return host;
+                }
+                host = new Host(key, contactPoint);
+                _unidentified.Add(key, host);
+                Subscribe(host);
             }
-            //The node was added
+            Added?.Invoke(host);
+            return host;
+        }
+
+        public bool TryGet(Guid hostId, out Host host)
+        {
+            return _hosts.TryGetValue(hostId, out host);
+        }
+
+        public Host AddOrUpdate(Guid hostId, IPEndPoint address, IContactPoint contactPoint, IRow row)
+        {
+            if (hostId == Guid.Empty)
+            {
+                throw new ArgumentException("A discovered node must have a nonempty Host ID.", nameof(hostId));
+            }
+            Host host;
+            Host provisional;
+            var added = false;
+            lock (_writeLock)
+            {
+                if (!_hosts.TryGetValue(hostId, out host))
+                {
+                    host = new Host(hostId, address, contactPoint);
+                    host.SetInfo(row);
+                    Subscribe(host);
+                    _hosts.Add(hostId, host);
+                    added = true;
+                }
+                else
+                {
+                    host.SetInfo(row);
+                    host.SetEndPoint(address, contactPoint);
+                }
+                _unidentified.TryRemove(address, out provisional);
+                RebuildAddressIndex();
+            }
+            if (provisional != null)
+            {
+                NotifyRemoved(provisional);
+            }
+            if (added)
+            {
+                Added?.Invoke(host);
+            }
+            return host;
+        }
+
+        private void Subscribe(Host host)
+        {
             host.Down += OnHostDown;
             host.Up += OnHostUp;
-            Added?.Invoke(newHost);
-            return host;
         }
 
         private void OnHostDown(Host sender)
@@ -105,11 +174,39 @@ namespace Cassandra
 
         public void RemoveIfExists(IPEndPoint ep)
         {
-            if (!_hosts.TryRemove(ep, out Host host))
+            if (TryGet(ep, out var host))
             {
-                //The host does not exists
-                return;
+                Remove(host);
             }
+        }
+
+        public void Remove(Host host)
+        {
+            lock (_writeLock)
+            {
+                if (host.HostId == Guid.Empty)
+                {
+                    if (!_unidentified.TryGetValue(host.Address, out var current) || !ReferenceEquals(host, current))
+                    {
+                        return;
+                    }
+                    _unidentified.Remove(host.Address);
+                }
+                else
+                {
+                    if (!_hosts.TryGetValue(host.HostId, out var current) || !ReferenceEquals(host, current))
+                    {
+                        return;
+                    }
+                    _hosts.Remove(host.HostId);
+                    RebuildAddressIndex();
+                }
+            }
+            NotifyRemoved(host);
+        }
+
+        private void NotifyRemoved(Host host)
+        {
             host.Down -= OnHostDown;
             host.Up -= OnHostUp;
             host.SetAsRemoved();
@@ -118,17 +215,17 @@ namespace Cassandra
 
         public IEnumerable<IPEndPoint> AllEndPointsToCollection()
         {
-            return _hosts.Keys;
+            return ToCollection().Select(h => h.Address).Distinct().ToArray();
         }
 
         public IEnumerator<Host> GetEnumerator()
         {
-            return _hosts.Values.GetEnumerator();
+            return ToCollection().GetEnumerator();
         }
 
         IEnumerator IEnumerable.GetEnumerator()
         {
-            return _hosts.Values.GetEnumerator();
+            return ToCollection().GetEnumerator();
         }
     }
 }

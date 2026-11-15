@@ -130,6 +130,22 @@ namespace Cassandra
             return null;
         }
 
+        internal Host GetHost(Guid hostId)
+        {
+            Hosts.TryGet(hostId, out var host);
+            return host;
+        }
+
+        internal Host AddOrUpdateHost(Guid hostId, IPEndPoint address, IContactPoint contactPoint, IRow row)
+        {
+            return Hosts.AddOrUpdate(hostId, address, contactPoint, row);
+        }
+
+        internal void RemoveHost(Host host)
+        {
+            Hosts.Remove(host);
+        }
+
         internal Host AddHost(IPEndPoint address)
         {
             return Hosts.Add(address);

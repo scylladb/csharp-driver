@@ -17,6 +17,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Responses;
 using Cassandra.Serialization;
@@ -35,6 +36,9 @@ namespace Cassandra.Connections.Control
 
         private readonly Configuration _config;
         private readonly Metadata _metadata;
+        private readonly Lock _refreshLock = new Lock();
+        private long _refreshSequence;
+        private long _lastAppliedRefresh;
 
         /// <summary>
         /// Once this is set to false, it will never be set to true again.
@@ -51,6 +55,7 @@ namespace Cassandra.Connections.Control
         public async Task<Host> RefreshNodeListAsync(
             IConnectionEndPoint currentEndPoint, IConnection connection, ISerializer serializer)
         {
+            var sequence = Interlocked.Increment(ref _refreshSequence);
             ControlConnection.Logger.Info("Refreshing node list");
 
             // safe guard against concurrent changes of this field
@@ -73,11 +78,31 @@ namespace Cassandra.Connections.Control
                 throw new DriverInternalError("Local host metadata could not be retrieved");
             }
 
-            _metadata.Partitioner = localRow.GetValue<string>("partitioner");
-            var host = GetAndUpdateLocalHost(currentEndPoint, localRow);
-            UpdatePeersInfo(localIsPeersV2, rsPeers, host);
-            ControlConnection.Logger.Info("Node list retrieved successfully");
-            return host;
+            var localId = GetHostId(localRow);
+            if (localId == Guid.Empty)
+            {
+                throw new DriverInternalError("Local host metadata does not contain a nonempty Host ID.");
+            }
+            lock (_refreshLock)
+            {
+                if (sequence < _lastAppliedRefresh)
+                {
+                    // Preserve the caller's node identity without publishing old rows.
+                    return _metadata.GetHost(localId)
+                        ?? throw new DriverInternalError("The refreshed control host was removed or replaced.");
+                }
+                _metadata.Partitioner = localRow.GetValue<string>("partitioner");
+                var host = GetAndUpdateLocalHost(currentEndPoint, localRow);
+                UpdatePeersInfo(localIsPeersV2, rsPeers, host);
+                _lastAppliedRefresh = sequence;
+                ControlConnection.Logger.Info("Node list retrieved successfully");
+                return host;
+            }
+        }
+
+        private static Guid GetHostId(IRow row)
+        {
+            return row.ContainsColumn("host_id") ? row.GetValue<Guid?>("host_id") ?? Guid.Empty : Guid.Empty;
         }
 
         private Task<Response> SendSystemLocalRequestAsync(IConnection connection, ISerializer serializer)
@@ -134,8 +159,7 @@ namespace Cassandra.Connections.Control
         /// </summary>
         private Host GetAndUpdateLocalHost(IConnectionEndPoint endPoint, IRow row)
         {
-            var hostIpEndPoint =
-                endPoint.GetHostIpEndPoint()
+            var hostIpEndPoint = endPoint.GetHostIpEndPoint()
                 ?? GetRpcEndPoint(false, row, _config.AddressTranslator, _config.ProtocolOptions.Port);
 
             if (hostIpEndPoint == null)
@@ -143,7 +167,7 @@ namespace Cassandra.Connections.Control
                 throw new DriverInternalError("Could not parse the node's ip address from system tables.");
             }
 
-            var host = _metadata.GetHost(hostIpEndPoint) ?? _metadata.AddHost(hostIpEndPoint, endPoint.ContactPoint);
+            var host = _metadata.AddOrUpdateHost(GetHostId(row), hostIpEndPoint, endPoint.ContactPoint, row);
 
             // Update cluster name, DC and rack for the one node we are connected to
             var clusterName = row.GetValue<string>("cluster_name");
@@ -153,7 +177,6 @@ namespace Cassandra.Connections.Control
                 _metadata.ClusterName = clusterName;
             }
 
-            host.SetInfo(row);
             return host;
         }
 
@@ -162,7 +185,7 @@ namespace Cassandra.Connections.Control
         /// </summary>
         private void UpdatePeersInfo(bool isPeersV2, IEnumerable<IRow> peersRs, Host currentHost)
         {
-            var foundPeers = new HashSet<IPEndPoint>();
+            var foundPeers = new HashSet<Guid> { currentHost.HostId };
             foreach (var row in peersRs)
             {
                 var address = GetRpcEndPoint(isPeersV2, row, _config.AddressTranslator, _config.ProtocolOptions.Port);
@@ -172,17 +195,26 @@ namespace Cassandra.Connections.Control
                     continue;
                 }
 
-                foundPeers.Add(address);
-                var host = _metadata.GetHost(address) ?? _metadata.AddHost(address);
-                host.SetInfo(row);
+                var hostId = GetHostId(row);
+                if (hostId == Guid.Empty)
+                {
+                    ControlConnection.Logger.Warning("Ignoring topology row at {0} without a nonempty Host ID.", address);
+                    continue;
+                }
+                if (!foundPeers.Add(hostId))
+                {
+                    ControlConnection.Logger.Warning("Ignoring duplicate Host ID {0} in topology metadata.", hostId);
+                    continue;
+                }
+                _metadata.AddOrUpdateHost(hostId, address, null, row);
             }
 
             // Removes all those that seems to have been removed (since we lost the control connection or not valid contact point)
-            foreach (var address in _metadata.AllReplicas())
+            foreach (var host in _metadata.AllHosts())
             {
-                if (!address.Equals(currentHost.Address) && !foundPeers.Contains(address))
+                if (!foundPeers.Contains(host.HostId))
                 {
-                    _metadata.RemoveHost(address);
+                    _metadata.RemoveHost(host);
                 }
             }
         }

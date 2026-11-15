@@ -149,8 +149,9 @@ namespace Cassandra.Tests
         public static Host CreateHost(string address, string dc = "dc1", string rack = "rack1",
                                       IEnumerable<string> tokens = null, string cassandraVersion = null)
         {
-            var h = new Host(new IPEndPoint(IPAddress.Parse(address), ProtocolOptions.DefaultPort),
-                             new ConstantReconnectionPolicy(1));
+            // Repeated uses of an address in a fixture describe the same test node.
+            var id = new Guid(IPAddress.Parse(address).MapToIPv6().GetAddressBytes());
+            var h = new Host(id, new IPEndPoint(IPAddress.Parse(address), ProtocolOptions.DefaultPort), contactPoint: null);
             h.SetInfo(new DictionaryBasedRow(new Dictionary<string, object>
             {
                 { "data_center", dc },

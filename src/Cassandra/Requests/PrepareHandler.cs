@@ -121,12 +121,13 @@ namespace Cassandra.Requests
             string effectiveKeyspace)
         {
             var triedHosts = new Dictionary<IPEndPoint, Exception>();
+            var failedHosts = new HashSet<Host>();
 
             while (true)
             {
                 // It may throw a NoHostAvailableException which we should yield to the caller
                 var hostConnectionTuple = await GetNextConnection(
-                    session, queryPlan, triedHosts, connectionKeyspace).ConfigureAwait(false);
+                    session, queryPlan, triedHosts, failedHosts, connectionKeyspace).ConfigureAwait(false);
                 var connection = hostConnectionTuple.Item2;
                 var host = hostConnectionTuple.Item1;
                 var nodeRequestInfo = new NodeRequestInfo(host, info.PrepareRequest ?? new PrepareRequest(request.Query, request.Keyspace));
@@ -148,8 +149,9 @@ namespace Cassandra.Requests
                     {
                         PreparedStatement = preparedStatement,
                         TriedHosts = triedHosts,
-                        HostAddress = host.Address
+                        Host = host
                     };
+                    prepareResult.FailedHosts.UnionWith(failedHosts);
                     await observer.OnNodeSuccessAsync(info, nodeRequestInfo).ConfigureAwait(false);
                     return prepareResult;
                 }
@@ -163,6 +165,7 @@ namespace Cassandra.Requests
                     if (PrepareHandler.CanBeRetried(ex))
                     {
                         triedHosts[host.Address] = ex;
+                        failedHosts.Add(host);
                     }
                     else
                     {
@@ -186,6 +189,7 @@ namespace Cassandra.Requests
             IInternalSession session,
             IEnumerator<RoutingTarget> queryPlan,
             Dictionary<IPEndPoint, Exception> triedHosts,
+            ISet<Host> failedHosts,
             string connectionKeyspace)
         {
             Host host;
@@ -197,6 +201,7 @@ namespace Cassandra.Requests
                 {
                     return Tuple.Create(host, connection);
                 }
+                failedHosts.Add(host);
             }
             throw new NoHostAvailableException(triedHosts);
         }

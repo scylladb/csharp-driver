@@ -826,3 +826,11 @@ only an initial amount of rows will be fetched (according to the page size), the
 [context]: https://msdn.microsoft.com/en-us/library/system.data.objects.objectcontext(v=vs.110).aspx
 [entitynuget]: https://www.nuget.org/packages/CassandraEntityContext/
 [enum-tolist]: https://msdn.microsoft.com/en-us/library/bb342261(v=vs.110).aspx
+
+## Node identity and node metric names
+
+Discovered nodes are identified by their immutable server Host ID. `Host.Equals` and `GetHashCode` use that ID, rather than the advertised endpoint. A node changing its endpoint retains its `Host`, pool ownership, and metrics. Connections already open to that node remain valid; subsequent connection attempts resolve its current endpoint. Different Host IDs at the same address represent distinct nodes. Address-based `GetHost` lookups remain available, returning `null` when the endpoint is ambiguous.
+
+`new Host(address, reconnectionPolicy)` creates an unidentified custom host with an empty Host ID. Such objects compare by reference; two objects with the same address are not equal. Applications should obtain discovered hosts from cluster metadata when they need server identity. Discovery requires a nonempty local Host ID and skips peer rows without one.
+
+Node metric buckets now use `session.nodes.<host-id>`, replacing `session.nodes.<address>`. Unidentified custom hosts have distinct `session.nodes.custom-<UUID>` buckets. Update dashboards and provider integrations accordingly. No framework, SDK, or language-version policy changes accompany this migration.
