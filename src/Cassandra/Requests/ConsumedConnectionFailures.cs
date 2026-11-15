@@ -18,6 +18,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using Cassandra.Connections;
 
@@ -41,8 +42,14 @@ namespace Cassandra.Requests
 
             var returnedCauses = returnedError == null ? null : GetReturnedCauses(returnedError);
             reportedFailures ??= new ConcurrentDictionary<Exception, byte>(ReferenceEqualityComparer.Instance);
+            var filteredFailures = new List<KeyValuePair<IPEndPoint, Exception>>();
+            Exception fatalDiagnostic = null;
             while (failures.TryDequeue(out var failure))
             {
+                if (returnedCauses != null && !Utils.IsFatalException(returnedError))
+                {
+                    RetainReturnedFailures(failure.Key, failure.Value, returnedCauses, filteredFailures);
+                }
                 var diagnosticError = returnedCauses == null
                     ? failure.Value
                     : GetUnreturnedFailure(failure.Value, returnedCauses);
@@ -68,9 +75,70 @@ namespace Cassandra.Requests
                 {
                     Logger.Verbose("Request consumed a failure to obtain a connection to {0}: {1}", failure.Key, diagnosticError);
                 }
-                catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure) || Utils.IsFatalException(returnedError))
+                catch (Exception diagnosticFailure)
                 {
-                    // Ordinary diagnostic failures are optional; a fatal one must not replace an already-selected fatal error.
+                    if (Utils.IsFatalException(diagnosticFailure) && !Utils.IsFatalException(returnedError))
+                    {
+                        // Drain every consumed failure before propagating the first fatal sink error.
+                        // Causes filtered against the displaced result are now consumed as well.
+                        fatalDiagnostic = diagnosticFailure;
+                        returnedError = diagnosticFailure;
+                        returnedCauses = GetReturnedCauses(returnedError);
+                        foreach (var filtered in filteredFailures)
+                        {
+                            failures.Enqueue(filtered);
+                        }
+                        filteredFailures.Clear();
+                    }
+                }
+            }
+            if (fatalDiagnostic != null)
+            {
+                ExceptionDispatchInfo.Capture(fatalDiagnostic).Throw();
+            }
+        }
+
+        private static void RetainReturnedFailures(
+            IPEndPoint host, Exception failure, HashSet<Exception> returnedCauses,
+            List<KeyValuePair<IPEndPoint, Exception>> filteredFailures)
+        {
+            // Retain matching subtrees rather than the entire original wrapper: its
+            // unreturned causes may already have been reported before a sink fails.
+            var pending = new Stack<Exception>();
+            var visited = new HashSet<Exception>(ReferenceEqualityComparer.Instance);
+            pending.Push(failure);
+            while (pending.TryPop(out var error))
+            {
+                if (error == null || !visited.Add(error))
+                {
+                    continue;
+                }
+                if (returnedCauses.Contains(error))
+                {
+                    filteredFailures.Add(new KeyValuePair<IPEndPoint, Exception>(host, error));
+                    continue;
+                }
+                if (error is ConnectionFailure connectionFailure)
+                {
+                    foreach (var cause in connectionFailure.SupersededConnectionErrors)
+                    {
+                        pending.Push(cause);
+                    }
+                    foreach (var cause in connectionFailure.UnresolvedResolutionErrors)
+                    {
+                        pending.Push(cause);
+                    }
+                }
+                if (error is AggregateException aggregate)
+                {
+                    foreach (var cause in aggregate.InnerExceptions)
+                    {
+                        pending.Push(cause);
+                    }
+                }
+                else
+                {
+                    pending.Push(error.InnerException);
                 }
             }
         }

@@ -20,6 +20,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Net;
+using System.Net.Sockets;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
@@ -47,6 +48,7 @@ namespace Cassandra.Tests
     [TestFixture]
     public class RequestExecutionTests
     {
+        [TestCase("thrown-acquisition", TraceLevel.Verbose, false)]
         [TestCase("recovered", TraceLevel.Verbose, false)]
         [TestCase("recovered", TraceLevel.Verbose, true)]
         [TestCase("recovered", TraceLevel.Warning, false)]
@@ -93,7 +95,9 @@ namespace Cassandra.Tests
                 new Host(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042), contactPoint: null),
                 new Host(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042), contactPoint: null)
             };
-            var preferredFailure = new InvalidOperationException("initial foreground connection failed");
+            Exception preferredFailure = scenario == "thrown-acquisition"
+                ? new SocketException((int)SocketError.ConnectionReset)
+                : new InvalidOperationException("initial foreground connection failed");
             var superseded = new InvalidOperationException("superseded route cause");
             var unresolved = new InvalidOperationException("unresolved backup DNS");
             Exception failure = composite
@@ -154,7 +158,9 @@ namespace Cassandra.Tests
                                 acquisitionStarted.TrySetResult(true);
                                 return acquisitionResult.Task;
                             }
-                            return Task.FromResult<IConnection>(null);
+                            return scenario == "thrown-acquisition"
+                                ? Task.FromException<IConnection>(preferredFailure)
+                                : Task.FromResult<IConnection>(null);
                         }
                         return scenario == "init-later-error" || scenario.StartsWith("init-fatal-")
                             ? Task.FromException<IConnection>(terminalError)
@@ -424,6 +430,50 @@ namespace Cassandra.Tests
                     Diagnostics.CassandraTraceSwitch.Level = previousLevel;
                     config.Timer.Dispose();
                 }
+            }
+        }
+
+        [TestCase(false, false)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        [NonParallelizable]
+        public void Should_DrainConsumedFailuresAfterFatalDiagnostic(bool returnedOrdinaryFailure, bool partialFailure)
+        {
+            var host = new IPEndPoint(IPAddress.Loopback, 9042);
+            var selected = new InvalidOperationException("Initially selected ordinary failure");
+            var first = new InvalidOperationException("First consumed failure");
+            var last = new InvalidOperationException("Last consumed failure");
+            var collector = new ConsumedConnectionFailures.Collector();
+            if (returnedOrdinaryFailure)
+            {
+                collector.Record(host, partialFailure ? new AggregateException(selected, new InvalidOperationException("Unreturned aggregate component")) : selected);
+            }
+            collector.Record(host, first);
+            collector.Record(host, last);
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new RecoveredConnectionTraceListener(true, true);
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                Assert.AreSame(listener.Failure, Assert.Throws<OutOfMemoryException>(() =>
+                    collector.Report(returnedOrdinaryFailure ? selected : null)));
+                var messages = listener.Messages.Values.Where(message => message.Contains("Request consumed")).ToArray();
+                Assert.AreEqual(partialFailure ? 4 : returnedOrdinaryFailure ? 3 : 2, messages.Length);
+                Assert.IsTrue(messages.Any(message => message.Contains(first.Message)));
+                Assert.IsTrue(messages.Any(message => message.Contains(last.Message)));
+                if (returnedOrdinaryFailure)
+                {
+                    Assert.IsTrue(messages.Any(message => message.Contains(selected.Message)),
+                        "A failure replaced by a fatal diagnostic is now consumed and must be reported.");
+                }
+                collector.Report(listener.Failure);
+                Assert.AreEqual(messages.Length, listener.Messages.Values.Count(message => message.Contains("Request consumed")));
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
             }
         }
 

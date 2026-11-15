@@ -94,10 +94,12 @@ namespace Cassandra.Requests
         private async Task SendToCurrentHostAsync()
         {
             var host = _host;
+            var acquiringConnection = true;
             try
             {
                 // host needs to be re-validated using the load balancing policy
                 _connection = await _parent.ValidateHostAndGetConnectionAsync(new RoutingTarget(host, _shard), _triedHosts).ConfigureAwait(false);
+                acquiringConnection = false;
                 if (_connection != null)
                 {
                     await SendAsync(_request, host, HandleResponseAsync).ConfigureAwait(false);
@@ -119,6 +121,10 @@ namespace Cassandra.Requests
             }
             catch (Exception ex)
             {
+                if (acquiringConnection)
+                {
+                    _parent.RecordConnectionFailure(host.Address, ex);
+                }
                 RequestExecution.Logger.Warning("RequestHandler received exception while attempting to retry with the current host: {0}", ex.ToString());
             }
 
@@ -134,12 +140,15 @@ namespace Cassandra.Requests
         /// <returns></returns>
         private async Task SendToNextHostAsync(ValidHost validHost)
         {
+            var acquiringConnection = false;
             try
             {
                 IConnection connection = null;
                 while (connection == null)
                 {
+                    acquiringConnection = true;
                     connection = await _parent.GetConnectionToValidHostAsync(validHost, _triedHosts).ConfigureAwait(false);
+                    acquiringConnection = false;
                     if (connection == null)
                     {
                         RecordConnectionFailure(validHost.Host);
@@ -162,6 +171,10 @@ namespace Cassandra.Requests
             }
             catch (Exception ex)
             {
+                if (acquiringConnection)
+                {
+                    _parent.RecordConnectionFailure(validHost.Host.Address, ex);
+                }
                 _shard = validHost.Shard;
                 _host = validHost.Host;
                 await HandleResponseAsync(RequestError.CreateClientError(ex, true), null, new NodeRequestInfo(validHost.Host, _sessionRequestInfo.PrepareRequest)).ConfigureAwait(false);
