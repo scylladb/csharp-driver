@@ -722,22 +722,31 @@ namespace Cassandra.Tests
             }
         }
 
-        [TestCase(false, false, "none")]
-        [TestCase(true, false, "none")]
-        [TestCase(false, true, "none")]
-        [TestCase(false, true, "ordinary")]
-        [TestCase(false, true, "fatal")]
-        [TestCase(true, true, "none")]
-        [TestCase(true, true, "ordinary")]
-        [TestCase(true, true, "fatal")]
+        [TestCase(false, false, "none", false, false)]
+        [TestCase(true, false, "none", false, false)]
+        [TestCase(false, true, "none", false, false)]
+        [TestCase(false, true, "ordinary", false, false)]
+        [TestCase(false, true, "fatal", false, false)]
+        [TestCase(true, true, "none", false, false)]
+        [TestCase(true, true, "ordinary", false, false)]
+        [TestCase(true, true, "fatal", false, false)]
+        [TestCase(false, false, "none", true, true)]
+        [TestCase(true, false, "none", true, true)]
+        [TestCase(false, true, "none", true, true)]
+        [TestCase(false, true, "ordinary", true, true)]
+        [TestCase(false, true, "fatal", true, true)]
+        [TestCase(true, true, "none", true, true)]
+        [TestCase(true, true, "ordinary", true, true)]
+        [TestCase(true, true, "fatal", true, true)]
         [NonParallelizable]
         public async Task Should_PreserveLateFatalDiagnosticInExecutionTask(
-            bool currentHost, bool fatalDiagnostic, string errorDiagnostic)
+            bool currentHost, bool fatalDiagnostic, string errorDiagnostic, bool thrownAcquisition, bool callerSucceeded)
         {
             var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), contactPoint: null);
             var acquisitionStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var releaseAcquisition = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            var failure = new InvalidOperationException("Consumed late acquisition failure");
+            Exception failure = thrownAcquisition ? new SocketException((int)SocketError.ConnectionReset)
+                : new InvalidOperationException("Consumed late acquisition failure");
             var policy = new Mock<ILoadBalancingPolicy>();
             policy.Setup(value => value.NewQueryPlan(It.IsAny<RoutingInfo>(), It.IsAny<ClusterState>()))
                 .Returns(Array.Empty<RoutingTarget>());
@@ -753,6 +762,10 @@ namespace Cassandra.Tests
                     acquisitionStarted.TrySetResult(true);
                     await releaseAcquisition.Task.ConfigureAwait(false);
                     tried[host.Address] = failure;
+                    if (thrownAcquisition)
+                    {
+                        throw failure;
+                    }
                     return null;
                 });
             var session = new Mock<IInternalSession>();
@@ -791,7 +804,20 @@ namespace Cassandra.Tests
                     BindingFlags.Instance | BindingFlags.NonPublic);
                 acquisition = (Task)method.Invoke(execution, currentHost ? null : new object[] { ValidHost.New(host, HostDistance.Local) });
                 await acquisitionStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-                Assert.IsTrue(await handler.SetCompletedAsync(new InvalidQueryException("Already returned error")).ConfigureAwait(false));
+                var returnedResult = new RowSet();
+                var returnedError = callerSucceeded ? null : new InvalidQueryException("Already returned error");
+                Assert.IsTrue(await handler.SetCompletedAsync(returnedError, returnedResult).ConfigureAwait(false));
+                var callerTask = ((IRequestResultHandler)typeof(RequestHandler)
+                    .GetField("_requestResultHandler", BindingFlags.Instance | BindingFlags.NonPublic)
+                    .GetValue(handler)).Task;
+                if (callerSucceeded)
+                {
+                    Assert.AreSame(returnedResult, await callerTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+                }
+                else
+                {
+                    Assert.AreSame(returnedError, await Assert.ThrowsAsync<InvalidQueryException>(() => callerTask));
+                }
                 releaseAcquisition.TrySetResult(true);
                 if (fatalDiagnostic)
                 {
@@ -803,6 +829,13 @@ namespace Cassandra.Tests
                     await acquisition.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
                 }
                 Assert.IsTrue(listener.Reported.Task.IsCompleted);
+                pool.Verify(value => value.GetConnectionFromHostAsync(
+                    It.IsAny<IDictionary<IPEndPoint, Exception>>(), It.IsAny<Func<string>>(), It.IsAny<RoutingKey>(), -1),
+                    Times.Exactly(thrownAcquisition ? 2 : 1));
+                if (callerSucceeded)
+                {
+                    Assert.AreSame(returnedResult, await callerTask.ConfigureAwait(false));
+                }
                 errorListener.Verify(value => value.WriteLine(It.Is<string>(message =>
                     message.Contains("Request consumed a fatal execution failure") &&
                     message.Contains(host.Address.ToString()) && message.Contains(listener.Failure.Message))),

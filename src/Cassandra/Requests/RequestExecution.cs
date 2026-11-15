@@ -121,9 +121,9 @@ namespace Cassandra.Requests
             }
             catch (Exception ex)
             {
-                if (acquiringConnection)
+                if (acquiringConnection && !await RecordAcquisitionFailureAsync(host, ex).ConfigureAwait(false))
                 {
-                    _parent.RecordConnectionFailure(host.Address, ex);
+                    return;
                 }
                 RequestExecution.Logger.Warning("RequestHandler received exception while attempting to retry with the current host: {0}", ex.ToString());
             }
@@ -171,13 +171,31 @@ namespace Cassandra.Requests
             }
             catch (Exception ex)
             {
-                if (acquiringConnection)
+                if (acquiringConnection && !await RecordAcquisitionFailureAsync(validHost.Host, ex).ConfigureAwait(false))
                 {
-                    _parent.RecordConnectionFailure(validHost.Host.Address, ex);
+                    return;
                 }
                 _shard = validHost.Shard;
                 _host = validHost.Host;
                 await HandleResponseAsync(RequestError.CreateClientError(ex, true), null, new NodeRequestInfo(validHost.Host, _sessionRequestInfo.PrepareRequest)).ConfigureAwait(false);
+            }
+        }
+
+        private async Task<bool> RecordAcquisitionFailureAsync(Host host, Exception failure)
+        {
+            try
+            {
+                _parent.RecordConnectionFailure(host.Address, failure);
+                return true;
+            }
+            catch (Exception diagnosticFailure) when (Utils.IsFatalException(diagnosticFailure))
+            {
+                if (!await _parent.SetCompletedAsync(diagnosticFailure).ConfigureAwait(false))
+                {
+                    RecordLateFatalExecutionFailure(host, diagnosticFailure);
+                    throw;
+                }
+                return false;
             }
         }
 
