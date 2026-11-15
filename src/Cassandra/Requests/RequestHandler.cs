@@ -277,17 +277,35 @@ namespace Cassandra.Requests
                 {
                     try
                     {
-                        await action().ConfigureAwait(false);
-                    }
-                    catch (Exception actionEx)
-                    {
-                        await ClearNodeExecutionsAsync().ConfigureAwait(false);
-                        await CompleteRequestAsync(actionEx, null).ConfigureAwait(false);
-                        return;
-                    }
+                        try
+                        {
+                            await action().ConfigureAwait(false);
+                        }
+                        catch (Exception actionEx)
+                        {
+                            await ClearNodeExecutionsAsync().ConfigureAwait(false);
+                            await CompleteRequestAsync(actionEx, null).ConfigureAwait(false);
+                            return;
+                        }
 
-                    await ClearNodeExecutionsAsync().ConfigureAwait(false);
-                    await CompleteRequestAsync(null, result).ConfigureAwait(false);
+                        await ClearNodeExecutionsAsync().ConfigureAwait(false);
+                        await CompleteRequestAsync(null, result).ConfigureAwait(false);
+                    }
+                    catch (Exception completionFailure) when (Utils.IsFatalException(completionFailure))
+                    {
+                        // The detached owner has unwound, even if aborting a node failed
+                        // before result completion. Let this and later fatal records drain.
+                        Interlocked.Exchange(ref _diagnosticsCompleted, 2);
+                        try
+                        {
+                            RecordConnectionFailure(result?.Info.QueriedHost, completionFailure);
+                        }
+                        catch (Exception)
+                        {
+                            // Keep the detached completion's fatal error if its diagnostic also fails.
+                        }
+                        throw;
+                    }
                 }, CancellationToken.None).Forget();
                 return true;
             }
