@@ -20,6 +20,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
@@ -176,10 +177,21 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             using var upstreamListener = new TcpListener(IPAddress.Loopback, 0);
             upstreamListener.Start();
             using var relay = new TcpRelay((IPEndPoint)upstreamListener.LocalEndpoint);
-            relay.EnableForwarding();
             using var client = new TcpClient();
-            await client.ConnectAsync(relay.ListenEndPoint, deadline.Token).ConfigureAwait(false);
-            relay.EnableForwarding();
+            var forwardingSync = typeof(TcpRelay)
+                .GetField("_forwardingSync", BindingFlags.Instance | BindingFlags.NonPublic)
+                .GetValue(relay);
+            lock (forwardingSync)
+            {
+                // Pause admission after accept captured its generation, before either generation check.
+                client.ConnectAsync(relay.ListenEndPoint, deadline.Token).GetAwaiter().GetResult();
+                Assert.IsTrue(SpinWait.SpinUntil(
+                    () => relay.AcceptedConnectionCount == 1,
+                    TimeSpan.FromSeconds(5)), "The relay did not reach the admission gate.");
+                relay.EnableForwarding();
+                relay.EnableForwarding();
+            }
+
             using var upstream = await upstreamListener.AcceptTcpClientAsync(deadline.Token).ConfigureAwait(false);
             relay.EnableForwarding();
             var request = Encoding.UTF8.GetBytes("forwarding remains enabled");
