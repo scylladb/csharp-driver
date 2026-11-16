@@ -118,6 +118,25 @@ namespace Cassandra.Tests.Connections
                 configuration.EndPointResolutionPlanProvider);
         }
 
+        [Test]
+        public void Configuration_Should_SelectClientRoutesProviderOnce()
+        {
+            var configuration = new TestConfigurationBuilder
+            {
+                EndPointResolver = new Mock<IEndPointResolver>(MockBehavior.Strict).Object,
+                ClientRoutesOptions = new ClientRoutesOptions(
+                    new[] { new ClientRouteProxy("route-a") },
+                    9042,
+                    false)
+            }.Build();
+
+            Assert.IsInstanceOf<ClientRoutesEndPointResolver>(configuration.EndPointResolver);
+            Assert.AreSame(
+                configuration.EndPointResolver,
+                configuration.EndPointResolutionPlanProvider);
+            Assert.IsTrue(configuration.EndPointResolutionPlanProvider.RetryOnPoolAdmissionFailure);
+        }
+
         private static Host CreateHost()
         {
             return new Host(

@@ -27,6 +27,7 @@ using Cassandra.Connections;
 using Cassandra.ExecutionProfiles;
 using Cassandra.Metrics;
 using Cassandra.Metrics.Internal;
+using Cassandra.Metrics.Registries;
 using Cassandra.Observers.Abstractions;
 using Cassandra.Requests;
 using Cassandra.Serialization;
@@ -40,7 +41,9 @@ namespace Cassandra
     {
         private readonly ISerializerManager _serializerManager;
         private static readonly Logger Logger = new Logger(typeof(Session));
-        private readonly IThreadSafeDictionary<IPEndPoint, IHostConnectionPool> _connectionPool;
+        private readonly IThreadSafeDictionary<IPEndPoint, HostPool> _connectionPool;
+        private readonly Lock _connectionPoolLifecycleLock = new Lock();
+        private readonly Lock _connectionPoolCreationLock = new Lock();
         private readonly IInternalCluster _cluster;
         private int _disposed;
         private long _initialized;
@@ -111,7 +114,7 @@ namespace Cassandra
             Keyspace = keyspace;
             SessionName = sessionName;
             UserDefinedTypes = new UdtMappingDefinitions(this, serializerManager);
-            _connectionPool = new CopyOnWriteDictionary<IPEndPoint, IHostConnectionPool>();
+            _connectionPool = new CopyOnWriteDictionary<IPEndPoint, HostPool>();
             _cluster.HostRemoved += OnHostRemoved;
             _metricsManager = new MetricsManager(configuration.MetricsProvider, Configuration.MetricsOptions, Configuration.MetricsEnabled, SessionName);
             _observerFactory = configuration.ObserverFactoryBuilder.Build(_metricsManager);
@@ -175,10 +178,16 @@ namespace Cassandra
         /// <inheritdoc />
         public Task ShutdownAsync()
         {
-            //Only dispose once
-            if (Interlocked.Increment(ref _disposed) != 1)
+            KeyValuePair<IPEndPoint, HostPool>[] pools;
+            lock (_connectionPoolLifecycleLock)
             {
-                return Task.FromResult<object>(null);
+                // Only dispose once, and exclude pool publication from the shutdown snapshot.
+                if (Interlocked.Increment(ref _disposed) != 1)
+                {
+                    return Task.FromResult<object>(null);
+                }
+                pools = _connectionPool.ToArray();
+                _connectionPool.Clear();
             }
 
             if (Interlocked.Read(ref _initialized) == 1)
@@ -190,10 +199,9 @@ namespace Cassandra
 
             _cluster.HostRemoved -= OnHostRemoved;
 
-            var pools = _connectionPool.ToArray();
             foreach (var pool in pools)
             {
-                pool.Value.Dispose();
+                pool.Value.Pool.Dispose();
             }
 
             return Task.FromResult<object>(null);
@@ -209,6 +217,11 @@ namespace Cassandra
                 await Warmup().ConfigureAwait(false);
             }
 
+            if (IsDisposed)
+            {
+                return;
+            }
+
             if (Keyspace != null)
             {
                 // Borrow a connection, trying to fail fast
@@ -222,20 +235,22 @@ namespace Cassandra
         /// <summary>
         /// Creates the required connections on all hosts in the local DC.
         /// Returns a Task that is marked as completed after all pools were warmed up.
-        /// If all host pool warmups fail with recoverable errors, it logs an error.
+        /// Unless the session or host pool is retired, recoverable warmup failures are logged at Info,
+        /// including partial failures, with an additional error if all remaining host pool warmups fail.
         /// Fatal errors propagate to the caller.
         /// </summary>
         private async Task Warmup()
         {
             var hosts = _cluster.AllHosts().Where(h => _cluster.RetrieveAndSetDistance(h) == HostDistance.Local).ToArray();
             var tasks = new Task[hosts.Length];
+            var pools = new IHostConnectionPool[hosts.Length];
             for (var i = 0; i < hosts.Length; i++)
             {
-                var host = hosts[i];
-                var pool = InternalRef.GetOrCreateConnectionPool(host, HostDistance.Local);
-                tasks[i] = pool.Warmup();
+                tasks[i] = WarmupHost(hosts[i], out pools[i]);
             }
 
+            var hostWarmups = tasks;
+            tasks = tasks.Where(task => task != null).ToArray();
             var allWarmups = Task.WhenAll(tasks);
             try
             {
@@ -249,15 +264,92 @@ namespace Cassandra
                     ExceptionDispatchInfo.Capture(fatal).Throw();
                 }
 
-                if (tasks.Any(t => t.Status == TaskStatus.RanToCompletion))
+                if (IsDisposed)
                 {
-                    // At least 1 of the warmup tasks completed
+                    // Shutdown may close connections while initial warmup is still pending.
+                    return;
+                }
+
+                for (var i = 0; i < hostWarmups.Length; i++)
+                {
+                    var warmup = hostWarmups[i];
+                    Exception failure = warmup?.Exception;
+                    if (warmup?.IsCanceled == true)
+                    {
+                        try
+                        {
+                            await warmup.ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException cancellation)
+                        {
+                            // Canceled tasks have no Exception property; retain their original cause.
+                            failure = cancellation;
+                        }
+                    }
+                    if (failure == null || !IsCurrentWarmupPool(hosts[i], pools[i]))
+                    {
+                        continue;
+                    }
+                    try
+                    {
+                        Session.Logger.Info("Connection pool for host {0} failed to warm up: {1}", hosts[i].Address, failure);
+                    }
+                    catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
+                    {
+                        // A diagnostic sink must not change the result of recoverable warmup.
+                    }
+                }
+
+                var currentWarmups = hostWarmups.Where((task, index) =>
+                    task != null && IsCurrentWarmupPool(hosts[index], pools[index])).ToArray();
+                if (currentWarmups.Length == 0 || currentWarmups.Any(t => t.Status == TaskStatus.RanToCompletion))
+                {
+                    // Retired pools no longer contribute to session readiness or its failure summary.
                     return;
                 }
 
                 // Log and continue as the ControlConnection is connected
-                Session.Logger.Error($"Connection pools for {hosts.Length} host(s) failed to be warmed up");
+                try
+                {
+                    Session.Logger.Error($"Connection pools for {currentWarmups.Length} host(s) failed to be warmed up");
+                }
+                catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
+                {
+                    // As with the per-host diagnostic, ordinary sink failures must not fail initialization.
+                }
             }
+        }
+
+        private bool IsCurrentWarmupPool(Host host, IHostConnectionPool pool)
+        {
+            return !IsDisposed && pool != null &&
+                   _connectionPool.TryGetValue(host.Address, out var entry) &&
+                   ReferenceEquals(entry.Pool, pool);
+        }
+
+        private Task WarmupHost(Host host, out IHostConnectionPool pool)
+        {
+            pool = null;
+            try
+            {
+                // A down host still needs a pool to own its background reconnection.
+                pool = GetOrCreateConnectionPool(host, HostDistance.Local, allowDownHost: true);
+            }
+            catch (HostConnectionPoolNotEligibleException)
+            {
+                // The host was removed or became ignored after the warmup list was built.
+                // Exclude skipped hosts from the completed-pool success check.
+                return null;
+            }
+            catch (ObjectDisposedException) when (IsDisposed)
+            {
+                // Shutdown owns all pools and must not let warmup publish another one.
+                return null;
+            }
+
+            // Do not introduce an async boundary here. Synchronous failures from pool creation,
+            // metrics initialization, and Warmup() must retain their original propagation behavior.
+            return pool.Warmup();
         }
 
         /// <inheritdoc />
@@ -327,22 +419,171 @@ namespace Cassandra
         /// <inheritdoc />
         IHostConnectionPool IInternalSession.GetOrCreateConnectionPool(Host host, HostDistance distance)
         {
-            var hostPool = _connectionPool.GetOrAdd(host.Address, address =>
+            return GetOrCreateConnectionPool(host, distance, allowDownHost: false);
+        }
+
+        private IHostConnectionPool GetOrCreateConnectionPool(Host host, HostDistance distance, bool allowDownHost)
+        {
+            var clientRoutesEnabled = Configuration.ClientRoutesRuntime != null;
+
+            var currentHost = ResolvePoolHost(host, clientRoutesEnabled, out var customHost);
+            if (!IsDisposed && currentHost != null &&
+                _connectionPool.TryGetValue(host.Address, out var entry) &&
+                CanReusePool(entry, currentHost, customHost) &&
+                IsPoolHostEligible(currentHost, clientRoutesEnabled, allowDownHost, ref distance))
             {
-                var newPool = Configuration.HostConnectionPoolFactory.Create(
-                    host, Configuration, _serializerManager, _observerFactory, Cluster.Metadata.GetTokenFactory());
+                return entry.Pool;
+            }
+
+            // Serialize candidate creation without blocking shutdown or topology retirement.
+            // Factories and metrics providers may synchronously wait for worker-thread shutdown.
+            lock (_connectionPoolCreationLock)
+            {
+                while (true)
+                {
+                    Host retiredHost = null;
+                    lock (_connectionPoolLifecycleLock)
+                    {
+                        if (IsDisposed)
+                        {
+                            throw new ObjectDisposedException(nameof(Session));
+                        }
+
+                        currentHost = ResolvePoolHost(host, clientRoutesEnabled, out customHost);
+                        if (currentHost == null)
+                        {
+                            throw new HostConnectionPoolNotEligibleException("it is absent from metadata");
+                        }
+                        host = currentHost;
+                        if (!IsPoolHostEligible(host, clientRoutesEnabled, allowDownHost, ref distance))
+                        {
+                            // Only warmup may create a down host's recovery pool.
+                            Session.Logger.Verbose(
+                                "Not creating a connection pool for host {0}: it is {1}.",
+                                host.Address, distance == HostDistance.Ignored ? "ignored" : "down");
+                            throw new HostConnectionPoolNotEligibleException(
+                                distance == HostDistance.Ignored ? "its policy distance is ignored" : "it is down");
+                        }
+
+                        if (_connectionPool.TryGetValue(host.Address, out var existingEntry))
+                        {
+                            if (CanReusePool(existingEntry, host, customHost))
+                            {
+                                // Custom policies can supply a fresh Host per query plan. Retain the
+                                // original pool owner while metadata supplies no replacement identity.
+                                return existingEntry.Pool;
+                            }
+                            retiredHost = existingEntry.Host;
+                        }
+                    }
+                    if (retiredHost == null)
+                    {
+                        return CreateAndPublishConnectionPool(host, distance);
+                    }
+
+                    // Retirement callbacks may publish a replacement or end the session lifetime.
+                    // Resolve its current owner and eligibility again before creating a candidate.
+                    OnHostRemoved(retiredHost);
+                }
+            }
+        }
+
+        private IHostConnectionPool CreateAndPublishConnectionPool(Host host, HostDistance distance)
+        {
+            var newPool = Configuration.HostConnectionPoolFactory.Create(
+                host, Configuration, _serializerManager, _observerFactory, Cluster.Metadata.GetTokenFactory());
+            try
+            {
                 newPool.AllConnectionClosed += InternalRef.OnAllConnectionClosed;
                 newPool.SetDistance(distance);
                 _metricsManager.GetOrCreateNodeMetrics(host).InitializePoolGauges(newPool);
-                return newPool;
-            });
-            return hostPool;
+                lock (_connectionPoolLifecycleLock)
+                {
+                    // User callbacks can shut down the session, remove the host or publish another pool.
+                    if (IsDisposed)
+                    {
+                        throw new ObjectDisposedException(nameof(Session));
+                    }
+                    if (host.IsRemoved)
+                    {
+                        throw new HostConnectionPoolNotEligibleException("it was removed during pool creation");
+                    }
+                    _connectionPool.Add(host.Address, new HostPool(host, newPool));
+                }
+            }
+            catch
+            {
+                try
+                {
+                    newPool.Dispose();
+                }
+                catch (Exception cleanupFailure) when (!Utils.IsFatalException(cleanupFailure))
+                {
+                    // Preserve the initialization failure if pool cleanup also fails.
+                }
+                finally
+                {
+                    try
+                    {
+                        INodeMetrics nodeMetrics;
+                        while (true)
+                        {
+                            lock (_connectionPoolLifecycleLock)
+                            {
+                                // Preserve metrics published by a reentrant initialization callback.
+                                if (_connectionPool.ContainsKey(host.Address))
+                                {
+                                    nodeMetrics = null;
+                                    break;
+                                }
+                                if (_metricsManager.TryDetachNodeMetrics(host, out nodeMetrics))
+                                {
+                                    break;
+                                }
+                            }
+                            _metricsManager.WaitForPendingNodeMetricsCreation();
+                        }
+                        nodeMetrics?.Dispose();
+                    }
+                    catch (Exception cleanupFailure) when (!Utils.IsFatalException(cleanupFailure))
+                    {
+                        // Keep the primary failure when metrics cleanup fails nonfatally.
+                    }
+                }
+                throw;
+            }
+            return newPool;
+        }
+
+        private Host ResolvePoolHost(Host selectedHost, bool clientRoutesEnabled, out bool customHost)
+        {
+            var currentHost = _cluster.Metadata.GetHost(selectedHost.Address);
+            customHost = currentHost == null && !clientRoutesEnabled && !selectedHost.IsRemoved;
+            return customHost ? selectedHost : currentHost;
+        }
+
+        private static bool CanReusePool(HostPool entry, Host currentHost, bool customHost)
+        {
+            return ReferenceEquals(entry.Host, currentHost) || (customHost && !entry.Host.IsRemoved);
+        }
+
+        private bool IsPoolHostEligible(Host host, bool clientRoutesEnabled, bool allowDownHost, ref HostDistance distance)
+        {
+            if (!clientRoutesEnabled)
+            {
+                return true;
+            }
+
+            // Both lookup paths evaluate the same policy; the locked path revalidates
+            // after selection because Host identity and policy distance may have changed.
+            distance = _cluster.RetrieveAndSetDistance(host);
+            return distance != HostDistance.Ignored && (allowDownHost || host.IsUp);
         }
 
         /// <inheritdoc />
         IEnumerable<KeyValuePair<IPEndPoint, IHostConnectionPool>> IInternalSession.GetPools()
         {
-            return _connectionPool.Select(kvp => new KeyValuePair<IPEndPoint, IHostConnectionPool>(kvp.Key, kvp.Value));
+            return _connectionPool.Select(kvp => new KeyValuePair<IPEndPoint, IHostConnectionPool>(kvp.Key, kvp.Value.Pool));
         }
 
         void IInternalSession.OnAllConnectionClosed(Host host, IHostConnectionPool pool)
@@ -358,7 +599,7 @@ namespace Cassandra
         }
 
         /// <inheritdoc/>
-        int IInternalSession.ConnectedNodes => _connectionPool.Count(kvp => kvp.Value.HasConnections);
+        int IInternalSession.ConnectedNodes => _connectionPool.Count(kvp => kvp.Value.Pool.HasConnections);
 
         public IDriverMetrics GetMetrics()
         {
@@ -369,7 +610,7 @@ namespace Cassandra
         {
             if (_connectionPool.TryGetValue(host.Address, out var pool))
             {
-                return pool.HasConnections;
+                return pool.Pool.HasConnections;
             }
             return false;
         }
@@ -378,7 +619,7 @@ namespace Cassandra
         IHostConnectionPool IInternalSession.GetExistingPool(IPEndPoint address)
         {
             _connectionPool.TryGetValue(address, out var pool);
-            return pool;
+            return pool?.Pool;
         }
 
         void IInternalSession.CheckHealth(Host host, IConnection connection)
@@ -388,7 +629,7 @@ namespace Cassandra
                 Session.Logger.Error("Internal error: No host connection pool found");
                 return;
             }
-            pool.CheckHealth(connection);
+            pool.Pool.CheckHealth(connection);
         }
 
         /// <inheritdoc />
@@ -470,11 +711,78 @@ namespace Cassandra
 
         private void OnHostRemoved(Host host)
         {
-            _metricsManager.RemoveNodeMetrics(host);
-            if (_connectionPool.TryRemove(host.Address, out var pool))
+            HostPool entry;
+            INodeMetrics nodeMetrics;
+            while (true)
             {
-                pool.OnHostRemoved();
-                pool.Dispose();
+                lock (_connectionPoolLifecycleLock)
+                {
+                    if (IsDisposed)
+                    {
+                        // Shutdown owns the remaining pools and their metrics.
+                        return;
+                    }
+                    if (_connectionPool.TryGetValue(host.Address, out entry) &&
+                        ReferenceEquals(entry.Host, host))
+                    {
+                        // Keep this exact pool reachable for shutdown if provider teardown throws.
+                        if (_metricsManager.TryDetachNodeMetrics(host, out nodeMetrics))
+                        {
+                            break;
+                        }
+                    }
+                    else
+                    {
+                        entry = null;
+                        if (_connectionPool.ContainsKey(host.Address))
+                        {
+                            return;
+                        }
+                        var currentHost = _cluster.Metadata.GetHost(host.Address);
+                        if (currentHost != null && !ReferenceEquals(currentHost, host))
+                        {
+                            return;
+                        }
+                        if (_metricsManager.TryDetachNodeMetrics(host, out nodeMetrics))
+                        {
+                            break;
+                        }
+                    }
+                }
+                // A metrics constructor may own its collection lock while waiting for shutdown.
+                // Wait outside the publication lock, then revalidate the current owner.
+                _metricsManager.WaitForPendingNodeMetricsCreation();
+            }
+
+            // A provider may synchronously marshal shutdown to another thread. Do not hold
+            // the pool publication lock across that callback, or remove newer metrics later.
+            nodeMetrics?.Dispose();
+            if (entry == null)
+            {
+                return;
+            }
+            lock (_connectionPoolLifecycleLock)
+            {
+                // A callback or concurrent shutdown may already have retired this exact owner.
+                if (_connectionPool.TryGetValue(host.Address, out var currentEntry) &&
+                    ReferenceEquals(currentEntry, entry))
+                {
+                    _connectionPool.Remove(host.Address);
+                    entry.Pool.OnHostRemoved();
+                    entry.Pool.Dispose();
+                }
+            }
+        }
+
+        private sealed class HostPool
+        {
+            public Host Host { get; }
+            public IHostConnectionPool Pool { get; }
+
+            public HostPool(Host host, IHostConnectionPool pool)
+            {
+                Host = host;
+                Pool = pool;
             }
         }
     }

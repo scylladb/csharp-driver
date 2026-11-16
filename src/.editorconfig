@@ -540,3 +540,35 @@ dotnet_diagnostic.CA1849.severity = warning
 # System.Threading.Lock (.NET 9+); IDE rules are checked by `make check`
 csharp_prefer_system_threading_lock = true
 dotnet_diagnostic.IDE0330.severity = warning
+
+# Keep the existing header template for inherited files.
+[*.cs]
+stylecop.documentation.companyName = DataStax Inc.
+
+# These ScyllaDB-authored files retain their original attribution and header checks.
+[Cassandra.IntegrationTests/ClientRoutes/ClientRoutesIntegrationTests.cs]
+stylecop.documentation.companyName = ScyllaDB
+
+[Cassandra.IntegrationTests/ClientRoutes/ClientRoutesNode.cs]
+stylecop.documentation.companyName = ScyllaDB
+
+[Cassandra.IntegrationTests/ClientRoutes/ClientRoutesNodeReplacementTests.cs]
+stylecop.documentation.companyName = ScyllaDB
+
+[Cassandra.IntegrationTests/ClientRoutes/ClientRoutesTestSupport.cs]
+stylecop.documentation.companyName = ScyllaDB
+
+[Cassandra.IntegrationTests/ClientRoutes/ClientRoutesUnsupportedServerTests.cs]
+stylecop.documentation.companyName = ScyllaDB
+
+[Cassandra.IntegrationTests/ClientRoutes/TcpRelay.cs]
+stylecop.documentation.companyName = ScyllaDB
+
+[Cassandra.IntegrationTests/ClientRoutes/TcpRelayTests.cs]
+stylecop.documentation.companyName = ScyllaDB
+
+[Cassandra.Tests/TestHelperTests.cs]
+stylecop.documentation.companyName = ScyllaDB
+
+[Cassandra/Connections/HostConnectionPoolNotEligibleException.cs]
+stylecop.documentation.companyName = ScyllaDB
