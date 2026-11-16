@@ -601,18 +601,16 @@ namespace Cassandra.Tests
             var elapsed = Stopwatch.StartNew();
             while (true)
             {
-                Exception lastException;
-                using (new TestExecutionContext.IsolatedContext())
-                {
-                    try
+                var lastException = await TryAssertAsync(
+                    () =>
                     {
                         assertion();
-                        return;
-                    }
-                    catch (Exception ex) when (exceptionFilter(ex))
-                    {
-                        lastException = ex;
-                    }
+                        return Task.CompletedTask;
+                    },
+                    exceptionFilter).ConfigureAwait(false);
+                if (lastException == null)
+                {
+                    return;
                 }
 
                 var remaining = timeout - elapsed.Elapsed;
@@ -727,27 +725,34 @@ namespace Cassandra.Tests
             var i = 0;
             do
             {
-                using (new TestExecutionContext.IsolatedContext())
+                lastException = await TryAssertAsync(
+                    func,
+                    ex => ex is MockException || ex is AssertionException).ConfigureAwait(false);
+                if (lastException == null)
                 {
-                    try
-                    {
-                        await func().ConfigureAwait(false);
-                        return;
-                    }
-                    catch (MockException ex1)
-                    {
-                        lastException = ex1;
-                    }
-                    catch (AssertionException ex2)
-                    {
-                        lastException = ex2;
-                    }
+                    return;
                 }
 
                 await Task.Delay(msPerRetry).ConfigureAwait(false);
             } while (i++ < maxRetries);
 
             throw lastException;
+        }
+
+        private static async Task<Exception> TryAssertAsync(Func<Task> assertion, Func<Exception, bool> exceptionFilter)
+        {
+            using (new TestExecutionContext.IsolatedContext())
+            {
+                try
+                {
+                    await assertion().ConfigureAwait(false);
+                    return null;
+                }
+                catch (Exception ex) when (exceptionFilter(ex))
+                {
+                    return ex;
+                }
+            }
         }
 
         private class SendReceiveCounter

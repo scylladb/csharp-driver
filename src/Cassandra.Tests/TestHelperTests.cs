@@ -31,16 +31,32 @@ namespace Cassandra.Tests
     [TestFixture]
     public sealed class TestHelperTests
     {
-        [Test]
-        public async Task SuccessfulRetryDoesNotRetainEarlierAssertionFailure()
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task SuccessfulRetryDoesNotRetainEarlierAssertionFailure(bool useAttemptLimit)
         {
             var attempts = 0;
-            await TestHelper.RetryAssertUntilAsync(
-                () => Assert.AreEqual(2, ++attempts),
-                TimeSpan.FromSeconds(5),
-                TimeSpan.Zero,
-                "The second attempt should succeed.",
-                ex => !Utils.IsFatalException(ex)).ConfigureAwait(false);
+            Action assertion = () => Assert.AreEqual(2, ++attempts);
+            if (useAttemptLimit)
+            {
+                await TestHelper.RetryAssertAsync(
+                    () =>
+                    {
+                        assertion();
+                        return Task.CompletedTask;
+                    },
+                    msPerRetry: 0,
+                    maxRetries: 1).ConfigureAwait(false);
+            }
+            else
+            {
+                await TestHelper.RetryAssertUntilAsync(
+                    assertion,
+                    TimeSpan.FromSeconds(5),
+                    TimeSpan.Zero,
+                    "The second attempt should succeed.",
+                    ex => !Utils.IsFatalException(ex)).ConfigureAwait(false);
+            }
             Assert.AreEqual(2, attempts);
         }
 
@@ -103,6 +119,40 @@ namespace Cassandra.Tests
                 ex => !Utils.IsFatalException(ex))).ConfigureAwait(false);
             StringAssert.Contains("Retry timed out.", exception.Message);
             StringAssert.Contains("The condition was never satisfied.", exception.Message);
+        }
+
+        [Test]
+        public async Task AttemptLimitedRetryRethrowsTheLastFailure()
+        {
+            var attempts = 0;
+            Exception lastFailure = null;
+            var exception = await Assert.ThrowsAsync<AssertionException>(() => TestHelper.RetryAssertAsync(
+                () =>
+                {
+                    lastFailure = new AssertionException("Attempt " + ++attempts);
+                    throw lastFailure;
+                },
+                msPerRetry: 0,
+                maxRetries: 1)).ConfigureAwait(false);
+            Assert.AreEqual(2, attempts);
+            Assert.AreSame(lastFailure, exception);
+        }
+
+        [Test]
+        public async Task AttemptLimitedRetryDoesNotRetryOtherExceptions()
+        {
+            var failure = new InvalidOperationException("Do not retry");
+            var attempts = 0;
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => TestHelper.RetryAssertAsync(
+                () =>
+                {
+                    attempts++;
+                    throw failure;
+                },
+                msPerRetry: 0,
+                maxRetries: 1)).ConfigureAwait(false);
+            Assert.AreEqual(1, attempts);
+            Assert.AreSame(failure, exception);
         }
 
         [Test]
