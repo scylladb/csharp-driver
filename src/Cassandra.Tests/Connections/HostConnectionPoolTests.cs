@@ -1085,9 +1085,11 @@ namespace Cassandra.Tests.Connections
                     if (speculative)
                     {
                         // A losing execution completing later must not emit the same diagnostic again.
-                        await (await nextResponse.Task.ConfigureAwait(false))(
+                        var losingCallback = await nextResponse.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                        await losingCallback(
                             null,
-                            new ProxyResultResponse(ResultResponse.ResultResponseKind.Void)).ConfigureAwait(false);
+                            new ProxyResultResponse(ResultResponse.ResultResponseKind.Void))
+                            .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
                     }
                 }
 

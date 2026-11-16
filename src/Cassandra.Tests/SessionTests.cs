@@ -1558,20 +1558,28 @@ namespace Cassandra.Tests
             finally
             {
                 continueCallback.Set();
-                Assert.IsTrue(creator.Join(TimeSpan.FromSeconds(10)), "metrics creator cleanup did not finish");
-                if (contenderLaunched)
-                {
-                    Assert.IsTrue(contender.Join(TimeSpan.FromSeconds(10)), "metrics contender cleanup did not finish");
-                }
-                if (shutdownWorker != null)
-                {
-                    Assert.IsTrue(shutdownWorker.Wait(TimeSpan.FromSeconds(10)));
-                    shutdownWorker.GetAwaiter().GetResult();
-                }
-                // Observer-created metrics can finish publishing after the shutdown snapshot.
-                // The test owns those registries and observes their ordinary teardown as well.
-                internalSession.MetricsManager.RemoveNodeMetrics(creatingHost);
-                internalSession.MetricsManager.RemoveNodeMetrics(queuedHost);
+                // Observe every worker and owned registry even if an earlier cleanup action fails.
+                TestHelper.RunAllCleanupActions(
+                    () => Assert.IsTrue(creator.Join(TimeSpan.FromSeconds(10)), "metrics creator cleanup did not finish"),
+                    () =>
+                    {
+                        if (contenderLaunched)
+                        {
+                            Assert.IsTrue(contender.Join(TimeSpan.FromSeconds(10)), "metrics contender cleanup did not finish");
+                        }
+                    },
+                    () =>
+                    {
+                        if (shutdownWorker != null)
+                        {
+                            Assert.IsTrue(shutdownWorker.Wait(TimeSpan.FromSeconds(10)));
+                            shutdownWorker.GetAwaiter().GetResult();
+                        }
+                    },
+                    // Observer-created metrics can finish publishing after the shutdown snapshot.
+                    // The test owns those registries and observes their ordinary teardown as well.
+                    () => internalSession.MetricsManager.RemoveNodeMetrics(creatingHost),
+                    () => internalSession.MetricsManager.RemoveNodeMetrics(queuedHost));
             }
         }
 
