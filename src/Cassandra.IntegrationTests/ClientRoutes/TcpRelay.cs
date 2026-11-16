@@ -151,9 +151,11 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             }
             catch (ObjectDisposedException)
             {
+                // Listener shutdown can interrupt an outstanding accept during disposal.
             }
             catch (SocketException)
             {
+                // Stopping the listener can also complete the outstanding accept with a socket error.
             }
             finally
             {
