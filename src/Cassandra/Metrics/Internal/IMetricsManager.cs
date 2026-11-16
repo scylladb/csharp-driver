@@ -44,6 +44,17 @@ namespace Cassandra.Metrics.Internal
         void RemoveNodeMetrics(Host host);
 
         /// <summary>
+        /// Try to remove a host's metrics without invoking provider callbacks or waiting for
+        /// another thread's metrics construction. The caller owns disposal of detached metrics.
+        /// </summary>
+        bool TryDetachNodeMetrics(Host host, out INodeMetrics nodeMetrics);
+
+        /// <summary>
+        /// Wait for pending metrics construction outside the session's publication lock.
+        /// </summary>
+        void WaitForPendingNodeMetricsCreation();
+
+        /// <summary>
         /// Whether SessionMetrics of type Timer are enabled.
         /// </summary>
         bool AreSessionTimerMetricsEnabled { get; }

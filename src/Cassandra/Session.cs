@@ -27,6 +27,7 @@ using Cassandra.Connections;
 using Cassandra.ExecutionProfiles;
 using Cassandra.Metrics;
 using Cassandra.Metrics.Internal;
+using Cassandra.Metrics.Registries;
 using Cassandra.Observers.Abstractions;
 using Cassandra.Requests;
 using Cassandra.Serialization;
@@ -42,6 +43,7 @@ namespace Cassandra
         private static readonly Logger Logger = new Logger(typeof(Session));
         private readonly IThreadSafeDictionary<IPEndPoint, HostPool> _connectionPool;
         private readonly Lock _connectionPoolLifecycleLock = new Lock();
+        private readonly Lock _connectionPoolCreationLock = new Lock();
         private readonly IInternalCluster _cluster;
         private int _disposed;
         private long _initialized;
@@ -416,54 +418,71 @@ namespace Cassandra
                 return entry.Pool;
             }
 
-            lock (_connectionPoolLifecycleLock)
+            // Serialize candidate creation without blocking shutdown or topology retirement.
+            // Factories and metrics providers may synchronously wait for worker-thread shutdown.
+            lock (_connectionPoolCreationLock)
             {
-                if (IsDisposed)
+                while (true)
                 {
-                    throw new ObjectDisposedException(nameof(Session));
-                }
-
-                currentHost = ResolvePoolHost(host, clientRoutesEnabled, out customHost);
-                if (currentHost == null)
-                {
-                    throw new HostConnectionPoolNotEligibleException("it is absent from metadata");
-                }
-                host = currentHost;
-                if (!IsPoolHostEligible(host, clientRoutesEnabled, allowDownHost, ref distance))
-                {
-                    // Only warmup may create a down host's recovery pool.
-                    Session.Logger.Verbose(
-                        "Not creating a connection pool for host {0}: it is {1}.",
-                        host.Address, distance == HostDistance.Ignored ? "ignored" : "down");
-                    throw new HostConnectionPoolNotEligibleException(
-                        distance == HostDistance.Ignored ? "its policy distance is ignored" : "it is down");
-                }
-
-                if (_connectionPool.TryGetValue(host.Address, out var existingEntry))
-                {
-                    if (CanReusePool(existingEntry, host, customHost))
+                    Host retiredHost = null;
+                    lock (_connectionPoolLifecycleLock)
                     {
-                        // Custom policies can supply a fresh Host per query plan. Retain the
-                        // original pool owner while metadata supplies no replacement identity.
-                        return existingEntry.Pool;
-                    }
-                    // Use the same metrics-first retirement as a topology removal. A metrics
-                    // callback may publish a replacement, so resolve the owner again afterwards.
-                    OnHostRemoved(existingEntry.Host);
-                    if (_connectionPool.ContainsKey(host.Address))
-                    {
-                        return GetOrCreateConnectionPool(host, distance, allowDownHost);
-                    }
-                }
+                        if (IsDisposed)
+                        {
+                            throw new ObjectDisposedException(nameof(Session));
+                        }
 
-                var newPool = Configuration.HostConnectionPoolFactory.Create(
-                    host, Configuration, _serializerManager, _observerFactory, Cluster.Metadata.GetTokenFactory());
-                try
+                        currentHost = ResolvePoolHost(host, clientRoutesEnabled, out customHost);
+                        if (currentHost == null)
+                        {
+                            throw new HostConnectionPoolNotEligibleException("it is absent from metadata");
+                        }
+                        host = currentHost;
+                        if (!IsPoolHostEligible(host, clientRoutesEnabled, allowDownHost, ref distance))
+                        {
+                            // Only warmup may create a down host's recovery pool.
+                            Session.Logger.Verbose(
+                                "Not creating a connection pool for host {0}: it is {1}.",
+                                host.Address, distance == HostDistance.Ignored ? "ignored" : "down");
+                            throw new HostConnectionPoolNotEligibleException(
+                                distance == HostDistance.Ignored ? "its policy distance is ignored" : "it is down");
+                        }
+
+                        if (_connectionPool.TryGetValue(host.Address, out var existingEntry))
+                        {
+                            if (CanReusePool(existingEntry, host, customHost))
+                            {
+                                // Custom policies can supply a fresh Host per query plan. Retain the
+                                // original pool owner while metadata supplies no replacement identity.
+                                return existingEntry.Pool;
+                            }
+                            retiredHost = existingEntry.Host;
+                        }
+                    }
+                    if (retiredHost == null)
+                    {
+                        return CreateAndPublishConnectionPool(host, distance);
+                    }
+
+                    // Retirement callbacks may publish a replacement or end the session lifetime.
+                    // Resolve its current owner and eligibility again before creating a candidate.
+                    OnHostRemoved(retiredHost);
+                }
+            }
+        }
+
+        private IHostConnectionPool CreateAndPublishConnectionPool(Host host, HostDistance distance)
+        {
+            var newPool = Configuration.HostConnectionPoolFactory.Create(
+                host, Configuration, _serializerManager, _observerFactory, Cluster.Metadata.GetTokenFactory());
+            try
+            {
+                newPool.AllConnectionClosed += InternalRef.OnAllConnectionClosed;
+                newPool.SetDistance(distance);
+                _metricsManager.GetOrCreateNodeMetrics(host).InitializePoolGauges(newPool);
+                lock (_connectionPoolLifecycleLock)
                 {
-                    newPool.AllConnectionClosed += InternalRef.OnAllConnectionClosed;
-                    newPool.SetDistance(distance);
-                    _metricsManager.GetOrCreateNodeMetrics(host).InitializePoolGauges(newPool);
-                    // User metrics callbacks can synchronously shut down the session or remove the host.
+                    // User callbacks can shut down the session, remove the host or publish another pool.
                     if (IsDisposed)
                     {
                         throw new ObjectDisposedException(nameof(Session));
@@ -474,35 +493,49 @@ namespace Cassandra
                     }
                     _connectionPool.Add(host.Address, new HostPool(host, newPool));
                 }
-                catch
+            }
+            catch
+            {
+                try
+                {
+                    newPool.Dispose();
+                }
+                catch (Exception cleanupFailure) when (!Utils.IsFatalException(cleanupFailure))
+                {
+                    // Preserve the initialization failure if pool cleanup also fails.
+                }
+                finally
                 {
                     try
                     {
-                        newPool.Dispose();
+                        INodeMetrics nodeMetrics;
+                        while (true)
+                        {
+                            lock (_connectionPoolLifecycleLock)
+                            {
+                                // Preserve metrics published by a reentrant initialization callback.
+                                if (_connectionPool.ContainsKey(host.Address))
+                                {
+                                    nodeMetrics = null;
+                                    break;
+                                }
+                                if (_metricsManager.TryDetachNodeMetrics(host, out nodeMetrics))
+                                {
+                                    break;
+                                }
+                            }
+                            _metricsManager.WaitForPendingNodeMetricsCreation();
+                        }
+                        nodeMetrics?.Dispose();
                     }
                     catch (Exception cleanupFailure) when (!Utils.IsFatalException(cleanupFailure))
                     {
-                        // Preserve the initialization failure if pool cleanup also fails.
+                        // Keep the primary failure when metrics cleanup fails nonfatally.
                     }
-                    finally
-                    {
-                        try
-                        {
-                            // A metrics callback may have published another pool at this address.
-                            if (!_connectionPool.ContainsKey(host.Address))
-                            {
-                                _metricsManager.RemoveNodeMetrics(host);
-                            }
-                        }
-                        catch (Exception cleanupFailure) when (!Utils.IsFatalException(cleanupFailure))
-                        {
-                            // Keep the primary failure when metrics cleanup fails nonfatally.
-                        }
-                    }
-                    throw;
                 }
-                return newPool;
+                throw;
             }
+            return newPool;
         }
 
         private Host ResolvePoolHost(Host selectedHost, bool clientRoutesEnabled, out bool customHost)
@@ -661,29 +694,65 @@ namespace Cassandra
 
         private void OnHostRemoved(Host host)
         {
-            lock (_connectionPoolLifecycleLock)
+            HostPool entry;
+            INodeMetrics nodeMetrics;
+            while (true)
             {
-                if (_connectionPool.TryGetValue(host.Address, out var entry) &&
-                    ReferenceEquals(entry.Host, host))
+                lock (_connectionPoolLifecycleLock)
                 {
-                    // Keep the pool reachable for shutdown if metrics teardown throws.
-                    _metricsManager.RemoveNodeMetrics(host);
-                    // A metrics callback may have already retired it and published a replacement.
-                    if (_connectionPool.TryGetValue(host.Address, out var currentEntry) &&
-                        ReferenceEquals(currentEntry, entry))
+                    if (IsDisposed)
                     {
-                        _connectionPool.Remove(host.Address);
-                        entry.Pool.OnHostRemoved();
-                        entry.Pool.Dispose();
+                        // Shutdown owns the remaining pools and their metrics.
+                        return;
+                    }
+                    if (_connectionPool.TryGetValue(host.Address, out entry) &&
+                        ReferenceEquals(entry.Host, host))
+                    {
+                        // Keep this exact pool reachable for shutdown if provider teardown throws.
+                        if (_metricsManager.TryDetachNodeMetrics(host, out nodeMetrics))
+                        {
+                            break;
+                        }
+                    }
+                    else
+                    {
+                        entry = null;
+                        if (_connectionPool.ContainsKey(host.Address))
+                        {
+                            return;
+                        }
+                        var currentHost = _cluster.Metadata.GetHost(host.Address);
+                        if (currentHost != null && !ReferenceEquals(currentHost, host))
+                        {
+                            return;
+                        }
+                        if (_metricsManager.TryDetachNodeMetrics(host, out nodeMetrics))
+                        {
+                            break;
+                        }
                     }
                 }
-                else if (!_connectionPool.ContainsKey(host.Address))
+                // A metrics constructor may own its collection lock while waiting for shutdown.
+                // Wait outside the publication lock, then revalidate the current owner.
+                _metricsManager.WaitForPendingNodeMetricsCreation();
+            }
+
+            // A provider may synchronously marshal shutdown to another thread. Do not hold
+            // the pool publication lock across that callback, or remove newer metrics later.
+            nodeMetrics?.Dispose();
+            if (entry == null)
+            {
+                return;
+            }
+            lock (_connectionPoolLifecycleLock)
+            {
+                // A callback or concurrent shutdown may already have retired this exact owner.
+                if (_connectionPool.TryGetValue(host.Address, out var currentEntry) &&
+                    ReferenceEquals(currentEntry, entry))
                 {
-                    var currentHost = _cluster.Metadata.GetHost(host.Address);
-                    if (currentHost == null || ReferenceEquals(currentHost, host))
-                    {
-                        _metricsManager.RemoveNodeMetrics(host);
-                    }
+                    _connectionPool.Remove(host.Address);
+                    entry.Pool.OnHostRemoved();
+                    entry.Pool.Dispose();
                 }
             }
         }

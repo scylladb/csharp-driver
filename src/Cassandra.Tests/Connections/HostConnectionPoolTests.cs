@@ -47,6 +47,58 @@ namespace Cassandra.Tests.Connections
         private IEndPointResolver _resolver;
 
         [Test]
+        public async Task Should_DetachHostEventsWhileRemovedConnectionsDrain()
+        {
+            var pending = 1;
+            var disposed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Mock<IConnection> connection = null;
+            var removalStarted = false;
+            var target = CreatePool(connectionFactory: new FakeConnectionFactory(endPoint =>
+            {
+                connection = CreateConnection(endPoint);
+                connection.SetupGet(value => value.HasPendingOperations).Returns(() => Volatile.Read(ref pending) != 0);
+                connection.Setup(value => value.Dispose()).Callback(() => disposed.TrySetResult(true));
+                return connection.Object;
+            }), coreConnections: 1);
+            try
+            {
+                await target.BorrowConnectionAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                removalStarted = true;
+                target.OnHostRemoved();
+                Parallel.For(0, 8, _ => target.Dispose());
+
+                Assert.AreEqual(0, target.OpenConnections);
+                Assert.IsFalse(disposed.Task.IsCompleted, "Retirement must drain pending requests rather than abort them.");
+                foreach (var eventName in new[] { "Up", "Down", "DistanceChanged" })
+                {
+                    var handlers = (Delegate)typeof(Host).GetField(
+                        eventName, BindingFlags.Instance | BindingFlags.NonPublic).GetValue(_host);
+                    Assert.IsFalse(handlers?.GetInvocationList().Any(handler => ReferenceEquals(handler.Target, target)) ?? false,
+                        eventName + " must not retain the retired pool.");
+                }
+            }
+            finally
+            {
+                Volatile.Write(ref pending, 0);
+                try
+                {
+                    if (!removalStarted)
+                    {
+                        target.OnHostRemoved();
+                    }
+                    if (connection != null)
+                    {
+                        await disposed.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    }
+                }
+                finally
+                {
+                    DisposePoolAndTimer(target);
+                }
+            }
+        }
+
+        [Test]
         public async Task Should_ResolveHostWithRefresh_When_Reconnection()
         {
             var target = CreatePool();

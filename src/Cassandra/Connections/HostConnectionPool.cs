@@ -389,6 +389,7 @@ namespace Cassandra.Connections
         /// </summary>
         public void Dispose()
         {
+            DetachHostEvents();
             var markShuttingDown =
                 (Interlocked.CompareExchange(ref _state, PoolState.ShuttingDown, PoolState.Init) == PoolState.Init) ||
                 (Interlocked.CompareExchange(ref _state, PoolState.ShuttingDown, PoolState.Closing) ==
@@ -408,9 +409,6 @@ namespace Cassandra.Connections
             {
                 c.Dispose();
             }
-            _host.Up -= OnHostUp;
-            _host.Down -= OnHostDown;
-            _host.DistanceChanged -= OnDistanceChanged;
             var t = _resizingEndTimeout;
             if (t != null)
             {
@@ -659,8 +657,16 @@ namespace Cassandra.Connections
             }
         }
 
+        private void DetachHostEvents()
+        {
+            _host.Up -= OnHostUp;
+            _host.Down -= OnHostDown;
+            _host.DistanceChanged -= OnDistanceChanged;
+        }
+
         public void OnHostRemoved()
         {
+            DetachHostEvents();
             var previousState = Interlocked.Exchange(ref _state, PoolState.ShuttingDown);
             if (previousState == PoolState.Shutdown)
             {

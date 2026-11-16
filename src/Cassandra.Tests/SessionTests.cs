@@ -21,6 +21,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Connections;
@@ -1028,8 +1029,10 @@ namespace Cassandra.Tests
                 Assert.AreSame(replacementHost, createdHosts[1]);
                 var expectedDistance = clientRoutesEnabled ? HostDistance.Remote : HostDistance.Local;
                 Mock.Get(replacementPool).Verify(value => value.SetDistance(expectedDistance), Times.Once);
+                // Stale-owner retirement releases the publication lock for provider callbacks.
+                // Revalidate the replacement policy after reacquiring it.
                 cluster.Verify(value => value.RetrieveAndSetDistance(It.Is<Host>(host => ReferenceEquals(host, replacementHost))),
-                    clientRoutesEnabled ? Times.Once() : Times.Never());
+                    clientRoutesEnabled ? Times.Exactly(poolRemovalCompleted ? 1 : 2) : Times.Never());
                 Mock.Get(oldPool).Verify(value => value.OnHostRemoved(), Times.Once);
                 Mock.Get(oldPool).Verify(value => value.Dispose(), Times.Once);
             }
@@ -1195,6 +1198,380 @@ namespace Cassandra.Tests
 
                 // Both modes check membership; only client routes re-evaluates policy distance.
                 cluster.Verify(value => value.RetrieveAndSetDistance(It.IsAny<Host>()), Times.Never);
+            }
+        }
+
+        [Test, Combinatorial]
+        public void Should_AllowRemovalMetricsCallbackToWaitForWorkerShutdown(
+            [Values(false, true)] bool clientRoutesEnabled,
+            [Values(false, true)] bool replacementLookup)
+        {
+            var metricsProvider = CreateMetricsProviderForRemovalTests();
+            var pool = new Mock<IHostConnectionPool>();
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>())).Returns(pool.Object);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object,
+                MetricsProvider = metricsProvider.Object,
+                ClientRoutesOptions = clientRoutesEnabled ? CreateClientRoutesOptions() : null
+            }.Build();
+            using var session = CreateWarmupSession(config, "removal-metrics-worker-shutdown-test");
+            var internalSession = (IInternalSession)session;
+            var host = internalSession.InternalCluster.AllHosts().Single();
+            internalSession.GetOrCreateConnectionPool(host, HostDistance.Local);
+            internalSession.InternalCluster.Metadata.RemoveHost(host.Address);
+            Host replacement = null;
+            if (replacementLookup)
+            {
+                replacement = internalSession.InternalCluster.Metadata.AddHost(host.Address);
+                replacement.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            }
+
+            Task shutdownWorker = null;
+            var callbackCount = 0;
+            metricsProvider.Setup(value => value.ShutdownMetricsBucket(It.Is<string>(bucket => bucket.Contains(".nodes."))))
+                           .Callback(() =>
+                           {
+                               // Only the retired node bucket marshals work; session bucket shutdown
+                               // remains ordinary, and the detached node must not be shut down twice.
+                               Interlocked.Increment(ref callbackCount);
+                               shutdownWorker = Task.Factory.StartNew(
+                                   () => session.Dispose(), CancellationToken.None,
+                                   TaskCreationOptions.LongRunning, TaskScheduler.Default);
+                               if (!shutdownWorker.Wait(TimeSpan.FromSeconds(5)))
+                               {
+                                   throw new TimeoutException("node metrics callback blocked worker session shutdown");
+                               }
+                               shutdownWorker.GetAwaiter().GetResult();
+                           });
+            try
+            {
+                if (replacementLookup)
+                {
+                    Assert.Throws<ObjectDisposedException>(() =>
+                        internalSession.GetOrCreateConnectionPool(replacement, HostDistance.Local));
+                }
+                else
+                {
+                    Mock.Get(internalSession.InternalCluster).Raise(value => value.HostRemoved += null, host);
+                }
+                Assert.IsTrue(session.IsDisposed);
+                Assert.AreEqual(1, callbackCount);
+                Assert.IsEmpty(internalSession.GetPools());
+                Assert.IsEmpty(session.GetMetrics().NodeMetrics);
+                pool.Verify(value => value.Dispose(), Times.Once);
+                poolFactory.Verify(value => value.Create(
+                    It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>()), Times.Once);
+            }
+            finally
+            {
+                // In a failing control the callback timeout releases the lifecycle lock, allowing
+                // its worker to finish. Observe that worker before disposing the test session.
+                if (shutdownWorker != null)
+                {
+                    Assert.IsTrue(shutdownWorker.Wait(TimeSpan.FromSeconds(10)), "shutdown worker did not finish");
+                    shutdownWorker.GetAwaiter().GetResult();
+                }
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void Should_RecheckReplacementEligibilityAfterRemovalMetricsCallback(bool ignored)
+        {
+            var metricsProvider = CreateMetricsProviderForRemovalTests();
+            var pool = new Mock<IHostConnectionPool>();
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>())).Returns(pool.Object);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object,
+                MetricsProvider = metricsProvider.Object,
+                ClientRoutesOptions = CreateClientRoutesOptions()
+            }.Build();
+            using var session = CreateWarmupSession(config, "removal-metrics-revalidation-test");
+            var internalSession = (IInternalSession)session;
+            var cluster = Mock.Get(internalSession.InternalCluster);
+            var host = internalSession.InternalCluster.AllHosts().Single();
+            internalSession.GetOrCreateConnectionPool(host, HostDistance.Local);
+            internalSession.InternalCluster.Metadata.RemoveHost(host.Address);
+            var replacement = internalSession.InternalCluster.Metadata.AddHost(host.Address);
+            replacement.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var distance = HostDistance.Local;
+            cluster.Setup(value => value.RetrieveAndSetDistance(replacement)).Returns(() => distance);
+            metricsProvider.Setup(value => value.ShutdownMetricsBucket(It.Is<string>(bucket => bucket.Contains(".nodes."))))
+                           .Callback(() =>
+                           {
+                               if (ignored)
+                               {
+                                   distance = HostDistance.Ignored;
+                               }
+                               else
+                               {
+                                   replacement.SetDown();
+                               }
+                           });
+
+            // Host equality is address based, so exclude the original owner's initialization.
+            cluster.Invocations.Clear();
+            var failure = Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
+                internalSession.GetOrCreateConnectionPool(replacement, HostDistance.Local));
+            StringAssert.Contains(ignored ? "ignored" : "down", failure.Message);
+            Assert.IsEmpty(internalSession.GetPools());
+            pool.Verify(value => value.Dispose(), Times.Once);
+            poolFactory.Verify(value => value.Create(
+                It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>()), Times.Once);
+            cluster.Verify(value => value.RetrieveAndSetDistance(replacement), Times.Exactly(2));
+        }
+
+        [Test, Combinatorial]
+        public void Should_AllowCreationMetricsCallbacksToWaitForWorkerShutdown(
+            [Values(false, true)] bool clientRoutesEnabled,
+            [Values("factory", "gauge", "failure", "removal")] string callbackKind)
+        {
+            var metricsProvider = CreateMetricsProviderForRemovalTests();
+            var pool = new Mock<IHostConnectionPool>();
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>())).Returns(pool.Object);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object,
+                MetricsProvider = metricsProvider.Object,
+                ClientRoutesOptions = clientRoutesEnabled ? CreateClientRoutesOptions() : null
+            }.Build();
+            using var session = CreateWarmupSession(config, "creation-metrics-worker-shutdown-test");
+            var internalSession = (IInternalSession)session;
+            var host = internalSession.InternalCluster.AllHosts().Single();
+            var primaryFailure = new InvalidOperationException("node metrics initialization failed");
+            Task shutdownWorker = null;
+            var gaugeCallbackRan = false;
+            var shutdownCallbackCount = 0;
+            var workerCompletedDuringCallback = false;
+            Action shutdownFromWorker = () =>
+            {
+                shutdownWorker = Task.Factory.StartNew(
+                    () => session.Dispose(), CancellationToken.None,
+                    TaskCreationOptions.LongRunning, TaskScheduler.Default);
+                if (!shutdownWorker.Wait(TimeSpan.FromSeconds(5)))
+                {
+                    throw new TimeoutException("creation metrics callback blocked worker session shutdown");
+                }
+                shutdownWorker.GetAwaiter().GetResult();
+                workerCompletedDuringCallback = true;
+            };
+            if (callbackKind == "factory")
+            {
+                poolFactory.Setup(value => value.Create(
+                    It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>()))
+                           .Callback(shutdownFromWorker)
+                           .Returns(pool.Object);
+            }
+            metricsProvider.Setup(value => value.Gauge(
+                               It.IsAny<string>(), It.IsAny<IMetric>(), It.IsAny<Func<double?>>()))
+                           .Returns((string _, IMetric metric, Func<double?> __) =>
+                           {
+                               if (metric is NodeMetric && !gaugeCallbackRan)
+                               {
+                                   gaugeCallbackRan = true;
+                                   if (callbackKind == "gauge")
+                                   {
+                                       shutdownFromWorker();
+                                   }
+                                   else if (callbackKind == "failure")
+                                   {
+                                       throw primaryFailure;
+                                   }
+                                   else if (callbackKind == "removal")
+                                   {
+                                       internalSession.InternalCluster.Metadata.RemoveHost(host.Address);
+                                       Mock.Get(internalSession.InternalCluster).Raise(value => value.HostRemoved += null, host);
+                                   }
+                               }
+                               return Mock.Of<IDriverGauge>();
+                           });
+            metricsProvider.Setup(value => value.ShutdownMetricsBucket(It.Is<string>(bucket => bucket.Contains(".nodes."))))
+                           .Callback(() =>
+                           {
+                               Interlocked.Increment(ref shutdownCallbackCount);
+                               if (callbackKind != "gauge" && callbackKind != "factory")
+                               {
+                                   shutdownFromWorker();
+                               }
+                           });
+            try
+            {
+                if (callbackKind == "failure")
+                {
+                    Assert.AreSame(primaryFailure, Assert.Throws<InvalidOperationException>(() =>
+                        internalSession.GetOrCreateConnectionPool(host, HostDistance.Local)));
+                }
+                else
+                {
+                    Assert.Throws(callbackKind == "gauge" || callbackKind == "factory" ? typeof(ObjectDisposedException) : typeof(HostConnectionPoolNotEligibleException),
+                        () => internalSession.GetOrCreateConnectionPool(host, HostDistance.Local));
+                }
+                Assert.IsTrue(gaugeCallbackRan);
+                Assert.IsTrue(workerCompletedDuringCallback, "provider must observe completed worker shutdown before returning");
+                Assert.IsTrue(session.IsDisposed);
+                Assert.AreEqual(1, shutdownCallbackCount);
+                Assert.IsEmpty(internalSession.GetPools());
+                Assert.IsEmpty(session.GetMetrics().NodeMetrics);
+                pool.Verify(value => value.Dispose(), Times.Once);
+            }
+            finally
+            {
+                if (shutdownWorker != null)
+                {
+                    Assert.IsTrue(shutdownWorker.Wait(TimeSpan.FromSeconds(10)), "creation shutdown worker did not finish");
+                    shutdownWorker.GetAwaiter().GetResult();
+                }
+            }
+        }
+
+        [Test, Combinatorial]
+        public void Should_AllowWorkerShutdownDuringConcurrentMetricsCreationAndRemoval(
+            [Values(false, true)] bool clientRoutesEnabled,
+            [Values(false, true)] bool reentrantRemoval)
+        {
+            var metricsProvider = CreateMetricsProviderForRemovalTests();
+            var pool = new Mock<IHostConnectionPool>();
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                It.IsAny<Host>(), It.IsAny<Configuration>(), It.IsAny<ISerializerManager>(),
+                It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>())).Returns(pool.Object);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object,
+                MetricsProvider = metricsProvider.Object,
+                ClientRoutesOptions = clientRoutesEnabled ? CreateClientRoutesOptions() : null
+            }.Build();
+            using var session = CreateWarmupSession(config, "concurrent-metrics-removal-test");
+            var internalSession = (IInternalSession)session;
+            var cluster = Mock.Get(internalSession.InternalCluster);
+            var host = internalSession.InternalCluster.AllHosts().Single();
+            internalSession.GetOrCreateConnectionPool(host, HostDistance.Local);
+            internalSession.InternalCluster.Metadata.RemoveHost(host.Address);
+            var creatingHost = internalSession.InternalCluster.Metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.12"), 9042));
+            var queuedHost = internalSession.InternalCluster.Metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.13"), 9042));
+            using var providerEntered = new ManualResetEventSlim();
+            using var continueCallback = new ManualResetEventSlim();
+            using var contenderStarted = new ManualResetEventSlim();
+            Task shutdownWorker = null;
+            Exception creationFailure = null;
+            Exception contenderFailure = null;
+            var callbackRan = false;
+            var workerCompletedDuringCallback = false;
+            metricsProvider.Setup(value => value.Gauge(
+                               It.IsAny<string>(), It.IsAny<IMetric>(), It.IsAny<Func<double?>>()))
+                           .Returns((string _, IMetric metric, Func<double?> __) =>
+                           {
+                               if (metric is NodeMetric && !callbackRan)
+                               {
+                                   callbackRan = true;
+                                   providerEntered.Set();
+                                   if (!continueCallback.Wait(TimeSpan.FromSeconds(5)))
+                                   {
+                                       throw new TimeoutException("concurrent metrics test did not release provider callback");
+                                   }
+                                   if (reentrantRemoval)
+                                   {
+                                       // Another creator is queued behind this callback's write lock.
+                                       // Same-thread retirement must use that reentrant ownership.
+                                       cluster.Raise(value => value.HostRemoved += null, host);
+                                   }
+                                   shutdownWorker = Task.Factory.StartNew(
+                                       () => session.Dispose(), CancellationToken.None,
+                                       TaskCreationOptions.LongRunning, TaskScheduler.Default);
+                                   if (!shutdownWorker.Wait(TimeSpan.FromSeconds(5)))
+                                   {
+                                       throw new TimeoutException("concurrent metrics callback blocked worker session shutdown");
+                                   }
+                                   shutdownWorker.GetAwaiter().GetResult();
+                                   workerCompletedDuringCallback = true;
+                               }
+                               return Mock.Of<IDriverGauge>();
+                           });
+            var creator = new Thread(() =>
+            {
+                try
+                {
+                    // Exercise the observer-facing manager path, outside the session creation gate.
+                    internalSession.MetricsManager.GetOrCreateNodeMetrics(creatingHost);
+                }
+                catch (Exception failure)
+                {
+                    creationFailure = failure;
+                }
+            });
+            var contender = new Thread(() =>
+            {
+                try
+                {
+                    contenderStarted.Set();
+                    if (reentrantRemoval)
+                    {
+                        internalSession.MetricsManager.GetOrCreateNodeMetrics(queuedHost);
+                    }
+                    else
+                    {
+                        cluster.Raise(value => value.HostRemoved += null, host);
+                    }
+                }
+                catch (Exception failure)
+                {
+                    contenderFailure = failure;
+                }
+            });
+            var contenderLaunched = false;
+            try
+            {
+                creator.Start();
+                Assert.IsTrue(providerEntered.Wait(TimeSpan.FromSeconds(5)));
+                contender.Start();
+                contenderLaunched = true;
+                Assert.IsTrue(contenderStarted.Wait(TimeSpan.FromSeconds(5)));
+                // The contender has no intervening waits: it is parked on metrics construction
+                // (or its write lock in a failing control) before the provider attempts shutdown.
+                Assert.IsTrue(SpinWait.SpinUntil(
+                    () => (contender.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0,
+                    TimeSpan.FromSeconds(5)), "contender did not reach the metrics wait");
+                continueCallback.Set();
+                Assert.IsTrue(creator.Join(TimeSpan.FromSeconds(10)), "metrics creator did not finish");
+                Assert.IsTrue(contender.Join(TimeSpan.FromSeconds(10)), "metrics contender did not finish");
+                Assert.IsNull(creationFailure);
+                Assert.IsNull(contenderFailure);
+                Assert.IsTrue(workerCompletedDuringCallback);
+                Assert.IsTrue(session.IsDisposed);
+                Assert.IsEmpty(internalSession.GetPools());
+                pool.Verify(value => value.Dispose(), Times.Once);
+            }
+            finally
+            {
+                continueCallback.Set();
+                Assert.IsTrue(creator.Join(TimeSpan.FromSeconds(10)), "metrics creator cleanup did not finish");
+                if (contenderLaunched)
+                {
+                    Assert.IsTrue(contender.Join(TimeSpan.FromSeconds(10)), "metrics contender cleanup did not finish");
+                }
+                if (shutdownWorker != null)
+                {
+                    Assert.IsTrue(shutdownWorker.Wait(TimeSpan.FromSeconds(10)));
+                    shutdownWorker.GetAwaiter().GetResult();
+                }
+                // Observer-created metrics can finish publishing after the shutdown snapshot.
+                // The test owns those registries and observes their ordinary teardown as well.
+                internalSession.MetricsManager.RemoveNodeMetrics(creatingHost);
+                internalSession.MetricsManager.RemoveNodeMetrics(queuedHost);
             }
         }
 
@@ -1462,6 +1839,44 @@ namespace Cassandra.Tests
             {
                 Trace.Listeners.Remove(listener);
                 Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                config.Timer.Dispose();
+            }
+        }
+
+        [Test]
+        public void Should_DetachRetiredCustomHostPoolWhenMetadataReplacesIt()
+        {
+            var address = new IPEndPoint(IPAddress.Parse("127.0.0.21"), 9042);
+            var config = new TestConfigurationBuilder().Build();
+            using var metadata = new Metadata(config);
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            var customHost = new Host(address, contactPoint: null);
+            customHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            try
+            {
+                using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "live-host-retirement");
+                var internalSession = (IInternalSession)session;
+                var retired = internalSession.GetOrCreateConnectionPool(customHost, HostDistance.Local);
+                var metadataHost = metadata.AddHost(address);
+                metadataHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+
+                var replacement = internalSession.GetOrCreateConnectionPool(customHost, HostDistance.Local);
+
+                Assert.IsFalse(customHost.IsRemoved);
+                Assert.IsTrue(customHost.IsUp);
+                Assert.AreNotSame(retired, replacement);
+                Assert.AreSame(replacement, internalSession.GetPools().Single().Value);
+                foreach (var eventName in new[] { "Up", "Down", "DistanceChanged" })
+                {
+                    var handlers = (Delegate)typeof(Host).GetField(
+                        eventName, BindingFlags.Instance | BindingFlags.NonPublic).GetValue(customHost);
+                    Assert.IsFalse(handlers?.GetInvocationList().Any(handler => ReferenceEquals(handler.Target, retired)) ?? false,
+                        eventName + " must not retain a pool after the live custom Host is superseded.");
+                }
+            }
+            finally
+            {
                 config.Timer.Dispose();
             }
         }

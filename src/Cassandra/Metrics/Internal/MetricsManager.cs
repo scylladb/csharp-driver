@@ -18,6 +18,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using System.Threading;
 
 using Cassandra.Collections;
 using Cassandra.Metrics.Abstractions;
@@ -40,6 +41,8 @@ namespace Cassandra.Metrics.Internal
         private readonly CopyOnWriteDictionary<Host, INodeMetrics> _nodeMetricsCollection;
         private readonly bool _disabledSessionTimerMetrics;
         private readonly bool _disabledNodeTimerMetrics;
+        private readonly object _nodeMetricsCreationLock = new object();
+        private readonly Dictionary<int, int> _nodeMetricsCreatingThreads = new Dictionary<int, int>();
 
         public MetricsManager(IDriverMetricsProvider driverMetricsProvider, DriverMetricsOptions metricsOptions, bool metricsEnabled, string sessionName)
         {
@@ -113,13 +116,45 @@ namespace Cassandra.Metrics.Internal
         /// <inheritdoc />
         public void RemoveNodeMetrics(Host host)
         {
-            if (!_nodeMetricsCollection.TryRemove(host, out var nodeMetrics))
+            INodeMetrics nodeMetrics;
+            while (!TryDetachNodeMetrics(host, out nodeMetrics))
             {
-                return;
+                WaitForPendingNodeMetricsCreation();
             }
+            nodeMetrics?.Dispose();
+        }
 
-            _nodeMetricsRegistryCollection.TryRemove(host, out _);
-            nodeMetrics.Dispose();
+        /// <inheritdoc />
+        public bool TryDetachNodeMetrics(Host host, out INodeMetrics nodeMetrics)
+        {
+            lock (_nodeMetricsCreationLock)
+            {
+                // A constructor callback already owns the collection's reentrant write lock.
+                // It must not wait for another creator queued behind that same write lock.
+                if (_nodeMetricsCreatingThreads.Count != 0 &&
+                    !_nodeMetricsCreatingThreads.ContainsKey(Environment.CurrentManagedThreadId))
+                {
+                    nodeMetrics = null;
+                    return false;
+                }
+                if (_nodeMetricsCollection.TryRemove(host, out nodeMetrics))
+                {
+                    _nodeMetricsRegistryCollection.TryRemove(host, out _);
+                }
+                return true;
+            }
+        }
+
+        /// <inheritdoc />
+        public void WaitForPendingNodeMetricsCreation()
+        {
+            lock (_nodeMetricsCreationLock)
+            {
+                while (_nodeMetricsCreatingThreads.Count != 0)
+                {
+                    Monitor.Wait(_nodeMetricsCreationLock);
+                }
+            }
         }
 
         /// <inheritdoc />
@@ -137,17 +172,42 @@ namespace Cassandra.Metrics.Internal
         /// <inheritdoc />
         public INodeMetrics GetOrCreateNodeMetrics(Host host)
         {
-            var value = _nodeMetricsCollection.GetOrAdd(host, h =>
+            if (_nodeMetricsCollection.TryGetValue(host, out var existing))
             {
-                var nodeBucket = $"{_sessionBucket}.nodes.{MetricsManager.BuildHostAddressMetricPath(host.Address)}";
-
-                var newRegistry = new NodeMetrics(_driverMetricsProvider, _metricsOptions, _metricsEnabled, nodeBucket);
-                _nodeMetricsRegistryCollection.Add(host, newRegistry.MetricsRegistry);
-
-                return newRegistry;
-            });
-
-            return value;
+                return existing;
+            }
+            var threadId = Environment.CurrentManagedThreadId;
+            lock (_nodeMetricsCreationLock)
+            {
+                _nodeMetricsCreatingThreads.TryGetValue(threadId, out var depth);
+                _nodeMetricsCreatingThreads[threadId] = depth + 1;
+            }
+            try
+            {
+                return _nodeMetricsCollection.GetOrAdd(host, h =>
+                {
+                    var nodeBucket = $"{_sessionBucket}.nodes.{MetricsManager.BuildHostAddressMetricPath(host.Address)}";
+                    var newRegistry = new NodeMetrics(_driverMetricsProvider, _metricsOptions, _metricsEnabled, nodeBucket);
+                    _nodeMetricsRegistryCollection.Add(host, newRegistry.MetricsRegistry);
+                    return newRegistry;
+                });
+            }
+            finally
+            {
+                lock (_nodeMetricsCreationLock)
+                {
+                    var depth = _nodeMetricsCreatingThreads[threadId];
+                    if (depth == 1)
+                    {
+                        _nodeMetricsCreatingThreads.Remove(threadId);
+                    }
+                    else
+                    {
+                        _nodeMetricsCreatingThreads[threadId] = depth - 1;
+                    }
+                    Monitor.PulseAll(_nodeMetricsCreationLock);
+                }
+            }
         }
 
         private static string BuildHostAddressMetricPath(IPEndPoint address)
