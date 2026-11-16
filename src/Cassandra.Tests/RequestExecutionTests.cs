@@ -646,8 +646,11 @@ namespace Cassandra.Tests
             var lateFailure = new InvalidOperationException("Late acquisition after ordinary abort");
             var abortFailure = new InvalidOperationException("Ordinary node abort observer failure");
             var diagnosticFailure = new OutOfMemoryException("Fatal diagnostic after ordinary abort");
-            Exception actionFailure = entry == "schema-fatal" ? new OutOfMemoryException("Selected fatal schema action")
-                : entry == "schema-ordinary" ? new InvalidQueryException("Selected ordinary schema action") : null;
+            Exception actionFailure = entry == "schema-fatal"
+                ? new OutOfMemoryException("Selected fatal schema action")
+                : entry == "schema-ordinary"
+                    ? new InvalidQueryException("Selected ordinary schema action")
+                    : null;
             var initialError = actionFailure ?? abortFailure;
             var expectedError = fatalDiagnostic && entry != "schema-fatal" ? diagnosticFailure : initialError;
             var policy = new Mock<ILoadBalancingPolicy>();
@@ -704,8 +707,11 @@ namespace Cassandra.Tests
             var sent = new TaskCompletionSource<Func<IRequestError, Response, Task>>(TaskCreationOptions.RunContinuationsAsynchronously);
             var connection = new Mock<IConnection>();
             connection.Setup(value => value.SendWithKeyspace(
-                    It.IsAny<IRequest>(), It.IsAny<string>(), It.IsAny<Func<IRequestError, Response, Task>>(),
-                    It.IsAny<int>(), It.IsAny<bool>()))
+                    It.IsAny<IRequest>(),
+                    It.IsAny<string>(),
+                    It.IsAny<Func<IRequestError, Response, Task>>(),
+                    It.IsAny<int>(),
+                    It.IsAny<bool>()))
                 .Callback<IRequest, string, Func<IRequestError, Response, Task>, int, bool>(
                     (_, __, callback, ___, ____) => sent.TrySetResult(callback))
                 .ReturnsAsync((OperationState)null);
@@ -717,9 +723,13 @@ namespace Cassandra.Tests
             var serializer = SerializerManager.Default.GetCurrentSerializer();
             var statement = new SimpleStatement("CREATE KEYSPACE ordinary_abort_diagnostic");
             statement.SetIdempotence(true);
-            var handler = new RequestHandler(session.Object, serializer,
+            var handler = new RequestHandler(
+                session.Object,
+                serializer,
                 new QueryRequest(serializer, statement.QueryString, QueryProtocolOptions.Default, false, null),
-                new SessionRequestInfo(statement, null), config.DefaultRequestOptions, observer.Object);
+                new SessionRequestInfo(statement, null),
+                config.DefaultRequestOptions,
+                observer.Object);
             handler.OnNewNodeExecution(new NodeRequestInfo(host, null, null));
             using var body = new MemoryStream();
             var writer = new FrameWriter(body, serializer, false);
@@ -727,7 +737,8 @@ namespace Cassandra.Tests
             writer.WriteString("KEYSPACE");
             writer.WriteString("ordinary_abort_diagnostic");
             body.Position = 0;
-            var response = new ProxyResultResponse(ResultResponse.ResultResponseKind.SchemaChange,
+            var response = new ProxyResultResponse(
+                ResultResponse.ResultResponseKind.SchemaChange,
                 new OutputSchemaChange(new FrameReader(body, serializer, false), null));
             var lateReported = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
@@ -765,7 +776,9 @@ namespace Cassandra.Tests
                 abortRelease.TrySetResult(true);
                 await abortExited.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
                 await completion.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-                Assert.AreSame(expectedError, await Assert.CatchAsync(() => resultTask.WaitAsync(TimeSpan.FromSeconds(5))),
+                Assert.AreSame(
+                    expectedError,
+                    await Assert.CatchAsync(() => resultTask.WaitAsync(TimeSpan.FromSeconds(5))).ConfigureAwait(false),
                     "An ordinary abort must settle the request with the selected action/abort error, subject to fatal diagnostic priority.");
                 handler.RecordConnectionFailure(host.Address, queuedFailure);
                 handler.RecordConnectionFailure(host.Address, lateFailure);
@@ -775,16 +788,21 @@ namespace Cassandra.Tests
                 var messages = listener.Messages.Values.Where(message => message.Contains("Request consumed")).ToArray();
                 Assert.AreEqual(1, messages.Count(message => message.Contains(queuedFailure.Message)));
                 Assert.AreEqual(1, messages.Count(message => message.Contains(lateFailure.Message)));
-                Assert.AreEqual(0, messages.Count(message => message.Contains(expectedError.Message)),
+                Assert.AreEqual(
+                    0,
+                    messages.Count(message => message.Contains(expectedError.Message)),
                     "The actual returned cause must not be repeated, including inside a late aggregate.");
                 if (!ReferenceEquals(initialError, expectedError))
                 {
-                    Assert.AreEqual(1, messages.Count(message => message.Contains(initialError.Message)),
+                    Assert.AreEqual(
+                        1,
+                        messages.Count(message => message.Contains(initialError.Message)),
                         "A cause displaced by a fatal diagnostic is now consumed and must be retained.");
                 }
 
                 observer.Verify(value => value.OnRequestFailureAsync(expectedError, It.IsAny<SessionRequestInfo>()), Times.Once);
-                control.Verify(value => value.HandleSchemaChangeEvent(It.IsAny<SchemaChangeEventArgs>(), true),
+                control.Verify(
+                    value => value.HandleSchemaChangeEvent(It.IsAny<SchemaChangeEventArgs>(), true),
                     entry == "direct" ? Times.Never() : Times.Once());
                 Assert.IsFalse(await handler.SetCompletedAsync(new InvalidOperationException("Duplicate completion"))
                     .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
