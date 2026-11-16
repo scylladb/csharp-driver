@@ -2526,6 +2526,7 @@ namespace Cassandra.Tests.Connections.Control
                 builder.SocketOptions = new SocketOptions().SetReadTimeoutMillis(0);
             });
             Task initialization = null;
+            Exception primaryFailure = null;
             try
             {
                 initialization = created.ControlConnection.InitAsync();
@@ -2541,13 +2542,29 @@ namespace Cassandra.Tests.Connections.Control
                 Assert.IsTrue(original.Object.IsDisposed);
                 Assert.IsFalse(created.Config.ClientRoutesRuntime.IsLifecycleReady);
             }
+            catch (Exception failure)
+            {
+                primaryFailure = failure;
+                throw;
+            }
             finally
             {
-                created.ControlConnection.Dispose();
-                pendingQuery.TrySetResult(true);
+                Exception cleanupFailure = null;
+                try
+                {
+                    created.ControlConnection.Dispose();
+                }
+                catch (Exception failure) when (!Utils.IsFatalException(failure))
+                {
+                    cleanupFailure = failure;
+                }
+                finally
+                {
+                    pendingQuery.TrySetResult(true);
+                }
                 if (initialization != null)
                 {
-                    // Observe the attempt even when an earlier assertion fails.
+                    // Always observe the attempt, including after an early assertion or disposal failure.
                     try
                     {
                         await initialization.WaitToCompleteAsync(5000).ConfigureAwait(false);
@@ -2555,6 +2572,18 @@ namespace Cassandra.Tests.Connections.Control
                     catch (NoHostAvailableException)
                     {
                     }
+                    catch (Exception failure) when (!Utils.IsFatalException(failure))
+                    {
+                        cleanupFailure = cleanupFailure == null ? failure : new AggregateException(cleanupFailure, failure);
+                    }
+                }
+                if (cleanupFailure != null)
+                {
+                    if (primaryFailure == null)
+                    {
+                        throw new AggregateException("Control connection test cleanup failed.", cleanupFailure);
+                    }
+                    TestContext.Error.WriteLine("Cleanup after the primary test failure: {0}", cleanupFailure);
                 }
             }
         }
