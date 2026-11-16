@@ -758,7 +758,7 @@ namespace Cassandra.Tests
                 }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 
                 // No pool is published until the factory is released. The second lookup
-                // must miss the fast path and wait for the lifecycle lock held by the first.
+                // must miss the fast path and wait for the creation lock held by the first.
                 Assert.IsTrue(SpinWait.SpinUntil(() =>
                 {
                     var worker = Volatile.Read(ref lookupThread);
