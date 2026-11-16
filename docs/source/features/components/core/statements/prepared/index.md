@@ -83,6 +83,20 @@ To turn the statement into its executable form, you need to *bind* it in order t
 BoundStatement bound = ps1.Bind("324378", "LCD screen");
 ```
 
+Bind anonymous `?` markers by position. Use anonymous-object binding only for explicit `:name` markers; the object's property order does not have to match the marker order:
+
+```csharp
+var positional = session.Prepare("SELECT * FROM readings WHERE sensor = ? AND sample IN ?");
+session.Execute(positional.Bind(7, new[] { 11, 12 }));
+
+var named = session.Prepare("SELECT * FROM readings WHERE sensor = :sensor AND sample IN :samples");
+session.Execute(named.Bind(new { samples = new[] { 11, 12 }, sensor = 7 }));
+```
+
+The server assigns a metadata name even to an anonymous marker. These synthesized names are not a stable API: an `IN ?` marker can be reported as `IN(sample)` or `in(sample)`, depending on the server version or configuration. Multiple anonymous markers can also have the same synthesized name. Do not use these names for binding or infer marker positions from them, even if a name currently matches a column. Inspect `PreparedStatement.Variables` for diagnostics, not as a source of stable names for `?`.
+
+For prepared statements, anonymous-object properties are resolved locally using the prepared metadata; the driver sends values positionally in `EXECUTE` and in prepared batch items. Positional binding and explicit named binding therefore continue to work when nodes disagree only on synthesized names during a rolling upgrade. Simple statements with named values send the names to the coordinator; use explicit `:name` markers there as well. Repreparing cannot make synthesized names portable.
+
 ### Unset values
 
 With [native protocol](../../../../native-protocol/index) V3, all variables must be bound. With native protocol V4, variables can be left unset, in which case they will be ignored (no tombstones will be generated). If you're reusing a bound statement, you can use the `unset` method to unset variables that were previously set:
@@ -153,6 +167,8 @@ Cassandra does not replicate prepared statements across the cluster. It is the d
       |                               |                              |
       |<------------------------------|                              |
     ```
+
+After a successful automatic reprepare, the driver refreshes the statement's bind and result metadata, including all batch items with the affected identifier. Initial prepare-on-all-hosts fan-out preserves the metadata from the initial coordinator; its peer responses only populate the server caches. An in-flight request retains its bound positional values for its retry; later bindings use the refreshed metadata. A different prepared-statement identifier is rejected rather than silently replacing the identifier used by an existing bound statement. This recovery handles a missing server cache entry, not arbitrary incompatible schema changes during an upgrade. Keep the query's marker order and types compatible across nodes.
 
 You can customize these strategies through the `Builder.QueryOptions()` method:
 
