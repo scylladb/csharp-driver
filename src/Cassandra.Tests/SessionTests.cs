@@ -274,7 +274,7 @@ namespace Cassandra.Tests
             {
                 HostConnectionPoolFactory = poolFactory.Object,
                 ClientRoutesOptions = clientRoutesEnabled
-                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    ? CreateClientRoutesOptions()
                     : null
             }.Build();
             var metadata = new Metadata(config);
@@ -349,7 +349,7 @@ namespace Cassandra.Tests
                 PoolingOptions = new PoolingOptions().SetCoreConnectionsPerHost(HostDistance.Local, 1),
                 Policies = new Cassandra.Policies(
                     new RoundRobinPolicy(), new ConstantReconnectionPolicy(100), new DefaultRetryPolicy()),
-                ClientRoutesOptions = new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                ClientRoutesOptions = CreateClientRoutesOptions()
             }.Build();
             using var metadata = new Metadata(config);
             var host = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
@@ -530,7 +530,7 @@ namespace Cassandra.Tests
                 HostConnectionPoolFactory = poolFactory.Object,
                 MetricsProvider = metricsProvider.Object,
                 ClientRoutesOptions = clientRoutesEnabled
-                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    ? CreateClientRoutesOptions()
                     : null
             }.Build();
             using (session = CreateWarmupSession(config, "metrics-callback-shutdown-test"))
@@ -588,7 +588,7 @@ namespace Cassandra.Tests
                 HostConnectionPoolFactory = poolFactory.Object,
                 MetricsProvider = metricsProvider.Object,
                 ClientRoutesOptions = clientRoutesEnabled
-                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    ? CreateClientRoutesOptions()
                     : null
             }.Build();
             using (session = CreateWarmupSession(config, "nested-metrics-initialization-test"))
@@ -682,7 +682,7 @@ namespace Cassandra.Tests
             {
                 HostConnectionPoolFactory = factory.Object,
                 ClientRoutesOptions = clientRoutesEnabled
-                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    ? CreateClientRoutesOptions()
                     : null
             }.Build();
             using var metadata = new Metadata(config);
@@ -836,7 +836,7 @@ namespace Cassandra.Tests
             var config = new TestConfigurationBuilder
             {
                 HostConnectionPoolFactory = poolFactory.Object,
-                ClientRoutesOptions = new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                ClientRoutesOptions = CreateClientRoutesOptions()
             }.Build();
             var metadata = new Metadata(config);
             var host = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
@@ -926,7 +926,7 @@ namespace Cassandra.Tests
             var config = new TestConfigurationBuilder
             {
                 HostConnectionPoolFactory = poolFactory.Object,
-                ClientRoutesOptions = new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                ClientRoutesOptions = CreateClientRoutesOptions()
             }.Build();
             var metadata = new Metadata(config);
             var host = metadata.AddHost(new IPEndPoint(IPAddress.Loopback, 9042));
@@ -992,7 +992,7 @@ namespace Cassandra.Tests
             {
                 HostConnectionPoolFactory = poolFactory.Object,
                 ClientRoutesOptions = clientRoutesEnabled
-                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    ? CreateClientRoutesOptions()
                     : null
             }.Build();
             var metadata = new Metadata(config);
@@ -1056,7 +1056,7 @@ namespace Cassandra.Tests
             var config = new TestConfigurationBuilder
             {
                 HostConnectionPoolFactory = poolFactory.Object,
-                ClientRoutesOptions = new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                ClientRoutesOptions = CreateClientRoutesOptions()
             }.Build();
             var metadata = new Metadata(config);
             var cluster = new Mock<IInternalCluster>();
@@ -1116,7 +1116,7 @@ namespace Cassandra.Tests
             {
                 HostConnectionPoolFactory = poolFactory.Object,
                 ClientRoutesOptions = clientRoutesEnabled
-                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    ? CreateClientRoutesOptions()
                     : null
             }.Build();
             var metadata = new Metadata(config);
@@ -1216,7 +1216,7 @@ namespace Cassandra.Tests
                 HostConnectionPoolFactory = poolFactory.Object,
                 MetricsProvider = metricsProvider.Object,
                 ClientRoutesOptions = clientRoutesEnabled
-                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    ? CreateClientRoutesOptions()
                     : null
             }.Build();
             using (var session = CreateWarmupSession(config, "removal-metrics-failure-test"))
@@ -1252,7 +1252,7 @@ namespace Cassandra.Tests
                 HostConnectionPoolFactory = poolFactory.Object,
                 MetricsProvider = metricsProvider.Object,
                 ClientRoutesOptions = clientRoutesEnabled
-                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    ? CreateClientRoutesOptions()
                     : null
             }.Build();
             using var session = CreateWarmupSession(config, "replacement-metrics-failure-test");
@@ -1293,7 +1293,7 @@ namespace Cassandra.Tests
                 HostConnectionPoolFactory = poolFactory.Object,
                 MetricsProvider = metricsProvider.Object,
                 ClientRoutesOptions = clientRoutesEnabled
-                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    ? CreateClientRoutesOptions()
                     : null
             }.Build();
             using (var session = CreateWarmupSession(config, "removal-metrics-replacement-test"))
@@ -1353,7 +1353,7 @@ namespace Cassandra.Tests
             {
                 HostConnectionPoolFactory = poolFactory.Object,
                 ClientRoutesOptions = clientRoutesEnabled
-                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    ? CreateClientRoutesOptions()
                     : null
             }.Build();
             using var session = CreateWarmupSession(config, "shutdown-pool-test");
@@ -1382,7 +1382,7 @@ namespace Cassandra.Tests
             {
                 HostConnectionPoolFactory = poolFactory.Object,
                 ClientRoutesOptions = clientRoutesEnabled
-                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    ? CreateClientRoutesOptions()
                     : null
             }.Build();
             using var metadata = new Metadata(config);
@@ -1428,7 +1428,7 @@ namespace Cassandra.Tests
             {
                 HostConnectionPoolFactory = factory.Object,
                 ClientRoutesOptions = clientRoutesEnabled
-                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    ? CreateClientRoutesOptions()
                     : null
             }.Build();
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
@@ -1475,6 +1475,11 @@ namespace Cassandra.Tests
             provider.Setup(value => value.Gauge(It.IsAny<string>(), It.IsAny<IMetric>(), It.IsAny<Func<double?>>()))
                     .Returns(Mock.Of<IDriverGauge>());
             return provider;
+        }
+
+        private static ClientRoutesOptions CreateClientRoutesOptions()
+        {
+            return new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false);
         }
 
         private static IRow CreateHostInfo(Guid hostId)
