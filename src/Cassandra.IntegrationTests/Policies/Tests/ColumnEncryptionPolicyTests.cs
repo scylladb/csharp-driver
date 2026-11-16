@@ -150,7 +150,7 @@ namespace Cassandra.IntegrationTests.Policies.Tests
             var boundSelect = preparedSelect.Bind(newUser.Id);
             await session.ExecuteAsync(boundInsert).ConfigureAwait(false);
             var rs = await session.ExecuteAsync(boundSelect).ConfigureAwait(false);
-            var users = rs.ToList();
+            var users = await rs.ToListAsync().ConfigureAwait(false);
             Assert.AreEqual(1, users.Count);
             var user = users[0];
 
@@ -165,7 +165,7 @@ namespace Cassandra.IntegrationTests.Policies.Tests
             }
 
             rs = await sessionNoEncryption.ExecuteAsync(new SimpleStatement($"SELECT * FROM {tableName}")).ConfigureAwait(false);
-            var allUsers = rs.ToList();
+            var allUsers = await rs.ToListAsync().ConfigureAwait(false);
 
             Assert.AreEqual(1, allUsers.Count);
             VerifyEncryptedUser(newUser, session, policy, KeyAndIv, allUsers[0]);
@@ -222,7 +222,7 @@ namespace Cassandra.IntegrationTests.Policies.Tests
                 preparedSelect.Bind(newUser.Id, newUser.Name, newUser.Surname, newUser.Age);
             await session.ExecuteAsync(boundInsert).ConfigureAwait(false);
             var rs = await session.ExecuteAsync(boundSelect).ConfigureAwait(false);
-            var users = rs.ToList();
+            var users = await rs.ToListAsync().ConfigureAwait(false);
             Assert.AreEqual(1, users.Count);
             var user = users[0];
 
@@ -238,7 +238,7 @@ namespace Cassandra.IntegrationTests.Policies.Tests
             }
 
             rs = await sessionNoEncryption.ExecuteAsync(new SimpleStatement($"SELECT * FROM {tableName}")).ConfigureAwait(false);
-            var allUsers = rs.ToList();
+            var allUsers = await rs.ToListAsync().ConfigureAwait(false);
 
             Assert.AreEqual(1, allUsers.Count);
             VerifyEncryptedUser(newUser, session, policy, KeyAndIv, allUsers[0]);
@@ -295,11 +295,11 @@ namespace Cassandra.IntegrationTests.Policies.Tests
                 preparedSelect.Bind(newUser.Id, newUser.Name, newUser.Surname, newUser.Age);
             await session.ExecuteAsync(boundInsert).ConfigureAwait(false);
             var rs = await session.ExecuteAsync(boundSelect).ConfigureAwait(false);
-            var users = rs.ToList();
+            var users = await rs.ToListAsync().ConfigureAwait(false);
             Assert.AreEqual(0, users.Count);
 
             rs = await sessionNoEncryption.ExecuteAsync(new SimpleStatement($"SELECT * FROM {tableName}")).ConfigureAwait(false);
-            var allUsers = rs.ToList();
+            var allUsers = await rs.ToListAsync().ConfigureAwait(false);
 
             Assert.AreEqual(1, allUsers.Count);
             VerifyEncryptedUser(newUser, session, policy, KeyOnly, allUsers[0]);
@@ -346,7 +346,7 @@ namespace Cassandra.IntegrationTests.Policies.Tests
                 newUser.Vv = null;
             }
 
-            RowSet rs;
+            AsyncRowSet rs;
             if (_withVector)
             {
                 await session.ExecuteAsync(new SimpleStatement(
@@ -383,7 +383,7 @@ namespace Cassandra.IntegrationTests.Policies.Tests
             }
 
 
-            var users = rs.ToList();
+            var users = await rs.ToListAsync().ConfigureAwait(false);
             Assert.AreEqual(1, users.Count);
             var user = users[0];
 
@@ -399,7 +399,7 @@ namespace Cassandra.IntegrationTests.Policies.Tests
             }
 
             rs = await sessionNoEncryption.ExecuteAsync(new SimpleStatement($"SELECT * FROM {tableName}")).ConfigureAwait(false);
-            var allUsers = rs.ToList();
+            var allUsers = await rs.ToListAsync().ConfigureAwait(false);
 
             Assert.AreEqual(1, allUsers.Count);
             VerifyEncryptedUser(newUser, session, policy, KeyAndIv, allUsers[0]);
@@ -468,7 +468,7 @@ namespace Cassandra.IntegrationTests.Policies.Tests
                 selectQuery,
                 new EncryptedValue(newUser.Id, KeyAndIv))).ConfigureAwait(false);
 
-            var users = rs.ToList();
+            var users = await rs.ToListAsync().ConfigureAwait(false);
             Assert.AreEqual(1, users.Count);
             var user = users[0];
 
@@ -484,7 +484,7 @@ namespace Cassandra.IntegrationTests.Policies.Tests
             }
 
             rs = await sessionNoEncryption.ExecuteAsync(new SimpleStatement($"SELECT * FROM {tableName}")).ConfigureAwait(false);
-            var allUsers = rs.ToList();
+            var allUsers = await rs.ToListAsync().ConfigureAwait(false);
 
             Assert.AreEqual(1, allUsers.Count);
             VerifyEncryptedUser(newUser, session, policy, KeyAndIv, allUsers[0]);
