@@ -134,6 +134,8 @@ namespace Cassandra.IntegrationTests.ClientRoutes
             await upstreamStream.ReadExactlyAsync(received, deadline.Token).ConfigureAwait(false);
             Assert.That(received, Is.EqualTo(request));
             Assert.AreEqual(0, await upstreamStream.ReadAsync(new byte[1], deadline.Token).ConfigureAwait(false));
+            Assert.AreEqual(1, relay.OpenConnectionCount, "Request EOF must leave the response direction open.");
+            Assert.IsEmpty(relay.Failures);
 
             var response = Encoding.UTF8.GetBytes("response after request EOF");
             await upstreamStream.WriteAsync(response, deadline.Token).ConfigureAwait(false);
@@ -148,6 +150,61 @@ namespace Cassandra.IntegrationTests.ClientRoutes
                 TimeSpan.FromMilliseconds(10),
                 "The half-closed relay connection did not finish.").ConfigureAwait(false);
             Assert.IsEmpty(relay.Failures);
+        }
+
+        [TestCase((int)TcpRelayMode.Plaintext, false)]
+        [TestCase((int)TcpRelayMode.ProxyProtocolV2, false)]
+        [TestCase((int)TcpRelayMode.Plaintext, true)]
+        [TestCase((int)TcpRelayMode.ProxyProtocolV2, true)]
+        public async Task RecordsClientResetAfterWriteShutdown(int relayMode, bool abortiveClose)
+        {
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using var upstreamListener = new TcpListener(IPAddress.Loopback, 0);
+            upstreamListener.Start();
+            using var relay = new TcpRelay((IPEndPoint)upstreamListener.LocalEndpoint, (TcpRelayMode)relayMode);
+            using var client = new TcpClient();
+            await client.ConnectAsync(relay.ListenEndPoint, deadline.Token).ConfigureAwait(false);
+            using var upstream = await upstreamListener.AcceptTcpClientAsync(deadline.Token).ConfigureAwait(false);
+            var upstreamStream = upstream.GetStream();
+            if ((TcpRelayMode)relayMode == TcpRelayMode.ProxyProtocolV2)
+            {
+                await upstreamStream.ReadExactlyAsync(new byte[28], deadline.Token).ConfigureAwait(false);
+            }
+
+            client.Client.Shutdown(SocketShutdown.Send);
+            Assert.AreEqual(0, await upstreamStream.ReadAsync(new byte[1], deadline.Token).ConfigureAwait(false));
+            Assert.AreEqual(1, relay.OpenConnectionCount);
+            Assert.IsEmpty(relay.Failures);
+            if (abortiveClose)
+            {
+                client.Client.LingerState = new LingerOption(true, 0);
+            }
+
+            client.Dispose();
+            var response = new byte[65536];
+            for (var i = 0; i < 100 && relay.OpenConnectionCount != 0; i++)
+            {
+                try
+                {
+                    await upstreamStream.WriteAsync(response, deadline.Token).ConfigureAwait(false);
+                }
+                catch (IOException)
+                {
+                    // Relay teardown can close the upstream after observing the client's reset.
+                    break;
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(10), deadline.Token).ConfigureAwait(false);
+            }
+
+            await TestHelper.WaitUntilOrFailAsync(
+                () => relay.OpenConnectionCount == 0,
+                TimeSpan.FromSeconds(5),
+                TimeSpan.FromMilliseconds(10),
+                "The relay did not finish after the client reset.").ConfigureAwait(false);
+            var failure = relay.Failures.Single();
+            Assert.IsInstanceOf<IOException>(failure);
+            Assert.IsInstanceOf<SocketException>(failure.InnerException);
         }
 
         [Test]

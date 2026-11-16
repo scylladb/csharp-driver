@@ -99,12 +99,19 @@ namespace Cassandra.IntegrationTests.ClientRoutes
 
         public int ForwardedConnectionCount => Volatile.Read(ref _forwardedConnectionCount);
 
+        /// <summary>
+        /// Counts connections until both forwarding directions finish or the connection is disposed.
+        /// Read EOF alone cannot distinguish a peer's full close from a write-side shutdown.
+        /// </summary>
         public int OpenConnectionCount => _connections.Count;
 
         public IReadOnlyCollection<int> AcceptedSourcePorts => _acceptedSourcePorts.ToArray();
 
         public IReadOnlyCollection<string> RequestedServerNames => _requestedServerNames.ToArray();
 
+        /// <summary>
+        /// Retains transport errors, including peer resets; local disable/dispose teardown is excluded.
+        /// </summary>
         public IReadOnlyCollection<Exception> Failures => _failures.ToArray();
 
         /// <summary>
