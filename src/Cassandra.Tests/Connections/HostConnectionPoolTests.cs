@@ -30,9 +30,14 @@ using Cassandra.Metrics;
 using Cassandra.Metrics.Internal;
 using Cassandra.Metrics.Providers.Null;
 using Cassandra.Observers.Metrics;
+using Cassandra.Observers.Null;
+using Cassandra.Requests;
+using Cassandra.Responses;
 using Cassandra.Serialization;
+using Cassandra.SessionManagement;
 using Cassandra.Tasks;
 using Cassandra.Tests.Connections.TestHelpers;
+using Cassandra.Tests.Requests;
 using Moq;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
@@ -928,6 +933,324 @@ namespace Cassandra.Tests.Connections
                 Trace.Listeners.Remove(listener);
                 Diagnostics.CassandraTraceSwitch.Level = previousLevel;
                 DisposePoolAndTimer(target);
+            }
+        }
+
+        [TestCase("success", false)]
+        [TestCase("success", true)]
+        [TestCase("error", false)]
+        [TestCase("cancel", false)]
+        [TestCase("exhausted", false)]
+        [TestCase("diagnostic-failure", false)]
+        [TestCase("fatal-diagnostic", false)]
+        [NonParallelizable]
+        public async Task Should_ReportConsumedOpeningFailureOnlyAfterRequestSuccess(string outcome, bool speculative)
+        {
+            var failure = new InvalidOperationException("first host opening failed before successful failover");
+            var openingAttempts = 0;
+            var target = CreatePool(
+                connectionFactory: new FakeConnectionFactory(endPoint =>
+                {
+                    Interlocked.Increment(ref openingAttempts);
+                    return CreateConnection(endPoint, failure).Object;
+                }),
+                coreConnections: 1,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            var failedHost = _host;
+            var nextHost = new Host(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042), contactPoint: null);
+            var speculativeHost = new Host(new IPEndPoint(IPAddress.Parse("127.0.0.3"), 9042), contactPoint: null);
+            var plan = outcome == "exhausted"
+                ? new[] { failedHost }
+                : speculative ? new[] { failedHost, nextHost, speculativeHost } : new[] { failedHost, nextHost };
+            var policy = new Mock<ILoadBalancingPolicy>();
+            policy.Setup(value => value.NewQueryPlan(It.IsAny<RoutingInfo>(), It.IsAny<ClusterState>()))
+                .Returns(plan.Select(host => new RoutingTarget(host, null)));
+            var config = new TestConfigurationBuilder
+            {
+                Policies = new Cassandra.Policies(
+                    policy.Object,
+                    new ConstantReconnectionPolicy(60000),
+                    new DefaultRetryPolicy(),
+                    speculative ? new ConstantSpeculativeExecutionPolicy(1, 1) : NoSpeculativeExecutionPolicy.Instance,
+                    new AtomicMonotonicTimestampGenerator(),
+                    null)
+            }.Build();
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Configuration).Returns(config);
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            var session = new Mock<IInternalSession>();
+            session.SetupGet(value => value.Cluster).Returns(cluster.Object);
+            session.SetupGet(value => value.InternalCluster).Returns(cluster.Object);
+            session.Setup(value => value.GetOrCreateConnectionPool(failedHost, HostDistance.Local)).Returns(target);
+            var nextResponse = new TaskCompletionSource<Func<IRequestError, Response, Task>>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var speculativeResponse = new TaskCompletionSource<Func<IRequestError, Response, Task>>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            foreach (var host in new[] { nextHost, speculativeHost })
+            {
+                var response = ReferenceEquals(host, nextHost) ? nextResponse : speculativeResponse;
+                var connection = new Mock<IConnection>();
+                connection.Setup(value => value.SendWithKeyspace(
+                        It.IsAny<IRequest>(),
+                        It.IsAny<string>(),
+                        It.IsAny<Func<IRequestError, Response, Task>>(),
+                        It.IsAny<int>(),
+                        It.IsAny<bool>()))
+                    .Returns<IRequest, string, Func<IRequestError, Response, Task>, int, bool>((_, __, callback, ___, ____) =>
+                    {
+                        response.TrySetResult(callback);
+                        return Task.FromResult<OperationState>(null);
+                    });
+                var pool = new Mock<IHostConnectionPool>();
+                pool.Setup(value => value.GetConnectionFromHostAsync(
+                        It.IsAny<IDictionary<IPEndPoint, Exception>>(),
+                        It.IsAny<Func<string>>(),
+                        It.IsAny<RoutingKey>(),
+                        It.IsAny<int>()))
+                    .ReturnsAsync(connection.Object);
+                session.Setup(value => value.GetOrCreateConnectionPool(host, HostDistance.Local)).Returns(pool.Object);
+            }
+
+            var serializer = new SerializerManager(ProtocolVersion.V4).GetCurrentSerializer();
+            var statement = new SimpleStatement("SELECT key FROM table1").SetIdempotence(speculative);
+            var handler = new RequestHandler(
+                session.Object,
+                serializer,
+                new SessionRequestInfo(statement, null),
+                config.DefaultRequestOptions,
+                NullRequestObserver.Instance);
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new LoggingTests.TestTraceListener();
+            var sinkFailure = outcome == "fatal-diagnostic"
+                ? (Exception)new AggregateException(new OutOfMemoryException("fatal diagnostic"))
+                : new InvalidOperationException("ordinary diagnostic failure");
+            var throwingListener = new Mock<TraceListener> { CallBase = true };
+            throwingListener.Setup(value => value.WriteLine(It.Is<string>(message =>
+                    message.Contains("Request succeeded after a connection attempt"))))
+                .Throws(sinkFailure);
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener);
+            if (outcome == "diagnostic-failure" || outcome == "fatal-diagnostic")
+            {
+                Trace.Listeners.Add(throwingListener.Object);
+            }
+
+            try
+            {
+                var sending = handler.SendAsync();
+                if (outcome == "exhausted")
+                {
+                    var noHost = await Assert.ThrowsAsync<NoHostAvailableException>(async () =>
+                        await sending.WaitToCompleteAsync(5000).ConfigureAwait(false)).ConfigureAwait(false);
+                    Assert.AreSame(failure, noHost.Errors[failedHost.Address]);
+                }
+                else
+                {
+                    var response = (speculative ? speculativeResponse : nextResponse).Task;
+                    await response.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    var callback = await response.ConfigureAwait(false);
+                    Assert.IsFalse(sending.IsCompleted, "Obtaining and sending on a later connection is not a final result.");
+                    Assert.IsFalse(
+                        listener.Messages.Values.Any(message => message.Contains(failure.Message)),
+                        "The opening failure must stay silent until the caller's request outcome is known.");
+                    var terminalFailure = outcome == "cancel"
+                        ? (Exception)new OperationCanceledException("request cancelled")
+                        : new InvalidQueryException("terminal request failure");
+                    await callback(
+                        outcome == "error" || outcome == "cancel" ? RequestError.CreateClientError(terminalFailure, false) : null,
+                        new ProxyResultResponse(ResultResponse.ResultResponseKind.Void)).ConfigureAwait(false);
+                    if (outcome == "error" || outcome == "cancel")
+                    {
+                        var actual = await Assert.CatchAsync(async () =>
+                            await sending.WaitToCompleteAsync(5000).ConfigureAwait(false)).ConfigureAwait(false);
+                        Assert.AreSame(terminalFailure, actual);
+                    }
+                    else if (outcome == "fatal-diagnostic")
+                    {
+                        var actual = await Assert.ThrowsAsync<AggregateException>(async () =>
+                            await sending.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false)).ConfigureAwait(false);
+                        Assert.AreSame(sinkFailure, actual);
+                    }
+                    else
+                    {
+                        await sending.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                        var result = await sending.ConfigureAwait(false);
+                        Assert.IsNotNull(result);
+                        if (!speculative)
+                        {
+                            CollectionAssert.AreEquivalent(new[] { failedHost.Address, nextHost.Address }, result.Info.TriedHosts);
+                        }
+                    }
+
+                    if (speculative)
+                    {
+                        // A losing execution completing later must not emit the same diagnostic again.
+                        await (await nextResponse.Task.ConfigureAwait(false))(
+                            null,
+                            new ProxyResultResponse(ResultResponse.ResultResponseKind.Void)).ConfigureAwait(false);
+                    }
+                }
+
+                Assert.AreEqual(1, openingAttempts);
+                var diagnostics = listener.Messages.Values.Where(message =>
+                    message.Contains("Request succeeded after a connection attempt")).ToArray();
+                var succeeded = outcome == "success" || outcome == "diagnostic-failure" || outcome == "fatal-diagnostic";
+                Assert.AreEqual(
+                    succeeded ? 1 : 0,
+                    diagnostics.Length,
+                    "Returned failures must not get a recovery diagnostic; successful failover gets one per affected endpoint.");
+                if (succeeded)
+                {
+                    StringAssert.Contains(failure.Message, diagnostics[0]);
+                    StringAssert.Contains(failedHost.Address.ToString(), diagnostics[0]);
+                    Assert.AreEqual(TraceLevel.Info, Diagnostics.CassandraTraceSwitch.Level);
+                }
+            }
+            finally
+            {
+                Trace.Listeners.Remove(throwingListener.Object);
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                throwingListener.Object.Dispose();
+                config.Timer.Dispose();
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [TestCase("success")]
+        [TestCase("error")]
+        [TestCase("cancel")]
+        [NonParallelizable]
+        public async Task Should_ReportLateOpeningFailureOnlyAfterSpeculativeRequestSuccess(string outcome)
+        {
+            var opening = new TaskCompletionSource<Response>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var openingStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var exhausted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var failure = new InvalidOperationException("opening failed after the speculative request completed");
+            var target = CreatePool(
+                connectionFactory: new FakeConnectionFactory(endPoint =>
+                {
+                    var connection = CreateConnection(endPoint);
+                    connection.Setup(value => value.Open()).Returns(() =>
+                    {
+                        openingStarted.TrySetResult(true);
+                        return opening.Task;
+                    });
+                    return connection.Object;
+                }),
+                coreConnections: 1,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            var failedHost = _host;
+            var nextHost = new Host(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042), contactPoint: null);
+            IEnumerable<RoutingTarget> QueryPlan()
+            {
+                yield return new RoutingTarget(failedHost, null);
+                yield return new RoutingTarget(nextHost, null);
+                exhausted.TrySetResult(true);
+            }
+
+            var policy = new Mock<ILoadBalancingPolicy>();
+            policy.Setup(value => value.NewQueryPlan(It.IsAny<RoutingInfo>(), It.IsAny<ClusterState>()))
+                .Returns(QueryPlan);
+            var config = new TestConfigurationBuilder
+            {
+                Policies = new Cassandra.Policies(
+                    policy.Object,
+                    new ConstantReconnectionPolicy(60000),
+                    new DefaultRetryPolicy(),
+                    new ConstantSpeculativeExecutionPolicy(1, 1),
+                    new AtomicMonotonicTimestampGenerator(),
+                    null)
+            }.Build();
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Configuration).Returns(config);
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            var session = new Mock<IInternalSession>();
+            session.SetupGet(value => value.Cluster).Returns(cluster.Object);
+            session.SetupGet(value => value.InternalCluster).Returns(cluster.Object);
+            session.Setup(value => value.GetOrCreateConnectionPool(failedHost, HostDistance.Local)).Returns(target);
+            var response = new TaskCompletionSource<Func<IRequestError, Response, Task>>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var connectionToNextHost = new Mock<IConnection>();
+            connectionToNextHost.Setup(value => value.SendWithKeyspace(
+                    It.IsAny<IRequest>(),
+                    It.IsAny<string>(),
+                    It.IsAny<Func<IRequestError, Response, Task>>(),
+                    It.IsAny<int>(),
+                    It.IsAny<bool>()))
+                .Returns<IRequest, string, Func<IRequestError, Response, Task>, int, bool>((_, __, callback, ___, ____) =>
+                {
+                    response.TrySetResult(callback);
+                    return Task.FromResult<OperationState>(null);
+                });
+            var nextPool = new Mock<IHostConnectionPool>();
+            nextPool.Setup(value => value.GetConnectionFromHostAsync(
+                    It.IsAny<IDictionary<IPEndPoint, Exception>>(),
+                    It.IsAny<Func<string>>(),
+                    It.IsAny<RoutingKey>(),
+                    It.IsAny<int>()))
+                .ReturnsAsync(connectionToNextHost.Object);
+            session.Setup(value => value.GetOrCreateConnectionPool(nextHost, HostDistance.Local)).Returns(nextPool.Object);
+            var statement = new SimpleStatement("SELECT key FROM table1").SetIdempotence(true);
+            var handler = new RequestHandler(
+                session.Object,
+                new SerializerManager(ProtocolVersion.V4).GetCurrentSerializer(),
+                new SessionRequestInfo(statement, null),
+                config.DefaultRequestOptions,
+                NullRequestObserver.Instance);
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new LoggingTests.TestTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                var sending = handler.SendAsync();
+                await openingStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                var callback = await response.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                var terminalFailure = outcome == "cancel"
+                    ? (Exception)new OperationCanceledException("speculative request cancelled")
+                    : new InvalidQueryException("terminal speculative request failure");
+                await callback(
+                    outcome == "success" ? null : RequestError.CreateClientError(terminalFailure, false),
+                    new ProxyResultResponse(ResultResponse.ResultResponseKind.Void)).ConfigureAwait(false);
+                if (outcome == "success")
+                {
+                    Assert.IsNotNull(await sending.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+                }
+                else
+                {
+                    var actual = await Assert.CatchAsync(async () =>
+                        await sending.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false)).ConfigureAwait(false);
+                    Assert.AreSame(terminalFailure, actual);
+                }
+
+                Assert.IsFalse(opening.Task.IsCompleted, "Request cancellation does not abort a shared pool open.");
+                opening.TrySetException(failure);
+
+                // Moving past this failed acquisition proves its error has reached the real handler.
+                await exhausted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                var diagnostics = listener.Messages.Values.Where(message => message.Contains(failure.Message)).ToArray();
+                Assert.AreEqual(outcome == "success" ? 1 : 0, diagnostics.Length);
+                if (outcome == "success")
+                {
+                    StringAssert.Contains(failedHost.Address.ToString(), diagnostics[0]);
+                    StringAssert.Contains("Request succeeded after a connection attempt", diagnostics[0]);
+                }
+            }
+            finally
+            {
+                opening.TrySetException(failure);
+                try
+                {
+                    await exhausted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                }
+                finally
+                {
+                    Trace.Listeners.Remove(listener);
+                    Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                    config.Timer.Dispose();
+                    DisposePoolAndTimer(target);
+                }
             }
         }
 
