@@ -341,8 +341,7 @@ namespace Cassandra.Tests
             using (var cluster = CreateCluster(configuration))
             {
                 Assert.Throws<TimeoutException>(() => _ = cluster.Metadata);
-                var retainedSetup = (Task)typeof(Cluster)
-                    .GetField("_clientRoutesInitTask", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cluster);
+                var retainedSetup = GetRetainedClientRoutesSetup(cluster);
                 policy.Verify(p => p.Initialize(It.IsAny<ICluster>()), Times.Never);
                 initCompletion.TrySetResult(true);
 
@@ -412,8 +411,7 @@ namespace Cassandra.Tests
                     var waitingCallerFailure = Assert.Throws<InitFatalErrorException>(() => _ = cluster.Metadata);
                     Assert.AreSame(failure, waitingCallerFailure.InnerException);
                 }
-                var retainedSetup = (Task)typeof(Cluster)
-                    .GetField("_clientRoutesInitTask", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cluster);
+                var retainedSetup = GetRetainedClientRoutesSetup(cluster);
                 initCompletion.TrySetResult(true);
                 var observed = await Assert.CatchAsync<Exception>(() =>
                     retainedSetup.WaitAsync(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
@@ -459,8 +457,7 @@ namespace Cassandra.Tests
             configuration.SocketOptions.SetConnectTimeoutMillis(1).SetMetadataAbortTimeout(10);
             using var cluster = CreateCluster(configuration);
             Assert.Throws<TimeoutException>(() => _ = cluster.Metadata);
-            var retainedSetup = (Task)typeof(Cluster).GetField(
-                "_clientRoutesInitTask", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cluster);
+            var retainedSetup = GetRetainedClientRoutesSetup(cluster);
             var listener = new Mock<TraceListener> { CallBase = true };
             listener.SetupGet(value => value.IsThreadSafe).Returns(true);
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
@@ -492,8 +489,7 @@ namespace Cassandra.Tests
                 control.Verify(value => value.InitAsync(), Times.Once);
                 control.Verify(value => value.Dispose(), Times.Once);
                 policy.Verify(value => value.Initialize(cluster), Times.Once);
-                Assert.AreSame(retainedSetup, typeof(Cluster).GetField(
-                    "_clientRoutesInitTask", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cluster));
+                Assert.AreSame(retainedSetup, GetRetainedClientRoutesSetup(cluster));
             }
             finally
             {
@@ -618,8 +614,7 @@ namespace Cassandra.Tests
                 try
                 {
                     Assert.Throws<TimeoutException>(() => _ = cluster.Metadata);
-                    var retainedSetup = (Task)typeof(Cluster)
-                        .GetField("_clientRoutesInitTask", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cluster);
+                    var retainedSetup = GetRetainedClientRoutesSetup(cluster);
                     initCompletion.TrySetResult(true);
                     var observed = await Assert.CatchAsync<Exception>(() =>
                         retainedSetup.WaitAsync(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
@@ -674,8 +669,7 @@ namespace Cassandra.Tests
                 try
                 {
                     Assert.Throws<TimeoutException>(() => _ = cluster.Metadata);
-                    var retainedSetup = (Task)typeof(Cluster)
-                        .GetField("_clientRoutesInitTask", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cluster);
+                    var retainedSetup = GetRetainedClientRoutesSetup(cluster);
                     initCompletion.TrySetResult(true);
                     await retainedSetup.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
                     Assert.IsTrue(initializedAtDiagnostic, "The diagnostic must observe already-published setup.");
@@ -709,8 +703,7 @@ namespace Cassandra.Tests
                 var original = metadata.AddHost(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042));
                 original.Datacenter = "dc1";
                 Assert.Throws<TimeoutException>(() => _ = cluster.Metadata);
-                var retainedSetup = (Task)typeof(Cluster)
-                    .GetField("_clientRoutesInitTask", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cluster);
+                var retainedSetup = GetRetainedClientRoutesSetup(cluster);
                 initCompletion.TrySetResult(true);
                 await retainedSetup.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
 
@@ -769,8 +762,7 @@ namespace Cassandra.Tests
                 try
                 {
                     Assert.Throws<TimeoutException>(() => _ = cluster.Metadata);
-                    retainedSetup = (Task)typeof(Cluster)
-                        .GetField("_clientRoutesInitTask", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cluster);
+                    retainedSetup = GetRetainedClientRoutesSetup(cluster);
                     initCompletion.TrySetResult(true);
                     await policyStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
                     if (!shutdownFromPolicy)
@@ -894,8 +886,7 @@ namespace Cassandra.Tests
                 Exception failure = setupTimeout
                     ? new TimeoutException("late setup timeout")
                     : new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>());
-                var retainedSetup = (Task)typeof(Cluster).GetField(
-                    "_clientRoutesInitTask", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cluster);
+                var retainedSetup = GetRetainedClientRoutesSetup(cluster);
                 initCompletion.TrySetException(failure);
                 Assert.AreSame(failure, await Assert.ThrowsAsync(
                     failure.GetType(),
@@ -1192,6 +1183,12 @@ namespace Cassandra.Tests
                 cluster.Dispose();
             }
             Assert.AreEqual(0, cluster.InternalRef.GetConnectedSessions().Count());
+        }
+
+        private static Task GetRetainedClientRoutesSetup(Cluster cluster)
+        {
+            return (Task)typeof(Cluster)
+                .GetField("_clientRoutesInitTask", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cluster);
         }
 
         private static Configuration CreateClientRoutesClusterConfiguration(
