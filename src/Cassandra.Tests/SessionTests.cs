@@ -1881,6 +1881,143 @@ namespace Cassandra.Tests
             }
         }
 
+        [Test, Combinatorial]
+        [NonParallelizable]
+        public async Task Should_SkipRetiredPoolWarmupDiagnostics(
+            [Values(false, true)] bool clientRoutesEnabled,
+            [Values("success", "failure", "retired", "replacement")] string remainingPool,
+            [Values("ordinary", "canceled", "fatal")] string failureKind)
+        {
+            var fatalFailure = failureKind == "fatal";
+            var retiredAddress = new IPEndPoint(IPAddress.Parse("127.0.0.22"), 9042);
+            var otherAddress = new IPEndPoint(IPAddress.Parse("127.0.0.23"), 9042);
+            var pending = new ConcurrentDictionary<IPEndPoint, TaskCompletionSource<Responses.Response>>();
+            var opened = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var factory = new FakeConnectionFactory(endPoint =>
+            {
+                var address = endPoint.GetHostIpEndPointWithFallback();
+                var completion = new TaskCompletionSource<Responses.Response>(TaskCreationOptions.RunContinuationsAsynchronously);
+                Assert.IsTrue(pending.TryAdd(address, completion), "Background retry must not supply the warmup result.");
+                var connection = new Mock<IConnection>();
+                connection.SetupGet(value => value.EndPoint).Returns(endPoint);
+                connection.Setup(value => value.Open()).Returns(completion.Task);
+                if (pending.Count == 2)
+                {
+                    opened.TrySetResult(true);
+                }
+                return connection.Object;
+            });
+            var config = new TestConfigurationBuilder
+            {
+                ConnectionFactory = factory,
+                ClientRoutesOptions = clientRoutesEnabled ? CreateClientRoutesOptions() : null,
+                PoolingOptions = new PoolingOptions().SetCoreConnectionsPerHost(HostDistance.Local, 1),
+                Policies = new Cassandra.Policies(
+                    new RoundRobinPolicy(), new ConstantReconnectionPolicy(3600000), new DefaultRetryPolicy())
+            }.Build();
+            using var metadata = new Metadata(config);
+            var retiredHost = metadata.AddHost(retiredAddress);
+            retiredHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            var otherHost = metadata.AddHost(otherAddress);
+            otherHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+            if (clientRoutesEnabled)
+            {
+                var provider = new Mock<IMetadataQueryProvider>();
+                provider.Setup(value => value.QueryUnpagedAsync(It.IsAny<string>(), false)).ReturnsAsync(Enumerable.Empty<IRow>());
+                var cache = config.ClientRoutesRuntime.Bind(provider.Object);
+                await cache.FullRefreshBarrierAsync(new[] { retiredHost.HostId, otherHost.HostId }, false)
+                    .WaitToCompleteAsync(5000).ConfigureAwait(false);
+            }
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            cluster.Setup(value => value.AllHosts()).Returns(() => metadata.AllHosts());
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new LoggingTests.TestTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener);
+            using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "retired-warmup-test");
+            Task initialization = null;
+            try
+            {
+                initialization = ((IInternalSession)session).Init();
+                await opened.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                var retiredPool = ((IInternalSession)session).GetPools().Single(pair => pair.Key.Equals(retiredAddress)).Value;
+                metadata.RemoveHost(retiredAddress);
+                cluster.Raise(value => value.HostRemoved += null, retiredHost);
+                Assert.IsFalse(session.IsDisposed);
+                Assert.IsFalse(((IInternalSession)session).GetPools().Any(pair => ReferenceEquals(pair.Value, retiredPool)));
+                if (remainingPool == "retired")
+                {
+                    metadata.RemoveHost(otherAddress);
+                    cluster.Raise(value => value.HostRemoved += null, otherHost);
+                }
+                else if (remainingPool == "replacement")
+                {
+                    var replacementHost = metadata.AddHost(retiredAddress);
+                    replacementHost.SetInfo(CreateHostInfo(Guid.NewGuid()));
+                    Assert.AreNotSame(retiredPool,
+                        ((IInternalSession)session).GetOrCreateConnectionPool(replacementHost, HostDistance.Local));
+                }
+                var fatal = new OutOfMemoryException("retired pool fatal failure");
+                if (fatalFailure)
+                {
+                    pending[retiredAddress].TrySetException(new AggregateException(fatal));
+                }
+                else if (failureKind == "canceled")
+                {
+                    pending[retiredAddress].TrySetCanceled();
+                }
+                else
+                {
+                    pending[retiredAddress].TrySetException(new InvalidOperationException("retired warmup failure"));
+                }
+                var activeFailure = remainingPool == "failure" || remainingPool == "replacement";
+                if (activeFailure)
+                {
+                    pending[otherAddress].TrySetException(new InvalidOperationException("active warmup failure"));
+                }
+                else
+                {
+                    pending[otherAddress].TrySetResult(null);
+                }
+                if (fatalFailure)
+                {
+                    var actual = await Assert.ThrowsAsync<OutOfMemoryException>(() =>
+                        initialization.WaitToCompleteAsync(5000)).ConfigureAwait(false);
+                    Assert.AreSame(fatal, actual);
+                }
+                else
+                {
+                    await initialization.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+                Assert.IsFalse(listener.Messages.Values.Any(message =>
+                    message.Contains("Connection pool for host " + retiredAddress) && message.Contains("failed to warm up")));
+                Assert.AreEqual(!fatalFailure && activeFailure ? 1 : 0, listener.Messages.Values.Count(message =>
+                    message.Contains("Connection pool for host " + otherAddress) && message.Contains("active warmup failure")));
+                Assert.AreEqual(!fatalFailure && activeFailure ? 1 : 0, listener.Messages.Values.Count(message =>
+                    message.Contains("Connection pools for 1 host(s) failed to be warmed up")));
+                Assert.IsFalse(listener.Messages.Values.Any(message =>
+                    message.Contains("Connection pools for 2 host(s) failed to be warmed up")));
+            }
+            finally
+            {
+                foreach (var completion in pending.Values)
+                {
+                    completion.TrySetResult(null);
+                }
+                session.Dispose();
+                if (initialization != null)
+                {
+                    await Task.WhenAny(initialization, Task.Delay(5000)).ConfigureAwait(false);
+                    _ = initialization.Exception;
+                }
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                config.Timer.Dispose();
+            }
+        }
+
         private static Mock<IDriverMetricsProvider> CreateMetricsProviderForRemovalTests()
         {
             var provider = new Mock<IDriverMetricsProvider>();

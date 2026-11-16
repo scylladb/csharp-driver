@@ -235,17 +235,18 @@ namespace Cassandra
         /// <summary>
         /// Creates the required connections on all hosts in the local DC.
         /// Returns a Task that is marked as completed after all pools were warmed up.
-        /// Unless the session is disposed, recoverable host pool warmup failures are logged at Info,
-        /// including partial failures, with an additional error if all host pool warmups fail.
+        /// Unless the session or host pool is retired, recoverable warmup failures are logged at Info,
+        /// including partial failures, with an additional error if all remaining host pool warmups fail.
         /// Fatal errors propagate to the caller.
         /// </summary>
         private async Task Warmup()
         {
             var hosts = _cluster.AllHosts().Where(h => _cluster.RetrieveAndSetDistance(h) == HostDistance.Local).ToArray();
             var tasks = new Task[hosts.Length];
+            var pools = new IHostConnectionPool[hosts.Length];
             for (var i = 0; i < hosts.Length; i++)
             {
-                tasks[i] = WarmupHost(hosts[i]);
+                tasks[i] = WarmupHost(hosts[i], out pools[i]);
             }
 
             var hostWarmups = tasks;
@@ -285,7 +286,7 @@ namespace Cassandra
                             failure = cancellation;
                         }
                     }
-                    if (failure == null)
+                    if (failure == null || !IsCurrentWarmupPool(hosts[i], pools[i]))
                     {
                         continue;
                     }
@@ -299,16 +300,18 @@ namespace Cassandra
                     }
                 }
 
-                if (tasks.Any(t => t.Status == TaskStatus.RanToCompletion))
+                var currentWarmups = hostWarmups.Where((task, index) =>
+                    task != null && IsCurrentWarmupPool(hosts[index], pools[index])).ToArray();
+                if (currentWarmups.Length == 0 || currentWarmups.Any(t => t.Status == TaskStatus.RanToCompletion))
                 {
-                    // At least 1 of the warmup tasks completed
+                    // Retired pools no longer contribute to session readiness or its failure summary.
                     return;
                 }
 
                 // Log and continue as the ControlConnection is connected
                 try
                 {
-                    Session.Logger.Error($"Connection pools for {tasks.Length} host(s) failed to be warmed up");
+                    Session.Logger.Error($"Connection pools for {currentWarmups.Length} host(s) failed to be warmed up");
                 }
                 catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
                 {
@@ -317,9 +320,16 @@ namespace Cassandra
             }
         }
 
-        private Task WarmupHost(Host host)
+        private bool IsCurrentWarmupPool(Host host, IHostConnectionPool pool)
         {
-            IHostConnectionPool pool;
+            return !IsDisposed && pool != null &&
+                   _connectionPool.TryGetValue(host.Address, out var entry) &&
+                   ReferenceEquals(entry.Pool, pool);
+        }
+
+        private Task WarmupHost(Host host, out IHostConnectionPool pool)
+        {
+            pool = null;
             try
             {
                 // A down host still needs a pool to own its background reconnection.
