@@ -75,7 +75,7 @@ output looks good.
 ### Never assume a specific format for `ToString()`
 
 Only use `ToString()` for debug logs or exception messages, and always assume that its format is unspecified and can change at any time.
-  
+
 If you need a specific string representation for a class, make it a dedicated method with a documented format, for example `ToCqlLiteral`. Otherwise it's too easy to lose track of the intended usage and break things: for example, someone modifies your `ToString()` method to make their logs prettier, but unintentionally breaks the script export feature that expected it to produce CQL literals. `ToString()` can delegate to `ToCqlLiteral()` if that is appropriate for logs.
 
 ## Unit tests
@@ -334,9 +334,13 @@ Like commits, pull requests should be focused on a single, clearly stated goal.
 
 Don't base a pull request onto another one, it's too complicated to follow two branches that evolve at the same time. If a ticket depends on another, wait for the first one to be merged.
 
-If you have to address feedback, avoid rewriting the history (e.g. squashing or amending commits). This makes the reviewers' job harder, because they have to re-read the full diff and figure out where your new changes are. Instead, push a new commit on top of the existing history; it will be squashed later when the PR gets merged.
+A pull request with several commits may be merged with its history intact, so every commit must stand on its own: it should build, pass the tests, and have a message that describes what the commit actually does.
 
-If you need new stuff from the base branch, it's fine to rebase and force-push, as long as you don't rewrite the history. Just give a heads up to the reviewers beforehand. Avoid pushing merge commits to a pull request.
+When you address review feedback or fix a CI failure, fold the change into the commit it belongs to rather than pushing a "Fix review comments" or "Fix lint" commit on top. If the fix changes what that commit does, reword its message so it describes the final state. Only add a new commit when the change is genuinely separate from the existing ones (for example, an unrelated bug you found along the way).
+
+After rewriting the history, leave a short comment on the pull request summarizing what changed, so reviewers can use GitHub's "Compare" link on the force-push instead of re-reading the full diff.
+
+If you need new stuff from the base branch, rebase onto it and force-push. Avoid pushing merge commits to a pull request.
 
 [linting-issue]: https://github.com/scylladb/csharp-driver/issues/73
 [fxcop]: https://github.com/dotnet/roslyn-analyzers#microsoftcodeanalysisfxcopanalyzers
