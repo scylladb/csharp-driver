@@ -31,7 +31,7 @@ namespace Cassandra
     /// </summary>
     public class PreparedStatement
     {
-        private readonly RowSetMetadata _variablesRowsMetadata;
+        private volatile RowSetMetadata _variablesRowsMetadata;
         private readonly ISerializerManager _serializerManager = SerializerManager.Default;
         private volatile RoutingKey _routingKey;
         private string[] _routingNames;
@@ -155,6 +155,17 @@ namespace Cassandra
             Keyspace = keyspace;
             _serializerManager = serializer;
             _isLwt = isLwt;
+        }
+
+        internal void UpdatePreparedMetadata(OutputPrepared output)
+        {
+            // Replace the reference, not its contents: in-flight requests retain their metadata snapshot.
+            if (output.VariablesRowsMetadata != null)
+            {
+                _variablesRowsMetadata = output.VariablesRowsMetadata;
+            }
+            UpdateResultMetadata(new ResultMetadata(
+                output.ResultMetadataId, RowSetMetadata.CopyForCachedResultMetadata(output.ResultRowsMetadata)));
         }
 
         /// <summary>

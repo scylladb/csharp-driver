@@ -78,6 +78,37 @@ namespace Cassandra.IntegrationTests.Core
             CreateTable(_tableName);
         }
 
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public void Should_Bind_In_Without_Synthesized_Names(bool named, bool wholeList)
+        {
+            var table = "bind_markers_" + Guid.NewGuid().ToString("N");
+            Session.Execute($"CREATE TABLE {table} (pk int, ck int, PRIMARY KEY (pk, ck))");
+            try
+            {
+                Session.Execute($"INSERT INTO {table} (pk, ck) VALUES (7, 11)");
+                Session.Execute($"INSERT INTO {table} (pk, ck) VALUES (7, 12)");
+                Session.Execute($"INSERT INTO {table} (pk, ck) VALUES (7, 13)");
+                var restriction = named
+                    ? (wholeList ? "pk = :pk AND ck IN :selected" : "pk = :pk AND ck IN (:first, :second)")
+                    : (wholeList ? "pk = ? AND ck IN ?" : "pk = ? AND ck IN (?, ?)");
+                var prepared = Session.Prepare($"SELECT ck FROM {table} WHERE {restriction}");
+                var bound = named
+                    ? (wholeList
+                        ? prepared.Bind(new { selected = new[] { 11, 12 }, pk = 7 })
+                        : prepared.Bind(new { second = 12, pk = 7, first = 11 }))
+                    : (wholeList ? prepared.Bind(7, new[] { 11, 12 }) : prepared.Bind(7, 11, 12));
+
+                CollectionAssert.AreEquivalent(new[] { 11, 12 }, Session.Execute(bound).Select(row => row.GetValue<int>("ck")));
+            }
+            finally
+            {
+                Session.Execute($"DROP TABLE {table}");
+            }
+        }
+
         [Test]
         public void Bound_AllSingleTypesDifferentValues()
         {

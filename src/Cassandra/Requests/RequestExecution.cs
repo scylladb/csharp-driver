@@ -714,15 +714,21 @@ namespace Cassandra.Requests
                         return;
                     }
 
-                    if (_parent.Statement is BoundStatement boundStatement)
+                    if (_parent.Statement is BatchStatement batch)
                     {
-                        // Use the latest result metadata id. Copied, like every other site that installs a
-                        // statement's long-lived result metadata, so that a cached instance never carries
-                        // the response-scoped parts of the one it came from.
-                        boundStatement.PreparedStatement.UpdateResultMetadata(
-                            new ResultMetadata(
-                                outputPrepared.ResultMetadataId,
-                                RowSetMetadata.CopyForCachedResultMetadata(outputPrepared.ResultRowsMetadata)));
+                        // Custom-payload prepares can create distinct instances with the same ID.
+                        // One PREPARE restores the server cache entry for all of them.
+                        foreach (var bound in batch.Queries.OfType<BoundStatement>())
+                        {
+                            if (bound.PreparedStatement.Id.SequenceEqual(originalId))
+                            {
+                                bound.PreparedStatement.UpdatePreparedMetadata(outputPrepared);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        preparedStatement.UpdatePreparedMetadata(outputPrepared);
                     }
 
                     if (_parent.SetNodeExecutionCompleted(nodeRequestInfo.ExecutionId))

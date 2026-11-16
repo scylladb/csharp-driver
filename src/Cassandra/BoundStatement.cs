@@ -155,11 +155,11 @@ namespace Cassandra
             {
                 return null;
             }
-            if (PreparedStatement.Variables == null || PreparedStatement.Variables.Columns == null || PreparedStatement.Variables.Columns.Length == 0)
+            var paramsMetadata = PreparedStatement.Variables?.Columns;
+            if (paramsMetadata == null || paramsMetadata.Length == 0)
             {
                 return values;
             }
-            var paramsMetadata = PreparedStatement.Variables.Columns;
             if (values.Length > paramsMetadata.Length)
             {
                 throw new ArgumentException(
