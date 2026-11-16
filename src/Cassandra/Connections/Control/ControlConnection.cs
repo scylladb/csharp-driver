@@ -1281,6 +1281,10 @@ namespace Cassandra.Connections.Control
                     {
                         throw new SocketException((int)SocketError.NotConnected);
                     }
+                    // In routed mode Refresh holds _controlLifecycleLock until this pass finishes.
+                    // Connect and ReconnectAsOwner hold the same lock around every connection
+                    // publication/rollback, so the captured connection cannot be replaced here.
+                    // The identity check also protects the ordinary, non-serialized refresh path.
                     if (ReferenceEquals(_connection, currentConnection))
                     {
                         SetCurrentConnectionEndpoint(currentHost, currentEndPoint);
