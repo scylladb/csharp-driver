@@ -621,6 +621,188 @@ namespace Cassandra.Tests
             }
         }
 
+        [TestCase("schema-success", false, false)]
+        [TestCase("schema-success", false, true)]
+        [TestCase("schema-success", true, false)]
+        [TestCase("schema-success", true, true)]
+        [TestCase("schema-ordinary", false, false)]
+        [TestCase("schema-ordinary", false, true)]
+        [TestCase("schema-ordinary", true, false)]
+        [TestCase("schema-ordinary", true, true)]
+        [TestCase("schema-fatal", false, false)]
+        [TestCase("schema-fatal", false, true)]
+        [TestCase("schema-fatal", true, false)]
+        [TestCase("schema-fatal", true, true)]
+        [TestCase("direct", false, false)]
+        [TestCase("direct", false, true)]
+        [TestCase("direct", true, false)]
+        [TestCase("direct", true, true)]
+        [NonParallelizable]
+        public async Task Should_CompleteAndDrainDiagnosticsAfterOrdinaryAbortFailure(
+            string entry, bool asyncAbort, bool fatalDiagnostic)
+        {
+            var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), contactPoint: null);
+            var queuedFailure = new InvalidOperationException("Queued acquisition before ordinary abort");
+            var lateFailure = new InvalidOperationException("Late acquisition after ordinary abort");
+            var abortFailure = new InvalidOperationException("Ordinary node abort observer failure");
+            var diagnosticFailure = new OutOfMemoryException("Fatal diagnostic after ordinary abort");
+            Exception actionFailure = entry == "schema-fatal" ? new OutOfMemoryException("Selected fatal schema action")
+                : entry == "schema-ordinary" ? new InvalidQueryException("Selected ordinary schema action") : null;
+            var initialError = actionFailure ?? abortFailure;
+            var expectedError = fatalDiagnostic && entry != "schema-fatal" ? diagnosticFailure : initialError;
+            var policy = new Mock<ILoadBalancingPolicy>();
+            policy.Setup(value => value.NewQueryPlan(It.IsAny<RoutingInfo>(), It.IsAny<ClusterState>()))
+                .Returns(new[] { new RoutingTarget(host, null) });
+            var config = new TestConfigurationBuilder { Policies = new Cassandra.Policies(policy.Object, null, null) }.Build();
+            using var metadata = new Metadata(config);
+            metadata.AddHost(host.Address);
+            var control = new Mock<IControlConnection>();
+            control.Setup(value => value.HandleSchemaChangeEvent(It.IsAny<SchemaChangeEventArgs>(), true))
+                .Returns(() => actionFailure == null ? Task.CompletedTask : Task.FromException(actionFailure));
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Configuration).Returns(config);
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            cluster.Setup(value => value.GetControlConnection()).Returns(control.Object);
+            cluster.Setup(value => value.RetrieveAndSetDistance(host)).Returns(HostDistance.Local);
+            var session = new Mock<IInternalSession>();
+            session.SetupGet(value => value.Cluster).Returns(cluster.Object);
+            session.SetupGet(value => value.InternalCluster).Returns(cluster.Object);
+            var abortEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var abortRelease = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var abortExited = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            async Task AbortAfterReleaseAsync()
+            {
+                try
+                {
+                    await abortRelease.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    throw abortFailure;
+                }
+                finally
+                {
+                    abortExited.TrySetResult(true);
+                }
+            }
+
+            Task AbortAsync()
+            {
+                abortEntered.TrySetResult(true);
+                if (asyncAbort)
+                {
+                    return AbortAfterReleaseAsync();
+                }
+
+                abortExited.TrySetResult(true);
+                throw abortFailure;
+            }
+
+            var observer = new Mock<IRequestObserver>();
+            observer.Setup(value => value.OnRequestSuccessAsync(It.IsAny<SessionRequestInfo>())).Returns(Task.CompletedTask);
+            observer.Setup(value => value.OnRequestFailureAsync(It.IsAny<Exception>(), It.IsAny<SessionRequestInfo>()))
+                .Returns(Task.CompletedTask);
+            observer.Setup(value => value.OnNodeRequestAbortedAsync(It.IsAny<SessionRequestInfo>(), It.IsAny<NodeRequestInfo>()))
+                .Returns(AbortAsync);
+            var sent = new TaskCompletionSource<Func<IRequestError, Response, Task>>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var connection = new Mock<IConnection>();
+            connection.Setup(value => value.SendWithKeyspace(
+                    It.IsAny<IRequest>(), It.IsAny<string>(), It.IsAny<Func<IRequestError, Response, Task>>(),
+                    It.IsAny<int>(), It.IsAny<bool>()))
+                .Callback<IRequest, string, Func<IRequestError, Response, Task>, int, bool>(
+                    (_, __, callback, ___, ____) => sent.TrySetResult(callback))
+                .ReturnsAsync((OperationState)null);
+            var pool = new Mock<IHostConnectionPool>();
+            pool.Setup(value => value.GetConnectionFromHostAsync(
+                    It.IsAny<IDictionary<IPEndPoint, Exception>>(), It.IsAny<Func<string>>(), It.IsAny<RoutingKey>(), -1))
+                .ReturnsAsync(connection.Object);
+            session.Setup(value => value.GetOrCreateConnectionPool(host, HostDistance.Local)).Returns(pool.Object);
+            var serializer = SerializerManager.Default.GetCurrentSerializer();
+            var statement = new SimpleStatement("CREATE KEYSPACE ordinary_abort_diagnostic");
+            statement.SetIdempotence(true);
+            var handler = new RequestHandler(session.Object, serializer,
+                new QueryRequest(serializer, statement.QueryString, QueryProtocolOptions.Default, false, null),
+                new SessionRequestInfo(statement, null), config.DefaultRequestOptions, observer.Object);
+            handler.OnNewNodeExecution(new NodeRequestInfo(host, null, null));
+            using var body = new MemoryStream();
+            var writer = new FrameWriter(body, serializer, false);
+            writer.WriteString("UPDATED");
+            writer.WriteString("KEYSPACE");
+            writer.WriteString("ordinary_abort_diagnostic");
+            body.Position = 0;
+            var response = new ProxyResultResponse(ResultResponse.ResultResponseKind.SchemaChange,
+                new OutputSchemaChange(new FrameReader(body, serializer, false), null));
+            var lateReported = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new RecoveredConnectionTraceListener(false, false, message =>
+            {
+                if (message.Contains("Request consumed a failure to obtain") && message.Contains(lateFailure.Message))
+                {
+                    lateReported.TrySetResult(true);
+                }
+
+                if (message.Contains("Request consumed a failure to obtain") && message.Contains(queuedFailure.Message))
+                {
+                    throw fatalDiagnostic ? diagnosticFailure : new InvalidOperationException("Ordinary diagnostic listener failure");
+                }
+            });
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                handler.RecordConnectionFailure(host.Address, new AggregateException(initialError));
+                handler.RecordConnectionFailure(host.Address, queuedFailure);
+                handler.RecordConnectionFailure(host.Address, queuedFailure);
+                var resultTask = handler.SendAsync();
+                var callback = await sent.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                var completion = entry == "direct"
+                    ? handler.SetCompletedAsync(new RowSet(), (Func<Task>)null)
+                    : callback(null, response);
+                await abortEntered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                if (asyncAbort)
+                {
+                    Assert.IsFalse(resultTask.IsCompleted, "The abort observer is still held by its explicit gate.");
+                    Assert.IsFalse(listener.Messages.Values.Any(message => message.Contains("Request consumed")));
+                }
+
+                abortRelease.TrySetResult(true);
+                await abortExited.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await completion.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.AreSame(expectedError, await Assert.CatchAsync(() => resultTask.WaitAsync(TimeSpan.FromSeconds(5))),
+                    "An ordinary abort must settle the request with the selected action/abort error, subject to fatal diagnostic priority.");
+                handler.RecordConnectionFailure(host.Address, queuedFailure);
+                handler.RecordConnectionFailure(host.Address, lateFailure);
+                handler.RecordConnectionFailure(host.Address, lateFailure);
+                handler.RecordConnectionFailure(host.Address, new AggregateException(expectedError));
+                await lateReported.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                var messages = listener.Messages.Values.Where(message => message.Contains("Request consumed")).ToArray();
+                Assert.AreEqual(1, messages.Count(message => message.Contains(queuedFailure.Message)));
+                Assert.AreEqual(1, messages.Count(message => message.Contains(lateFailure.Message)));
+                Assert.AreEqual(0, messages.Count(message => message.Contains(expectedError.Message)),
+                    "The actual returned cause must not be repeated, including inside a late aggregate.");
+                if (!ReferenceEquals(initialError, expectedError))
+                {
+                    Assert.AreEqual(1, messages.Count(message => message.Contains(initialError.Message)),
+                        "A cause displaced by a fatal diagnostic is now consumed and must be retained.");
+                }
+
+                observer.Verify(value => value.OnRequestFailureAsync(expectedError, It.IsAny<SessionRequestInfo>()), Times.Once);
+                control.Verify(value => value.HandleSchemaChangeEvent(It.IsAny<SchemaChangeEventArgs>(), true),
+                    entry == "direct" ? Times.Never() : Times.Once());
+                Assert.IsFalse(await handler.SetCompletedAsync(new InvalidOperationException("Duplicate completion"))
+                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+            }
+            finally
+            {
+                abortRelease.TrySetResult(true);
+                if (abortEntered.Task.IsCompleted)
+                {
+                    await abortExited.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                }
+
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                config.Timer.Dispose();
+            }
+        }
+
         [TestCase("success", true, false, false)]
         [TestCase("success", true, true, false)]
         [TestCase("success", true, false, true)]

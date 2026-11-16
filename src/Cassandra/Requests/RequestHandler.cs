@@ -283,13 +283,11 @@ namespace Cassandra.Requests
                         }
                         catch (Exception actionEx)
                         {
-                            await ClearNodeExecutionsAsync().ConfigureAwait(false);
-                            await CompleteRequestAsync(actionEx, null).ConfigureAwait(false);
+                            await ClearNodeExecutionsAndCompleteRequestAsync(actionEx, null).ConfigureAwait(false);
                             return;
                         }
 
-                        await ClearNodeExecutionsAsync().ConfigureAwait(false);
-                        await CompleteRequestAsync(null, result).ConfigureAwait(false);
+                        await ClearNodeExecutionsAndCompleteRequestAsync(null, result).ConfigureAwait(false);
                     }
                     catch (Exception completionFailure) when (Utils.IsFatalException(completionFailure))
                     {
@@ -310,9 +308,23 @@ namespace Cassandra.Requests
                 return true;
             }
 
-            await ClearNodeExecutionsAsync().ConfigureAwait(false);
-            await CompleteRequestAsync(null, result).ConfigureAwait(false);
+            await ClearNodeExecutionsAndCompleteRequestAsync(null, result).ConfigureAwait(false);
             return true;
+        }
+
+        private async Task ClearNodeExecutionsAndCompleteRequestAsync(Exception error, RowSet result)
+        {
+            try
+            {
+                await ClearNodeExecutionsAsync().ConfigureAwait(false);
+            }
+            catch (Exception abortFailure) when (!Utils.IsFatalException(abortFailure))
+            {
+                // Preserve the selected action error, or return the ordinary abort failure.
+                error ??= abortFailure;
+            }
+
+            await CompleteRequestAsync(error, result).ConfigureAwait(false);
         }
 
         private async Task CompleteRequestAsync(Exception error, RowSet result)

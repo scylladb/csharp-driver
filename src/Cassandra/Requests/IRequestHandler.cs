@@ -52,7 +52,9 @@ namespace Cassandra.Requests
         bool HasCompleted();
 
         /// <summary>
-        /// Records a failed connection acquisition until the whole request's returned error is known.
+        /// Records a connection-acquisition failure or a late fatal execution, observer, or completion failure.
+        /// Queues failures while request completion selects its returned error. After diagnostic completion,
+        /// reports new failures immediately, omitting returned causes and retaining observation identity.
         /// </summary>
         void RecordConnectionFailure(IPEndPoint host, Exception failure);
 
