@@ -52,5 +52,70 @@ namespace Cassandra.Tests
         {
             Assert.AreEqual(SocketOptions.DefaultConnectTimeoutMillis, new SocketOptions().ConnectTimeoutMillis);
         }
+
+        [Test]
+        public void Should_LeaveTheTcpKeepAliveSettingsUnset_When_TheyAreNotConfigured()
+        {
+            var options = new SocketOptions();
+
+            Assert.IsNull(options.TcpKeepAliveTime);
+            Assert.IsNull(options.TcpKeepAliveInterval);
+            Assert.IsNull(options.TcpKeepAliveRetryCount);
+        }
+
+        [Test]
+        public void Should_KeepTheTcpKeepAliveSettings_When_TheyAreConfigured()
+        {
+            var options = new SocketOptions()
+                          .SetTcpKeepAliveTime(TimeSpan.FromMinutes(1))
+                          .SetTcpKeepAliveInterval(TimeSpan.FromSeconds(10))
+                          .SetTcpKeepAliveRetryCount(3);
+
+            Assert.AreEqual(TimeSpan.FromMinutes(1), options.TcpKeepAliveTime);
+            Assert.AreEqual(TimeSpan.FromSeconds(10), options.TcpKeepAliveInterval);
+            Assert.AreEqual(3, options.TcpKeepAliveRetryCount);
+        }
+
+        private static readonly TimeSpan[] InvalidTcpKeepAliveTimes =
+        {
+            TimeSpan.Zero, TimeSpan.FromSeconds(-1), TimeSpan.FromMilliseconds(1500), TimeSpan.FromSeconds(32768),
+            TimeSpan.MaxValue, TimeSpan.MinValue
+        };
+
+        [TestCaseSource(nameof(InvalidTcpKeepAliveTimes))]
+        public void Should_ThrowArgumentOutOfRangeException_When_TheTcpKeepAliveTimeIsNotAWholeNumberOfSecondsInRange(TimeSpan value)
+        {
+            var options = new SocketOptions();
+
+            Assert.Throws<ArgumentOutOfRangeException>(() => options.SetTcpKeepAliveTime(value));
+            Assert.Throws<ArgumentOutOfRangeException>(() => options.SetTcpKeepAliveInterval(value));
+            Assert.IsNull(options.TcpKeepAliveTime);
+            Assert.IsNull(options.TcpKeepAliveInterval);
+        }
+
+        [Test]
+        public void Should_AcceptTheLargestTcpKeepAliveSettingsLinuxAccepts()
+        {
+            var options = new SocketOptions()
+                          .SetTcpKeepAliveTime(TimeSpan.FromSeconds(32767))
+                          .SetTcpKeepAliveInterval(TimeSpan.FromSeconds(32767))
+                          .SetTcpKeepAliveRetryCount(127);
+
+            Assert.AreEqual(TimeSpan.FromSeconds(32767), options.TcpKeepAliveTime);
+            Assert.AreEqual(TimeSpan.FromSeconds(32767), options.TcpKeepAliveInterval);
+            Assert.AreEqual(127, options.TcpKeepAliveRetryCount);
+        }
+
+        [Test]
+        [TestCase(0)]
+        [TestCase(-1)]
+        [TestCase(128)]
+        public void Should_ThrowArgumentOutOfRangeException_When_TheTcpKeepAliveRetryCountIsOutOfRange(int retryCount)
+        {
+            var options = new SocketOptions();
+
+            Assert.Throws<ArgumentOutOfRangeException>(() => options.SetTcpKeepAliveRetryCount(retryCount));
+            Assert.IsNull(options.TcpKeepAliveRetryCount);
+        }
     }
 }

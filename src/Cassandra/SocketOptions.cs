@@ -37,8 +37,19 @@ namespace Cassandra
         /// Default value for <see cref="DefunctReadTimeoutThreshold"/>, 64.
         /// </summary>
         internal const int DefaultDefunctReadTimeoutThreshold = 64;
+        /// <summary>
+        /// The largest TCP keep-alive time or interval in seconds, the largest Linux accepts.
+        /// </summary>
+        internal const int MaxTcpKeepAliveSeconds = 32767;
+        /// <summary>
+        /// The largest TCP keep-alive retry count, the largest Linux accepts.
+        /// </summary>
+        internal const int MaxTcpKeepAliveRetryCount = 127;
         private int _connectTimeoutMillis = DefaultConnectTimeoutMillis;
         private bool _keepAlive = true;
+        private TimeSpan? _tcpKeepAliveTime;
+        private TimeSpan? _tcpKeepAliveInterval;
+        private int? _tcpKeepAliveRetryCount;
         private int? _receiveBufferSize;
         private bool? _reuseAddress;
         private int? _sendBufferSize;
@@ -63,6 +74,36 @@ namespace Cassandra
         public bool? KeepAlive
         {
             get { return _keepAlive; }
+        }
+
+        /// <summary>
+        /// Gets how long a connection stays idle before the first TCP keep-alive probe is sent, or <c>null</c> to use
+        /// the operating system's setting (TCP_KEEPIDLE on Linux, two hours by default). It only applies when
+        /// <see cref="KeepAlive"/> is enabled.
+        /// </summary>
+        public TimeSpan? TcpKeepAliveTime
+        {
+            get { return _tcpKeepAliveTime; }
+        }
+
+        /// <summary>
+        /// Gets the time between TCP keep-alive probes that receive no acknowledgment, or <c>null</c> to use the
+        /// operating system's setting (TCP_KEEPINTVL on Linux). It only applies when <see cref="KeepAlive"/> is
+        /// enabled.
+        /// </summary>
+        public TimeSpan? TcpKeepAliveInterval
+        {
+            get { return _tcpKeepAliveInterval; }
+        }
+
+        /// <summary>
+        /// Gets the number of unacknowledged TCP keep-alive probes after which the connection is considered broken,
+        /// or <c>null</c> to use the operating system's setting (TCP_KEEPCNT on Linux). It only applies when
+        /// <see cref="KeepAlive"/> is enabled.
+        /// </summary>
+        public int? TcpKeepAliveRetryCount
+        {
+            get { return _tcpKeepAliveRetryCount; }
         }
 
         public bool? ReuseAddress
@@ -164,6 +205,62 @@ namespace Cassandra
         {
             _keepAlive = keepAlive;
             return this;
+        }
+
+        /// <summary>
+        /// Sets how long a connection stays idle before the first TCP keep-alive probe is sent. The operating system
+        /// applies it in whole seconds, so it must be a whole number of seconds from 1 to 32767, the largest value
+        /// Linux accepts. It only applies when <see cref="KeepAlive"/> is enabled. A platform that doesn't support it keeps its own
+        /// setting, and the driver logs a warning.
+        /// </summary>
+        public SocketOptions SetTcpKeepAliveTime(TimeSpan time)
+        {
+            _tcpKeepAliveTime = ValidateKeepAliveSeconds(time, nameof(time));
+            return this;
+        }
+
+        /// <summary>
+        /// Sets the time between TCP keep-alive probes that receive no acknowledgment. The operating system applies
+        /// it in whole seconds, so it must be a whole number of seconds from 1 to 32767, the largest value Linux
+        /// accepts. It only applies when <see cref="KeepAlive"/> is enabled. A platform that doesn't support it keeps its own
+        /// setting, and the driver logs a warning.
+        /// </summary>
+        public SocketOptions SetTcpKeepAliveInterval(TimeSpan interval)
+        {
+            _tcpKeepAliveInterval = ValidateKeepAliveSeconds(interval, nameof(interval));
+            return this;
+        }
+
+        /// <summary>
+        /// Sets the number of unacknowledged TCP keep-alive probes after which the connection is considered broken.
+        /// It must be from 1 to 127, the largest value Linux accepts. It only applies when <see cref="KeepAlive"/> is enabled. A platform that doesn't support it keeps its own
+        /// setting, and the driver logs a warning.
+        /// </summary>
+        public SocketOptions SetTcpKeepAliveRetryCount(int retryCount)
+        {
+            if (retryCount <= 0 || retryCount > MaxTcpKeepAliveRetryCount)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(retryCount),
+                    retryCount,
+                    $"The TCP keep-alive retry count must be from 1 to {MaxTcpKeepAliveRetryCount}.");
+            }
+
+            _tcpKeepAliveRetryCount = retryCount;
+            return this;
+        }
+
+        private static TimeSpan ValidateKeepAliveSeconds(TimeSpan value, string parameterName)
+        {
+            if (value <= TimeSpan.Zero || value.Ticks % TimeSpan.TicksPerSecond != 0 || value.TotalSeconds > MaxTcpKeepAliveSeconds)
+            {
+                throw new ArgumentOutOfRangeException(
+                    parameterName,
+                    value,
+                    $"A TCP keep-alive time or interval must be a whole number of seconds from 1 to {MaxTcpKeepAliveSeconds}.");
+            }
+
+            return value;
         }
 
         public SocketOptions SetReuseAddress(bool reuseAddress)
