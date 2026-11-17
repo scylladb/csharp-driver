@@ -18,7 +18,7 @@ We recommend using a single session with different execution profiles for each w
 
 ## Should I dispose or shut down `ICluster` or `ISession` instances after executing a query?
 
-No, only call `cluster.Shutdown()` once in your application's lifetime, normally when you shutdown your application. Note that there is an async version, i.e., `cluster.ShutDownAsync()` which is like an async `Dispose`. Shutting down the `cluster` will automatically shutdown all session instances created by this `cluster`.
+No, only call `cluster.Shutdown()` once in your application's lifetime, normally when you shutdown your application. Note that there is an async version, i.e., `cluster.ShutdownAsync()` which is like an async `Dispose`. Shutting down the `cluster` will automatically shutdown all session instances created by this `cluster`.
 
 ## How can I enable logging in the driver?
 
