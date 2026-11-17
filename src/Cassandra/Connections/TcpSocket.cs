@@ -15,6 +15,7 @@
 //
 
 using System;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Net;
 using System.Net.Security;
@@ -35,6 +36,12 @@ namespace Cassandra.Connections
     internal class TcpSocket : ITcpSocket
     {
         public static readonly Logger Logger = new Logger(typeof(TcpSocket));
+
+        /// <summary>
+        /// The TCP keep-alive options a warning was logged for, so that it is logged once rather than per connection.
+        /// </summary>
+        private static readonly ConcurrentDictionary<SocketOptionName, bool> KeepAliveOptionsWarned =
+            new ConcurrentDictionary<SocketOptionName, bool>();
 
         private readonly Socket _socket;
         private readonly SocketAsyncEventArgs _receiveSocketEvent;
@@ -85,6 +92,12 @@ namespace Cassandra.Connections
             if (Options.KeepAlive != null)
             {
                 _socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, Options.KeepAlive.Value);
+                if (Options.KeepAlive.Value)
+                {
+                    TrySetKeepAliveOption(_socket, SocketOptionName.TcpKeepAliveTime, (int?)Options.TcpKeepAliveTime?.TotalSeconds);
+                    TrySetKeepAliveOption(_socket, SocketOptionName.TcpKeepAliveInterval, (int?)Options.TcpKeepAliveInterval?.TotalSeconds);
+                    TrySetKeepAliveOption(_socket, SocketOptionName.TcpKeepAliveRetryCount, Options.TcpKeepAliveRetryCount);
+                }
             }
             if (Options.SoLinger != null)
             {
@@ -111,6 +124,54 @@ namespace Cassandra.Connections
                 _receiveSocketEvent.Completed += OnReceiveCompleted;
                 _sendSocketEvent = new SocketAsyncEventArgs();
                 _sendSocketEvent.Completed += OnSendCompleted;
+            }
+        }
+
+        /// <summary>
+        /// Gets the underlying socket, for tests.
+        /// </summary>
+        internal Socket Socket => _socket;
+
+        /// <summary>
+        /// Sets a TCP keep-alive option when it is configured. When the platform doesn't support the option or rejects
+        /// the value, the socket keeps the platform's setting: the connection works without it, so a warning is logged,
+        /// once per option, instead of failing the connection. Returns false in that case.
+        /// </summary>
+        internal static bool TrySetKeepAliveOption(Socket socket, SocketOptionName name, int? value)
+        {
+            return TrySetKeepAliveOption(socket, name, value, TcpSocket.Logger, KeepAliveOptionsWarned);
+        }
+
+        /// <summary>
+        /// See <see cref="TrySetKeepAliveOption(Socket, SocketOptionName, int?)"/>, logging to <paramref name="logger"/>
+        /// and recording the options a warning was logged for in <paramref name="warned"/>.
+        /// </summary>
+        internal static bool TrySetKeepAliveOption(
+            Socket socket, SocketOptionName name, int? value, Logger logger, ConcurrentDictionary<SocketOptionName, bool> warned)
+        {
+            if (value == null)
+            {
+                return true;
+            }
+
+            try
+            {
+                socket.SetSocketOption(SocketOptionLevel.Tcp, name, value.Value);
+                return true;
+            }
+            catch (Exception ex) when (ex is SocketException || ex is PlatformNotSupportedException)
+            {
+                const string message = "Could not set the TCP keep-alive option {0} to {1} on a connection, which keeps the platform's setting: {2}";
+                if (warned.TryAdd(name, true))
+                {
+                    logger.Warning(message, name, value.Value, ex.Message);
+                }
+                else
+                {
+                    logger.Verbose(message, name, value.Value, ex.Message);
+                }
+
+                return false;
             }
         }
 
