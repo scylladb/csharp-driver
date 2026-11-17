@@ -43,7 +43,7 @@ namespace Cassandra
     /// new nodes joining the cluster.
     /// </para>
     /// </summary>
-    public interface ICluster : IDisposable
+    public interface ICluster : IDisposable, IAsyncDisposable
     {
         /// <summary>
         ///  Gets read-only metadata on the connected cluster.
@@ -142,6 +142,25 @@ namespace Cassandra
         ///  used by it. <p> This method has no effect if the cluster was already shutdown.</p>
         /// </summary>
         Task ShutdownAsync(int timeoutMs = Timeout.Infinite);
+
+        /// <summary>
+        /// Disposes the cluster by calling <see cref="IDisposable.Dispose"/>, so that a class implementing
+        /// <see cref="ICluster"/> keeps its own cleanup when it is disposed asynchronously, for instance by a dependency
+        /// injection container that prefers <see cref="IAsyncDisposable"/>. <see cref="Cluster"/> overrides it to
+        /// shut down asynchronously.
+        /// </summary>
+        ValueTask IAsyncDisposable.DisposeAsync()
+        {
+            try
+            {
+                Dispose();
+                return default;
+            }
+            catch (Exception ex)
+            {
+                return ValueTask.FromException(ex);
+            }
+        }
 
         /// <summary>
         /// Updates keyspace metadata (including token metadata for token aware routing) for a given keyspace or a specific keyspace table.

@@ -653,6 +653,35 @@ the iteration now ends after the rows already retrieved, as for any ignored requ
 It previously threw a `NullReferenceException`. `IsFullyFetched` is then true, even
 though the remaining pages were not retrieved.
 
+### Asynchronous disposal
+
+`ICluster` and `ISession` implement `IAsyncDisposable`, so they can be declared with
+`await using`:
+
+```csharp
+await using var cluster = Cluster.Builder().AddContactPoint("127.0.0.1").Build();
+await using var session = await cluster.ConnectAsync();
+```
+
+For `Cluster` and `Session`, `DisposeAsync()` calls `ShutdownAsync()`, without a
+timeout for a cluster, as `Dispose()` calls it synchronously. Shutting down a cluster
+again has no effect, unless the previous shutdown timed out.
+
+Both interfaces implement `DisposeAsync()` by default, by calling the class's own
+`Dispose()`, so a class that implements one of them keeps its cleanup when it is
+disposed asynchronously. A dependency injection container, for instance, disposes a
+service through `IAsyncDisposable` when it implements it, which it now does. A class
+that implements both interfaces must implement `DisposeAsync()` itself, since the two
+default implementations conflict. A class that already has a public
+`ValueTask DisposeAsync()` method now uses it as its `IAsyncDisposable`
+implementation. A `Task DisposeAsync()` method doesn't implement `IAsyncDisposable`:
+only `await using` on the class itself calls it, and the interfaces still use the
+default implementation.
+
+A mock implements `DisposeAsync()` itself. With Moq, it completes on a loose mock
+without calling `Dispose()` or `ShutdownAsync()`, even with `CallBase`, and throws on a strict mock
+unless it is set up.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.

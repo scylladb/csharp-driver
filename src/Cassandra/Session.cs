@@ -172,6 +172,12 @@ namespace Cassandra
             ShutdownAsync().GetAwaiter().GetResult();
         }
 
+        /// <summary>
+        /// Disposes the session asynchronously, as <see cref="ShutdownAsync"/> does, so that it can be used in an
+        /// asynchronous <c>using</c> statement.
+        /// </summary>
+        public ValueTask DisposeAsync() => new ValueTask(ShutdownAsync());
+
         /// <inheritdoc />
         public Task ShutdownAsync()
         {
