@@ -167,6 +167,12 @@ namespace Cassandra.Requests
                         throw new PreparedStatementIdMismatchException(
                             (byte[])ps.Id.Clone(), outputPrepared.QueryId);
                     }
+                    // Initial fan-out only populates peer caches. Keep the metadata from the
+                    // coordinator that handled the initial PREPARE, including its negotiated ID.
+                    if (sessionRequestInfo == null)
+                    {
+                        ps.UpdatePreparedMetadata(outputPrepared);
+                    }
                     if (observer != null)
                     {
                         await observer.OnNodeSuccessAsync(sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);

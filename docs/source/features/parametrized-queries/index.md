@@ -3,6 +3,12 @@
 You can bind the values of parameters in a `BoundStatement` or `SimpleStatement` either by position or by using
 named markers.
 
+Bind anonymous `?` markers by position, and bind by name only when the query declares explicit
+`:name` markers. Names that the server generates for `?`, such as `IN(column)` or `in(column)`, can
+change across server versions and must not be used as an application contract. See
+[prepared statements](../components/core/statements/prepared/index) for `IN` examples, automatic
+repreparation, and mixed-version rollout limits.
+
 ## Positional parameters example
 
 ```csharp

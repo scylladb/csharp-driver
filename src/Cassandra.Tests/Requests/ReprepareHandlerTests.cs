@@ -43,6 +43,53 @@ namespace Cassandra.Tests.Requests
         private const string Cql = "SELECT * FROM table1";
         private const string Keyspace = "ks1";
 
+        [TestCase("IN(ck)", "in(ck)", false)]
+        [TestCase("in(ck)", "IN(ck)", false)]
+        [TestCase("IN(ck)", "in(ck)", true)]
+        [TestCase("in(ck)", "IN(ck)", true)]
+        public async Task ReprepareOnSingleNodeAsync_Should_Refresh_Only_Background_Metadata(
+            string originalName, string refreshedName, bool initialFanOut)
+        {
+            var context = CreateContext(new byte[] { 1 });
+            var originalVariables = context.PreparedStatement.Variables;
+            originalVariables.Columns[0].Name = originalName;
+            var originalResult = context.PreparedStatement.ResultMetadata;
+            var variables = new RowSetMetadata
+            {
+                Columns = new[] { new CqlColumn { Name = refreshedName, TypeCode = ColumnTypeCode.Int } }
+            };
+            context.Connection.Setup(value => value.SendWithKeyspace(context.Request, It.IsAny<string>()))
+                .ReturnsAsync(new ProxyResultResponse(ResultResponse.ResultResponseKind.Prepared,
+                    new OutputPrepared(new byte[] { 1 }, variables,
+                        new RowSetMetadata { Columns = new[] { new CqlColumn { Name = "fresh", TypeCode = ColumnTypeCode.Int } } })));
+
+            using (var semaphore = new SemaphoreSlim(0, 1))
+            {
+                await new ReprepareHandler().ReprepareOnSingleNodeAsync(
+                    context.Cluster.Object,
+                    initialFanOut ? NullRequestObserver.Instance : null,
+                    initialFanOut ? new SessionRequestInfo(context.Request, ReprepareHandlerTests.Keyspace) : null,
+                    context.Pool, context.PreparedStatement, context.Request, semaphore, true)
+                    .ConfigureAwait(false);
+            }
+
+            Assert.AreEqual(originalName, originalVariables.Columns[0].Name);
+            Assert.AreEqual("old", originalResult.RowSetMetadata.Columns[0].Name);
+            if (initialFanOut)
+            {
+                Assert.AreSame(originalVariables, context.PreparedStatement.Variables);
+                Assert.AreSame(originalResult, context.PreparedStatement.ResultMetadata);
+                CollectionAssert.AreEqual(new byte[] { 7 }, context.PreparedStatement.ResultMetadata.ResultMetadataId);
+            }
+            else
+            {
+                Assert.AreSame(variables, context.PreparedStatement.Variables);
+                Assert.AreEqual(refreshedName, context.PreparedStatement.Variables.Columns[0].Name);
+                Assert.AreEqual("fresh", context.PreparedStatement.ResultMetadata.RowSetMetadata.Columns[0].Name);
+                Assert.IsNull(context.PreparedStatement.ResultMetadata.ResultMetadataId);
+            }
+        }
+
         [Test]
         public async Task ReprepareOnSingleNodeAsync_Should_Invalidate_And_Report_Error_When_FanOut_Id_Changes()
         {
@@ -83,6 +130,9 @@ namespace Cassandra.Tests.Requests
                 observer.Verify(value => value.OnNodeSuccessAsync(
                     It.IsAny<SessionRequestInfo>(), It.IsAny<NodeRequestInfo>()), Times.Never);
                 Assert.AreEqual(1, semaphore.CurrentCount);
+                Assert.AreEqual("IN(ck)", context.PreparedStatement.Variables.Columns[0].Name);
+                Assert.AreEqual("old", context.PreparedStatement.ResultMetadata.RowSetMetadata.Columns[0].Name);
+                CollectionAssert.AreEqual(new byte[] { 7 }, context.PreparedStatement.ResultMetadata.ResultMetadataId);
             }
         }
 
@@ -111,6 +161,9 @@ namespace Cassandra.Tests.Requests
                     ReprepareHandlerTests.Cql,
                     ReprepareHandlerTests.Keyspace), Times.Once);
                 Assert.AreEqual(1, semaphore.CurrentCount);
+                Assert.AreEqual("IN(ck)", context.PreparedStatement.Variables.Columns[0].Name);
+                Assert.AreEqual("old", context.PreparedStatement.ResultMetadata.RowSetMetadata.Columns[0].Name);
+                CollectionAssert.AreEqual(new byte[] { 7 }, context.PreparedStatement.ResultMetadata.ResultMetadataId);
             }
         }
 
@@ -181,9 +234,13 @@ namespace Cassandra.Tests.Requests
                 requestKeyspace,
                 null);
             var preparedStatement = new PreparedStatement(
-                null,
+                new RowSetMetadata
+                {
+                    Columns = new[] { new CqlColumn { Name = "IN(ck)", TypeCode = ColumnTypeCode.Int } }
+                },
                 new byte[] { 1 },
-                null,
+                new ResultMetadata(new byte[] { 7 },
+                    new RowSetMetadata { Columns = new[] { new CqlColumn { Name = "old", TypeCode = ColumnTypeCode.Int } } }),
                 ReprepareHandlerTests.Cql,
                 ReprepareHandlerTests.Keyspace,
                 serializerManager,
