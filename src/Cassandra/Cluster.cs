@@ -62,6 +62,7 @@ namespace Cassandra
                 new ConcurrentDictionary<PreparedStatementCacheEntry, byte>();
         private long _preparedStatementCacheGeneration;
         private volatile bool _initialized;
+        private volatile bool _shutDown;
         private volatile Exception _initException;
         private readonly SemaphoreSlim _initLock = new SemaphoreSlim(1, 1);
         private long _sessionCounter = -1;
@@ -487,6 +488,13 @@ namespace Cassandra
             Shutdown();
         }
 
+        /// <summary>
+        /// Shuts down this cluster instance asynchronously, as <see cref="ShutdownAsync"/> does without a timeout,
+        /// so that it can be used in an asynchronous <c>using</c> statement. The sessions of this cluster are shut
+        /// down too.
+        /// </summary>
+        public ValueTask DisposeAsync() => new ValueTask(ShutdownAsync());
+
         /// <inheritdoc />
         public Host GetHost(IPEndPoint address)
         {
@@ -564,6 +572,12 @@ namespace Cassandra
         /// <inheritdoc />
         public async Task ShutdownAsync(int timeoutMs = Timeout.Infinite)
         {
+            if (_shutDown)
+            {
+                // Already shut down. A shutdown that timed out waiting for the sessions didn't complete, and runs again
+                return;
+            }
+
             if (!_initialized)
             {
                 _preparedStatementCache.Clear();
@@ -572,6 +586,7 @@ namespace Cassandra
                 _controlConnection.Dispose();
                 await _protocolEventDebouncer.ShutdownAsync().ConfigureAwait(false);
                 Configuration.Timer.Dispose();
+                _shutDown = true;
                 Cluster.Logger.Info("Cluster #{0} has been shut down.", GetHashCode());
                 return;
             }
@@ -614,6 +629,7 @@ namespace Cassandra
                 sep.Dispose();
             }
 
+            _shutDown = true;
             Cluster.Logger.Info("Cluster #{0} [{1}] has been shut down.", GetHashCode(), Metadata.ClusterName);
             return;
         }

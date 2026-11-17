@@ -35,7 +35,7 @@ namespace Cassandra
     /// at a time, so one instance per keyspace is necessary.
     /// </para>
     /// </summary>
-    public interface ISession : IDisposable
+    public interface ISession : IDisposable, IAsyncDisposable
     {
         /// <summary>
         /// Gets the Cassandra native binary protocol version
@@ -329,5 +329,24 @@ namespace Cassandra
         /// Disposes the session asynchronously.
         /// </summary>
         Task ShutdownAsync();
+
+        /// <summary>
+        /// Disposes the session by calling <see cref="IDisposable.Dispose"/>, so that a class implementing
+        /// <see cref="ISession"/> keeps its own cleanup when it is disposed asynchronously, for instance by a dependency
+        /// injection container that prefers <see cref="IAsyncDisposable"/>. <see cref="Session"/> overrides it to
+        /// shut down asynchronously.
+        /// </summary>
+        ValueTask IAsyncDisposable.DisposeAsync()
+        {
+            try
+            {
+                Dispose();
+                return default;
+            }
+            catch (Exception ex)
+            {
+                return ValueTask.FromException(ex);
+            }
+        }
     }
 }

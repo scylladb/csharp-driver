@@ -30,7 +30,7 @@ Brief description of this code snippet (see the number, e.g., `// (1)`):
 3. Here we use `Execute` to send a query to Cassandra. This returns a `RowSet`, which is an `IEnumerable` of `Row` objects. On the next line, we extract the first row (which is the only one in this case);
 4. Extract the value of the first (and only) column from the row.
 
-Always close the `Cluster` and `Session` once you're done with them, in order to free underlying resources (TCP connections, thread pools...). You can use `Dispose`, `Shutdown` or `ShutdownAsync`.
+Always close the `Cluster` and `Session` once you're done with them, in order to free underlying resources (TCP connections, thread pools...). You can use `Dispose`, `Shutdown` or `ShutdownAsync`, or declare them with `await using`, which calls `DisposeAsync`.
 
 This example uses the synchronous API. Most methods have asynchronous equivalents (look for `*Async` variants that return a `Task`).
 
