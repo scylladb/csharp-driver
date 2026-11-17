@@ -37,8 +37,15 @@ namespace Cassandra.Requests
         {
             if (Interlocked.CompareExchange(ref _done, 1, 0) == 0)
             {
-                await _requestObserver.OnRequestSuccessAsync(sessionRequestInfo).ConfigureAwait(false);
-                _taskCompletionSource.SetResult(result);
+                try
+                {
+                    await _requestObserver.OnRequestSuccessAsync(sessionRequestInfo).ConfigureAwait(false);
+                }
+                finally
+                {
+                    // A failing request observer can't leave the task incomplete
+                    _taskCompletionSource.SetResult(result);
+                }
             }
         }
 
@@ -46,8 +53,14 @@ namespace Cassandra.Requests
         {
             if (Interlocked.CompareExchange(ref _done, 1, 0) == 0)
             {
-                await _requestObserver.OnRequestFailureAsync(exception, sessionRequestInfo).ConfigureAwait(false);
-                _taskCompletionSource.SetException(exception);
+                try
+                {
+                    await _requestObserver.OnRequestFailureAsync(exception, sessionRequestInfo).ConfigureAwait(false);
+                }
+                finally
+                {
+                    _taskCompletionSource.SetException(exception);
+                }
             }
         }
 

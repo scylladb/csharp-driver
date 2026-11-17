@@ -278,20 +278,40 @@ namespace Cassandra.Requests
                     }
                     catch (Exception actionEx)
                     {
-                        await ClearNodeExecutionsAsync().ConfigureAwait(false);
-                        await _requestResultHandler.TrySetExceptionAsync(actionEx, _sessionRequestInfo).ConfigureAwait(false);
+                        await ClearNodeExecutionsAndCompleteAsync(actionEx, null).ConfigureAwait(false);
                         return;
                     }
 
-                    await ClearNodeExecutionsAsync().ConfigureAwait(false);
-                    await _requestResultHandler.TrySetResultAsync(result, _sessionRequestInfo).ConfigureAwait(false);
+                    await ClearNodeExecutionsAndCompleteAsync(null, result).ConfigureAwait(false);
                 }, CancellationToken.None).Forget();
                 return true;
             }
 
-            await ClearNodeExecutionsAsync().ConfigureAwait(false);
-            await _requestResultHandler.TrySetResultAsync(result, _sessionRequestInfo).ConfigureAwait(false);
+            await ClearNodeExecutionsAndCompleteAsync(null, result).ConfigureAwait(false);
             return true;
+        }
+
+        /// <summary>
+        /// Reports the node executions still running as aborted, then completes the task with the error or the
+        /// result. The task is completed even when a request observer throws.
+        /// </summary>
+        private async Task ClearNodeExecutionsAndCompleteAsync(Exception ex, RowSet result)
+        {
+            try
+            {
+                await ClearNodeExecutionsAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                if (ex != null)
+                {
+                    await _requestResultHandler.TrySetExceptionAsync(ex, _sessionRequestInfo).ConfigureAwait(false);
+                }
+                else
+                {
+                    await _requestResultHandler.TrySetResultAsync(result, _sessionRequestInfo).ConfigureAwait(false);
+                }
+            }
         }
 
         private async Task ClearNodeExecutionsAsync()
@@ -495,7 +515,16 @@ namespace Cassandra.Requests
                 return await _requestResultHandler.Task.ConfigureAwait(false);
             }
 
-            await StartNewExecutionAsync().ConfigureAwait(false);
+            try
+            {
+                await StartNewExecutionAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex) when (_requestResultHandler.Task.IsCompleted)
+            {
+                // A request observer failed while the request was completed: return the outcome of the request
+                RequestHandler.Logger.Warning("A request observer failed while the request was completed: {0}", ex);
+            }
+
             return await _requestResultHandler.Task.ConfigureAwait(false);
         }
 
