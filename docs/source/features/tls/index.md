@@ -44,7 +44,7 @@ Alternatively, you can provide your own `RemoteCertificateValidationCallback` to
 
 ### Enabling server authentication with a custom root certificate
 
-If you have a custom (untrusted) root certificate, then there are two ways to provide it: using the system/user store or loading it manually in code.
+If you have a custom (untrusted) root certificate, then there are three ways to provide it: using the system/user store, loading it manually in code, or a certificate chain policy (see [Other TLS settings](#other-tls-settings)).
 
 #### Certificate store
 
@@ -106,6 +106,32 @@ var cluster = Cluster.Builder()
     .WithSSL(new SSLOptions().SetCertificateCollection(collection))
     .Build();
 ```
+
+### Other TLS settings
+
+For TLS settings that the other `SSLOptions` methods don't cover, such as a certificate chain policy, cipher suites or application protocols (ALPN), set a callback with `SSLOptions.SetClientAuthenticationOptionsCallback(...)`. It receives the `SslClientAuthenticationOptions` of each connection, which already hold the server name and the settings of the `SSLOptions`, and can change any of them. For example, to trust only the certificates signed by your own root certificate:
+
+```csharp
+var root = X509CertificateLoader.LoadCertificateFromFile("ca.crt");
+
+var cluster = Cluster.Builder()
+    .AddContactPoints("...")
+    .WithSSL(new SSLOptions().SetClientAuthenticationOptionsCallback(options =>
+    {
+        options.CertificateChainPolicy = new X509ChainPolicy
+        {
+            TrustMode = X509ChainTrustMode.CustomRootTrust,
+            CustomTrustStore = { root },
+            // Replaces SetCertificateRevocationCheck. Use X509RevocationMode.Online if your CA publishes revocation lists.
+            RevocationMode = X509RevocationMode.NoCheck,
+        };
+    }))
+    .Build();
+```
+
+A certificate chain policy replaces the one .NET builds from the `SSLOptions`, so its revocation mode applies instead of `SetCertificateRevocationCheck(...)`. A new `X509ChainPolicy` checks revocation online, which fails for certificates without a revocation endpoint, as is common with a private CA: set `RevocationMode` explicitly.
+
+The driver calls the callback for every connection it opens, possibly concurrently, with new options each time. If the callback throws, the connection fails. The callback must make its changes before it returns, so don't pass an async lambda: the changes it makes once it yields come after the handshake started, and an exception it throws terminates the process. The options hold a new collection of client certificates each time, but the certificates in it are shared: the callback can add or remove certificates, but must not modify or dispose them. After `SetCertificateCollection(null)`, there is no collection, and the callback must create one to add certificates.
 
 [certstore]: #certificate-store
 [client-to-node-dse]: https://docs.datastax.com/en/security/6.7/security/encryptClientNodeSSL.html
