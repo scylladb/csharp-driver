@@ -26,6 +26,10 @@ namespace Cassandra.Metrics.Registries
     /// </summary>
     internal interface INodeMetrics : IDisposable
     {
+        Host Owner { get; }
+
+        bool IsRetired { get; }
+
         IDriverCounter SpeculativeExecutions { get; }
 
         IDriverMeter BytesSent { get; }
@@ -54,5 +58,7 @@ namespace Cassandra.Metrics.Registries
         /// </summary>
         /// <param name="pool"></param>
         void InitializePoolGauges(IHostConnectionPool pool);
+
+        void MarkRetired();
     }
 }

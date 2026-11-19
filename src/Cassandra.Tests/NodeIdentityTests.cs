@@ -233,12 +233,14 @@ namespace Cassandra.Tests
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             cluster.SetupGet(value => value.Configuration).Returns(config);
             using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "s1");
-            var first = new Host(Guid.NewGuid(), Address, null);
-            var replacement = new Host(Guid.NewGuid(), Address, null);
+            var firstId = Guid.NewGuid();
+            var replacementId = Guid.NewGuid();
+            var first = metadata.AddOrUpdateHost(firstId, Address, null, Row(firstId));
+            var replacement = metadata.AddOrUpdateHost(replacementId, Address, null, Row(replacementId));
             var pool = session.InternalRef.GetOrCreateConnectionPool(first, HostDistance.Local);
             var replacementPool = session.InternalRef.GetOrCreateConnectionPool(replacement, HostDistance.Local);
             Assert.AreNotSame(pool, replacementPool);
-            first.SetEndPoint(OtherAddress, null);
+            metadata.AddOrUpdateHost(firstId, OtherAddress, null, Row(firstId));
             Assert.AreSame(pool, session.InternalRef.GetOrCreateConnectionPool(first, HostDistance.Local));
             cluster.Raise(value => value.HostRetired += null, first);
             Assert.AreSame(replacementPool, session.InternalRef.GetExistingPool(replacement));
@@ -407,7 +409,7 @@ namespace Cassandra.Tests
             using var metadata = new Metadata(config);
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "s1");
-            var host = new Host(id, Address, null);
+            var host = metadata.AddOrUpdateHost(id, Address, null, Row(id));
             Assert.AreSame(pool.Object, session.InternalRef.GetOrCreateConnectionPool(host, HostDistance.Local));
 
             using var listener = new LoggingTests.TestTraceListener();
@@ -437,14 +439,63 @@ namespace Cassandra.Tests
             Assert.IsNull(session.InternalRef.GetExistingPool(host));
         }
 
-        [Test]
-        public void PoolSnapshotsRetainCustomHostsAndExcludeRemovedIdentities()
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public void Should_RejectDiscoveredHostAfterMetadataRemovalBeforeNotification(
+            bool clientRoutesEnabled, bool poolAlreadyCreated)
         {
             var pool = new Mock<IHostConnectionPool>();
             var factory = new Mock<IHostConnectionPoolFactory>();
             factory.Setup(value => value.Create(It.IsAny<Host>(), It.IsAny<Configuration>(),
                     It.IsAny<ISerializerManager>(), It.IsAny<Cassandra.Observers.Abstractions.IObserverFactory>(), It.IsAny<TokenFactory>()))
                 .Returns(pool.Object);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = factory.Object,
+                ClientRoutesOptions = clientRoutesEnabled
+                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    : null
+            }.Build();
+            using var metadata = new Metadata(config);
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "s1");
+            var id = Guid.NewGuid();
+            var host = metadata.AddOrUpdateHost(id, Address, null, Row(id));
+            if (poolAlreadyCreated)
+            {
+                session.InternalRef.GetOrCreateConnectionPool(host, HostDistance.Local);
+            }
+            var notifications = new List<(Host Host, Action Callback)>();
+            metadata.Hosts.Remove(host, notifications);
+
+            Assert.IsNull(metadata.GetHost(id));
+            Assert.IsFalse(host.IsRemoved);
+            Assert.AreEqual(1, notifications.Count);
+            Assert.Throws<HostConnectionPoolNotEligibleException>(() =>
+                session.InternalRef.GetOrCreateConnectionPool(host, HostDistance.Local));
+            factory.Verify(value => value.Create(It.IsAny<Host>(), It.IsAny<Configuration>(),
+                It.IsAny<ISerializerManager>(), It.IsAny<Cassandra.Observers.Abstractions.IObserverFactory>(), It.IsAny<TokenFactory>()),
+                Times.Exactly(poolAlreadyCreated ? 1 : 0));
+
+            // Selection cannot reuse a stale pool, but the session still owns its cleanup.
+            pool.Verify(value => value.Dispose(), Times.Never);
+            session.Dispose();
+            pool.Verify(value => value.Dispose(), Times.Exactly(poolAlreadyCreated ? 1 : 0));
+        }
+
+        [Test]
+        public void PoolSnapshotsRetainCustomHostsAndExcludeRemovedIdentities()
+        {
+            var customPool = new Mock<IHostConnectionPool>();
+            var currentPool = new Mock<IHostConnectionPool>();
+            var removedPool = new Mock<IHostConnectionPool>();
+            var factory = new Mock<IHostConnectionPoolFactory>();
+            factory.SetupSequence(value => value.Create(It.IsAny<Host>(), It.IsAny<Configuration>(),
+                    It.IsAny<ISerializerManager>(), It.IsAny<Cassandra.Observers.Abstractions.IObserverFactory>(), It.IsAny<TokenFactory>()))
+                .Returns(customPool.Object).Returns(currentPool.Object).Returns(removedPool.Object);
             var config = new TestConfigurationBuilder { HostConnectionPoolFactory = factory.Object }.Build();
             using var metadata = new Metadata(config);
             var cluster = new Mock<IInternalCluster>();
@@ -453,20 +504,33 @@ namespace Cassandra.Tests
             using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "s1");
             var currentId = Guid.NewGuid();
             var removedId = Guid.NewGuid();
+            var custom = new Host(Address, new ConstantReconnectionPolicy(100));
+            // Acquire the custom pool before discovery; later address-only selections
+            // resolve to the discovered Host instead of creating another pool.
+            session.InternalRef.GetOrCreateConnectionPool(custom, HostDistance.Local);
             var current = metadata.AddOrUpdateHost(currentId, Address, null, Row(currentId));
             var removed = metadata.AddOrUpdateHost(removedId, OtherAddress, null, Row(removedId));
-            var custom = new Host(Address, new ConstantReconnectionPolicy(100));
-            foreach (var host in new[] { current, removed, custom })
+            foreach (var host in new[] { current, removed })
             {
                 session.InternalRef.GetOrCreateConnectionPool(host, HostDistance.Local);
             }
             // Leave the pool in place while its topology removal awaits dispatch.
             metadata.Hosts.Remove(removed, new List<(Host Host, Action Callback)>());
 
-            Assert.AreSame(pool.Object, session.InternalRef.GetExistingPool(removed));
+            Assert.AreSame(removedPool.Object, session.InternalRef.GetExistingPool(removed));
             Assert.AreEqual(2, session.InternalRef.GetNodePools().Count());
             CollectionAssert.AreEquivalent(new[] { current, custom }, session.InternalRef.GetNodePools().Select(pair => pair.Key));
             CollectionAssert.AreEquivalent(new[] { current, custom }, session.GetState().GetConnectedHosts());
+
+            // Discovery redirects future address-only selections, but does not retire
+            // the independently owned custom pool. Session shutdown still owns it.
+            Assert.AreSame(currentPool.Object, session.InternalRef.GetOrCreateConnectionPool(custom, HostDistance.Local));
+            Assert.AreSame(customPool.Object, session.InternalRef.GetExistingPool(custom));
+            customPool.Verify(value => value.Dispose(), Times.Never);
+            session.ShutdownAsync().GetAwaiter().GetResult();
+            customPool.Verify(value => value.Dispose(), Times.Once);
+            currentPool.Verify(value => value.Dispose(), Times.Once);
+            removedPool.Verify(value => value.Dispose(), Times.Once);
         }
 
         private static IRow Row(Guid id)
