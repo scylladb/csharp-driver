@@ -23,6 +23,8 @@ using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Collections;
+using Cassandra.Metrics.Registries;
+using Cassandra.Observers;
 using Cassandra.Observers.Abstractions;
 using Cassandra.Serialization;
 using Cassandra.Tasks;
@@ -145,6 +147,8 @@ namespace Cassandra.Connections
             _tokenFactory = tokenFactory;
         }
 
+        public INodeMetrics NodeMetrics { get; set; }
+
         /// <inheritdoc />
         public async Task<IConnection> BorrowConnectionAsync(RoutingKey routingKey = null, int shardID = -1)
         {
@@ -242,14 +246,22 @@ namespace Cassandra.Connections
 
         public void CheckHealth(IConnection c)
         {
-            var timedOutOps = c.TimedOutOperations;
-            if (timedOutOps < _config.SocketOptions.DefunctReadTimeoutThreshold)
+            if (IsDefunct(c, _config.SocketOptions, _host.Address))
             {
-                return;
+                Remove(c);
+            }
+        }
+
+        internal static bool IsDefunct(IConnection connection, SocketOptions socketOptions, IPEndPoint address)
+        {
+            var timedOutOperations = connection.TimedOutOperations;
+            if (timedOutOperations < socketOptions.DefunctReadTimeoutThreshold)
+            {
+                return false;
             }
             HostConnectionPool.Logger.Warning("Connection to {0} considered as unhealthy after {1} timed out operations",
-                _host.Address, timedOutOps);
-            Remove(c);
+                address, timedOutOperations);
+            return true;
         }
 
         /// <inheritdoc />
@@ -319,6 +331,7 @@ namespace Cassandra.Connections
                 // The pool is already being shutdown, never mind
                 return;
             }
+            (_observerFactory as PoolObserverFactory)?.CancelInitialization();
             HostConnectionPool.Logger.Info("Disposing connection pool #{0} to {1}", GetHashCode(), _host.Address);
             ShardedList<IConnection> connections;
             lock (_connectionHandoffLock)
@@ -353,6 +366,18 @@ namespace Cassandra.Connections
             int shardCount,
             Func<ConnectionCandidateHandoff, bool> tryAddToPool)
         {
+            if (_observerFactory is PoolObserverFactory poolObservers)
+            {
+                try
+                {
+                    await poolObservers.WaitForInitializationAsync().ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    Dispose();
+                    throw;
+                }
+            }
             var resolutionPlan = await _config.EndPointResolutionPlanProvider
                 .GetConnectionEndPointResolutionPlanAsync(
                     _host,
@@ -1386,6 +1411,10 @@ namespace Cassandra.Connections
                     OnConnectionClosing();
                     break;
                 }
+            }
+            if (!IsClosing && _connections.Count > 0)
+            {
+                _host.BringUpIfDown();
             }
         }
     }

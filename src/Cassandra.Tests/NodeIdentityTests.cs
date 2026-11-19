@@ -453,10 +453,13 @@ namespace Cassandra.Tests
             using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "s1");
             var currentId = Guid.NewGuid();
             var removedId = Guid.NewGuid();
+            var custom = new Host(Address, new ConstantReconnectionPolicy(100));
+            // Acquire the custom pool before discovery; later address-only selections
+            // resolve to the discovered Host instead of creating another pool.
+            session.InternalRef.GetOrCreateConnectionPool(custom, HostDistance.Local);
             var current = metadata.AddOrUpdateHost(currentId, Address, null, Row(currentId));
             var removed = metadata.AddOrUpdateHost(removedId, OtherAddress, null, Row(removedId));
-            var custom = new Host(Address, new ConstantReconnectionPolicy(100));
-            foreach (var host in new[] { current, removed, custom })
+            foreach (var host in new[] { current, removed })
             {
                 session.InternalRef.GetOrCreateConnectionPool(host, HostDistance.Local);
             }

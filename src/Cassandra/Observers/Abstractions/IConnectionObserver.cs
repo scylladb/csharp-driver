@@ -15,6 +15,7 @@
 //
 
 using System;
+using Cassandra.Metrics.Registries;
 
 namespace Cassandra.Observers.Abstractions
 {
@@ -23,6 +24,11 @@ namespace Cassandra.Observers.Abstractions
     /// </summary>
     internal interface IConnectionObserver
     {
+        /// <summary>
+        /// The registry captured for this connection's pool, or null when metrics are disabled.
+        /// </summary>
+        INodeMetrics NodeMetrics { get; }
+
         void OnBytesSent(long size);
 
         void OnBytesReceived(long size);
