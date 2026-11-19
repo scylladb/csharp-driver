@@ -33,6 +33,12 @@ namespace Cassandra.Metrics.Internal
         /// </summary>
         INodeMetrics GetOrCreateNodeMetrics(Host host);
 
+
+        /// <summary>
+        /// Gets existing metrics for a connection's exact pool owner, or disabled metrics after retirement.
+        /// </summary>
+        INodeMetrics GetNodeMetrics(Host host);
+
         /// <summary>
         /// Initialize metrics with the provided session.
         /// </summary>
@@ -42,6 +48,12 @@ namespace Cassandra.Metrics.Internal
         /// 
         /// </summary>
         void RemoveNodeMetrics(Host host);
+
+        /// <summary>
+        /// Removes node metrics without invoking provider callbacks. The caller owns
+        /// disposal of the returned metrics, or receives null when none exist.
+        /// </summary>
+        INodeMetrics DetachNodeMetrics(Host host);
 
         /// <summary>
         /// Whether SessionMetrics of type Timer are enabled.

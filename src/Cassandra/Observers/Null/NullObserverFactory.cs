@@ -14,6 +14,7 @@
 //   limitations under the License.
 //
 
+using Cassandra.Metrics.Registries;
 using Cassandra.Observers.Abstractions;
 
 namespace Cassandra.Observers.Null
@@ -28,6 +29,11 @@ namespace Cassandra.Observers.Null
         }
 
         public IConnectionObserver CreateConnectionObserver(Host host)
+        {
+            return NullConnectionObserver.Instance;
+        }
+
+        public IConnectionObserver CreateConnectionObserver(Host host, INodeMetrics nodeMetrics)
         {
             return NullConnectionObserver.Instance;
         }
