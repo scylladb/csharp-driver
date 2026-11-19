@@ -133,6 +133,12 @@ namespace Cassandra.Connections
         internal Socket Socket => _socket;
 
         /// <summary>
+        /// Gets or sets the clock of the connect timeout of the TLS handshake, which tests replace to expire the
+        /// timeout when they choose.
+        /// </summary>
+        internal TimeProvider TimeProvider { get; set; } = TimeProvider.System;
+
+        /// <summary>
         /// Sets a TCP keep-alive option when it is configured. When the platform doesn't support the option or rejects
         /// the value, the socket keeps the platform's setting: the connection works without it, so a warning is logged,
         /// once per option, instead of failing the connection. Returns false in that case.
@@ -270,34 +276,55 @@ namespace Cassandra.Connections
             TcpSocket.Logger.Verbose("Socket connected, starting SSL client authentication");
             //Stream mode: not the most performant but it has ssl support
             TcpSocket.Logger.Verbose("Starting SSL authentication");
-            var sslStream = new SslStream(new NetworkStream(_socket), false, SSLOptions.RemoteCertValidationCallback, null);
+            var sslStream = new SslStream(new NetworkStream(_socket), false);
             _socketStream = sslStream;
 
-            // The handshake may never complete, so bound it (including the server name resolution) by the connect
-            // timeout.
-            var authentication = AuthenticateAsync(sslStream);
+            // The handshake may never complete, so the connect timeout bounds it, including the server name
+            // resolution, and cancels it when it expires. The wait is bounded separately: cancellation doesn't
+            // interrupt synchronous work in the handshake, such as the options or certificate validation callbacks
+            // or an online revocation check.
+            var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(Options.ConnectTimeoutMillis), TimeProvider);
+            var serverName = EndPoint.GetServerNameAsync();
+
+            // On the thread pool, so that the wait starts before the options callback, which runs synchronously
+            // when the server name is already resolved.
+            var authentication = Task.Run(() => AuthenticateAsync(sslStream, serverName, timeout.Token), timeout.Token);
             try
             {
-                await authentication.WaitAsync(TimeSpan.FromMilliseconds(Options.ConnectTimeoutMillis)).ConfigureAwait(false);
+                await authentication.WaitAsync(timeout.Token).ConfigureAwait(false);
             }
-            catch (TimeoutException ex) when (!(authentication.IsFaulted && authentication.Exception.InnerExceptions.Contains(ex)))
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
             {
-                // The handshake may still fail later; keep that failure from going unobserved.
+                // The server name resolution can't be cancelled, and the handshake may end after the wait: keep
+                // their failures from going unobserved.
+                serverName.Forget();
                 authentication.Forget();
                 throw new TimeoutException("The timeout period elapsed prior to completion of SSL authentication operation.");
             }
+            finally
+            {
+                // A handshake that is still running may still use the token. The timer of a source that isn't
+                // disposed has already fired.
+                if (authentication.IsCompleted)
+                {
+                    timeout.Dispose();
+                }
+            }
+
             TcpSocket.Logger.Verbose("SSL authentication successful");
             ReceiveAsync();
             return true;
         }
 
-        private async Task AuthenticateAsync(SslStream sslStream)
+        private async Task AuthenticateAsync(SslStream sslStream, Task<string> serverName, CancellationToken token)
         {
-            await sslStream.AuthenticateAsClientAsync(await EndPoint.GetServerNameAsync().ConfigureAwait(false),
-                                                      SSLOptions.CertificateCollection,
-                                                      SSLOptions.SslProtocol,
-                                                      SSLOptions.CheckCertificateRevocation)
-                           .ConfigureAwait(false);
+            var name = await serverName.WaitAsync(token).ConfigureAwait(false);
+
+            // WaitAsync doesn't check the token when the name is already resolved: don't call the options callback
+            // once the connection timed out
+            token.ThrowIfCancellationRequested();
+            var options = SSLOptions.CreateClientAuthenticationOptions(name);
+            await sslStream.AuthenticateAsClientAsync(options, token).ConfigureAwait(false);
         }
 
         /// <summary>

@@ -41,6 +41,7 @@ namespace Cassandra
         private bool _checkCertificateRevocation;
         private X509CertificateCollection _certificateCollection = new X509CertificateCollection();
         private Func<IPAddress, string> _hostNameResolver = GetHostName;
+        private Action<SslClientAuthenticationOptions> _clientAuthenticationOptionsCallback;
 
         /// <summary>
         /// Verifies Cassandra host SSL certificate used for authentication.
@@ -59,11 +60,14 @@ namespace Cassandra
         /// installs by default and .NET's own validation (used when the callback is <c>null</c>) reject that, so
         /// the host name is verified in both cases. An application supplied callback decides for itself and what
         /// it decides is not introspectable, so the answer is <c>null</c> rather than <c>false</c>: the driver
-        /// cannot vouch for the verification, but neither can it claim the host name goes unchecked.
+        /// cannot vouch for the verification, but neither can it claim the host name goes unchecked. The same
+        /// applies to a <see cref="ClientAuthenticationOptionsCallback"/>, which can replace the validation callback
+        /// or the target host.
         /// </para>
         /// </summary>
         internal bool? VerifiesHostName =>
-            _remoteCertValidationCallback == null || _remoteCertValidationCallback == SSLOptions.DefaultCertValidationCallback
+            _clientAuthenticationOptionsCallback == null
+            && (_remoteCertValidationCallback == null || _remoteCertValidationCallback == SSLOptions.DefaultCertValidationCallback)
                 ? true
                 : (bool?)null;
 
@@ -97,6 +101,15 @@ namespace Cassandra
         public X509CertificateCollection CertificateCollection
         {
             get { return _certificateCollection; }
+        }
+
+        /// <summary>
+        /// Gets the callback that adjusts the options of each TLS handshake, or <c>null</c> when none is set.
+        /// </summary>
+        /// <seealso cref="SetClientAuthenticationOptionsCallback"/>
+        public Action<SslClientAuthenticationOptions> ClientAuthenticationOptionsCallback
+        {
+            get { return _clientAuthenticationOptionsCallback; }
         }
 
         /// <summary>
@@ -157,6 +170,71 @@ namespace Cassandra
         {
             _remoteCertValidationCallback = callback;
             return this;
+        }
+
+        /// <summary>
+        /// Sets a callback that adjusts the options of each TLS handshake, for settings that the other
+        /// methods of these SSL options don't cover, such as
+        /// <see cref="SslClientAuthenticationOptions.CipherSuitesPolicy"/>,
+        /// <see cref="SslClientAuthenticationOptions.ApplicationProtocols"/>,
+        /// <see cref="SslClientAuthenticationOptions.CertificateChainPolicy"/> or
+        /// <see cref="SslClientAuthenticationOptions.ClientCertificateContext"/>.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The driver calls the callback for each connection, with new options that already hold the server name
+        /// (<see cref="SslClientAuthenticationOptions.TargetHost"/>), and the client certificates, protocols,
+        /// revocation check and certificate validation callback of these SSL options. Changes the callback makes
+        /// apply to that connection only, and override those values.
+        /// </para>
+        /// <para>
+        /// A certificate chain policy replaces the chain policy that .NET builds from these options, so its
+        /// <see cref="X509ChainPolicy.RevocationMode"/> applies instead of the revocation check of these SSL options.
+        /// A new <see cref="X509ChainPolicy"/> checks revocation online, which fails for a certificate without a
+        /// revocation endpoint.
+        /// </para>
+        /// <para>
+        /// The client certificates are a new collection for each connection, so the callback can add or remove
+        /// certificates, but the certificates in it are shared: the callback must not modify or dispose them. After
+        /// <see cref="SetCertificateCollection"/> with <c>null</c>, the collection is <c>null</c>, and the callback
+        /// must create one to add certificates.
+        /// </para>
+        /// <para>
+        /// The callback must make its changes before it returns, so don't pass an async lambda. It compiles to an
+        /// <c>async void</c> method: the changes it makes once it yields come after the handshake started, and an
+        /// exception it throws, even before it yields, is raised on the thread pool and terminates the process.
+        /// </para>
+        /// <para>
+        /// The callback can run concurrently for different connections. An exception it throws fails the connection.
+        /// </para>
+        /// </remarks>
+        /// <param name="callback">The callback, or <c>null</c> to remove it.</param>
+        /// <returns>This instance.</returns>
+        public SSLOptions SetClientAuthenticationOptionsCallback(Action<SslClientAuthenticationOptions> callback)
+        {
+            _clientAuthenticationOptionsCallback = callback;
+            return this;
+        }
+
+        /// <summary>
+        /// Creates the options of one TLS handshake, with the server name <paramref name="targetHost"/>.
+        /// </summary>
+        internal SslClientAuthenticationOptions CreateClientAuthenticationOptions(string targetHost)
+        {
+            // The same options that SslStream.AuthenticateAsClientAsync(string, X509CertificateCollection,
+            // SslProtocols, bool) builds, with the validation callback that SslStream's constructor used to take.
+            // The collection is copied, so that a callback that adds or removes certificates only changes this
+            // connection's. The certificates themselves are shared.
+            var options = new SslClientAuthenticationOptions
+            {
+                TargetHost = targetHost,
+                ClientCertificates = _certificateCollection == null ? null : new X509CertificateCollection(_certificateCollection),
+                EnabledSslProtocols = _sslProtocol,
+                CertificateRevocationCheckMode = _checkCertificateRevocation ? X509RevocationMode.Online : X509RevocationMode.NoCheck,
+                RemoteCertificateValidationCallback = _remoteCertValidationCallback,
+            };
+            _clientAuthenticationOptionsCallback?.Invoke(options);
+            return options;
         }
 
         private static bool ValidateServerCertificate(

@@ -1061,6 +1061,24 @@ namespace Cassandra.Tests.Requests
         }
 
         [Test]
+        public void Should_OmitHostnameVerification_When_TheApplicationAdjustsTheHandshakeOptions()
+        {
+            // The callback can replace the validation callback, the target host or the chain policy, so with the
+            // default validation callback the driver still cannot vouch for the verification.
+            var sslOptions = new SSLOptions().SetClientAuthenticationOptionsCallback(_ => { });
+            var config = new TestConfigurationBuilder
+            {
+                ProtocolOptions = new ProtocolOptions(ProtocolOptions.DefaultPort, sslOptions)
+            }.Build();
+
+            var report = DriverConfigReporterTests.BuildReport(config);
+
+            Assert.IsNotNull(report["connection"]["tls"]);
+            Assert.IsNull(report["connection"]["tls"]["hostname-verification"]);
+            DriverConfigReporterTests.AssertConformsToSchema(report);
+        }
+
+        [Test]
         public void Should_ReportHostnameVerification_When_TheValidationCallbackIsNull()
         {
             // A null callback leaves .NET's own certificate validation in place, which does verify the host name.
