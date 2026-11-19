@@ -234,15 +234,58 @@ namespace Cassandra
         private async Task Warmup()
         {
             var hosts = _cluster.AllHosts().Where(h => _cluster.RetrieveAndSetDistance(h) == HostDistance.Local).ToArray();
-            var tasks = new Task[hosts.Length];
+            var poolCreations = new Task<Task>[hosts.Length];
             for (var i = 0; i < hosts.Length; i++)
             {
-                var host = hosts[i];
-                var pool = InternalRef.GetOrCreateConnectionPool(host, HostDistance.Local);
-                tasks[i] = pool.Warmup();
+                try
+                {
+                    var pool = InternalRef.GetOrCreateConnectionPool(hosts[i], HostDistance.Local);
+                    poolCreations[i] = Task.FromResult(pool.Warmup());
+                }
+                catch (Exception failure) when (!Utils.IsFatalException(failure))
+                {
+                    // Include ordinary synchronous setup in the fatal-priority aggregation.
+                    poolCreations[i] = Task.FromException<Task>(failure);
+                }
             }
 
-            var allWarmups = Task.WhenAll(tasks);
+            // Keep setup failures outside the recoverable asynchronous-warmup catch.
+            var allCreations = Task.WhenAll(poolCreations);
+            Task[] hostWarmups;
+            try
+            {
+                hostWarmups = await allCreations.ConfigureAwait(false);
+            }
+            catch
+            {
+                var fatal = allCreations.Exception?.Flatten().InnerExceptions.FirstOrDefault(Utils.IsFatalException);
+                if (fatal != null)
+                {
+                    ExceptionDispatchInfo.Capture(fatal).Throw();
+                }
+
+                // Setup may fail after other hosts have started opening. Observe
+                // those warmups too, so their fatal failures keep priority.
+                var completedCreations = await Task.WhenAll(poolCreations
+                    .Where(creation => creation.Status == TaskStatus.RanToCompletion)).ConfigureAwait(false);
+                var startedWarmups = Task.WhenAll(completedCreations);
+                try
+                {
+                    await startedWarmups.ConfigureAwait(false);
+                }
+                catch (Exception failure) when (!Utils.IsFatalException(failure))
+                {
+                    fatal = startedWarmups.Exception?.Flatten().InnerExceptions.FirstOrDefault(Utils.IsFatalException);
+                    if (fatal != null)
+                    {
+                        ExceptionDispatchInfo.Capture(fatal).Throw();
+                    }
+                }
+
+                throw;
+            }
+
+            var allWarmups = Task.WhenAll(hostWarmups);
             try
             {
                 await allWarmups.ConfigureAwait(false);
@@ -255,14 +298,14 @@ namespace Cassandra
                     ExceptionDispatchInfo.Capture(fatal).Throw();
                 }
 
-                if (tasks.Any(t => t.Status == TaskStatus.RanToCompletion))
+                if (hostWarmups.Any(t => t.Status == TaskStatus.RanToCompletion))
                 {
                     // At least 1 of the warmup tasks completed
                     return;
                 }
 
                 // Log and continue as the ControlConnection is connected
-                Session.Logger.Error($"Connection pools for {hosts.Length} host(s) failed to be warmed up");
+                Session.Logger.Error($"Connection pools for {hostWarmups.Length} host(s) failed to be warmed up");
             }
         }
 
