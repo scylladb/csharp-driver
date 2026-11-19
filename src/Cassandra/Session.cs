@@ -403,7 +403,14 @@ namespace Cassandra
         {
             if (!_connectionPool.TryGetValue(host, out var pool))
             {
-                Session.Logger.Error("Internal error: No host connection pool found");
+                // A host can retire after a request acquires its connection and before
+                // the timeout callback. Close this defunct connection immediately
+                // rather than waiting for the retired pool to finish draining.
+                if (HostConnectionPool.IsDefunct(connection, Configuration.SocketOptions, host.Address))
+                {
+                    connection.Dispose();
+                }
+
                 return;
             }
             pool.CheckHealth(connection);

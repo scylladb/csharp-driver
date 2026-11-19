@@ -301,10 +301,12 @@ namespace Cassandra.Requests
             var inFlight = new JObject { ["max"] = maxRequests };
 
             // The requests a client stopped waiting for, whose stream identifiers cannot be reused: the driver
-            // counts timed-out operations per connection and HostConnectionPool.CheckHealth closes and replaces
-            // a connection once it reaches this threshold. Required and non-negative, and
-            // SetDefunctReadTimeoutThreshold does not validate its argument; a threshold of 0 or below both mean
-            // the connection goes on the first timed-out operation, so clamping is exact rather than invented.
+            // counts timed-out operations per connection. Pool and session health checks share the threshold
+            // for closing a defunct connection. Active pools replace closed connections;
+            // after host retirement the session closes the connection while its pool drains.
+            // The reported limit is required and must be non-negative. SetDefunctReadTimeoutThreshold does not
+            // validate its argument; any threshold of 0 or below closes the connection on the first timed-out
+            // operation, so clamping the reported limit preserves the threshold's meaning.
             var orphaned = new JObject
             {
                 ["max"] = Math.Max(0, _configuration.SocketOptions.DefunctReadTimeoutThreshold)
