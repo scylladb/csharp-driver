@@ -19,6 +19,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using Cassandra.Mapping.TypeConversion;
+using Cassandra.Serialization;
 using Cassandra.Tests.TestAttributes;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
@@ -29,6 +30,12 @@ namespace Cassandra.Tests.Mapping
     [TestFixture]
     public class TypeConverterTests : MappingTestBase
     {
+        public enum UdtColor
+        {
+            Red,
+            Green
+        }
+
         [Test]
         public void GetFromDbConverter_Should_Convert_From_Guid_Array_To_Sorted_Set()
         {
@@ -164,6 +171,37 @@ namespace Cassandra.Tests.Mapping
             Assert.Throws<InvalidCastException>(() => TestGetFromDbConverter<TSource, TResult>(src, false));
         }
 
+        [Test]
+        public void ConvertToDbFromUdtFieldValue_Should_Convert_A_Nullable_Enum_To_A_String()
+        {
+            var converter = new DefaultTypeConverter();
+
+            // The database type is a class, which can't be made nullable
+            Assert.AreEqual("Green", converter.ConvertToDbFromUdtFieldValue(typeof(UdtColor?), typeof(string), UdtColor.Green));
+            Assert.IsNull(converter.ConvertToDbFromUdtFieldValue(typeof(UdtColor?), typeof(string), null));
+            Assert.AreEqual(5, converter.ConvertToDbFromUdtFieldValue(typeof(int?), typeof(int), 5));
+        }
+
+        [Test]
+        [TestCase(UdtColor.Green)]
+        [TestCase(null)]
+        public void Udt_Should_Encode_And_Decode_A_Nullable_Enum_Field_Of_Type_Text(UdtColor? color)
+        {
+            var serializerManager = new SerializerManager(ProtocolVersion.V4);
+            var udtInfo = new UdtColumnInfo("ks1.paint");
+            udtInfo.Fields.Add(new ColumnDesc { Name = "color", TypeCode = ColumnTypeCode.Text });
+            var udtMap = UdtMap.For<PaintUdt>();
+            udtMap.SetSerializer(serializerManager.GetCurrentSerializer());
+            udtMap.Build(udtInfo);
+            serializerManager.SetUdtMap("ks1.paint", udtMap);
+            var serializer = serializerManager.GetCurrentSerializer();
+
+            var decoded = (PaintUdt)serializer.Deserialize(
+                serializer.Serialize(new PaintUdt { Color = color }), ColumnTypeCode.Udt, udtInfo);
+
+            Assert.AreEqual(color, decoded.Color);
+        }
+
         private static TResult TestGetFromDbConverter<TSource, TResult>(TSource value, bool compare = true)
         {
             var converter = new DefaultTypeConverter();
@@ -175,6 +213,11 @@ namespace Cassandra.Tests.Mapping
                 CollectionAssert.AreEqual((IEnumerable)value, (IEnumerable)convertedValue, new LooseComparer());
             }
             return convertedValue;
+        }
+
+        public class PaintUdt
+        {
+            public UdtColor? Color { get; set; }
         }
     }
 

@@ -126,13 +126,11 @@ namespace Cassandra.Mapping.TypeConversion
         /// </summary>
         internal object ConvertToDbFromUdtFieldValue(Type valueType, Type dbType, object value)
         {
-            if (valueType.GetTypeInfo().IsGenericType && valueType.GetGenericTypeDefinition() == typeof(Nullable<>))
+            // A nullable of the database type needs no conversion. The database type can be a class, such as string
+            // for a nullable enum, which can't be made nullable.
+            if (Nullable.GetUnderlyingType(valueType) == dbType)
             {
-                var nullableType = typeof(Nullable<>).MakeGenericType(dbType);
-                if (valueType == nullableType)
-                {
-                    return value;
-                }
+                return value;
             }
 
             var converter = GetToDbConverter(valueType, dbType);
