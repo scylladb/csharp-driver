@@ -13,21 +13,27 @@ There are two categories of metrics:
 
 **Metric names** are path-like, dot-separated strings. An example is `errors.connection.init`. Metrics are represented by the classes `SessionMetric` and `NodeMetric`. These classes have `public static readonly` properties with all individual metrics that can be enabled on the driver. For instance, `NodeMetric.Counters.ConnectionInitErrors` is a `NodeMetric` object with a `Name` property that returns `errors.connection.init`.
 
-Metrics are grouped into **buckets** and each bucket has a name. The most common scenario is to concatenate the bucket name with the metric name which is what the [App.Metrics provider] does. The bucket name is the name of the session (see `Builder.WithSessionName()`) and, in the case of node-level metrics, nodes followed by a textual representation of the node’s address. If the client application specifies a bucket prefix with `DriverMetricsOptions.SetBucketPrefix()`, the driver will prepend that prefix to the bucket name.
+Metrics are grouped into **buckets** and each bucket has a name. The most common scenario is to concatenate the bucket name with the metric name which is what the [App.Metrics provider] does. The bucket name is the name of the session (see `Builder.WithSessionName()`) and, in the case of node-level metrics, nodes followed by the node’s Host ID. If the client application specifies a bucket prefix with `DriverMetricsOptions.SetBucketPrefix()`, the driver will prepend that prefix to the bucket name.
 
 Here is an example of a session metric and a node metric without a bucket prefix and how their structure looks like:
 
-| Bucket                            | Name                    | Metric                                 |
-|-----------------------------------|-------------------------|----------------------------------------|
-| `s0`                              | `connected-nodes`       | `SessionMetric.Gauges.ConnectedNodes`  |
-| `s0.nodes.127_0_0_1:9042`         | `pool.open-connections` | `NodeMetric.Gauges.OpenConnections`    |
+| Bucket                                          | Name                    | Metric                                |
+|-------------------------------------------------|-------------------------|---------------------------------------|
+| `s0`                                            | `connected-nodes`       | `SessionMetric.Gauges.ConnectedNodes` |
+| `s0.nodes.00112233-4455-6677-8899-aabbccddeeff` | `pool.open-connections` | `NodeMetric.Gauges.OpenConnections`   |
 
 Here are the same examples but with a bucket prefix set in the `Builder`:
 
-| Bucket                            | Name                    | Metric                                 |
-|-----------------------------------|-------------------------|----------------------------------------|
-| `prefix.s0`                       | `connected-nodes`       | `SessionMetric.Gauges.ConnectedNodes`  |
-| `prefix.s0.nodes.127_0_0_1:9042`  | `pool.open-connections` | `NodeMetric.Gauges.OpenConnections`    |
+| Bucket                                                 | Name                    | Metric                                |
+|--------------------------------------------------------|-------------------------|---------------------------------------|
+| `prefix.s0`                                            | `connected-nodes`       | `SessionMetric.Gauges.ConnectedNodes` |
+| `prefix.s0.nodes.00112233-4455-6677-8899-aabbccddeeff` | `pool.open-connections` | `NodeMetric.Gauges.OpenConnections`   |
+
+### Node identity and bucket names
+
+Node buckets use the server Host ID in UUID format. A node keeps its bucket when its advertised address changes. Nodes with different Host IDs have separate buckets, even when they reuse an address. Removal and return with the same Host ID use the same bucket. Unidentified custom hosts use a unique `custom-<UUID>` bucket token; this token is not a server Host ID.
+
+This replaces the previous address-based node bucket names. Update dashboards, alerts, and provider integrations that matched the old names. Session bucket names are unchanged.
 
 ## Configuration
 

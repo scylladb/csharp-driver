@@ -4,6 +4,36 @@ The purpose of this guide is to detail the changes made by the successive versio
 
 ## Unreleased
 
+### Node identity and node metric names
+
+Discovered nodes are identified by their immutable server Host ID. `Host.Equals` and `GetHashCode`
+use that ID, rather than the advertised endpoint. A node changing its endpoint retains its `Host`,
+pool ownership, and metrics. Open connections keep their existing transport endpoint; new connection
+attempts use the host's current endpoint after topology learns the change. A client-route control
+connection uses fresh local metadata to update the advertised endpoint while retaining its proxy
+connection. Different Host IDs at the same address represent distinct nodes. Address-based `GetHost`
+lookups remain available, returning `null` when the endpoint is ambiguous.
+
+`new Host(address, reconnectionPolicy)` creates an unidentified custom host with an empty Host ID.
+Such objects compare by reference; two objects with the same address are not equal. Applications
+should obtain discovered hosts from cluster metadata when they need server identity. Discovery
+requires a nonempty local Host ID and skips peer rows without one. Custom load-balancing policies
+must reuse the same unidentified `Host` object to reuse its pool and metric bucket. Discovery does
+not remove these custom objects. Their pools and metric buckets remain until the session is disposed,
+so creating new custom hosts for each query plan can grow these resources without bound. Use hosts
+from cluster metadata for a topology-managed lifecycle.
+
+Node metric buckets now use `session.nodes.<host-id>`, replacing `session.nodes.<address>`.
+Unidentified custom hosts have distinct `session.nodes.custom-<UUID>` buckets. Update dashboards and
+provider integrations accordingly. No framework, SDK, or language-version policy changes accompany
+this migration.
+
+`HostAdded` and `HostRemoved` notifications need not form pairs. A queued addition can be skipped if
+its exact `Host` has been removed before dispatch, while its removal is still reported. When a Host
+ID returns, discovery creates a new `Host` object and queues a new `HostAdded` notification, subject
+to the same dispatch check. An old public removal is skipped if its Host ID is present again at
+dispatch. Callback invocation is not serialized with concurrent topology refreshes.
+
 ### Local consistency defaults
 
 Statements and batches executed through `ISession` now default to `LOCAL_QUORUM`. For clusters

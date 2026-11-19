@@ -402,16 +402,19 @@ namespace Cassandra.IntegrationTests.Core
             using (var cluster = ClusterBuilder().AddContactPoint(_realCluster.Value.InitialContactPoint).Build())
             {
                 var session = (IInternalSession)cluster.Connect();
-                session.CreateKeyspaceIfNotExists("ks1");
+                session.CreateKeyspaceIfNotExists("ks1", ReplicationStrategies.CreateSimpleStrategyReplicationProperty(1));
                 var hosts = session.Cluster.AllHosts().OrderBy(h => h.Address.ToString()).ToArray();
                 Assert.AreEqual(3, hosts.Length);
                 Assert.AreEqual(3, session.GetPools().Count());
                 Assert.IsNotNull(session.GetExistingPool(oldEndPoint));
+                var originalHost = session.Cluster.GetHost(oldEndPoint);
+                var originalPool = session.GetExistingPool(oldEndPoint);
                 Assert.IsTrue(hosts.Select(h => h.Address.Address.ToString()).SequenceEqual(addresses));
                 var tokenMap = session.Cluster.Metadata.TokenToReplicasMap;
                 var oldHostTokens = tokenMap.GetByKeyspace("ks1")
                                      .Where(kvp =>
-                                         kvp.Value.First().Address.Address.ToString().Equals(oldIp));
+                                         kvp.Value.First().Address.Address.ToString().Equals(oldIp))
+                                     .Select(kvp => kvp.Key).ToArray();
 
                 _realCluster.Value.Stop(3);
                 _realCluster.Value.UpdateConfig(
@@ -440,8 +443,9 @@ namespace Cassandra.IntegrationTests.Core
 
                 hosts = session.Cluster.AllHosts().ToArray();
                 Assert.AreEqual(3, hosts.Length);
-                Assert.IsTrue(hosts.Select(h => h.Address.Address.ToString()).SequenceEqual(newAddresses));
-                Assert.IsTrue(newHostTokens.Select(h => h.Key).SequenceEqual(oldHostTokens.Select(h => h.Key)));
+                CollectionAssert.AreEquivalent(newAddresses.Select(IPAddress.Parse), hosts.Select(h => h.Address.Address));
+                CollectionAssert.AreEquivalent(oldHostTokens, newHostTokens.Select(h => h.Key));
+                Assert.AreSame(originalHost, session.Cluster.GetHost(newEndPoint));
 
                 // force session to open connection to the new node
                 foreach (var i in Enumerable.Range(0, 5))
@@ -452,6 +456,7 @@ namespace Cassandra.IntegrationTests.Core
                 Assert.AreEqual(3, session.GetPools().Count());
                 Assert.IsNull(session.GetExistingPool(oldEndPoint));
                 Assert.IsNotNull(session.GetExistingPool(newEndPoint));
+                Assert.AreSame(originalPool, session.GetExistingPool(newEndPoint));
             }
         }
     }

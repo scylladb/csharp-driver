@@ -33,7 +33,7 @@ namespace Cassandra.Tests.TestHelpers
                     { "release_version", "3.11.1" },
                     { "tokens", tokens?.ToList() ?? new List<string> { "1" }}
                 });
-            var host = new Host(new IPEndPoint(IPAddress.Parse(ipAddress), 9042), contactPoint: null);
+            var host = new Host(hostId.Value, new IPEndPoint(IPAddress.Parse(ipAddress), 9042), contactPoint: null);
             host.SetInfo(row);
             return host;
         }

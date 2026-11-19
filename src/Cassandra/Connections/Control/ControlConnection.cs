@@ -185,11 +185,12 @@ namespace Cassandra.Connections.Control
                 refreshEndpoints,
                 () =>
                 {
-                    if (host.ContactPoint != null && attempt.AttemptedContactPoints.TryAdd(host.ContactPoint, null))
+                    var contactPoint = host.ContactPoint;
+                    if (contactPoint != null && attempt.AttemptedContactPoints.TryAdd(contactPoint, null))
                     {
                         return CreateSingleResolutionPlan(
                             () => ResolveContactPoint(
-                                host.ContactPoint,
+                                contactPoint,
                                 refreshContactPoints,
                                 attempt));
                     }
@@ -1208,7 +1209,17 @@ namespace Cassandra.Connections.Control
 
                 if (e is StatusChangeEventArgs args)
                 {
-                    HandleStatusChangeEvent(args);
+                    // Address-only events cannot identify a node at an ambiguous or
+                    // unresolved endpoint. Reconcile topology instead of choosing an ID.
+                    var address = TranslateAddress(args.Address) ?? args.Address;
+                    ControlConnection.Logger.Info("Received Node status change event: host {0} is {1}", address, args.What.ToString().ToUpperInvariant());
+                    if (!_metadata.Hosts.TryGet(address, out var host) || !HandleStatusChangeEvent(args, address, host))
+                    {
+                        ControlConnection.Logger.Info(
+                            "Status change event for host {0} could not be applied: the endpoint is unknown, ambiguous, or no longer belongs to the selected host. Refreshing topology.",
+                            address);
+                        await ScheduleHostsRefreshAsync().ConfigureAwait(false);
+                    }
                     return;
                 }
 
@@ -1266,29 +1277,16 @@ namespace Cassandra.Connections.Control
             return ScheduleObjectRefreshAsync(ssc.Keyspace, processNow, handler);
         }
 
-        private void HandleStatusChangeEvent(StatusChangeEventArgs e)
+        private bool HandleStatusChangeEvent(StatusChangeEventArgs e, IPEndPoint address, Host host)
         {
-            //The address in the Cassandra event message needs to be translated
-            var address = TranslateAddress(e.Address);
-            ControlConnection.Logger.Info("Received Node status change event: host {0} is {1}", address, e.What.ToString().ToUpperInvariant());
-            if (!_metadata.Hosts.TryGet(address, out var host))
-            {
-                ControlConnection.Logger.Info("Received status change event for host {0} but it was not found", address);
-                return;
-            }
             var distance = _cluster.RetrieveAndSetDistance(host);
             if (distance != HostDistance.Ignored)
             {
                 // We should not consider events for status changes
                 // We should trust the pools.
-                return;
+                return true;
             }
-            if (e.What == StatusChangeEventArgs.Reason.Up)
-            {
-                host.BringUpIfDown();
-                return;
-            }
-            host.SetDown();
+            return _metadata.Hosts.TrySetStatus(address, host, e.What == StatusChangeEventArgs.Reason.Up);
         }
 
         private IPEndPoint TranslateAddress(IPEndPoint value)
@@ -1422,11 +1420,10 @@ namespace Cassandra.Connections.Control
             {
                 yield return hosts[index++];
                 // Check that the collection changed
-                var newHosts = _metadata.Hosts.ToCollection();
-                if (newHosts.Count != hosts.Length)
+                if (_metadata.Hosts.Count != hosts.Length)
                 {
                     index = 0;
-                    hosts = newHosts.ToArray();
+                    hosts = _metadata.Hosts.ToArray();
                 }
             }
         }

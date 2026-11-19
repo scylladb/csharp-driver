@@ -14,6 +14,7 @@
 //   limitations under the License.
 //
 
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading.Tasks;
@@ -27,6 +28,11 @@ namespace Cassandra.SessionManagement
     /// <inheritdoc />
     internal interface IInternalCluster : ICluster
     {
+        /// <summary>
+        /// Notifies internal consumers of a removed Host instance, even when its identity has already returned.
+        /// </summary>
+        event Action<Host> HostRetired;
+
         bool AnyOpenConnections(Host host);
 
         /// <summary>

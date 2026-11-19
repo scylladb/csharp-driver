@@ -67,12 +67,16 @@ namespace Cassandra
         ICollection<Host> AllHosts();
 
         /// <summary>
-        /// Event that gets triggered when a new host is added to the cluster
+        /// Event that gets triggered when a new host is added to the cluster.
+        /// A queued addition can be skipped if its Host was removed before dispatch.
         /// </summary>
         event Action<Host> HostAdded;
 
         /// <summary>
-        /// Event that gets triggered when a host has been removed from the cluster
+        /// Event that gets triggered when a host has been removed from the cluster.
+        /// A removal can have no earlier HostAdded notification if its queued addition was skipped.
+        /// If the same Host ID is present again at dispatch, the old public removal is skipped.
+        /// Notifications are not serialized with concurrent topology refreshes.
         /// </summary>
         event Action<Host> HostRemoved;
 
@@ -104,7 +108,7 @@ namespace Cassandra
         /// Get the host instance for a given Ip address.
         /// </summary>
         /// <param name="address">Ip address of the host</param>
-        /// <returns>The host or null if not found</returns>
+        /// <returns>The host, or null if the address is unknown or shared by multiple discovered hosts</returns>
         Host GetHost(IPEndPoint address);
 
         /// <summary>

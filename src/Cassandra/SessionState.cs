@@ -64,15 +64,11 @@ namespace Cassandra
 
         internal static SessionState From(IInternalSession session)
         {
-            var pools = session.GetPools();
+            var pools = session.GetNodePools();
             var result = new Dictionary<Host, HostStateInfo>();
             foreach (var kv in pools)
             {
-                var host = session.Cluster.GetHost(kv.Key);
-                if (host == null)
-                {
-                    continue;
-                }
+                var host = kv.Key;
                 result[host] = new HostStateInfo(kv.Value);
             }
             return new SessionState(result);

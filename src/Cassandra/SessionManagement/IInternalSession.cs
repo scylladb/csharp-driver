@@ -47,7 +47,8 @@ namespace Cassandra.SessionManagement
         IHostConnectionPool GetOrCreateConnectionPool(Host host, HostDistance distance);
 
         /// <summary>
-        /// Gets a snapshot of the connection pools
+        /// Gets all session pools projected onto their current addresses, including retired hosts
+        /// awaiting cleanup. Distinct hosts can produce duplicate address keys.
         /// </summary>
         IEnumerable<KeyValuePair<IPEndPoint, IHostConnectionPool>> GetPools();
 
@@ -55,6 +56,18 @@ namespace Cassandra.SessionManagement
         /// Gets the existing connection pool for this host and session or null when it does not exists
         /// </summary>
         IHostConnectionPool GetExistingPool(IPEndPoint address);
+
+        /// <summary>
+        /// Gets the pool for the host's identity, or null if none exists. Discovered hosts use
+        /// their Host ID; unidentified custom hosts use object identity.
+        /// </summary>
+        IHostConnectionPool GetExistingPool(Host host);
+
+        /// <summary>
+        /// Gets a snapshot of pools whose discovered Host IDs remain in metadata, plus all
+        /// unidentified custom-host pools. Each entry retains its host identity.
+        /// </summary>
+        IEnumerable<KeyValuePair<Host, IHostConnectionPool>> GetNodePools();
 
         void CheckHealth(Host host, IConnection connection);
 

@@ -121,12 +121,13 @@ namespace Cassandra.Requests
             string effectiveKeyspace)
         {
             var triedHosts = new Dictionary<IPEndPoint, Exception>();
+            var failedHosts = new Dictionary<Host, Exception>();
 
             while (true)
             {
                 // It may throw a NoHostAvailableException which we should yield to the caller
                 var hostConnectionTuple = await GetNextConnection(
-                    session, queryPlan, triedHosts, connectionKeyspace).ConfigureAwait(false);
+                    session, queryPlan, triedHosts, failedHosts, connectionKeyspace).ConfigureAwait(false);
                 var connection = hostConnectionTuple.Item2;
                 var host = hostConnectionTuple.Item1;
                 var nodeRequestInfo = new NodeRequestInfo(host, info.PrepareRequest ?? new PrepareRequest(request.Query, request.Keyspace));
@@ -147,8 +148,8 @@ namespace Cassandra.Requests
                     var prepareResult = new PrepareResult
                     {
                         PreparedStatement = preparedStatement,
-                        TriedHosts = triedHosts,
-                        HostAddress = host.Address
+                        FailedHosts = failedHosts,
+                        Host = host
                     };
                     await observer.OnNodeSuccessAsync(info, nodeRequestInfo).ConfigureAwait(false);
                     return prepareResult;
@@ -163,6 +164,7 @@ namespace Cassandra.Requests
                     if (PrepareHandler.CanBeRetried(ex))
                     {
                         triedHosts[host.Address] = ex;
+                        failedHosts[host] = ex;
                     }
                     else
                     {
@@ -186,17 +188,24 @@ namespace Cassandra.Requests
             IInternalSession session,
             IEnumerator<RoutingTarget> queryPlan,
             Dictionary<IPEndPoint, Exception> triedHosts,
+            IDictionary<Host, Exception> failedHosts,
             string connectionKeyspace)
         {
             Host host;
             while ((host = GetNextHost(queryPlan, out HostDistance distance)) != null)
             {
+                var attemptErrors = new Dictionary<IPEndPoint, Exception>();
                 var connection = await RequestHandler.GetConnectionFromHostWithKeyspaceAsync(
-                    host, distance, session, triedHosts, connectionKeyspace).ConfigureAwait(false);
+                    host, distance, session, attemptErrors, connectionKeyspace).ConfigureAwait(false);
+                foreach (var error in attemptErrors)
+                {
+                    triedHosts[error.Key] = error.Value;
+                }
                 if (connection != null)
                 {
                     return Tuple.Create(host, connection);
                 }
+                failedHosts[host] = attemptErrors.Values.FirstOrDefault();
             }
             throw new NoHostAvailableException(triedHosts);
         }

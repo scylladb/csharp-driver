@@ -17,6 +17,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using System.Runtime.ExceptionServices;
+using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Responses;
 using Cassandra.Serialization;
@@ -35,6 +37,9 @@ namespace Cassandra.Connections.Control
 
         private readonly Configuration _config;
         private readonly Metadata _metadata;
+        private readonly Lock _refreshLock = new Lock();
+        private long _refreshSequence;
+        private long _lastAppliedRefresh;
 
         /// <summary>
         /// Once this is set to false, it will never be set to true again.
@@ -51,6 +56,7 @@ namespace Cassandra.Connections.Control
         public async Task<Host> RefreshNodeListAsync(
             IConnectionEndPoint currentEndPoint, IConnection connection, ISerializer serializer)
         {
+            var sequence = Interlocked.Increment(ref _refreshSequence);
             ControlConnection.Logger.Info("Refreshing node list");
 
             // safe guard against concurrent changes of this field
@@ -73,11 +79,66 @@ namespace Cassandra.Connections.Control
                 throw new DriverInternalError("Local host metadata could not be retrieved");
             }
 
-            _metadata.Partitioner = localRow.GetValue<string>("partitioner");
-            var host = GetAndUpdateLocalHost(currentEndPoint, localRow);
-            UpdatePeersInfo(localIsPeersV2, rsPeers, host);
-            ControlConnection.Logger.Info("Node list retrieved successfully");
+            var localId = GetHostId(localRow);
+            if (localId == Guid.Empty)
+            {
+                throw new DriverInternalError("Local host metadata does not contain a nonempty Host ID.");
+            }
+
+            var notifications = new List<(Host Host, Action Callback)>();
+            Host host = null;
+            ExceptionDispatchInfo failure = null;
+            try
+            {
+                lock (_refreshLock)
+                {
+                    if (sequence < _lastAppliedRefresh)
+                    {
+                        ControlConnection.Logger.Verbose("Discarding an outdated topology refresh from control host {0}.", localId);
+                        // Preserve the caller's node identity without publishing old rows.
+                        return _metadata.GetHost(localId)
+                            ?? throw new DriverInternalError("The refreshed control host was removed or replaced.");
+                    }
+
+                    // Even a partial publication supersedes older snapshots if a
+                    // later row fails validation while applying this refresh.
+                    _lastAppliedRefresh = sequence;
+                    _metadata.Partitioner = localRow.GetValue<string>("partitioner");
+                    host = GetAndUpdateLocalHost(currentEndPoint, localRow, notifications);
+                    UpdatePeersInfo(localIsPeersV2, rsPeers, host, notifications);
+                    ControlConnection.Logger.Info("Node list retrieved successfully");
+                }
+            }
+            catch (Exception ex) when (!Utils.IsFatalException(ex))
+            {
+                failure = ExceptionDispatchInfo.Capture(ex);
+            }
+            finally
+            {
+                // User callbacks can wait for a refresh on another thread.
+                // Deliver even partially applied changes after releasing the lock.
+                foreach (var notification in notifications)
+                {
+                    try
+                    {
+                        notification.Callback();
+                    }
+                    catch (Exception ex) when (!Utils.IsFatalException(ex))
+                    {
+                        // Preserve an earlier refresh error, but attempt every
+                        // committed notification after an ordinary callback failure.
+                        Utils.CaptureOrLog(ex, ref failure, ControlConnection.Logger,
+                            $"for Host ID {notification.Host.HostId} during topology refresh from control host {localId}");
+                    }
+                }
+            }
+            failure?.Throw();
             return host;
+        }
+
+        private static Guid GetHostId(IRow row)
+        {
+            return row.ContainsColumn("host_id") ? row.GetValue<Guid?>("host_id") ?? Guid.Empty : Guid.Empty;
         }
 
         private Task<Response> SendSystemLocalRequestAsync(IConnection connection, ISerializer serializer)
@@ -132,18 +193,28 @@ namespace Cassandra.Connections.Control
         /// <summary>
         /// Parses system.local response, creates the local Host and adds it to the Hosts collection.
         /// </summary>
-        private Host GetAndUpdateLocalHost(IConnectionEndPoint endPoint, IRow row)
+        private Host GetAndUpdateLocalHost(IConnectionEndPoint endPoint, IRow row, ICollection<(Host Host, Action Callback)> notifications)
         {
-            var hostIpEndPoint =
-                endPoint.GetHostIpEndPoint()
-                ?? GetRpcEndPoint(false, row, _config.AddressTranslator, _config.ProtocolOptions.Port);
+            var hostId = GetHostId(row);
+            var hostIpEndPoint = endPoint.GetHostIpEndPoint();
+            int? advertisedPort = null;
+
+            // A routed connection can survive an advertised-address change. Its
+            // captured metadata endpoint must not override the current local row.
+            if (endPoint is ClientRouteConnectionEndPoint routed)
+            {
+                advertisedPort = _metadata.GetHost(hostId)?.AdvertisedPort ?? routed.AdvertisedPort ?? _config.ProtocolOptions.Port;
+                hostIpEndPoint = GetRpcEndPoint(false, row, _config.AddressTranslator, advertisedPort.Value) ?? hostIpEndPoint;
+            }
+
+            hostIpEndPoint ??= GetRpcEndPoint(false, row, _config.AddressTranslator, _config.ProtocolOptions.Port);
 
             if (hostIpEndPoint == null)
             {
                 throw new DriverInternalError("Could not parse the node's ip address from system tables.");
             }
 
-            var host = _metadata.GetHost(hostIpEndPoint) ?? _metadata.AddHost(hostIpEndPoint, endPoint.ContactPoint);
+            var host = _metadata.AddOrUpdateHost(hostId, hostIpEndPoint, endPoint.ContactPoint, row, notifications, advertisedPort);
 
             // Update cluster name, DC and rack for the one node we are connected to
             var clusterName = row.GetValue<string>("cluster_name");
@@ -153,16 +224,15 @@ namespace Cassandra.Connections.Control
                 _metadata.ClusterName = clusterName;
             }
 
-            host.SetInfo(row);
             return host;
         }
 
         /// <summary>
         /// Parses response from system.peers and updates the hosts collection.
         /// </summary>
-        private void UpdatePeersInfo(bool isPeersV2, IEnumerable<IRow> peersRs, Host currentHost)
+        private void UpdatePeersInfo(bool isPeersV2, IEnumerable<IRow> peersRs, Host currentHost, ICollection<(Host Host, Action Callback)> notifications)
         {
-            var foundPeers = new HashSet<IPEndPoint>();
+            var peers = new Dictionary<Guid, (IRow Row, IPEndPoint Address)>();
             foreach (var row in peersRs)
             {
                 var address = GetRpcEndPoint(isPeersV2, row, _config.AddressTranslator, _config.ProtocolOptions.Port);
@@ -172,17 +242,43 @@ namespace Cassandra.Connections.Control
                     continue;
                 }
 
-                foundPeers.Add(address);
-                var host = _metadata.GetHost(address) ?? _metadata.AddHost(address);
-                host.SetInfo(row);
+                var hostId = GetHostId(row);
+                if (hostId == Guid.Empty)
+                {
+                    ControlConnection.Logger.Warning("Ignoring topology row at {0} without a nonempty Host ID.", address);
+                    continue;
+                }
+
+                if (hostId == currentHost.HostId)
+                {
+                    ControlConnection.Logger.Warning("Ignoring peer row with control Host ID {0} in topology metadata.", hostId);
+                    continue;
+                }
+
+                if (peers.ContainsKey(hostId))
+                {
+                    ControlConnection.Logger.Warning("Duplicate peer Host ID {0} in topology metadata; selecting one endpoint.", hostId);
+                    // Prefer the known endpoint when duplicate peer rows include it.
+                    // With no matching current endpoint, keep the first valid row.
+                    if (!_metadata.Hosts.TryGet(hostId, out var existing) || !existing.Address.Equals(address))
+                    {
+                        continue;
+                    }
+                }
+                peers[hostId] = (row, address);
+            }
+
+            foreach (var peer in peers)
+            {
+                _metadata.AddOrUpdateHost(peer.Key, peer.Value.Address, null, peer.Value.Row, notifications);
             }
 
             // Removes all those that seems to have been removed (since we lost the control connection or not valid contact point)
-            foreach (var address in _metadata.AllReplicas())
+            foreach (var host in _metadata.AllHosts())
             {
-                if (!address.Equals(currentHost.Address) && !foundPeers.Contains(address))
+                if (host.HostId != currentHost.HostId && !peers.ContainsKey(host.HostId))
                 {
-                    _metadata.RemoveHost(address);
+                    _metadata.RemoveHost(host, notifications);
                 }
             }
         }
@@ -249,7 +345,8 @@ namespace Cassandra.Connections.Control
                 }
             }
 
-            return translator.Translate(new IPEndPoint(address, rpcPort));
+            var endPoint = new IPEndPoint(address, rpcPort);
+            return translator.Translate(endPoint) ?? endPoint;
         }
 
         private IPAddress GetRpcAddressFromPeersV2(IRow row)

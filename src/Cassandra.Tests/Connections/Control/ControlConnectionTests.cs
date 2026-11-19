@@ -188,6 +188,265 @@ namespace Cassandra.Tests.Connections.Control
         }
 
         [Test]
+        public async Task Should_RetainContactPointForDeferredResolution_WhenHostMoves()
+        {
+            var created = NewInstance();
+            try
+            {
+                var endpoint = new ConnectionEndPoint(_endpoint1, Mock.Of<IServerNameResolver>(), null);
+                var contactPoint = new TestContactPoint(new[] { endpoint });
+                var host = new Host(_endpoint1, contactPoint);
+                var attemptType = typeof(ControlConnection).GetNestedType("ControlConnectionAttempt", System.Reflection.BindingFlags.NonPublic);
+                var attempt = Activator.CreateInstance(attemptType, true);
+                var plan = (ConnectionEndPointResolutionPlan)typeof(ControlConnection).GetMethod(
+                    "GetHostContactPointOrConnectionEndpointResolutionPlan",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                    .Invoke(created.ControlConnection, new[] { attempt, host, false, false });
+                host.SetEndPoint(_endpoint2, null);
+
+                var candidates = await plan.ResolveNextAsync().ConfigureAwait(false);
+
+                CollectionAssert.AreEqual(new[] { endpoint }, candidates);
+                Assert.AreEqual(1, contactPoint.Calls.Count);
+            }
+            finally
+            {
+                created.ControlConnection.Shutdown();
+                created.Metadata.Dispose();
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_RetainAdvertisedStatusAddressWhenTranslationReturnsNull(bool up)
+        {
+            CassandraEventHandler handler = null;
+            var subscriber = new Mock<IServerEventsSubscriber>();
+            subscriber.Setup(value => value.SubscribeToServerEvents(It.IsAny<IConnection>(), It.IsAny<CassandraEventHandler>()))
+                .Callback<IConnection, CassandraEventHandler>((_, callback) => handler = callback)
+                .Returns(Task.CompletedTask);
+            var translator = new Mock<IAddressTranslator>();
+            translator.Setup(value => value.Translate(It.IsAny<IPEndPoint>())).Returns((IPEndPoint)null);
+            var cluster = new Mock<IInternalCluster>();
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Ignored);
+            var rows = new Dictionary<IPEndPoint, IRow>();
+            foreach (var address in new[] { _endpoint1, _endpoint2 })
+            {
+                rows.Add(address, TestHelper.CreateRow(new Dictionary<string, object>
+                {
+                    { "host_id", Guid.NewGuid() }, { "data_center", "dc1" }, { "rack", "rack1" }, { "tokens", null }
+                }));
+            }
+            var created = NewInstance(rows: rows, cluster: cluster.Object, configBuilderAct: builder =>
+            {
+                builder.ServerEventsSubscriber = subscriber.Object;
+                builder.AddressTranslator = translator.Object;
+            });
+            try
+            {
+                await created.ControlConnection.InitAsync().ConfigureAwait(false);
+                var peer = created.Metadata.GetHost(_endpoint2);
+                Assert.IsNotNull(peer);
+                if (up)
+                {
+                    peer.SetDown();
+                }
+
+                handler(null, new StatusChangeEventArgs
+                {
+                    Address = _endpoint2,
+                    What = up ? StatusChangeEventArgs.Reason.Up : StatusChangeEventArgs.Reason.Down
+                });
+
+                Assert.AreEqual(up, peer.IsUp);
+                translator.Verify(value => value.Translate(_endpoint2), Times.Once);
+            }
+            finally
+            {
+                created.ControlConnection.Dispose();
+                created.Metadata.Dispose();
+            }
+        }
+
+        [NonParallelizable]
+        [TestCase(false, 0, false)]
+        [TestCase(true, 0, false)]
+        [TestCase(false, 1, false)]
+        [TestCase(true, 1, false)]
+        [TestCase(false, 2, false)]
+        [TestCase(true, 2, false)]
+        [TestCase(false, 0, true)]
+        [TestCase(true, 0, true)]
+        [TestCase(false, 1, true)]
+        [TestCase(true, 1, true)]
+        [TestCase(false, 2, true)]
+        [TestCase(true, 2, true)]
+        public async Task Should_RefreshUnresolvedStatusAndTranslateResolvedStatusOnce(bool up, int identityCount, bool nullTranslation)
+        {
+            var debouncer = new Mock<IProtocolEventDebouncer>();
+            debouncer.Setup(value => value.ScheduleEventAsync(It.IsAny<ProtocolEvent>(), false))
+                .Returns(Task.CompletedTask);
+            CassandraEventHandler handler = null;
+            var subscriber = new Mock<IServerEventsSubscriber>();
+            subscriber.Setup(value => value.SubscribeToServerEvents(It.IsAny<IConnection>(), It.IsAny<CassandraEventHandler>()))
+                .Callback<IConnection, CassandraEventHandler>((_, callback) => handler = callback)
+                .Returns(Task.CompletedTask);
+            var translator = new Mock<IAddressTranslator>();
+            translator.Setup(value => value.Translate(It.IsAny<IPEndPoint>())).Returns<IPEndPoint>(value => nullTranslation ? null : value);
+            var cluster = new Mock<IInternalCluster>();
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Ignored);
+            var created = NewInstance(cluster: cluster.Object, eventDebouncer: debouncer.Object,
+                configBuilderAct: builder =>
+                {
+                    builder.ServerEventsSubscriber = subscriber.Object;
+                    builder.AddressTranslator = translator.Object;
+                });
+            using var listener = new LoggingTests.TestTraceListener();
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                await created.ControlConnection.InitAsync().ConfigureAwait(false);
+                var hosts = new List<Host>();
+                for (var i = 0; i < identityCount; i++)
+                {
+                    var id = Guid.NewGuid();
+                    var host = created.Metadata.AddOrUpdateHost(id, _endpoint2, null,
+                        TestHelper.CreateRow(new Dictionary<string, object>
+                        {
+                            { "host_id", id }, { "data_center", "dc1" }, { "rack", "rack1" }, { "tokens", null }
+                        }));
+                    if (up)
+                    {
+                        host.SetDown();
+                    }
+                    hosts.Add(host);
+                }
+                debouncer.Invocations.Clear();
+                translator.Invocations.Clear();
+                cluster.Invocations.Clear();
+                listener.Messages.Clear();
+
+                handler(null, new StatusChangeEventArgs
+                {
+                    Address = _endpoint2,
+                    What = up ? StatusChangeEventArgs.Reason.Up : StatusChangeEventArgs.Reason.Down
+                });
+
+                translator.Verify(value => value.Translate(_endpoint2), Times.Once);
+                debouncer.Verify(value => value.ScheduleEventAsync(It.IsAny<ProtocolEvent>(), false),
+                    identityCount == 1 ? Times.Never() : Times.Once());
+                cluster.Verify(value => value.RetrieveAndSetDistance(It.IsAny<Host>()),
+                    identityCount == 1 ? Times.Once() : Times.Never());
+                foreach (var host in hosts)
+                {
+                    Assert.AreEqual(identityCount == 1 ? up : !up, host.IsUp);
+                }
+                var expectedLog = $"Received Node status change event: host {_endpoint2} is {(up ? "UP" : "DOWN")}";
+                Assert.AreEqual(1, listener.Messages.Values.Count(message => message.Contains(expectedLog)));
+                var rejectedLog = $"Status change event for host {_endpoint2} could not be applied:";
+                Assert.AreEqual(identityCount == 1 ? 0 : 1,
+                    listener.Messages.Values.Count(message => message.Contains(rejectedLog)));
+            }
+            finally
+            {
+                try
+                {
+                    created.ControlConnection.Shutdown();
+                    created.Metadata.Dispose();
+                }
+                finally
+                {
+                    Trace.Listeners.Remove(listener);
+                    Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                }
+            }
+        }
+
+        [TestCase(false, false)]
+        [TestCase(true, false)]
+        [TestCase(false, true)]
+        [TestCase(true, true)]
+        public async Task Should_RefreshMovedStatusOwner_AndNotifyOutsideRegistryLock(bool up, bool moveInPolicy)
+        {
+            var debouncer = new Mock<IProtocolEventDebouncer>();
+            debouncer.Setup(value => value.ScheduleEventAsync(It.IsAny<ProtocolEvent>(), false))
+                .Returns(Task.CompletedTask);
+            CassandraEventHandler handler = null;
+            var subscriber = new Mock<IServerEventsSubscriber>();
+            subscriber.Setup(value => value.SubscribeToServerEvents(It.IsAny<IConnection>(), It.IsAny<CassandraEventHandler>()))
+                .Callback<IConnection, CassandraEventHandler>((_, callback) => handler = callback)
+                .Returns(Task.CompletedTask);
+            var cluster = new Mock<IInternalCluster>();
+            var created = NewInstance(cluster: cluster.Object, eventDebouncer: debouncer.Object,
+                configBuilderAct: builder => builder.ServerEventsSubscriber = subscriber.Object);
+            IRow Info(Guid value) => TestHelper.CreateRow(new Dictionary<string, object>
+            {
+                { "host_id", value }, { "data_center", "dc1" }, { "rack", "rack1" }, { "tokens", null }
+            });
+            try
+            {
+                await created.ControlConnection.InitAsync().ConfigureAwait(false);
+                var id = Guid.NewGuid();
+                var host = created.Metadata.AddOrUpdateHost(id, _endpoint2, null, Info(id));
+                if (up)
+                {
+                    host.SetDown();
+                }
+                var otherAddress = new IPEndPoint(IPAddress.Parse("127.0.0.3"), _endpoint2.Port);
+                var callbackId = Guid.NewGuid();
+                Task callbackUpdate = null;
+                var callbackCompleted = false;
+                Action<Host> callback = _ =>
+                {
+                    callbackUpdate = Task.Run(() => created.Metadata.AddOrUpdateHost(callbackId, otherAddress, null, Info(callbackId)));
+                    callbackUpdate.WaitAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
+                    callbackCompleted = true;
+                };
+                if (up)
+                {
+                    host.Up += callback;
+                }
+                else
+                {
+                    host.Down += callback;
+                }
+                cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>()))
+                    .Callback<Host>(selected =>
+                    {
+                        Assert.AreSame(host, selected);
+                        if (moveInPolicy)
+                        {
+                            created.Metadata.AddOrUpdateHost(id, otherAddress, null, Info(id));
+                        }
+                    }).Returns(HostDistance.Ignored);
+                debouncer.Invocations.Clear();
+
+                handler(null, new StatusChangeEventArgs
+                {
+                    Address = _endpoint2,
+                    What = up ? StatusChangeEventArgs.Reason.Up : StatusChangeEventArgs.Reason.Down
+                });
+                if (callbackUpdate != null)
+                {
+                    await callbackUpdate.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                }
+
+                Assert.AreEqual(moveInPolicy ? !up : up, host.IsUp);
+                Assert.AreEqual(!moveInPolicy, callbackCompleted);
+                Assert.AreEqual(moveInPolicy, created.Metadata.GetHost(callbackId) == null);
+                debouncer.Verify(value => value.ScheduleEventAsync(It.IsAny<ProtocolEvent>(), false),
+                    moveInPolicy ? Times.Once() : Times.Never());
+            }
+            finally
+            {
+                created.ControlConnection.Shutdown();
+                created.Metadata.Dispose();
+            }
+        }
+
+        [Test]
         public async Task Should_RemoveStaleHost_AfterReconnectMissesTopologyEvent()
         {
             // Issue #202: the reconnect's peers query still contains the removed node,

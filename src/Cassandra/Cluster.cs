@@ -21,6 +21,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Reflection;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -77,7 +78,15 @@ namespace Cassandra
         /// <inheritdoc />
         public event Action<Host> HostRemoved;
 
+        internal event Action<Host> HostRetired;
+
         internal IInternalCluster InternalRef => this;
+
+        event Action<Host> IInternalCluster.HostRetired
+        {
+            add => HostRetired += value;
+            remove => HostRetired -= value;
+        }
 
         /// <inheritdoc />
         IControlConnection IInternalCluster.GetControlConnection()
@@ -523,7 +532,34 @@ namespace Cassandra
 
         private void OnHostRemoved(Host h)
         {
-            HostRemoved?.Invoke(h);
+            ExceptionDispatchInfo failure = null;
+            NotifyHostRemoval(HostRetired, h, ref failure);
+            // Internal cleanup still needs the old instance. Public consumers
+            // must not remove a replacement announced while this callback waited.
+            if (h.HostId == Guid.Empty || !_metadata.Hosts.TryGet(h.HostId, out _))
+            {
+                NotifyHostRemoval(HostRemoved, h, ref failure);
+            }
+            failure?.Throw();
+
+            static void NotifyHostRemoval(Action<Host> handlers, Host host, ref ExceptionDispatchInfo failure)
+            {
+                if (handlers == null)
+                {
+                    return;
+                }
+                foreach (Action<Host> handler in handlers.GetInvocationList())
+                {
+                    try
+                    {
+                        handler(host);
+                    }
+                    catch (Exception ex) when (!Utils.IsFatalException(ex))
+                    {
+                        Utils.CaptureOrLog(ex, ref failure, Logger, $"for Host ID {host.HostId}");
+                    }
+                }
+            }
         }
 
         private void OnHostAdded(Host h)
@@ -970,7 +1006,7 @@ namespace Cassandra
             }
 
             // Get the first pool for that host that has open connections
-            var pool = sessions.Select(s => s.GetExistingPool(host.Address)).Where(p => p != null).FirstOrDefault(p => p.HasConnections);
+            var pool = sessions.Select(s => s.GetExistingPool(host)).Where(p => p != null).FirstOrDefault(p => p.HasConnections);
             if (pool == null)
             {
                 PrepareHandler.Logger.Info($"Not re-preparing queries on {host.Address} as there wasn't an open connection to the node.");

@@ -16,7 +16,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Net;
 
 namespace Cassandra.Requests
 {
@@ -24,8 +23,8 @@ namespace Cassandra.Requests
     {
         public PreparedStatement PreparedStatement { get; set; }
 
-        public IDictionary<IPEndPoint, Exception> TriedHosts { get; set; }
+        public Host Host { get; set; }
 
-        public IPEndPoint HostAddress { get; set; }
+        public IDictionary<Host, Exception> FailedHosts { get; set; }
     }
 }

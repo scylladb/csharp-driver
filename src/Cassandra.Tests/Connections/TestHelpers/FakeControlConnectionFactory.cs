@@ -48,8 +48,8 @@ namespace Cassandra.Tests.Connections.TestHelpers
                     foreach (var connectionEndpoint in connectionEndpoints)
                     {
                         var endpt = connectionEndpoint.GetHostIpEndPointWithFallback();
-                        var host = metadata.AddHost(endpt, cp);
-                        host.SetInfo(BuildRow());
+                        var row = BuildRow();
+                        var host = metadata.AddOrUpdateHost(row.GetValue<Guid>("host_id"), endpt, cp, row);
                         Mock.Get(cc).Setup(c => c.Host).Returns(host);
                     }
                 }

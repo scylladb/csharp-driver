@@ -94,7 +94,7 @@ namespace Cassandra.Metrics
         ///            .Build();
         ///
         /// // Resulting metric name for the NodeMetric.Counters.Retries metric:
-        /// web.app.session.nodes.127_0_0_1:9042.retries.total
+        /// web.app.session.nodes.00112233-4455-6677-8899-aabbccddeeff.retries.total
         /// </code>
         /// </summary>
         public DriverMetricsOptions SetBucketPrefix(string bucketPrefix)
