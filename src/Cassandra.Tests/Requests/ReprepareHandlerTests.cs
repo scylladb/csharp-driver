@@ -21,7 +21,11 @@ using System.Threading;
 using System.Threading.Tasks;
 
 using Cassandra.Connections;
+using Cassandra.Metrics.Abstractions;
+using Cassandra.Metrics.Internal;
+using Cassandra.Metrics.Registries;
 using Cassandra.Observers.Abstractions;
+using Cassandra.Observers.Metrics;
 using Cassandra.Observers.Null;
 using Cassandra.Requests;
 using Cassandra.Responses;
@@ -42,6 +46,44 @@ namespace Cassandra.Tests.Requests
     {
         private const string Cql = "SELECT * FROM table1";
         private const string Keyspace = "ks1";
+
+        [Test]
+        public async Task Should_ObserveBackgroundReprepareWithoutSessionRequestInfo()
+        {
+            var context = CreateContext(new byte[] { 1 });
+            var poolMetrics = Mock.Of<INodeMetrics>();
+            var connectionMetrics = Mock.Of<INodeMetrics>();
+            Mock.Get(context.Pool.Value).SetupGet(value => value.NodeMetrics).Returns(poolMetrics);
+            context.Connection.SetupGet(value => value.NodeMetrics).Returns(connectionMetrics);
+            NodeRequestInfo started = null;
+            var observer = new Mock<IRequestObserver>(MockBehavior.Strict);
+            observer.Setup(value => value.OnNodeStartAsync(null, It.IsAny<NodeRequestInfo>()))
+                .Callback<SessionRequestInfo, NodeRequestInfo>((_, info) =>
+                {
+                    started = info;
+                    Assert.AreSame(poolMetrics, info.NodeMetrics);
+                })
+                .Returns(Task.CompletedTask);
+            observer.Setup(value => value.OnNodeSuccessAsync(null, It.IsAny<NodeRequestInfo>()))
+                .Callback<SessionRequestInfo, NodeRequestInfo>((_, info) =>
+                {
+                    Assert.AreSame(started, info);
+                    Assert.AreSame(connectionMetrics, info.NodeMetrics);
+                })
+                .Returns(Task.CompletedTask);
+
+            using var semaphore = new SemaphoreSlim(0, 1);
+            await new ReprepareHandler().ReprepareOnSingleNodeAsync(
+                context.Cluster.Object, observer.Object, null, context.Pool,
+                context.PreparedStatement, context.Request, semaphore, true).ConfigureAwait(false);
+
+            Assert.IsNotNull(started);
+            Assert.AreEqual(Cql, started.PrepareRequest.Query);
+            Assert.AreEqual(Keyspace, started.PrepareRequest.Keyspace);
+            context.Connection.Verify(value => value.SendWithKeyspace(context.Request, Keyspace), Times.Once);
+            observer.VerifyAll();
+            Assert.AreEqual(1, semaphore.CurrentCount);
+        }
 
         [TestCase(false)]
         [TestCase(true)]
@@ -126,6 +168,64 @@ namespace Cassandra.Tests.Requests
                 Assert.AreEqual("fresh", context.PreparedStatement.ResultMetadata.RowSetMetadata.Columns[0].Name);
                 Assert.IsNull(context.PreparedStatement.ResultMetadata.ResultMetadataId);
             }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_CountReprepareErrorsAgainstSelectedConnectionMetrics(bool retired)
+        {
+            var context = CreateContext();
+            var counter = new Mock<IDriverCounter>();
+            var errors = Mock.Of<IRequestErrorMetrics>(value => value.Aborted == counter.Object);
+            var metrics = Mock.Of<INodeMetrics>(value => value.Errors == errors && value.IsRetired == retired);
+            context.Connection.SetupGet(value => value.NodeMetrics).Returns(metrics);
+            var poolCounter = new Mock<IDriverCounter>();
+            var poolErrors = Mock.Of<IRequestErrorMetrics>(value => value.Aborted == poolCounter.Object);
+            Mock.Get(context.Pool.Value).SetupGet(value => value.NodeMetrics)
+                .Returns(Mock.Of<INodeMetrics>(value => value.Errors == poolErrors));
+            var manager = new Mock<IMetricsManager>(MockBehavior.Strict);
+            var observer = new MetricsRequestObserver(manager.Object, Mock.Of<IDriverTimer>());
+            using var semaphore = new SemaphoreSlim(0, 1);
+            await Assert.ThrowsAsync<PreparedStatementIdMismatchException>(async () =>
+                await new ReprepareHandler().ReprepareOnSingleNodeAsync(
+                    context.Cluster.Object, observer, new SessionRequestInfo(context.Request, Keyspace),
+                    context.Pool, context.PreparedStatement, context.Request, semaphore, false).ConfigureAwait(false));
+            counter.Verify(value => value.Increment(), retired ? Times.Never() : Times.Once());
+            poolCounter.Verify(value => value.Increment(), Times.Never());
+            manager.VerifyNoOtherCalls();
+            Assert.AreEqual(1, semaphore.CurrentCount);
+        }
+
+        [TestCase(false, false)]
+        [TestCase(true, false)]
+        [TestCase(false, true)]
+        [TestCase(true, true)]
+        public async Task Should_CountReprepareAcquisitionErrorsAgainstSelectedPoolMetrics(bool acquisitionThrows, bool retired)
+        {
+            var context = CreateContext();
+            var counter = new Mock<IDriverCounter>();
+            var errors = Mock.Of<IRequestErrorMetrics>(value => value.Aborted == counter.Object && value.Other == counter.Object);
+            var metrics = Mock.Of<INodeMetrics>(value => value.Errors == errors && value.IsRetired == retired);
+            Mock.Get(context.Pool.Value).SetupGet(value => value.NodeMetrics).Returns(metrics);
+            var acquisition = Mock.Get(context.Pool.Value).Setup(value => value.GetExistingConnectionFromHostAsync(
+                It.IsAny<IDictionary<IPEndPoint, Exception>>(), It.IsAny<Func<string>>(), It.IsAny<RoutingKey>(), -1));
+            if (acquisitionThrows)
+            {
+                acquisition.ThrowsAsync(new InvalidOperationException("Connection acquisition failed"));
+            }
+            else
+            {
+                acquisition.ReturnsAsync((IConnection)null);
+            }
+            var manager = new Mock<IMetricsManager>(MockBehavior.Strict);
+            var observer = new MetricsRequestObserver(manager.Object, Mock.Of<IDriverTimer>());
+            using var semaphore = new SemaphoreSlim(0, 1);
+            await new ReprepareHandler().ReprepareOnSingleNodeAsync(
+                context.Cluster.Object, observer, new SessionRequestInfo(context.Request, Keyspace),
+                context.Pool, context.PreparedStatement, context.Request, semaphore, false).ConfigureAwait(false);
+            counter.Verify(value => value.Increment(), retired ? Times.Never() : Times.Once());
+            manager.VerifyNoOtherCalls();
+            Assert.AreEqual(1, semaphore.CurrentCount);
         }
 
         [Test]

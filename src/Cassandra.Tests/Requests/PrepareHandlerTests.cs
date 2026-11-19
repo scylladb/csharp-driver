@@ -23,6 +23,8 @@ using System.Threading;
 using System.Threading.Tasks;
 
 using Cassandra.Connections;
+using Cassandra.Metrics.Abstractions;
+using Cassandra.Metrics.Registries;
 using Cassandra.Requests;
 using Cassandra.Responses;
 using Cassandra.Serialization;
@@ -39,6 +41,45 @@ namespace Cassandra.Tests.Requests
     public class PrepareHandlerTests
     {
         private readonly ISerializer _serializer = new SerializerManager(ProtocolVersion.V3).GetCurrentSerializer();
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_CountPrepareErrorsAgainstSelectedConnectionMetrics(bool invalidResponse)
+        {
+            var counter = new Mock<IDriverCounter>();
+            var errors = Mock.Of<IRequestErrorMetrics>(value =>
+                value.Other == counter.Object && value.Aborted == counter.Object);
+            var metrics = Mock.Of<INodeMetrics>(value => value.Errors == errors);
+            var context = BuildPrepareHandler(_ => { });
+            context.ConnectionFactory.OnCreate += connection =>
+            {
+                var mock = Mock.Get(connection);
+                mock.SetupGet(value => value.NodeMetrics).Returns(metrics);
+                if (invalidResponse)
+                {
+                    mock.Setup(value => value.SendWithKeyspace(It.IsAny<IRequest>(), It.IsAny<string>()))
+                        .ReturnsAsync(new ProxyResultResponse(ResultResponse.ResultResponseKind.Void, null));
+                }
+                else
+                {
+                    mock.Setup(value => value.SendWithKeyspace(It.IsAny<IRequest>(), It.IsAny<string>()))
+                        .ThrowsAsync(new InvalidOperationException("prepare failed"));
+                }
+            };
+            try
+            {
+                var host = context.Session.InternalCluster.AllHosts().First();
+                var plan = new[] { new RoutingTarget(host, -1) }.AsEnumerable().GetEnumerator();
+                await Assert.CatchAsync<Exception>(async () => await context.PrepareHandler.Prepare(
+                    new InternalPrepareRequest(_serializer, "TEST", null, null), context.Session,
+                    plan, null, null).ConfigureAwait(false));
+                counter.Verify(value => value.Increment(), Times.Once);
+            }
+            finally
+            {
+                ((IDisposable)context.Session).Dispose();
+            }
+        }
 
         [Test]
         public async Task Should_Retry_Wrong_Keyspace_On_Next_Host_Before_FanOut()

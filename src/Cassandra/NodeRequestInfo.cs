@@ -15,6 +15,7 @@
 //
 
 using System;
+using Cassandra.Metrics.Registries;
 
 namespace Cassandra
 {
@@ -40,11 +41,21 @@ namespace Cassandra
         /// </summary>
         public PrepareRequest PrepareRequest { get; }
 
-        internal NodeRequestInfo(Host host, PrepareRequest prepareRequest)
+        internal NodeRequestInfo(Host host, PrepareRequest prepareRequest, INodeMetrics nodeMetrics = null)
         {
             Host = host;
             ExecutionId = Guid.NewGuid();
             PrepareRequest = prepareRequest;
+            NodeMetrics = nodeMetrics;
+        }
+
+        // Keep the connection's registry even when the query-plan Host is an alias
+        // or topology replaces its address before this execution starts.
+        internal INodeMetrics NodeMetrics { get; private set; }
+
+        internal void CaptureNodeMetrics(INodeMetrics nodeMetrics)
+        {
+            NodeMetrics = nodeMetrics;
         }
 
         public bool Equals(NodeRequestInfo other)

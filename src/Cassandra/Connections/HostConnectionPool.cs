@@ -23,6 +23,7 @@ using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Collections;
+using Cassandra.Metrics.Registries;
 using Cassandra.Observers.Abstractions;
 using Cassandra.Serialization;
 using Cassandra.Tasks;
@@ -158,6 +159,8 @@ namespace Cassandra.Connections
             _expectedConnectionLength = 1;
             _tokenFactory = tokenFactory;
         }
+
+        public INodeMetrics NodeMetrics { get; set; }
 
         /// <inheritdoc />
         public async Task<IConnection> BorrowConnectionAsync(RoutingKey routingKey = null, int shardID = -1)

@@ -20,6 +20,7 @@ using System.Linq;
 
 using Cassandra.Collections;
 using Cassandra.Metrics.Abstractions;
+using Cassandra.Metrics.Providers.Null;
 using Cassandra.Metrics.Registries;
 using Cassandra.SessionManagement;
 
@@ -29,6 +30,8 @@ namespace Cassandra.Metrics.Internal
     internal class MetricsManager : IMetricsManager
     {
         private static readonly Logger Logger = new Logger(typeof(MetricsManager));
+        private static readonly INodeMetrics InactiveNodeMetrics =
+            new NodeMetrics(new NullDriverMetricsProvider(), new DriverMetricsOptions(), false, "inactive");
 
         private readonly IDriverMetricsProvider _driverMetricsProvider;
         private readonly DriverMetricsOptions _metricsOptions;
@@ -112,13 +115,21 @@ namespace Cassandra.Metrics.Internal
         /// <inheritdoc />
         public void RemoveNodeMetrics(Host host)
         {
-            if (!_nodeMetricsCollection.TryRemove(host, out var nodeMetrics))
+            DetachNodeMetrics(host)?.Dispose();
+        }
+
+        /// <inheritdoc />
+        public INodeMetrics DetachNodeMetrics(Host host)
+        {
+            var published = _nodeMetricsCollection.TryRemove(host, out var nodeMetrics);
+            nodeMetrics?.MarkRetired();
+            if (!published)
             {
-                return;
+                return null;
             }
 
             _nodeMetricsRegistryCollection.TryRemove(host, out _);
-            nodeMetrics.Dispose();
+            return nodeMetrics;
         }
 
         /// <inheritdoc />
@@ -136,17 +147,28 @@ namespace Cassandra.Metrics.Internal
         /// <inheritdoc />
         public INodeMetrics GetOrCreateNodeMetrics(Host host)
         {
-            var value = _nodeMetricsCollection.GetOrAdd(host, h =>
-            {
-                var nodeBucket = $"{_sessionBucket}.nodes.{host.MetricKey}";
+            return _nodeMetricsCollection.GetOrAdd(host, h => CreateNodeMetrics(h));
+        }
 
-                var newRegistry = new NodeMetrics(_driverMetricsProvider, _metricsOptions, _metricsEnabled, nodeBucket);
-                _nodeMetricsRegistryCollection.Add(host, newRegistry.MetricsRegistry);
+        /// <inheritdoc />
+        public INodeMetrics GetNodeMetrics(Host host)
+        {
+            // Observers can outlive their pool. They must not recreate a detached
+            // node metrics bucket, or attach a removed Host to its replacement's registry.
+            return !host.IsRemoved && _nodeMetricsCollection.TryGetValue(host, out var metrics) &&
+                ReferenceEquals(metrics.Owner, host) && !metrics.IsRetired
+                ? metrics
+                : InactiveNodeMetrics;
+        }
 
-                return newRegistry;
-            });
+        private INodeMetrics CreateNodeMetrics(Host host)
+        {
+            var nodeBucket = $"{_sessionBucket}.nodes.{host.MetricKey}";
+            var newRegistry = new NodeMetrics(
+                _driverMetricsProvider, _metricsOptions, _metricsEnabled, nodeBucket, owner: host);
+            _nodeMetricsRegistryCollection.Add(host, newRegistry.MetricsRegistry);
 
-            return value;
+            return newRegistry;
         }
 
         public void Dispose()
