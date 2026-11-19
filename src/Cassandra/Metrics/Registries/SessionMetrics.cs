@@ -24,6 +24,7 @@ namespace Cassandra.Metrics.Registries
     /// <inheritdoc />
     internal class SessionMetrics : ISessionMetrics
     {
+        private static readonly Logger Logger = new Logger(typeof(SessionMetrics));
         private readonly IDriverMetricsProvider _driverMetricsProvider;
         private readonly string _context;
 
@@ -61,9 +62,22 @@ namespace Cassandra.Metrics.Registries
 
                 MetricsRegistry.OnMetricsAdded();
             }
-            catch (Exception)
+            catch (Exception initializationFailure)
             {
-                Dispose();
+                try
+                {
+                    Dispose();
+                }
+                catch (Exception cleanupFailure)
+                    when (Utils.CanSuppressException(cleanupFailure, initializationFailure))
+                {
+                    Utils.LogSecondaryException(
+                        cleanupFailure,
+                        initializationFailure,
+                        Logger,
+                        $"while retiring session metrics {_context} after initialization failed");
+                }
+
                 throw;
             }
         }
