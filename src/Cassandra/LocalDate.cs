@@ -227,6 +227,14 @@ namespace Cassandra
         }
 
         /// <summary>
+        /// Creates a LocalDate from a DateOnly.
+        /// </summary>
+        public static LocalDate FromDateOnly(DateOnly date)
+        {
+            return new LocalDate(date.Year, date.Month, date.Day);
+        }
+
+        /// <summary>
         /// Returns the DateTimeOffset representation of the LocalDate for dates between 0001-01-01 and 9999-12-31
         /// </summary>
         public DateTimeOffset ToDateTimeOffset()
@@ -236,6 +244,19 @@ namespace Cassandra
                 throw new ArgumentOutOfRangeException("The LocalDate can not be converted to DateTimeOffset", (Exception)null);
             }
             return new DateTimeOffset(Year, Month, Day, 0, 0, 0, 0, TimeSpan.Zero);
+        }
+
+        /// <summary>
+        /// Returns the DateOnly representation of the LocalDate for dates between 0001-01-01 and 9999-12-31.
+        /// </summary>
+        /// <exception cref="ArgumentOutOfRangeException">The date is outside that range.</exception>
+        public DateOnly ToDateOnly()
+        {
+            if (Year < 1 || Year > 9999)
+            {
+                throw new ArgumentOutOfRangeException("The LocalDate can not be converted to DateOnly", (Exception)null);
+            }
+            return new DateOnly(Year, Month, Day);
         }
 
         /// <summary>

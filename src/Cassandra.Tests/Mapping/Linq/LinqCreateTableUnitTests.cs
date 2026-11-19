@@ -613,6 +613,33 @@ namespace Cassandra.Tests.Mapping.Linq
                             " PRIMARY KEY (id1, id2))", createQuery);
         }
 
+        [Test]
+        public void Create_With_DateOnly_And_TimeOnly_Properties()
+        {
+            var createQueries = new List<string>();
+            var sessionMock = GetSessionMock();
+            sessionMock
+                .Setup(s => s.Execute(It.IsAny<string>()))
+                .Returns(() => new RowSet())
+                .Callback<string>(createQueries.Add);
+            var definition = new Map<DateOnlyEvent>()
+                             .TableName("events")
+                             .PartitionKey(e => e.Id)
+                             .Column(e => e.Id, c => c.WithName("id"))
+                             .Column(e => e.Day, c => c.WithName("day"))
+                             .Column(e => e.OptionalDay, c => c.WithName("optionalday"))
+                             .Column(e => e.Start, c => c.WithName("start"))
+                             .Column(e => e.OptionalStart, c => c.WithName("optionalstart"))
+                             .Column(e => e.Days, c => c.WithName("days"));
+            var table = GetTable<DateOnlyEvent>(sessionMock.Object, definition);
+
+            table.Create();
+
+            Assert.AreEqual(
+                "CREATE TABLE events (day date, days list<date>, id uuid, optionalday date, optionalstart time, start time, PRIMARY KEY (id))",
+                createQueries[0]);
+        }
+
         private static Mock<ISession> GetSessionMock(ISerializerManager serializer = null)
         {
             if (serializer == null)

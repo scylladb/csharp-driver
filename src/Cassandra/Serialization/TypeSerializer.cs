@@ -49,6 +49,8 @@ namespace Cassandra.Serialization
         public static readonly TypeSerializer<string> PrimitiveAsciiStringSerializer = new StringSerializer(Encoding.ASCII);
         public static readonly TypeSerializer<TimeUuid> PrimitiveTimeUuidSerializer = new TimeUuidSerializer();
 
+        internal static readonly TypeSerializer<DateOnly> PrimitiveDateOnlySerializer = new DateOnlySerializer();
+        internal static readonly TypeSerializer<TimeOnly> PrimitiveTimeOnlySerializer = new TimeOnlySerializer();
         internal static readonly DateTimeOffset UnixStart = new DateTimeOffset(1970, 1, 1, 0, 0, 0, 0, TimeSpan.Zero);
 
         internal static byte[] GuidShuffle(byte[] b, int offset = 0)

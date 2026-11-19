@@ -10,7 +10,7 @@ blob|byte[]
 boolean|bool
 counter|long
 custom|byte[]
-date|[LocalDate](datetime/index)
+date|[LocalDate or DateOnly](datetime/index)
 decimal|decimal
 double|double
 duration|Duration
@@ -22,7 +22,7 @@ map|IDictionary&lt;K, V&gt;
 set|IEnumerable&lt;T&gt;
 smallint|short
 text|string
-time|[LocalTime](datetime/index)
+time|[LocalTime or TimeOnly](datetime/index)
 timestamp|[DateTimeOffset](datetime/index)
 timeuuid|TimeUuid
 tinyint|sbyte

@@ -411,6 +411,70 @@ namespace Cassandra.IntegrationTests.Core
             }
         }
 
+        [Test]
+        [TestCassandraVersion(2, 2)]
+        public void SimpleStatementDateOnlyTests()
+        {
+            Session.Execute("CREATE TABLE tbl_date_only_param (id int PRIMARY KEY, v date, m map<date, text>)");
+            var prepared = Session.Prepare("INSERT INTO tbl_date_only_param (id, v, m) VALUES (?, ?, ?)");
+            var values = new[]
+            {
+                new DateOnly(2010, 4, 29),
+                new DateOnly(1969, 12, 31),
+                new DateOnly(1970, 1, 1),
+                DateOnly.MinValue,
+                DateOnly.MaxValue,
+            };
+            for (var i = 0; i < values.Length; i++)
+            {
+                var v = values[i];
+                var map = new SortedDictionary<DateOnly, string> { { v, v.ToString("O") } };
+
+                // Even ids use a simple statement, odd ids a prepared one
+                Session.Execute(i % 2 == 0
+                    ? new SimpleStatement("INSERT INTO tbl_date_only_param (id, v, m) VALUES (?, ?, ?)", i, v, map)
+                    : prepared.Bind(i, v, map));
+                var rs = Session.Execute(new SimpleStatement("SELECT * FROM tbl_date_only_param WHERE id = ?", i)).ToList();
+                Assert.AreEqual(1, rs.Count);
+                Assert.AreEqual(v, rs[0].GetValue<DateOnly>("v"));
+                Assert.AreEqual(LocalDate.FromDateOnly(v), rs[0].GetValue<LocalDate>("v"));
+                Assert.AreEqual(v.ToString("O"), rs[0].GetValue<SortedDictionary<DateOnly, string>>("m")[v]);
+            }
+        }
+
+        [Test]
+        [TestCassandraVersion(2, 2)]
+        public void SimpleStatementTimeOnlyTests()
+        {
+            Session.Execute("CREATE TABLE tbl_time_only_param (id int PRIMARY KEY, v time, m map<time, text>)");
+            var prepared = Session.Prepare("INSERT INTO tbl_time_only_param (id, v, m) VALUES (?, ?, ?)");
+            var values = new[]
+            {
+                TimeOnly.MinValue,
+                new TimeOnly(10, 31, 5, 789),
+                new TimeOnly(TimeOnly.MaxValue.Ticks),
+            };
+            for (var i = 0; i < values.Length; i++)
+            {
+                var v = values[i];
+                var map = new SortedDictionary<TimeOnly, string> { { v, v.ToString("O") } };
+                Session.Execute(i % 2 == 0
+                    ? new SimpleStatement("INSERT INTO tbl_time_only_param (id, v, m) VALUES (?, ?, ?)", i, v, map)
+                    : prepared.Bind(i, v, map));
+                var rs = Session.Execute(new SimpleStatement("SELECT * FROM tbl_time_only_param WHERE id = ?", i)).ToList();
+                Assert.AreEqual(1, rs.Count);
+                Assert.AreEqual(v, rs[0].GetValue<TimeOnly>("v"));
+                Assert.AreEqual(LocalTime.FromTimeOnly(v), rs[0].GetValue<LocalTime>("v"));
+                Assert.AreEqual(v.ToString("O"), rs[0].GetValue<SortedDictionary<TimeOnly, string>>("m")[v]);
+            }
+
+            // A time with nanoseconds below the precision of TimeOnly is truncated
+            Session.Execute(new SimpleStatement(
+                "INSERT INTO tbl_time_only_param (id, v) VALUES (?, ?)", 100, new LocalTime(1, 2, 3, 456789123)));
+            var truncated = Session.Execute(new SimpleStatement("SELECT v FROM tbl_time_only_param WHERE id = ?", 100)).First();
+            Assert.AreEqual(new TimeOnly(new TimeOnly(1, 2, 3).Ticks + 4567891), truncated.GetValue<TimeOnly>("v"));
+        }
+
         /// <summary>
         /// Testing the usage of dictionary for named parameters.
         ///
