@@ -18,7 +18,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.ExceptionServices;
 using Cassandra.Collections;
+using Moq;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 using CollectionAssert = NUnit.Framework.CollectionAssert;
@@ -28,6 +30,60 @@ namespace Cassandra.Tests
     [TestFixture]
     public class UtilsTests
     {
+        [TestCase(false)]
+        [TestCase(true)]
+        public void IsFatalExceptionChecksNestedAggregates(bool fatal)
+        {
+            Exception cause = fatal ? new OutOfMemoryException() : new InvalidOperationException();
+            var aggregate = new AggregateException(new ArgumentException("Ordinary cause"), new AggregateException(cause));
+            Assert.AreEqual(fatal, Utils.IsFatalException(aggregate));
+        }
+
+        [Test, Combinatorial]
+        public void CaptureOrLogPreservesFatalPriorityWhenDiagnosticsFail(
+            [Values(false, true)] bool fatalSelected,
+            [Values(false, true)] bool fatalDiagnostic,
+            [Values(false, true)] bool aggregateSelected,
+            [Values(false, true)] bool aggregateDiagnostic)
+        {
+            Exception selected = fatalSelected ? new OutOfMemoryException("selected") : new InvalidOperationException("selected");
+            if (aggregateSelected)
+            {
+                selected = new AggregateException(selected);
+            }
+
+            Exception diagnostic = fatalDiagnostic ? new OutOfMemoryException("diagnostic") : new InvalidOperationException("diagnostic");
+            if (aggregateDiagnostic)
+            {
+                diagnostic = new AggregateException(diagnostic);
+            }
+
+            var handler = new Mock<Logger.ILoggerHandler>();
+            handler.Setup(value => value.Warning(It.IsAny<string>(), It.IsAny<object[]>())).Throws(diagnostic);
+            var logger = new Logger(handler.Object);
+            var failure = ExceptionDispatchInfo.Capture(selected);
+            var cleanup = new InvalidOperationException("cleanup");
+
+            if (fatalDiagnostic && !fatalSelected)
+            {
+                var actual = Assert.Throws(diagnostic.GetType(), () => Utils.CaptureOrLog(cleanup, ref failure, logger, "during cleanup"));
+                Assert.AreSame(diagnostic, actual);
+            }
+            else
+            {
+                Utils.CaptureOrLog(cleanup, ref failure, logger, "during cleanup");
+                var actual = Assert.Throws(selected.GetType(), () => failure.Throw());
+                Assert.AreSame(selected, actual);
+            }
+
+            Assert.AreSame(selected, failure.SourceException);
+            handler.Verify(
+                value => value.Warning(
+                    "Additional lifecycle failure {0}: {1}",
+                    It.Is<object[]>(args => (string)args[0] == "during cleanup" && ReferenceEquals(args[1], cleanup))),
+                Times.Once);
+        }
+
         [Test]
         public void ReadAllBytes_Should_ReadFromNonzeroPosition()
         {
