@@ -577,6 +577,38 @@ driver writes its own should use its own logging instead. To receive the driver'
 messages, add an `ILoggerProvider` with `Diagnostics.AddLoggerProvider`, or set the level
 of `Diagnostics.CassandraTraceSwitch`.
 
+#### `TableNameAttribute` and `PrimaryKeyAttribute`
+
+The `Cassandra.Mapping.TableNameAttribute` and `Cassandra.Mapping.PrimaryKeyAttribute`
+classes are removed. Their documentation called them deprecated, and the mapper ignored
+them: a class marked with them was mapped as if they were absent. Use the attributes of
+`Cassandra.Mapping.Attributes` instead:
+
+```csharp
+// Before
+[TableName("users")]
+[PrimaryKey("id")]
+public class User
+{
+    public Guid Id { get; set; }
+}
+
+// After
+[Table("users")]
+public class User
+{
+    [PartitionKey]
+    public Guid Id { get; set; }
+}
+```
+
+Mark clustering columns with `ClusteringKeyAttribute`.
+
+Since the mapper ignored `TableNameAttribute`, a class marked with it was mapped to
+the table named after the class, `User` in the example above. With `[Table("users")]`,
+the class maps to `users` instead, so give `TableAttribute` the name of the table that
+your code reads and writes.
+
 ### `RoutingTarget` replaces `HostShard`
 
 Query plans and replica lookups return `RoutingTarget` values instead of `HostShard`
