@@ -164,7 +164,9 @@ namespace Cassandra
         }
 
         /// <summary>
-        /// Determines whether the certificate revocation list is checked during connection authentication.
+        /// Sets the callback that validates the certificate of each node during connection authentication. With
+        /// <c>null</c>, .NET's own validation applies, which rejects a certificate with any error. By default, the driver
+        /// installs a callback that also rejects any error, and logs it.
         /// </summary>
         public SSLOptions SetRemoteCertValidationCallback(RemoteCertificateValidationCallback callback)
         {
