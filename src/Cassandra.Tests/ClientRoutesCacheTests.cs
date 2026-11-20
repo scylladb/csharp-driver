@@ -949,7 +949,7 @@ namespace Cassandra.Tests
                 Assert.That(handler.Errors, Has.Count.EqualTo(1));
                 Assert.That(handler.Errors.Single(), Does.StartWith(
                     "Rejected malformed client routes result. Cached routes are retained; " +
-                    "this result cannot confirm direct-fallback coverage."));
+                    "this result cannot confirm which hosts have no client routes."));
                 Assert.That(handler.Errors.Single(), Does.Not.Contain("{0}"));
                 Assert.That(handler.Warnings, Is.Empty);
 

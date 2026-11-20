@@ -521,7 +521,7 @@ namespace Cassandra
                 PublishSnapshot(new RoutesSnapshot(current.ByKey, current.ByHost,
                     current.CoveredHostIds.Where(id => !work.IncludesHost(id)).ToImmutableHashSet(), current.IsComplete));
                 _logger.Error("Rejected malformed client routes result. Cached routes are retained; " +
-                              "this result cannot confirm direct-fallback coverage.", ex);
+                              "this result cannot confirm which hosts have no client routes.", ex);
                 return ClientRoutesRefreshOutcome.Malformed;
             }
 

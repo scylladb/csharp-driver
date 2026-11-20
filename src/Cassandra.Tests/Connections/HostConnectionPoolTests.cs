@@ -1721,6 +1721,115 @@ namespace Cassandra.Tests.Connections
         }
 
         [Test]
+        public async Task Should_RollBackConnectionWithoutClientRoutesThatClosesDuringOwnerPublication()
+        {
+            var endPoint = new FakeConnectionEndPoint("198.51.100.57", 9042);
+            var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            var rejectedInfo = ShardingInfo.Create("0", "4", "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin", "12", "19042", "19142");
+            var recoveryInfo = ShardingInfo.Create("0", "8", "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin", "12", "19042", "19142");
+            var connection = CreateConnection(endPoint, shardingInfo: rejectedInfo);
+            var closingRaised = 0;
+            connection.Setup(value => value.ShardingInfo()).Returns(() =>
+            {
+                Interlocked.Increment(ref closingRaised);
+                connection.Raise(value => value.Closing += null, connection.Object);
+                return rejectedInfo;
+            });
+            var recoveredConnection = CreateConnection(endPoint, shardingInfo: recoveryInfo);
+            var attempts = 0;
+            var target = CreatePool(
+                res: resolver.Object,
+                connectionFactory: new FakeConnectionFactory((IConnectionEndPoint _) =>
+                    Interlocked.Increment(ref attempts) == 1 ? connection.Object : recoveredConnection.Object),
+                coreConnections: 1,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            resolver.Setup(value => value.GetConnectionEndPointsAsync(_host, false))
+                    .ReturnsAsync(new IConnectionEndPoint[] { endPoint });
+
+            try
+            {
+                await Assert.ThrowsAsync<SocketException>(async () =>
+                    await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false));
+                Assert.AreEqual(1, Volatile.Read(ref closingRaised));
+                Assert.AreEqual(0, target.OpenConnections);
+                Assert.IsEmpty(target.ConnectionsSnapshot);
+                Assert.IsNull(GetShardingInfo(target));
+                Assert.AreEqual(1, GetExpectedConnectionLength(target));
+                connection.Verify(value => value.Dispose(), Times.AtLeastOnce);
+
+                var recovery = InvokeCreateOpenConnection(target);
+                await recovery.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                var recovered = await recovery.ConfigureAwait(false);
+                Assert.AreSame(recoveredConnection.Object, recovered);
+                Assert.AreSame(recoveryInfo, GetShardingInfo(target));
+                Assert.AreEqual(8, GetExpectedConnectionLength(target));
+                recoveredConnection.Verify(value => value.Open(), Times.Once);
+                recoveredConnection.Verify(value => value.Open(It.IsAny<int>(), It.IsAny<int>()), Times.Never);
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [Test]
+        public async Task Should_KeepPublishedShardStateWhenRejectedRouteOmitsMetadata()
+        {
+            IConnectionEndPoint endPoint = new FakeConnectionEndPoint("198.51.100.58", 9042);
+            var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            var shardingInfo = ShardingInfo.Create("0", "4", "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin", "12", "19042", "19142");
+            Mock<IConnection> rejectedConnection = null;
+            var target = CreatePool(
+                res: resolver.Object,
+                connectionFactory: new FakeConnectionFactory(candidate =>
+                {
+                    var connection = CreateConnection(candidate, shardingInfo: shardingInfo);
+                    if (candidate is ClientRouteConnectionEndPoint)
+                    {
+                        rejectedConnection = connection;
+                        connection.Setup(value => value.ShardingInfo()).Returns(() =>
+                        {
+                            connection.Raise(value => value.Closing += null, connection.Object);
+                            return null;
+                        });
+                    }
+
+                    return connection.Object;
+                }),
+                clientRoutesOptions: new ClientRoutesOptions(new[] { new ClientRouteProxy("route-a") }, 9042, true),
+                hostHasClientRoute: false,
+                coreConnections: 1,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            resolver.Setup(value => value.GetConnectionEndPointsAsync(_host, false))
+                    .ReturnsAsync(() => new[] { endPoint });
+            resolver.Setup(value => value.GetConnectionShardAwareEndPointsAsync(_host, false, 19042))
+                    .ReturnsAsync(() => new[] { endPoint });
+            try
+            {
+                await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreSame(shardingInfo, GetShardingInfo(target));
+                Assert.AreEqual(4, GetExpectedConnectionLength(target));
+
+                endPoint = new ClientRouteConnectionEndPoint(new IPEndPoint(IPAddress.Parse("198.51.100.59"), 9042),
+                    _host.Address, "route.proxy", "route-a");
+                await Assert.ThrowsAsync<SocketException>(async () =>
+                    await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false));
+
+                Assert.AreEqual(1, target.OpenConnections);
+                Assert.AreSame(shardingInfo, GetShardingInfo(target));
+                Assert.AreEqual(4, GetExpectedConnectionLength(target));
+                rejectedConnection.Verify(value => value.Dispose(), Times.AtLeastOnce);
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [Test]
         public async Task Should_PropagateFatalOptionalConnectionFailureDuringWarmup()
         {
             var failure = new OutOfMemoryException("fatal optional warmup connection failure");
@@ -1751,6 +1860,1178 @@ namespace Cassandra.Tests.Connections
             finally
             {
                 target.Dispose();
+            }
+        }
+
+        [Test]
+        public async Task Should_ReplaceShardLayoutOnLaterOpenUsingClientRoutes()
+        {
+            var first = ShardingInfo.Create("0", "4", "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin", "12", "19042", "19142");
+            var replacement = ShardingInfo.Create("0", "8", "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin", "12", "19042", "19142");
+            var current = first;
+            var target = CreatePool(
+                connectionFactory: new FakeConnectionFactory(endpoint => CreateConnection(endpoint, shardingInfo: current).Object),
+                clientRoutesOptions: new ClientRoutesOptions(new[] { new ClientRouteProxy("route-a") }, 9042, true));
+            try
+            {
+                await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreSame(first, GetShardingInfo(target));
+                Assert.AreEqual(4, GetExpectedConnectionLength(target));
+
+                current = replacement;
+                await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreSame(replacement, GetShardingInfo(target));
+                Assert.AreEqual(8, GetExpectedConnectionLength(target));
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_PreserveAdaptiveTargetWhenOpenUsingClientRoutesReportsEquivalentLayout(bool changePort)
+        {
+            var connections = new ConcurrentQueue<Mock<IConnection>>();
+            var factory = new FakeConnectionFactory(endpoint =>
+            {
+                var index = connections.Count;
+                var info = ShardingInfo.Create(new[] { "0", "1", "2", "3" }[index % 4], "4",
+                    "org.apache.cassandra.dht.Murmur3Partitioner", "biased-token-round-robin", "12",
+                    changePort && index >= 4 ? "19043" : "19042", "19142");
+                var connection = CreateConnection(endpoint, shardingInfo: info);
+                connection.Object.ShardID = index % 4;
+                connections.Enqueue(connection);
+                return connection.Object;
+            });
+            var target = CreatePool(
+                connectionFactory: factory,
+                clientRoutesOptions: new ClientRoutesOptions(new[] { new ClientRouteProxy("route-a") }, 9042, true),
+                coreConnections: 4,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            var config = GetConfiguration(target);
+            config.PoolingOptions.SetMaxConnectionsPerHost(HostDistance.Local, 8);
+            target.SetDistance(HostDistance.Local);
+            try
+            {
+                await target.Warmup().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                var beforeResize = GetShardingInfo(target);
+                target.ConsiderResizingPool(int.MaxValue);
+                await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                Assert.AreEqual(5, target.OpenConnections);
+                Assert.AreEqual(5, GetExpectedConnectionLength(target));
+                Assert.AreNotSame(beforeResize, GetShardingInfo(target));
+                Assert.AreEqual(changePort ? 19043 : 19042, GetShardingInfo(target).ScyllaShardAwarePort);
+
+                var lost = connections.Single(connection => connection.Object.ShardID == 1);
+                lost.Raise(value => value.Closing += null, lost.Object);
+                await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                Assert.AreEqual(5, target.OpenConnections);
+                Assert.AreEqual(5, GetExpectedConnectionLength(target));
+                Assert.AreEqual(6, connections.Count);
+                CollectionAssert.AreEquivalent(new[] { 0, 1, 2, 3 },
+                    target.ConnectionsSnapshot.Select(connection => connection.ShardID).Distinct());
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [Test]
+        public async Task Should_SkipEligibilityScanWhilePhysicalPoolIsUnderTarget()
+        {
+            var endpointReads = 0;
+            var created = 0;
+            var info = ShardingInfo.Create("0", "32", "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin", "12", "19042", "19142");
+            var target = CreatePool(
+                connectionFactory: new FakeConnectionFactory(endpoint =>
+                {
+                    var connection = CreateConnection(endpoint, shardingInfo: info);
+                    connection.Object.ShardID = created++ % 32;
+                    connection.SetupGet(value => value.EndPoint).Returns(() =>
+                    {
+                        Interlocked.Increment(ref endpointReads);
+                        return endpoint;
+                    });
+                    return connection.Object;
+                }),
+                clientRoutesOptions: new ClientRoutesOptions(new[] { new ClientRouteProxy("route-a") }, 9042, false),
+                hostHasClientRoute: false,
+                coreConnections: 32,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            var config = GetConfiguration(target);
+            config.PoolingOptions.SetMaxConnectionsPerHost(HostDistance.Local, 64);
+            target.SetDistance(HostDistance.Local);
+            Mock.Get(_resolver).Setup(value => value.GetConnectionShardAwareEndPointsAsync(_host, false, 19042))
+                .ReturnsAsync(new IConnectionEndPoint[] { new FakeConnectionEndPoint("127.0.0.1", 19042) });
+            try
+            {
+                await target.Warmup().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                target.OnConnectionClosing(target.ConnectionsSnapshot[0]);
+                Assert.AreEqual(31, target.OpenConnections);
+                Assert.AreEqual(32, GetExpectedConnectionLength(target));
+                Interlocked.Exchange(ref endpointReads, 0);
+                for (var i = 0; i < 100; i++)
+                {
+                    target.ConsiderResizingPool(int.MaxValue);
+                }
+
+                Assert.AreEqual(0, endpointReads, "An underfilled physical pool cannot have enough eligible connections.");
+                Assert.AreEqual(32, GetExpectedConnectionLength(target));
+                await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreEqual(32, target.OpenConnections);
+                target.ConsiderResizingPool(int.MaxValue);
+                await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreEqual(33, GetExpectedConnectionLength(target));
+                Assert.AreEqual(33, target.OpenConnections);
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [Test]
+        public async Task Should_SkipEligibilityScanDuringResizeCooldown()
+        {
+            var endpointReads = 0;
+            var created = 0;
+            var info = ShardingInfo.Create("0", "32", "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin", "12", "19042", "19142");
+            var target = CreatePool(
+                connectionFactory: new FakeConnectionFactory(endpoint =>
+                {
+                    var connection = CreateConnection(endpoint, shardingInfo: info);
+                    connection.Object.ShardID = created++ % 32;
+                    connection.SetupGet(value => value.EndPoint).Returns(() =>
+                    {
+                        Interlocked.Increment(ref endpointReads);
+                        return endpoint;
+                    });
+                    return connection.Object;
+                }),
+                clientRoutesOptions: new ClientRoutesOptions(new[] { new ClientRouteProxy("route-a") }, 9042, false),
+                hostHasClientRoute: false,
+                coreConnections: 32);
+            var config = GetConfiguration(target);
+            config.PoolingOptions.SetMaxConnectionsPerHost(HostDistance.Local, 64);
+            target.SetDistance(HostDistance.Local);
+            Mock.Get(_resolver).Setup(value => value.GetConnectionShardAwareEndPointsAsync(_host, false, 19042))
+                .ReturnsAsync(new IConnectionEndPoint[] { new FakeConnectionEndPoint("127.0.0.1", 19042) });
+            try
+            {
+                await target.Warmup().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreEqual(32, target.OpenConnections);
+                var cooldown = typeof(HostConnectionPool).GetField("_poolResizing", BindingFlags.Instance | BindingFlags.NonPublic);
+                Assert.IsNotNull(cooldown);
+                // Freeze the existing cooldown state so this cost regression is independent
+                // of machine speed and the production two-second timer.
+                cooldown.SetValue(target, 1);
+                Interlocked.Exchange(ref endpointReads, 0);
+                for (var i = 0; i < 100; i++)
+                {
+                    target.ConsiderResizingPool(int.MaxValue);
+                }
+
+                Assert.AreEqual(0, endpointReads, "A rejected cooldown attempt must not enumerate eligible endpoints.");
+                Assert.AreEqual(32, target.OpenConnections);
+                cooldown.SetValue(target, 0);
+                target.ConsiderResizingPool(int.MaxValue);
+                await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.Greater(endpointReads, 0, "An actual resize must still check eligibility.");
+                Assert.AreEqual(33, GetExpectedConnectionLength(target));
+                Assert.AreEqual(33, target.OpenConnections);
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [Test]
+        public async Task Should_PreserveShardMultipleWhenDistanceChanges()
+        {
+            var info = ShardingInfo.Create("0", "4", "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin", "12", "19042", "19142");
+            var target = CreatePool(
+                connectionFactory: new FakeConnectionFactory(endpoint => CreateConnection(endpoint, shardingInfo: info).Object),
+                clientRoutesOptions: new ClientRoutesOptions(new[] { new ClientRouteProxy("route-a") }, 9042, true));
+            try
+            {
+                await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                target.SetDistance(HostDistance.Remote);
+                Assert.AreEqual(4, GetExpectedConnectionLength(target));
+                Assert.AreSame(info, GetShardingInfo(target));
+                target.SetDistance(HostDistance.Ignored);
+                Assert.AreEqual(0, GetExpectedConnectionLength(target));
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [Test]
+        public async Task Should_FillNewShardTargetWhenWarmupFallsBackToConnectionsWithoutClientRoutes()
+        {
+            var info = ShardingInfo.Create("0", "4", "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin", "12", "19042", "19142");
+            var rows = new List<IRow>();
+            ClientRoutesCache cache = null;
+            var initializedRoutes = false;
+            var created = new List<IConnection>();
+            var factory = new FakeConnectionFactory(endpoint =>
+            {
+                var connection = CreateConnection(endpoint, shardingInfo: info).Object;
+                created.Add(connection);
+                if (created.Count == 1)
+                {
+                    rows.Clear();
+                    for (var i = 0; i < 3; i++)
+                    {
+                        cache.FullRefreshBarrierAsync().WaitToCompleteAsync(5000).GetAwaiter().GetResult();
+                    }
+                }
+
+                return connection;
+            });
+            var target = CreatePool(
+                connectionFactory: factory,
+                clientRoutesOptions: new ClientRoutesOptions(new[] { new ClientRouteProxy("route-a") }, 9042, false),
+                clientRouteRowsFactory: hostId =>
+                {
+                    if (!initializedRoutes)
+                    {
+                        rows.Add(ClientRouteRow(hostId, "198.51.100.90", 9042, "route-a"));
+                        initializedRoutes = true;
+                    }
+
+                    return rows;
+                },
+                clientRoutesCacheCreated: value => cache = value);
+            Mock.Get(_resolver).Setup(value => value.GetConnectionShardAwareEndPointsAsync(_host, false, 19042))
+                .ReturnsAsync(new IConnectionEndPoint[] { new FakeConnectionEndPoint("127.0.0.1", 19042) });
+            try
+            {
+                await target.Warmup().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreEqual(5, target.OpenConnections);
+                Assert.AreEqual(4, GetExpectedConnectionLength(target));
+                Assert.IsInstanceOf<ClientRouteConnectionEndPoint>(created.First().EndPoint);
+                Assert.IsTrue(created.Skip(1).All(connection => !(connection.EndPoint is ClientRouteConnectionEndPoint)));
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [Test]
+        public async Task Should_UseShardAwareOpenWithoutChangingResolvedDestination()
+        {
+            var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            Mock<IConnection> connection = null;
+            var factory = new FakeConnectionFactory(endPoint =>
+            {
+                connection = CreateConnection(endPoint);
+                return connection.Object;
+            });
+            var target = CreatePool(resolver.Object, factory,
+                new ClientRoutesOptions(new[] { new ClientRouteProxy("route-a") }, 9042, true),
+                clientRouteRowsFactory: hostId => new[] { ClientRouteRow(hostId, "198.51.100.5", 9142, "route-a") });
+            try
+            {
+                var opened = await target.DoCreateAndOpen(false, 2, 19042, 4).ConfigureAwait(false);
+
+                Assert.AreSame(connection.Object, opened);
+                Assert.AreEqual(new IPEndPoint(IPAddress.Parse("198.51.100.5"), 9142), opened.EndPoint.SocketIpEndPoint);
+                connection.Verify(c => c.Open(2, 4), Times.Once);
+                connection.Verify(c => c.Open(), Times.Never);
+                resolver.VerifyNoOtherCalls();
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [TestCase(true, false, false)]
+        [TestCase(true, true, false)]
+        [TestCase(true, false, true)]
+        [TestCase(true, true, true)]
+        [TestCase(false, false, false)]
+        [TestCase(false, true, false)]
+        [TestCase(false, false, true)]
+        [TestCase(false, true, true)]
+        public async Task Should_ApplyShardAwarenessPolicyToExplicitShardBorrow(
+            bool usesClientRoutes, bool routedOptIn, bool disabledGlobally)
+        {
+            var connections = new List<Mock<IConnection>>();
+            var target = CreatePool(
+                connectionFactory: new FakeConnectionFactory(endPoint =>
+                {
+                    var shard = connections.Count;
+                    var info = ShardingInfo.Create(shard.ToString(), "2", "org.apache.cassandra.dht.Murmur3Partitioner",
+                        "biased-token-round-robin", "12", "19042", "19142");
+                    var connection = CreateConnection(endPoint, shardingInfo: info);
+                    connection.Object.ShardID = shard;
+                    connection.SetupGet(value => value.InFlight).Returns(shard);
+                    connections.Add(connection);
+                    return connection.Object;
+                }),
+                clientRoutesOptions: new ClientRoutesOptions(new[] { new ClientRouteProxy("route-a") }, 9042, routedOptIn),
+                hostHasClientRoute: usesClientRoutes,
+                coreConnections: 2);
+            Mock.Get(_resolver).Setup(value => value.GetConnectionShardAwareEndPointsAsync(_host, false, 19042))
+                .ReturnsAsync(new IConnectionEndPoint[] { new FakeConnectionEndPoint("127.0.0.1", 19042) });
+            if (disabledGlobally)
+            {
+                GetConfiguration(target).PoolingOptions.DisableShardAwareness();
+            }
+
+            try
+            {
+                await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                var shardAware = !disabledGlobally && (!usesClientRoutes || routedOptIn);
+
+                // Tablet query plans supply an explicit shard without a routing key.
+                var borrowed = target.BorrowExistingConnection(null, 1);
+
+                Assert.AreSame(connections[shardAware ? 1 : 0].Object, borrowed);
+                Assert.AreEqual(shardAware, GetShardingInfo(target) != null);
+                Assert.AreEqual(2, target.OpenConnections);
+                foreach (var connection in connections)
+                {
+                    Assert.AreEqual(usesClientRoutes, connection.Object.EndPoint is ClientRouteConnectionEndPoint);
+                    connection.Verify(value => value.Dispose(), Times.Never);
+                }
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [Test]
+        public async Task Should_NotEnableShardAwareConnectionsByDefaultForClientRoutes()
+        {
+            var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            var shardingInfo = ShardingInfo.Create(
+                "0",
+                "4",
+                "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin",
+                "12",
+                "19042",
+                "19142");
+            var connections = new List<Mock<IConnection>>();
+            var factory = new FakeConnectionFactory(endPoint =>
+            {
+                var connection = CreateConnection(endPoint, shardingInfo: shardingInfo);
+                connections.Add(connection);
+                return connection.Object;
+            });
+            var clientRoutesOptions = new ClientRoutesOptions(
+                new ClientRoutesConfig(new[] { new ClientRouteProxy("route-a") }).Snapshot);
+            var target = CreatePool(resolver.Object, factory, clientRoutesOptions);
+
+            try
+            {
+                await target.Warmup().WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                Assert.AreEqual(2, target.OpenConnections);
+                foreach (var connection in connections)
+                {
+                    connection.Verify(value => value.Open(), Times.Once);
+                    connection.Verify(value => value.Open(It.IsAny<int>(), It.IsAny<int>()), Times.Never);
+                }
+
+                resolver.VerifyNoOtherCalls();
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [Test]
+        public async Task Should_ResolveShardAwareCandidateButSkipSourcePortTargetingForClientRouteEndpointByDefault()
+        {
+            Mock<IConnection> createdConnection = null;
+            var factory = new FakeConnectionFactory(endPoint =>
+            {
+                createdConnection = CreateConnection(endPoint);
+                return createdConnection.Object;
+            });
+            var clientRoutesOptions = new ClientRoutesOptions(
+                new ClientRoutesConfig(new[] { new ClientRouteProxy("route-a") }).Snapshot);
+            var target = CreatePool(
+                new Mock<IEndPointResolver>(MockBehavior.Strict).Object,
+                factory,
+                clientRoutesOptions);
+
+            try
+            {
+                var opened = await target.DoCreateAndOpen(false, 2, 19042, 4).ConfigureAwait(false);
+
+                Assert.IsInstanceOf<ClientRouteConnectionEndPoint>(opened.EndPoint);
+                Assert.AreEqual(9042, opened.EndPoint.SocketIpEndPoint.Port);
+                createdConnection.Verify(value => value.Open(), Times.Once);
+                createdConnection.Verify(value => value.Open(It.IsAny<int>(), It.IsAny<int>()), Times.Never);
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [Test]
+        public async Task Should_KeepShardAwarenessForHostsWithoutClientRoutesInMixedClusters()
+        {
+            var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            var shardingInfo = ShardingInfo.Create(
+                "0",
+                "4",
+                "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin",
+                "12",
+                "19042",
+                "19142");
+            var factory = new FakeConnectionFactory(endPoint => CreateConnection(endPoint, shardingInfo: shardingInfo).Object);
+            var clientRoutesOptions = new ClientRoutesOptions(
+                new[] { new ClientRouteProxy("route-a") },
+                9042,
+                false);
+            var target = CreatePool(resolver.Object, factory, clientRoutesOptions, false);
+            resolver.Setup(r => r.GetConnectionEndPointsAsync(_host, false))
+                    .ReturnsAsync(new IConnectionEndPoint[]
+                    {
+                        new ConnectionEndPoint(_host.Address, Mock.Of<IServerNameResolver>(), null)
+                    });
+            resolver.Setup(r => r.GetConnectionShardAwareEndPointsAsync(_host, false, 19042))
+                    .ReturnsAsync(new IConnectionEndPoint[]
+                    {
+                        new ConnectionEndPoint(
+                            new IPEndPoint(_host.Address.Address, 19042),
+                            Mock.Of<IServerNameResolver>(),
+                            null)
+                    });
+
+            try
+            {
+                await target.Warmup().WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                Assert.AreEqual(4, target.OpenConnections);
+                resolver.Verify(r => r.GetConnectionEndPointsAsync(_host, false), Times.Once);
+                resolver.Verify(r => r.GetConnectionShardAwareEndPointsAsync(_host, false, 19042), Times.Exactly(3));
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_PreserveRoutingPolicyAcrossMixedEndpointPools(bool initiallyUsesClientRoutes)
+        {
+            var rows = new List<IRow>();
+            var direct = new List<Mock<IConnection>>();
+            var routed = new List<Mock<IConnection>>();
+            var info = ShardingInfo.Create("0", "4", "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin", "12", "19042", "19142");
+            ClientRoutesCache cache = null;
+            var initialized = false;
+            var target = CreatePool(
+                connectionFactory: new FakeConnectionFactory(endpoint =>
+                {
+                    var usesRoutes = endpoint is ClientRouteConnectionEndPoint;
+                    var list = usesRoutes ? routed : direct;
+                    var connection = CreateConnection(endpoint, shardingInfo: info);
+                    connection.Object.ShardID = list.Count % 4;
+                    connection.Setup(value => value.Open(It.IsAny<int>(), It.IsAny<int>()))
+                        .Callback<int, int>((shard, _) => connection.Object.ShardID = shard)
+                        .ReturnsAsync((Cassandra.Responses.Response)null);
+                    connection.SetupGet(value => value.InFlight)
+                        .Returns(() => connection.Object.ShardID == 1 ? 5 : 0);
+                    connection.Setup(value => value.Dispose())
+                        .Raises(value => value.Closing += null, connection.Object);
+                    list.Add(connection);
+                    return connection.Object;
+                }),
+                clientRoutesOptions: new ClientRoutesOptions(new[] { new ClientRouteProxy("route-a") }, 9042, false),
+                clientRouteRowsFactory: hostId =>
+                {
+                    if (!initialized)
+                    {
+                        initialized = true;
+                        if (initiallyUsesClientRoutes)
+                        {
+                            rows.Add(ClientRouteRow(hostId, "198.51.100.90", 9042, "route-a"));
+                        }
+                    }
+
+                    return rows;
+                },
+                clientRoutesCacheCreated: value => cache = value,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            Mock.Get(_resolver).Setup(value => value.GetConnectionShardAwareEndPointsAsync(_host, false, 19042))
+                .ReturnsAsync(new IConnectionEndPoint[] { new FakeConnectionEndPoint("127.0.0.1", 19042) });
+            try
+            {
+                await target.Warmup().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                if (initiallyUsesClientRoutes)
+                {
+                    rows.Clear();
+                    for (var i = 0; i < 3; i++)
+                    {
+                        await cache.FullRefreshBarrierAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    }
+
+                    routed[0].Object.Dispose();
+                }
+                else
+                {
+                    rows.Add(ClientRouteRow(_host.HostId, "198.51.100.90", 9042, "route-a"));
+                    await cache.FullRefreshBarrierAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    direct[0].Object.Dispose();
+                }
+
+                // Each call may add at most one connection. Extra calls must stop once the
+                // eligible target is filled, without removing the older usable transports.
+                for (var i = 0; i < 6; i++)
+                {
+                    await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+
+                if (initiallyUsesClientRoutes)
+                {
+                    Assert.AreEqual(5, target.OpenConnections);
+                    Assert.AreEqual(4, direct.Count);
+                    CollectionAssert.AreEquivalent(new[] { 0, 1, 2, 3 }, direct.Select(value => value.Object.ShardID));
+                    for (var shard = 0; shard < 4; shard++)
+                    {
+                        var borrowed = target.BorrowExistingConnection(null, shard);
+                        Assert.AreEqual(shard, borrowed.ShardID);
+                        Assert.IsNotInstanceOf<ClientRouteConnectionEndPoint>(borrowed.EndPoint);
+                    }
+
+                    var lost = direct.Single(value => value.Object.ShardID == 1);
+                    lost.Object.Dispose();
+                    await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    Assert.AreEqual(5, target.OpenConnections);
+                    Assert.AreEqual(1, target.BorrowExistingConnection(null, 1).ShardID);
+                    Assert.IsNotInstanceOf<ClientRouteConnectionEndPoint>(target.BorrowExistingConnection(null, 1).EndPoint);
+                    routed[1].Verify(value => value.Dispose(), Times.Never);
+                }
+                else
+                {
+                    Assert.IsNull(GetShardingInfo(target));
+                    Assert.AreEqual(4, target.OpenConnections);
+                    Assert.AreEqual(0, target.BorrowExistingConnection(null, 1).InFlight);
+                }
+
+                var key = Enumerable.Range(0, 256).Select(value => new RoutingKey(new[] { (byte)value }))
+                    .First(value => info.ShardID(M3PToken.Factory.Hash(value.RawRoutingKey)) == 1);
+                var tokenBorrow = target.BorrowExistingConnection(key);
+                var tabletBorrow = target.BorrowExistingConnection(null, 1);
+                if (initiallyUsesClientRoutes)
+                {
+                    Assert.AreEqual(1, tabletBorrow.ShardID);
+                    Assert.AreEqual(1, tokenBorrow.ShardID);
+                }
+                else
+                {
+                    Assert.AreEqual(0, tabletBorrow.InFlight);
+                    Assert.AreEqual(0, tokenBorrow.InFlight);
+                }
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_UpdatePoolShardStateWhenEndpointTypeChanges(bool initiallyUsesClientRoutes)
+        {
+            var rows = new List<IRow>();
+            var connectionsWithoutClientRoutes = new ConcurrentQueue<Mock<IConnection>>();
+            var connectionsUsingClientRoutes = new ConcurrentQueue<Mock<IConnection>>();
+            var shardingInfo = ShardingInfo.Create(
+                "0",
+                "4",
+                "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin",
+                "12",
+                "19042",
+                "19142");
+            var factory = new FakeConnectionFactory(endPoint =>
+            {
+                var connection = CreateConnection(endPoint, shardingInfo: shardingInfo);
+                connection.Setup(value => value.Dispose())
+                          .Raises(value => value.Closing += null, connection.Object);
+                if (endPoint is ClientRouteConnectionEndPoint)
+                {
+                    connectionsUsingClientRoutes.Enqueue(connection);
+                }
+                else
+                {
+                    connectionsWithoutClientRoutes.Enqueue(connection);
+                }
+
+                return connection.Object;
+            });
+            ClientRoutesCache routesCache = null;
+            var options = new ClientRoutesOptions(
+                new[] { new ClientRouteProxy("route-a") },
+                9042,
+                false);
+            var target = CreatePool(
+                connectionFactory: factory,
+                clientRoutesOptions: options,
+                hostHasClientRoute: true,
+                clientRouteRowsFactory: hostId =>
+                {
+                    if (initiallyUsesClientRoutes && connectionsWithoutClientRoutes.IsEmpty &&
+                        connectionsUsingClientRoutes.IsEmpty && rows.Count == 0)
+                    {
+                        rows.Add(ClientRouteRow(hostId, "198.51.100.90", 9042, "route-a"));
+                    }
+
+                    return rows;
+                },
+                coreConnections: 2,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000),
+                clientRoutesCacheCreated: cache => routesCache = cache);
+            try
+            {
+                Mock.Get(_resolver)
+                    .Setup(resolver => resolver.GetConnectionShardAwareEndPointsAsync(_host, false, 19042))
+                    .ReturnsAsync(new IConnectionEndPoint[]
+                    {
+                        new ConnectionEndPoint(
+                            new IPEndPoint(_host.Address.Address, 19042),
+                            Mock.Of<IServerNameResolver>(),
+                            null)
+                    });
+
+                await target.Warmup().WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                Assert.AreEqual(initiallyUsesClientRoutes ? 2 : 4, target.OpenConnections);
+                Assert.AreEqual(initiallyUsesClientRoutes ? 0 : 4, connectionsWithoutClientRoutes.Count);
+                Assert.AreEqual(initiallyUsesClientRoutes ? 2 : 0, connectionsUsingClientRoutes.Count);
+
+                if (initiallyUsesClientRoutes)
+                {
+                    rows.Clear();
+                    // An existing nonempty snapshot requires three empty refreshes before clearing.
+                    for (var i = 0; i < 3; i++)
+                    {
+                        await routesCache.FullRefreshBarrierAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    }
+                }
+                else
+                {
+                    rows.Add(ClientRouteRow(_host.HostId, "198.51.100.90", 9042, "route-a"));
+                    await routesCache.FullRefreshBarrierAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+
+                var previousConnections = (initiallyUsesClientRoutes ? connectionsUsingClientRoutes : connectionsWithoutClientRoutes).ToArray();
+                previousConnections[0].Object.Dispose();
+                await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                Assert.AreEqual(initiallyUsesClientRoutes ? 4 : 2, GetExpectedConnectionLength(target));
+                Assert.AreEqual(initiallyUsesClientRoutes ? 1 : 3,
+                    target.ConnectionsSnapshot.Count(connection => (connection.EndPoint is ClientRouteConnectionEndPoint) == initiallyUsesClientRoutes));
+                Assert.AreEqual(initiallyUsesClientRoutes ? 4 : 1,
+                    target.ConnectionsSnapshot.Count(connection => (connection.EndPoint is ClientRouteConnectionEndPoint) != initiallyUsesClientRoutes));
+                foreach (var connection in previousConnections.Skip(1))
+                {
+                    connection.Object.Dispose();
+                }
+
+                await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreEqual(initiallyUsesClientRoutes ? 4 : 2, target.OpenConnections);
+                Assert.IsTrue(target.ConnectionsSnapshot.All(
+                    connection => (connection.EndPoint is ClientRouteConnectionEndPoint) != initiallyUsesClientRoutes));
+                foreach (var connectionUsingClientRoutes in connectionsUsingClientRoutes)
+                {
+                    connectionUsingClientRoutes.Verify(connection => connection.Open(), Times.Once);
+                    connectionUsingClientRoutes.Verify(connection => connection.Open(It.IsAny<int>(), It.IsAny<int>()), Times.Never);
+                }
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_UseCurrentDistanceWhenRouteAdmissionClearsShardState(bool resizeDuringPublication)
+        {
+            var rows = new List<IRow>();
+            var shardingInfo = ShardingInfo.Create("0", "4", "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin", "12", "19042", "19142");
+            HostConnectionPool target = null;
+            var distanceChanged = false;
+            Task resize = null;
+            Thread resizeThread = null;
+            var factory = new FakeConnectionFactory(endPoint =>
+            {
+                var connection = CreateConnection(endPoint, shardingInfo: shardingInfo);
+                if (endPoint is ClientRouteConnectionEndPoint)
+                {
+                    var shardInfoRead = false;
+                    connection.Setup(value => value.ShardingInfo()).Returns(() =>
+                    {
+                        shardInfoRead = true;
+                        return null;
+                    });
+                    connection.SetupGet(value => value.IsClosed).Returns(() =>
+                    {
+                        if (shardInfoRead && !distanceChanged)
+                        {
+                            // Change distance between candidate metadata retrieval and publication.
+                            distanceChanged = true;
+                            if (resizeDuringPublication)
+                            {
+                                // Exercise the entry point before observing the worker's managed wait.
+                                target.ConsiderResizingPool(0);
+                                resize = Task.Factory.StartNew(() =>
+                                {
+                                    Volatile.Write(ref resizeThread, Thread.CurrentThread);
+                                    target.ConsiderResizingPool(int.MaxValue);
+                                }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+                                Assert.IsTrue(SpinWait.SpinUntil(() =>
+                                {
+                                    var worker = Volatile.Read(ref resizeThread);
+                                    return resize.IsCompleted || (worker != null &&
+                                        (worker.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0);
+                                }, 5000));
+                                Assert.IsFalse(resize.IsCompleted, "Resizing must wait for shard-state publication.");
+                                Assert.AreEqual(4, GetExpectedConnectionLength(target));
+                            }
+
+                            target.SetDistance(HostDistance.Remote);
+                        }
+
+                        return false;
+                    });
+                }
+
+                return connection.Object;
+            });
+            ClientRoutesCache routesCache = null;
+            target = CreatePool(
+                connectionFactory: factory,
+                clientRoutesOptions: new ClientRoutesOptions(new[] { new ClientRouteProxy("route-a") }, 9042, true),
+                clientRouteRowsFactory: _ => rows,
+                coreConnections: 4,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000),
+                clientRoutesCacheCreated: cache => routesCache = cache);
+            var config = GetConfiguration(target);
+            config.PoolingOptions.SetCoreConnectionsPerHost(HostDistance.Remote, 1)
+                                 .SetMaxConnectionsPerHost(HostDistance.Remote, 1);
+            config.PoolingOptions.SetMaxConnectionsPerHost(HostDistance.Local, 8);
+            target.SetDistance(HostDistance.Local);
+            Mock.Get(_resolver)
+                .Setup(resolver => resolver.GetConnectionShardAwareEndPointsAsync(_host, false, 19042))
+                .ReturnsAsync(new IConnectionEndPoint[]
+                {
+                    new ConnectionEndPoint(new IPEndPoint(_host.Address.Address, 19042),
+                        Mock.Of<IServerNameResolver>(), null)
+                });
+            try
+            {
+                await target.Warmup().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.IsNotNull(GetShardingInfo(target));
+                Assert.AreEqual(4, GetExpectedConnectionLength(target));
+                rows.Add(ClientRouteRow(_host.HostId, "198.51.100.93", 9042, "route-a"));
+                await routesCache.FullRefreshBarrierAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                var previous = target.ConnectionsSnapshot.First();
+                Mock.Get(previous).Raise(connection => connection.Closing += null, previous);
+                await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                if (resize != null)
+                {
+                    await resize.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+
+                Assert.IsTrue(distanceChanged);
+                Assert.IsNull(GetShardingInfo(target));
+                Assert.AreEqual(1, GetExpectedConnectionLength(target));
+            }
+            finally
+            {
+                try
+                {
+                    if (resize != null)
+                    {
+                        await resize.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    }
+                }
+                finally
+                {
+                    DisposePoolAndTimer(target);
+                }
+            }
+        }
+
+        [Test]
+        public async Task Should_ClearShardStateWhenConnectionUsingClientRoutesOmitsShardingMetadata()
+        {
+            var shardingInfo = ShardingInfo.Create(
+                "0", "4", "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin", "12", "19042", "19142");
+            var connections = new List<Mock<IConnection>>();
+            var factory = new FakeConnectionFactory(endPoint =>
+            {
+                var connection = CreateConnection(endPoint, shardingInfo: connections.Count == 0 ? shardingInfo : null);
+                connections.Add(connection);
+                return connection.Object;
+            });
+            var tokenFactory = new CallbackTokenFactory();
+            var hashes = 0;
+            tokenFactory.OnHash = () => hashes++;
+            var target = CreatePool(
+                connectionFactory: factory,
+                clientRoutesOptions: new ClientRoutesOptions(new[] { new ClientRouteProxy("route-a") }, 9042, true),
+                coreConnections: 3,
+                tokenFactory: tokenFactory);
+            try
+            {
+                await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.IsNotNull(GetShardingInfo(target));
+                Assert.AreEqual(4, GetExpectedConnectionLength(target));
+
+                await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.IsNull(GetShardingInfo(target));
+                Assert.AreEqual(3, GetExpectedConnectionLength(target));
+
+                await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreEqual(3, connections.Count);
+                Assert.AreEqual(3, target.OpenConnections);
+                CollectionAssert.AreEquivalent(connections.Select(connection => connection.Object), target.ConnectionsSnapshot);
+                connections[0].Verify(value => value.Dispose(), Times.Never);
+                connections[1].Verify(value => value.Dispose(), Times.Never);
+                connections[1].Verify(value => value.Open(It.IsAny<int>(), 4), Times.Once);
+                connections[2].Verify(value => value.Open(), Times.Once);
+                connections[2].Verify(value => value.Open(It.IsAny<int>(), It.IsAny<int>()), Times.Never);
+                Assert.IsNotNull(target.BorrowExistingConnection(new RoutingKey(new byte[] { 1 })));
+                Assert.AreEqual(0, hashes, "A non-sharded route must not select a shard using prior metadata.");
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [Test]
+        public async Task Should_FinishBorrowWithShardSnapshot_WhenHostStartsUsingClientRoutesDuringHash()
+        {
+            var shardingInfo = ShardingInfo.Create(
+                "0",
+                "4",
+                "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin",
+                "12",
+                "19042",
+                "19142");
+            var tokenFactory = new CallbackTokenFactory();
+            var options = new ClientRoutesOptions(
+                new[] { new ClientRouteProxy("route-a") },
+                9042,
+                false);
+            var endPointWithoutClientRoutes = new FakeConnectionEndPoint("127.0.0.1", 9042);
+            var shardAwareEndPointWithoutClientRoutes = new FakeConnectionEndPoint("127.0.0.1", 19042);
+            var resolver = new Mock<IEndPointResolver>(MockBehavior.Strict);
+            resolver.Setup(value => value.GetConnectionEndPointsAsync(It.IsAny<Host>(), false))
+                    .ReturnsAsync(new IConnectionEndPoint[] { endPointWithoutClientRoutes });
+            resolver.Setup(value => value.GetConnectionShardAwareEndPointsAsync(
+                        It.IsAny<Host>(), false, 19042))
+                    .ReturnsAsync(new IConnectionEndPoint[] { shardAwareEndPointWithoutClientRoutes });
+            var target = CreatePool(
+                res: resolver.Object,
+                connectionFactory: new FakeConnectionFactory(endPoint =>
+                    CreateConnection(endPoint, shardingInfo: shardingInfo).Object),
+                clientRoutesOptions: options,
+                hostHasClientRoute: false,
+                coreConnections: 1,
+                tokenFactory: tokenFactory,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+
+            try
+            {
+                await target.Warmup().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreEqual(4, target.OpenConnections);
+
+                var clientRouteEndPoint = new ClientRouteConnectionEndPoint(
+                    new IPEndPoint(IPAddress.Parse("198.51.100.91"), 9042),
+                    _host.Address,
+                    "route.proxy",
+                    "route-a");
+                var transitions = 0;
+                tokenFactory.OnHash = () =>
+                {
+                    Interlocked.Increment(ref transitions);
+                    resolver.Setup(value => value.GetConnectionShardAwareEndPointsAsync(
+                                It.IsAny<Host>(), false, 19042))
+                            .ReturnsAsync(new IConnectionEndPoint[] { clientRouteEndPoint });
+                    target.OnConnectionClosing(target.ConnectionsSnapshot[0]);
+                    InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).GetAwaiter().GetResult();
+                };
+
+                var borrowed = target.BorrowExistingConnection(new RoutingKey(new byte[] { 1 }));
+
+                Assert.IsNotNull(borrowed);
+                Assert.AreEqual(1, transitions);
+                Assert.IsNull(GetShardingInfo(target));
+                Assert.AreEqual(1, GetExpectedConnectionLength(target));
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [Test]
+        public async Task Should_SerializeShardPublicationWithConnectionOpen_WhenHostStartsUsingClientRoutes()
+        {
+            var rows = new List<IRow>();
+            var shardingReadWithoutClientRoutesStarted = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseShardingReadWithoutClientRoutes = new ManualResetEventSlim(false);
+            var connectionsUsingClientRoutes = new ConcurrentQueue<Mock<IConnection>>();
+            Mock<IConnection> connectionWithoutClientRoutes = null;
+            var shardingInfo = ShardingInfo.Create(
+                "0",
+                "4",
+                "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin",
+                "12",
+                "19042",
+                "19142");
+            var factory = new FakeConnectionFactory(endPoint =>
+            {
+                var connection = CreateConnection(endPoint, shardingInfo: shardingInfo);
+                if (endPoint is ClientRouteConnectionEndPoint)
+                {
+                    connectionsUsingClientRoutes.Enqueue(connection);
+                }
+                else
+                {
+                    connectionWithoutClientRoutes = connection;
+                    connection.Setup(value => value.ShardingInfo())
+                              .Callback(() =>
+                              {
+                                  shardingReadWithoutClientRoutesStarted.TrySetResult(true);
+                                  releaseShardingReadWithoutClientRoutes.Wait();
+                              })
+                              .Returns(shardingInfo);
+                }
+
+                return connection.Object;
+            });
+            ClientRoutesCache routesCache = null;
+            var options = new ClientRoutesOptions(
+                new[] { new ClientRouteProxy("route-a") },
+                9042,
+                false);
+            var target = CreatePool(
+                connectionFactory: factory,
+                clientRoutesOptions: options,
+                clientRouteRowsFactory: _ => rows,
+                coreConnections: 1,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000),
+                clientRoutesCacheCreated: cache => routesCache = cache);
+            var config = GetConfiguration(target);
+
+            Task warmup = null;
+            Task<IConnection> borrow = null;
+            var shardUpdateIsSerialized = false;
+            try
+            {
+                warmup = Task.Run(() => target.Warmup());
+                await shardingReadWithoutClientRoutesStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                shardUpdateIsSerialized = GetConnectionOpenOperation(target) != null;
+
+                rows.Add(ClientRouteRow(_host.HostId, "198.51.100.92", 9042, "route-a"));
+                await routesCache.FullRefreshBarrierAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+                target.OnConnectionClosing(connectionWithoutClientRoutes.Object);
+                borrow = target.BorrowConnectionAsync();
+
+                Assert.AreEqual(0, connectionsUsingClientRoutes.Count);
+                releaseShardingReadWithoutClientRoutes.Set();
+
+                var warmupException = await Assert.ThrowsAsync<SocketException>(async () =>
+                    await warmup.WaitToCompleteAsync(5000).ConfigureAwait(false));
+                var borrowException = await Assert.ThrowsAsync<SocketException>(async () =>
+                    await borrow.WaitToCompleteAsync(5000).ConfigureAwait(false));
+                Assert.AreEqual(SocketError.NotConnected, warmupException.SocketErrorCode);
+                Assert.AreEqual(SocketError.NotConnected, borrowException.SocketErrorCode);
+                await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreEqual(1, connectionsUsingClientRoutes.Count);
+                Assert.AreEqual(1, target.OpenConnections);
+
+                var recoveredConnection = target.BorrowExistingConnection(null);
+                var connectionUsingClientRoutes = connectionsUsingClientRoutes.Single().Object;
+
+                Assert.IsTrue(
+                    shardUpdateIsSerialized,
+                    "The next connection could start before the previous connection published its shard state.");
+                Assert.AreNotSame(connectionWithoutClientRoutes.Object, recoveredConnection);
+                Assert.AreSame(connectionUsingClientRoutes, recoveredConnection);
+                Assert.IsNull(GetShardingInfo(target));
+                Assert.AreEqual(1, GetExpectedConnectionLength(target));
+            }
+            finally
+            {
+                releaseShardingReadWithoutClientRoutes.Set();
+                try
+                {
+                    target.Dispose();
+                }
+                finally
+                {
+                    config.Timer.Dispose();
+                    var inFlight = Task.WhenAll(warmup ?? Task.CompletedTask, borrow ?? Task.CompletedTask);
+                    try
+                    {
+                        // The normal path asserts expected faults; cleanup also observes them after early assertions.
+                        await inFlight.ContinueWith(completed => _ = completed.Exception, TaskScheduler.Default)
+                            .WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        if (inFlight.IsCompleted)
+                        {
+                            releaseShardingReadWithoutClientRoutes.Dispose();
+                        }
+                    }
+                }
+            }
+        }
+
+        [TestCase(0, false)]
+        [TestCase(-1, false)]
+        [TestCase(0, true)]
+        [TestCase(-1, true)]
+        public async Task Should_KeepConnectionsWithoutShardRouting_WhenShardCountRemainsInvalid(int shardCount, bool usesClientRoutes)
+        {
+            var connections = new List<Mock<IConnection>>();
+            var factory = new FakeConnectionFactory(endPoint =>
+            {
+                var info = ShardingInfo.Create("0", shardCount == 0 ? "0" : "-1",
+                    "org.apache.cassandra.dht.Murmur3Partitioner", "biased-token-round-robin", "12", "19042", "19142");
+                var connection = CreateConnection(endPoint, shardingInfo: info);
+                connections.Add(connection);
+                return connection.Object;
+            });
+            var options = usesClientRoutes ? new ClientRoutesOptions(new[] { new ClientRouteProxy("route-a") }, 9042, true) : null;
+            var target = CreatePool(connectionFactory: factory, clientRoutesOptions: options);
+            try
+            {
+                await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreEqual(2, target.OpenConnections);
+                Assert.AreEqual(2, GetExpectedConnectionLength(target));
+                Assert.IsNull(GetShardingInfo(target));
+                Assert.IsNull(GetConnectionOpenOperation(target));
+                foreach (var connection in connections)
+                {
+                    connection.Verify(value => value.Dispose(), Times.Never);
+                }
+            }
+            finally
+            {
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [NonParallelizable]
+        [TestCase(true, false, false)]
+        [TestCase(false, false, false)]
+        [TestCase(false, true, false)]
+        [TestCase(false, true, true)]
+        public async Task Should_ReportOpenSuccessOnlyAfterShardPublication(bool failMetadata, bool failDiagnostic, bool fatal)
+        {
+            var info = ShardingInfo.Create("0", "4", "org.apache.cassandra.dht.Murmur3Partitioner",
+                "biased-token-round-robin", "12", "19042", "19142");
+            var target = CreatePool(connectionFactory: new FakeConnectionFactory(endPoint =>
+            {
+                var connection = CreateConnection(endPoint, shardingInfo: info);
+                if (failMetadata)
+                {
+                    // Inject an alternate IConnection failure. The production accessor returns
+                    // cached metadata; malformed SUPPORTED options fail earlier during Open.
+                    connection.Setup(value => value.ShardingInfo()).Throws(new InvalidOperationException("metadata failed"));
+                }
+
+                return connection.Object;
+            }), coreConnections: 1, reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            var successMessages = 0;
+            var publicationWasComplete = false;
+            Exception sinkFailure = fatal ? new OutOfMemoryException("diagnostic failed") : new InvalidOperationException("diagnostic failed");
+            var listener = new Mock<TraceListener> { CallBase = true };
+            listener.Setup(value => value.WriteLine(It.Is<string>(message => message.Contains("opened successfully, pool"))))
+                .Callback<string>(message =>
+                {
+                    successMessages++;
+                    publicationWasComplete = GetShardingInfo(target) != null && GetConnectionOpenOperation(target) == null;
+                    if (failDiagnostic)
+                    {
+                        throw sinkFailure;
+                    }
+                });
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener.Object);
+            try
+            {
+                var opening = InvokeCreateOpenConnection(target);
+                if (failMetadata)
+                {
+                    await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                        await opening.WaitToCompleteAsync(5000).ConfigureAwait(false));
+                    Assert.AreEqual(0, successMessages);
+                    Assert.AreEqual(0, target.OpenConnections);
+                }
+                else
+                {
+                    if (fatal)
+                    {
+                        var observed = await Assert.ThrowsAsync<OutOfMemoryException>(async () =>
+                            await opening.WaitToCompleteAsync(5000).ConfigureAwait(false));
+                        Assert.AreSame(sinkFailure, observed);
+                    }
+                    else
+                    {
+                        await opening.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    }
+
+                    Assert.AreEqual(1, successMessages);
+                    Assert.IsTrue(publicationWasComplete);
+                    Assert.AreEqual(1, target.OpenConnections);
+                }
+
+                Assert.IsNull(GetConnectionOpenOperation(target));
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener.Object);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                listener.Object.Dispose();
+                DisposePoolAndTimer(target);
             }
         }
 
@@ -1821,14 +3102,12 @@ namespace Cassandra.Tests.Connections
         [NonParallelizable]
         public async Task Should_NotAttributeShardingInitializationFailureToHostUpNotification()
         {
-            var shardingInfo = ShardingInfo.Create(
-                "0", "0", "org.apache.cassandra.dht.Murmur3Partitioner",
-                "biased-token-round-robin", "0", "0", "0");
+            Mock<IConnection> connection = null;
             var target = CreatePool(
                 connectionFactory: new FakeConnectionFactory(endPoint =>
                 {
-                    var connection = CreateConnection(endPoint, shardingInfo: shardingInfo);
-                    connection.Object.ShardID = 0;
+                    connection = CreateConnection(endPoint);
+                    connection.Setup(value => value.ShardingInfo()).Throws(new DivideByZeroException("metadata failed"));
                     return connection.Object;
                 }),
                 coreConnections: 1,
@@ -1838,15 +3117,21 @@ namespace Cassandra.Tests.Connections
             _host.Up += _ => hostUpCalls++;
             var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
             var listener = new Mock<TraceListener> { CallBase = true };
-            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Warning;
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
             Trace.Listeners.Add(listener.Object);
             try
             {
                 await InvokeCreateOrScheduleReconnectAsync(target).WaitToCompleteAsync(5000).ConfigureAwait(false);
 
+                connection.Verify(value => value.Open(), Times.Once);
+                connection.Verify(value => value.ShardingInfo(), Times.Once);
+                connection.Verify(value => value.Dispose(), Times.Once);
+                Assert.AreEqual(0, target.OpenConnections);
+                Assert.IsNull(GetConnectionOpenOperation(target));
+                Assert.IsFalse(_host.IsUp);
                 Assert.AreEqual(0, hostUpCalls);
                 listener.Verify(value => value.WriteLine(It.Is<string>(message =>
-                    message.Contains("Background connection maintenance") &&
+                    message.Contains("could not be created") &&
                     message.Contains(_host.Address.ToString()) &&
                     message.Contains(nameof(DivideByZeroException)))), Times.Once());
                 listener.Verify(value => value.WriteLine(It.Is<string>(message =>
@@ -1916,6 +3201,224 @@ namespace Cassandra.Tests.Connections
                 listener.Object.Dispose();
                 Diagnostics.CassandraTraceSwitch.Level = previousLevel;
                 DisposePoolAndTimer(target);
+            }
+        }
+
+        [NonParallelizable]
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_ReleaseOpenGateAndRollbackAdmission_WhenShardPublicationFails(bool failCleanupDiagnostic)
+        {
+            var failShardPublication = true;
+            var createdConnections = new ConcurrentQueue<Mock<IConnection>>();
+            var factory = new FakeConnectionFactory(endPoint =>
+            {
+                var shardingInfo = ShardingInfo.Create(
+                    "0",
+                    "4",
+                    "org.apache.cassandra.dht.Murmur3Partitioner",
+                    "biased-token-round-robin",
+                    "12",
+                    "19042",
+                    "19142");
+                var connection = CreateConnection(endPoint, shardingInfo: shardingInfo);
+                if (failShardPublication)
+                {
+                    connection.Setup(value => value.ShardingInfo()).Throws(new InvalidOperationException("metadata failed"));
+                }
+
+                if (failShardPublication && failCleanupDiagnostic)
+                {
+                    connection.Setup(value => value.Dispose()).Throws(new InvalidOperationException("dispose failed"));
+                }
+
+                createdConnections.Enqueue(connection);
+                return connection.Object;
+            });
+            var target = CreatePool(connectionFactory: factory, coreConnections: 1);
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new RejectedConnectionWarningTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Warning;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                    await InvokeCreateOpenConnection(target).WaitToCompleteAsync(5000).ConfigureAwait(false));
+
+                Assert.IsNull(GetConnectionOpenOperation(target));
+                Assert.AreEqual(0, target.OpenConnections);
+                Assert.AreEqual(0, target.Status.AvailableConnections);
+                Assert.AreEqual(NodeConnectivity.Disconnected, target.Status.Connectivity);
+                var rejectedConnection = createdConnections.Single();
+                rejectedConnection.Verify(value => value.Dispose(), Times.Once);
+                Assert.AreEqual(failCleanupDiagnostic ? 1 : 0, listener.Messages.Count);
+
+                failShardPublication = false;
+                var opening = InvokeCreateOpenConnection(target);
+                await opening.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                var openedConnection = await opening.ConfigureAwait(false);
+
+                Assert.IsNotNull(openedConnection);
+                Assert.AreEqual(2, createdConnections.Count);
+                Assert.AreSame(createdConnections.Last().Object, openedConnection);
+                rejectedConnection.Verify(value => value.Dispose(), Times.Once);
+                Assert.AreEqual(1, target.OpenConnections);
+                Assert.AreEqual(1, target.Status.AvailableConnections);
+                Assert.AreEqual(NodeConnectivity.Connected, target.Status.Connectivity);
+                Assert.IsNotNull(GetShardingInfo(target));
+                Assert.IsNull(GetConnectionOpenOperation(target));
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                DisposePoolAndTimer(target);
+            }
+        }
+
+        [NonParallelizable]
+        [TestCase(true, true, false, false, false)]
+        [TestCase(false, true, false, false, false)]
+        [TestCase(false, false, true, false, false)]
+        [TestCase(false, false, true, true, false)]
+        [TestCase(true, true, false, false, true)]
+        [TestCase(false, true, true, true, true)]
+        public async Task Should_CompleteRejectedOpenForAllWaiters_WhenCleanupOrDiagnosticFails(
+            bool failShardPublication, bool failDisposal, bool failDiagnostic, bool fatalDiagnostic, bool fatalPrimary)
+        {
+            var shardingReadStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseShardingRead = new ManualResetEventSlim(false);
+            var fatalFailure = new OutOfMemoryException("rejected connection cleanup failed");
+            var firstFatalFailure = new OutOfMemoryException("rejected connection publication failed");
+            var attempts = 0;
+            Mock<IConnection> rejectedConnection = null;
+            var target = CreatePool(
+                connectionFactory: new FakeConnectionFactory(endPoint =>
+                {
+                    var connection = CreateConnection(endPoint);
+                    if (Interlocked.Increment(ref attempts) == 1)
+                    {
+                        rejectedConnection = connection;
+                        var closed = false;
+                        connection.SetupGet(value => value.IsClosed).Returns(() => closed);
+                        connection.Setup(value => value.ShardingInfo()).Returns(() =>
+                        {
+                            shardingReadStarted.TrySetResult(true);
+                            releaseShardingRead.Wait();
+                            closed = !failShardPublication;
+                            if (failShardPublication)
+                            {
+                                throw fatalPrimary ? firstFatalFailure : new InvalidOperationException("metadata failed");
+                            }
+
+                            return null;
+                        });
+                        if (failDisposal)
+                        {
+                            connection.Setup(value => value.Dispose()).Throws(fatalFailure);
+                        }
+                    }
+
+                    return connection.Object;
+                }),
+                coreConnections: 1,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            var listener = new Mock<TraceListener> { CallBase = true };
+            if (failDiagnostic)
+            {
+                listener.Setup(value => value.WriteLine(It.Is<string>(message =>
+                        message.Contains("was removed or closed while publishing shard state"))))
+                    .Throws(fatalDiagnostic
+                        ? fatalPrimary ? firstFatalFailure : fatalFailure
+                        : new InvalidOperationException("post-publication diagnostic failed"));
+            }
+
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener.Object);
+            Task<IConnection> opening = null;
+            Task<IConnection> joining = null;
+            try
+            {
+                opening = Task.Run(() => InvokeCreateOpenConnection(target));
+                await shardingReadStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                joining = InvokeCreateOpenConnection(target);
+                Assert.IsFalse(joining.IsCompleted);
+                releaseShardingRead.Set();
+
+                foreach (var waiter in new[] { opening, joining })
+                {
+                    if (failDisposal || fatalDiagnostic)
+                    {
+                        var failure = await Assert.ThrowsAsync<OutOfMemoryException>(async () =>
+                            await waiter.WaitToCompleteAsync(5000).ConfigureAwait(false));
+                        Assert.AreSame(fatalPrimary ? firstFatalFailure : fatalFailure, failure);
+                    }
+                    else
+                    {
+                        var failure = await Assert.ThrowsAsync<SocketException>(async () =>
+                            await waiter.WaitToCompleteAsync(5000).ConfigureAwait(false));
+                        Assert.AreEqual(SocketError.NotConnected, failure.SocketErrorCode);
+                    }
+                }
+
+                Assert.IsNull(GetConnectionOpenOperation(target));
+                Assert.AreEqual(0, target.OpenConnections);
+                Assert.AreEqual(0, target.Status.AvailableConnections);
+                Assert.AreEqual(NodeConnectivity.Disconnected, target.Status.Connectivity);
+                rejectedConnection.Verify(value => value.Dispose(), Times.Once);
+                if (fatalPrimary)
+                {
+                    listener.Verify(value => value.WriteLine(It.Is<string>(message =>
+                        message.Contains("Additional lifecycle failure") &&
+                        message.Contains("rejected connection cleanup failed"))), Times.Once);
+                }
+
+                if (failDiagnostic)
+                {
+                    listener.Verify(value => value.WriteLine(It.Is<string>(message =>
+                        message.Contains("was removed or closed while publishing shard state"))), Times.Once);
+                }
+
+                var recovery = InvokeCreateOpenConnection(target);
+                await recovery.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                var recovered = await recovery.ConfigureAwait(false);
+                Assert.AreNotSame(rejectedConnection.Object, recovered);
+                Assert.AreEqual(1, target.OpenConnections);
+                Assert.IsNull(GetConnectionOpenOperation(target));
+            }
+            finally
+            {
+                releaseShardingRead.Set();
+                try
+                {
+                    Trace.Listeners.Remove(listener.Object);
+                    Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+                    listener.Object.Dispose();
+                    // Synthetic fatal disposal is part of the assertion path, not fixture cleanup.
+                    rejectedConnection?.Setup(value => value.Dispose()).Callback(() => { });
+                    DisposePoolAndTimer(target);
+                }
+                finally
+                {
+                    var inFlight = Task.WhenAll(opening ?? Task.CompletedTask, joining ?? Task.CompletedTask);
+                    try
+                    {
+                        await inFlight.ContinueWith(completed => _ = completed.Exception, TaskScheduler.Default)
+                            .WaitToCompleteAsync(5000).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        if (opening == null || opening.IsCompleted)
+                        {
+                            releaseShardingRead.Dispose();
+                        }
+                        else
+                        {
+                            _ = opening.ContinueWith(_ => releaseShardingRead.Dispose(), TaskScheduler.Default);
+                        }
+                    }
+                }
             }
         }
 
@@ -2211,6 +3714,107 @@ namespace Cassandra.Tests.Connections
             await Assert.ThrowsAsync<SocketException>(() => target.Warmup().WaitAsync(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
             Assert.AreEqual(2, Volatile.Read(ref openAttempts));
             Assert.AreSame(disconnected, target.Status, "Repeated failed opens must not publish duplicate transitions.");
+        }
+
+        [NonParallelizable]
+        [TestCase(0, 1)]
+        [TestCase(0, 2)]
+        [TestCase(1, 0)]
+        [TestCase(2, 0)]
+        [TestCase(2, 1)]
+        [TestCase(2, 2)]
+        public async Task Should_SettleEarlyRejectedOpenForEveryWaiter(int diagnosticKind, int cleanupKind)
+        {
+            var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), contactPoint: null);
+            var config = new TestConfigurationBuilder().Build();
+            using var timer = config.Timer;
+            var pool = new Mock<HostConnectionPool>(host, config, SerializerManager.Default,
+                Mock.Of<IObserverFactory>(), M3PToken.Factory)
+            { CallBase = true };
+            var started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new TaskCompletionSource<IConnection>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var rejected = new Mock<IConnection>();
+            rejected.SetupGet(value => value.IsClosed).Returns(true);
+            rejected.SetupGet(value => value.ShardID).Returns(-1);
+            Exception diagnosticFailure = diagnosticKind == 2
+                ? new OutOfMemoryException("early rejection diagnostic fatal")
+                : new InvalidOperationException("early rejection diagnostic ordinary");
+            Exception cleanupFailure = cleanupKind == 2
+                ? new OutOfMemoryException("early rejection cleanup fatal")
+                : new InvalidOperationException("early rejection cleanup ordinary");
+            if (cleanupKind != 0)
+            {
+                rejected.Setup(value => value.Dispose()).Throws(cleanupFailure);
+            }
+
+            pool.Setup(value => value.DoCreateAndOpen(false, -1, 0, 0)).Returns(() =>
+            {
+                started.TrySetResult(true);
+                return release.Task;
+            });
+            using var target = pool.Object;
+            var level = Diagnostics.CassandraTraceSwitch.Level;
+            var listener = new Mock<TraceListener> { CallBase = true };
+            if (diagnosticKind != 0)
+            {
+                listener.Setup(value => value.WriteLine(It.Is<string>(message =>
+                        message.Contains("opened successfully but could not be added"))))
+                    .Throws(diagnosticFailure);
+            }
+
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Info;
+            Trace.Listeners.Add(listener.Object);
+            Task<IConnection> owner = null;
+            Task<IConnection> joiner = null;
+            try
+            {
+                owner = InvokeCreateOpenConnection(target);
+                await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                joiner = InvokeCreateOpenConnection(target);
+                Assert.IsFalse(joiner.IsCompleted);
+                release.TrySetResult(rejected.Object);
+                foreach (var waiter in new[] { owner, joiner })
+                {
+                    var error = await Assert.CatchAsync(() => waiter.WaitAsync(TimeSpan.FromSeconds(5)));
+                    if (diagnosticKind == 2 || cleanupKind == 2)
+                    {
+                        Assert.AreSame(diagnosticKind == 2 ? diagnosticFailure : cleanupFailure, error);
+                    }
+                    else
+                    {
+                        Assert.IsInstanceOf<SocketException>(error);
+                    }
+                }
+
+                Assert.IsNull(GetConnectionOpenOperation(target));
+                Assert.AreEqual(0, target.OpenConnections);
+                Assert.AreEqual(0, target.Status.AvailableConnections);
+                Assert.AreEqual(NodeConnectivity.Disconnected, target.Status.Connectivity);
+                rejected.Verify(value => value.Dispose(), Times.Once);
+                if (diagnosticKind == 2 && cleanupKind != 0)
+                {
+                    listener.Verify(value => value.WriteLine(It.Is<string>(message =>
+                        message.Contains(cleanupFailure.Message))), Times.Once);
+                }
+
+                var recovery = new Mock<IConnection>();
+                recovery.SetupGet(value => value.ShardID).Returns(-1);
+                pool.Setup(value => value.DoCreateAndOpen(false, -1, 0, 0)).ReturnsAsync(recovery.Object);
+                Assert.AreSame(recovery.Object, await InvokeCreateOpenConnection(target).WaitAsync(TimeSpan.FromSeconds(5)));
+                Assert.IsNull(GetConnectionOpenOperation(target));
+                Assert.AreEqual(1, target.OpenConnections);
+            }
+            finally
+            {
+                release.TrySetResult(rejected.Object);
+                Trace.Listeners.Remove(listener.Object);
+                Diagnostics.CassandraTraceSwitch.Level = level;
+                listener.Object.Dispose();
+                rejected.Setup(value => value.Dispose()).Callback(() => { });
+                // A red control can leave the shared promise pending; never block fixture teardown on it.
+                _ = owner?.Exception;
+                _ = joiner?.Exception;
+            }
         }
 
         [Test]
@@ -2544,6 +4148,15 @@ namespace Cassandra.Tests.Connections
             }
         }
 
+        private static Configuration GetConfiguration(HostConnectionPool pool)
+        {
+            var field = typeof(HostConnectionPool).GetField(
+                "_config",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.IsNotNull(field);
+            return (Configuration)field.GetValue(pool);
+        }
+
         private static int GetExpectedConnectionLength(HostConnectionPool pool)
         {
             var field = typeof(HostConnectionPool).GetField(
@@ -2555,11 +4168,11 @@ namespace Cassandra.Tests.Connections
 
         private static ShardingInfo GetShardingInfo(HostConnectionPool pool)
         {
-            var property = typeof(HostConnectionPool).GetProperty(
-                "shardingInfo",
+            var field = typeof(HostConnectionPool).GetField(
+                "_shardingInfo",
                 BindingFlags.Instance | BindingFlags.NonPublic);
-            Assert.IsNotNull(property);
-            return (ShardingInfo)property.GetValue(pool);
+            Assert.IsNotNull(field);
+            return (ShardingInfo)field.GetValue(pool);
         }
 
         private static object GetConnectionOpenOperation(HostConnectionPool pool)
@@ -2569,6 +4182,15 @@ namespace Cassandra.Tests.Connections
                 BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.IsNotNull(field);
             return field.GetValue(pool);
+        }
+
+        private static Task<IConnection> InvokeCreateOpenConnection(HostConnectionPool pool)
+        {
+            var method = typeof(HostConnectionPool).GetMethod(
+                "CreateOpenConnection",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.IsNotNull(method);
+            return (Task<IConnection>)method.Invoke(pool, new object[] { false, false });
         }
 
         private static Task InvokeCreateOrScheduleReconnectAsync(HostConnectionPool pool)
@@ -2584,9 +4206,12 @@ namespace Cassandra.Tests.Connections
             IEndPointResolver res = null,
             IConnectionFactory connectionFactory = null,
             ClientRoutesOptions clientRoutesOptions = null,
+            bool hostHasClientRoute = true,
             Func<Guid, IEnumerable<IRow>> clientRouteRowsFactory = null,
             IDnsResolver dnsResolver = null,
             int coreConnections = 2,
+            Action<ClientRoutesCache> clientRoutesCacheCreated = null,
+            TokenFactory tokenFactory = null,
             IReconnectionPolicy reconnectionPolicy = null,
             Host host = null)
         {
@@ -2614,12 +4239,15 @@ namespace Cassandra.Tests.Connections
             {
                 var provider = new Mock<IMetadataQueryProvider>();
                 provider.Setup(value => value.QueryUnpagedAsync(It.IsAny<string>(), false))
-                        .ReturnsAsync(clientRouteRowsFactory == null
-                            ? new[] { ClientRouteRow(_host.HostId, "127.0.0.1", 9042, "route-a") }
-                            : clientRouteRowsFactory(_host.HostId));
+                        .ReturnsAsync(hostHasClientRoute
+                            ? clientRouteRowsFactory == null
+                                ? new[] { ClientRouteRow(_host.HostId, "127.0.0.1", 9042, "route-a") }
+                                : clientRouteRowsFactory(_host.HostId)
+                            : Enumerable.Empty<IRow>());
                 var cache = config.ClientRoutesRuntime.Bind(provider.Object);
                 cache.FullRefreshBarrierAsync(new[] { _host.HostId }, false)
                     .WaitToCompleteAsync(5000).GetAwaiter().GetResult();
+                clientRoutesCacheCreated?.Invoke(cache);
             }
 
             var pool = new HostConnectionPool(
@@ -2627,7 +4255,7 @@ namespace Cassandra.Tests.Connections
                 config,
                 SerializerManager.Default,
                 new MetricsObserverFactory(new MetricsManager(new NullDriverMetricsProvider(), new DriverMetricsOptions(), false, "s1")),
-                M3PToken.Factory
+                tokenFactory ?? M3PToken.Factory
                 );
             _resources.Add((pool, config.Timer));
             pool.SetDistance(HostDistance.Local); // set expected connections length
@@ -2709,6 +4337,34 @@ namespace Cassandra.Tests.Connections
                 WriteLine(message);
                 Attempted.TrySetResult(true);
                 throw new InvalidOperationException("diagnostic listener failure");
+            }
+        }
+
+        private sealed class CallbackTokenFactory : TokenFactory
+        {
+            public Action OnHash { get; set; }
+
+            public override IToken Parse(string tokenStr)
+            {
+                return M3PToken.Factory.Parse(tokenStr);
+            }
+
+            public override IToken Hash(byte[] partitionKey)
+            {
+                OnHash?.Invoke();
+                return M3PToken.Factory.Hash(partitionKey);
+            }
+        }
+
+        private sealed class RejectedConnectionWarningTraceListener : LoggingTests.TestTraceListener
+        {
+            public override void WriteLine(string message)
+            {
+                if (message.Contains("after shard-state publication failed"))
+                {
+                    base.WriteLine(message);
+                    throw new InvalidOperationException("cleanup warning sink failed");
+                }
             }
         }
     }

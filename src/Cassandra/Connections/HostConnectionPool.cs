@@ -100,6 +100,7 @@ namespace Cassandra.Connections
         private int _state = PoolState.Init;
         private HashedWheelTimer.ITimeout _newConnectionTimeout;
         private ConnectionOpenOperation _connectionOpenOperation;
+        private ShardingInfo _shardingInfo;
         private int _connectionIndex;
         private readonly int _maxRequestsPerConnection;
         private readonly PoolingOptions _poolingOptions;
@@ -141,8 +142,6 @@ namespace Cassandra.Connections
 
         /// <inheritdoc />
         public IConnection[] ConnectionsSnapshot => _connections.GetSnapshot().GetAllItems();
-
-        private ShardingInfo shardingInfo { get; set; }
 
         private int lastAttemptedShard = 0;
 
@@ -216,6 +215,7 @@ namespace Cassandra.Connections
 
         private IConnection BorrowLeastBusyConnection(ShardedList<IConnection> connections, RoutingKey routingKey = null, int shardID = -1)
         {
+            var shardingInfo = Volatile.Read(ref _shardingInfo);
             if (shardingInfo != null)
             {
                 if (routingKey != null)
@@ -233,11 +233,17 @@ namespace Cassandra.Connections
             }
 
             IConnection c = null;
-            if (shardID != -1)
+            if (shardingInfo != null && shardID != -1)
             {
                 var minInFlight = int.MaxValue;
                 foreach (var connection in _connections.GetItemsForShard(shardID))
                 {
+                    // Explicit tablet shards obey the same policy as token-based shard selection.
+                    if (!ShouldUseShardAwareness(connection.EndPoint))
+                    {
+                        continue;
+                    }
+
                     int localInFlight = connection.InFlight;
                     if (localInFlight < minInFlight)
                     {
@@ -313,39 +319,58 @@ namespace Cassandra.Connections
 
         public void ConsiderResizingPool(int inFlight)
         {
-            if (inFlight < _maxInflightThresholdToConsiderResizing)
-            {
-                // The requests in-flight are normal
-                return;
-            }
-
-            if (_expectedConnectionLength >= _maxConnectionLength)
-            {
-                // We can not add more connections
-                return;
-            }
-
-            if (_connections.Count < _expectedConnectionLength)
-            {
-                // The pool is still trying to acquire the correct size
-                return;
-            }
-
-            var canResize = Interlocked.Exchange(ref _poolResizing, 1) == 0;
-            if (!canResize)
-            {
-                // There is already another thread resizing the pool
-                return;
-            }
-
-            if (IsClosing)
+            if (inFlight < _maxInflightThresholdToConsiderResizing ||
+                _expectedConnectionLength >= _maxConnectionLength ||
+                Volatile.Read(ref _poolResizing) != 0 ||
+                _connections.Count < _expectedConnectionLength ||
+                GetConnectionCountForTarget(_connections.GetSnapshot()) < _expectedConnectionLength)
             {
                 return;
             }
 
-            _expectedConnectionLength++;
+            int expectedConnectionLength;
+            lock (_connectionHandoffLock)
+            {
+                if (inFlight < _maxInflightThresholdToConsiderResizing)
+                {
+                    // Distance may change the threshold after the fast-path checks.
+                    return;
+                }
+
+                if (_expectedConnectionLength >= _maxConnectionLength)
+                {
+                    // We can not add more connections
+                    return;
+                }
+
+                if (Volatile.Read(ref _poolResizing) != 0)
+                {
+                    return;
+                }
+
+                if (GetConnectionCountForTarget(_connections.GetSnapshot()) < _expectedConnectionLength)
+                {
+                    // The pool is still trying to acquire the correct size
+                    return;
+                }
+
+                var canResize = Interlocked.Exchange(ref _poolResizing, 1) == 0;
+                if (!canResize)
+                {
+                    // There is already another thread resizing the pool
+                    return;
+                }
+
+                if (IsClosing)
+                {
+                    return;
+                }
+
+                expectedConnectionLength = ++_expectedConnectionLength;
+            }
+
             HostConnectionPool.Logger.Info("Increasing pool #{0} size to {1}, as in-flight requests are above threshold ({2})",
-                GetHashCode(), _expectedConnectionLength, _maxInflightThresholdToConsiderResizing);
+                GetHashCode(), expectedConnectionLength, _maxInflightThresholdToConsiderResizing);
             StartCreatingConnection(null);
             _resizingEndTimeout = _timer.NewTimeout(_ => Interlocked.Exchange(ref _poolResizing, 0), null,
                 HostConnectionPool.BetweenResizeDelay);
@@ -466,7 +491,8 @@ namespace Cassandra.Connections
                         {
                             c.OnIdleRequestException += ex => OnIdleRequestException(c, ex);
                         }
-                        if (shardID != -1)
+
+                        if (shardID != -1 && ShouldUseShardAwareness(endPoint))
                         {
                             await c.Open(shardID, shardCount).ConfigureAwait(false);
                         }
@@ -586,6 +612,14 @@ namespace Cassandra.Connections
 
             preferredFailure.Exception.Throw();
             throw new DriverInternalError("The preferred connection failure did not propagate.");
+        }
+
+        private bool ShouldUseShardAwareness(IConnectionEndPoint endPoint)
+        {
+            return ClientRoutesOptions.ShouldUseShardAwareness(
+                _poolingOptions,
+                _config.ClientRoutesRuntime?.Options,
+                endPoint is ClientRouteConnectionEndPoint);
         }
 
         private bool TryTransferConnectionToPool(
@@ -769,7 +803,8 @@ namespace Cassandra.Connections
             {
                 currentLength = _connections.Count;
             }
-            if (IsClosing || currentLength >= _expectedConnectionLength)
+
+            if (IsClosing || GetConnectionCountForTarget(_connections.GetSnapshot()) >= _expectedConnectionLength)
             {
                 // No need to reconnect
                 return;
@@ -984,7 +1019,7 @@ namespace Cassandra.Connections
         /// <param name="schedule"></param>
         private void StartCreatingConnection(IReconnectionSchedule schedule)
         {
-            var count = _connections.Count;
+            var count = GetConnectionCountForTarget(_connections.GetSnapshot());
             if (count >= _expectedConnectionLength)
             {
                 return;
@@ -1009,13 +1044,12 @@ namespace Cassandra.Connections
             var notifyingHostUp = false;
             try
             {
-                var t = await CreateOpenConnectionCore(
+                await CreateOpenConnectionCore(
                         false,
                         schedule != null,
                         false,
                         operation => openOperation = operation)
                     .ConfigureAwait(false);
-                UpdateShardingInfo(t);
                 StartCreatingConnection(null);
                 notifyingHostUp = true;
                 _host.BringUpIfDown();
@@ -1179,7 +1213,7 @@ namespace Cassandra.Connections
             // This method is the only one that adds new connections
             // But we don't control the removal, use snapshot
             var connectionsSnapshot = _connections.GetSnapshot();
-            if (connectionsSnapshot.Length >= _expectedConnectionLength)
+            if (GetConnectionCountForTarget(connectionsSnapshot) >= _expectedConnectionLength)
             {
                 if (connectionsSnapshot.Length == 0)
                 {
@@ -1222,6 +1256,7 @@ namespace Cassandra.Connections
                 var shardID = -1;
                 var shardAwarePort = 0;
                 var shardCount = 0;
+                var shardingInfo = Volatile.Read(ref _shardingInfo);
                 if (shardingInfo != null)
                 {
                     shardAwarePort = _config.ProtocolOptions.SslOptions != null ? shardingInfo.ScyllaShardAwarePortSSL : shardingInfo.ScyllaShardAwarePort;
@@ -1274,16 +1309,115 @@ namespace Cassandra.Connections
                     UpdateStatus(initializationCompleted: true);
                 }
 
-                HostConnectionPool.Logger.Info(
-                    "Connection to {0} opened successfully but could not be added to pool #{1}",
-                    _host.Address,
-                    GetHashCode());
-                c.Dispose();
-                return await FinishOpen(
-                        openOperation,
-                        !IsClosing,
-                        HostConnectionPool.GetNotConnectedException())
-                    .ConfigureAwait(false);
+                Exception failure = HostConnectionPool.GetNotConnectedException();
+                try
+                {
+                    HostConnectionPool.Logger.Info(
+                        "Connection to {0} opened successfully but could not be added to pool #{1}",
+                        _host.Address,
+                        GetHashCode());
+                }
+                catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
+                {
+                    // Rejected admission must release the shared operation even if diagnostics fail.
+                }
+                catch (Exception diagnosticFailure)
+                {
+                    failure = diagnosticFailure;
+                }
+
+                c.Closing -= OnConnectionClosing;
+                try
+                {
+                    TryDisposeRejectedConnection(c, "pool admission failed");
+                }
+                catch (Exception cleanupFailure) when (Utils.CanSuppressException(cleanupFailure, failure))
+                {
+                    Utils.LogSecondaryException(cleanupFailure, failure, HostConnectionPool.Logger,
+                        "after pool admission failed");
+                }
+                catch (Exception cleanupFailure)
+                {
+                    failure = cleanupFailure;
+                }
+
+                return await FinishOpen(openOperation, !IsClosing, failure).ConfigureAwait(false);
+            }
+
+            // Publish shard state before releasing _connectionOpenOperation. Connection creation is
+            // serialized by that field, so an older connection cannot overwrite a newer route
+            // transition after the next open has already updated the pool.
+            var shardStatePublished = false;
+            try
+            {
+                shardStatePublished = UpdateShardingInfo(c);
+            }
+            catch (Exception ex)
+            {
+                // Roll back admission without firing the normal reconnection callback, and always
+                // release the shared open. The concrete metadata accessor is nonthrowing, but
+                // alternate IConnection implementations can fail during publication.
+                lock (_connectionHandoffLock)
+                {
+                    c.Closing -= OnConnectionClosing;
+                    _connections.Remove(c);
+                    UpdateStatus();
+                }
+
+                try
+                {
+                    TryDisposeRejectedConnection(c, "shard-state publication failed");
+                }
+                catch (Exception cleanupFailure) when (Utils.CanSuppressException(cleanupFailure, ex))
+                {
+                    Utils.LogSecondaryException(cleanupFailure, ex, HostConnectionPool.Logger,
+                        "after shard-state publication failed");
+                }
+                catch (Exception cleanupFailure)
+                {
+                    // A fatal cleanup failure takes priority over an ordinary publication failure.
+                    ex = cleanupFailure;
+                }
+
+                return await FinishOpen(openOperation, true, ex).ConfigureAwait(false);
+            }
+
+            if (!shardStatePublished)
+            {
+                Exception failure = HostConnectionPool.GetNotConnectedException();
+                try
+                {
+                    HostConnectionPool.Logger.Info(
+                        "Connection to {0} was removed or closed while publishing shard state for pool #{1}",
+                        _host.Address,
+                        GetHashCode());
+                }
+                catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
+                {
+                    // Failed diagnostics must not prevent cleanup or completion of a rejected open.
+                }
+                catch (Exception diagnosticFailure)
+                {
+                    failure = diagnosticFailure;
+                }
+
+                c.Closing -= OnConnectionClosing;
+                try
+                {
+                    TryDisposeRejectedConnection(c, "post-publication validation failed");
+                }
+                catch (Exception cleanupFailure) when (Utils.CanSuppressException(cleanupFailure, failure))
+                {
+                    Utils.LogSecondaryException(cleanupFailure, failure, HostConnectionPool.Logger,
+                        "after post-publication validation failed");
+                }
+                catch (Exception cleanupFailure)
+                {
+                    // Complete all joiners even when cleanup or its diagnostics fail fatally.
+                    failure = cleanupFailure;
+                }
+
+                return await FinishOpen(openOperation, !IsClosing, failure).ConfigureAwait(false);
             }
 
             var opened = await FinishOpen(openOperation, true, null, c).ConfigureAwait(false);
@@ -1300,6 +1434,45 @@ namespace Cassandra.Connections
             return opened;
         }
 
+        private void TryDisposeRejectedConnection(IConnection connection, string failureContext)
+        {
+            try
+            {
+                if (!connection.IsDisposed)
+                {
+                    connection.Dispose();
+                }
+            }
+            catch (Exception disposeException) when (!Utils.IsFatalException(disposeException))
+            {
+                try
+                {
+                    HostConnectionPool.Logger.Warning(
+                        "Could not dispose connection to {0} after {1}: {2}",
+                        _host.Address,
+                        failureContext,
+                        disposeException);
+                }
+                catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
+                {
+                    // Failed diagnostics must not prevent the rejected open from completing.
+                }
+            }
+        }
+
+        private int GetConnectionCountForTarget(ShardedList<IConnection> connections)
+        {
+            if (Volatile.Read(ref _shardingInfo) == null ||
+                ClientRoutesOptions.ShouldUseShardAwareness(_poolingOptions, _config.ClientRoutesRuntime?.Options, true))
+            {
+                return connections.Length;
+            }
+
+            // Older opted-out routed transports remain usable for ordinary borrowing, but
+            // cannot fill the direct shard target after a route-to-direct transition.
+            return connections.Count(connection => ShouldUseShardAwareness(connection.EndPoint));
+        }
+
         private int GetLeastRepresentedShard(int shardCount)
         {
             var selectedShardId = -1;
@@ -1312,7 +1485,8 @@ namespace Cassandra.Connections
             for (var i = 1; i <= shardCount; i++)
             {
                 var shardId = (lastAttemptedShard + i) % shardCount;
-                var connectionCount = connectionsSnapshot.GetItemsForShard(shardId).Length;
+                var connectionCount = connectionsSnapshot.GetItemsForShard(shardId)
+                    .Count(connection => ShouldUseShardAwareness(connection.EndPoint));
                 if (connectionCount >= connectionsPerShard || connectionCount >= selectedShardConnectionCount)
                 {
                     continue;
@@ -1392,7 +1566,6 @@ namespace Cassandra.Connections
                 // It's the first time accessing or it has been recently set as UP
                 // CreateOpenConnection() supports concurrent calls
                 c = await CreateOpenConnection(true, false).ConfigureAwait(false);
-                UpdateShardingInfo(c);
             }
             catch (Exception)
             {
@@ -1427,10 +1600,13 @@ namespace Cassandra.Connections
 
         public void SetDistance(HostDistance distance)
         {
-            _distance = distance;
-            _expectedConnectionLength = _poolingOptions.GetCoreConnectionsPerHost(distance);
-            _maxInflightThresholdToConsiderResizing = _poolingOptions.GetMaxSimultaneousRequestsPerConnectionTreshold(distance);
-            _maxConnectionLength = _poolingOptions.GetMaxConnectionPerHost(distance);
+            lock (_connectionHandoffLock)
+            {
+                _distance = distance;
+                _expectedConnectionLength = GetCoreConnectionTarget(Volatile.Read(ref _shardingInfo));
+                _maxInflightThresholdToConsiderResizing = _poolingOptions.GetMaxSimultaneousRequestsPerConnectionTreshold(distance);
+                _maxConnectionLength = _poolingOptions.GetMaxConnectionPerHost(distance);
+            }
         }
 
         /// <inheritdoc />
@@ -1549,17 +1725,70 @@ namespace Cassandra.Connections
                          "avoid hitting this node as part of the query plan for a while", _host.Address, ex.ProtocolVersion);
         }
 
-        private void UpdateShardingInfo(IConnection c)
+        private bool UpdateShardingInfo(IConnection c)
         {
-            if (!_poolingOptions.GetDisableShardAwareness() && shardingInfo == null && c.ShardingInfo() != null)
+            var previousShardingInfo = Volatile.Read(ref _shardingInfo);
+            var nextShardingInfo = previousShardingInfo;
+            if (!ShouldUseShardAwareness(c.EndPoint))
             {
-                shardingInfo = c.ShardingInfo();
-                var coreSize = _poolingOptions.GetCoreConnectionsPerHost(_distance);
-                var shardsCount = shardingInfo == null ? 1 : shardingInfo.ScyllaNrShards;
-
-                var connectionsPerShard = HostConnectionPool.CeilingDivide(coreSize, shardsCount);
-                _expectedConnectionLength = shardsCount * connectionsPerShard;
+                nextShardingInfo = null;
             }
+            else
+            {
+                var usesClientRoutes = c.EndPoint is ClientRouteConnectionEndPoint;
+                var connectionShardingInfo = usesClientRoutes || previousShardingInfo == null
+                    ? c.ShardingInfo()
+                    : previousShardingInfo;
+                if (connectionShardingInfo != null && connectionShardingInfo.ScyllaNrShards <= 0)
+                {
+                    // Invalid shard counts cannot guide routing. Keep the transport usable
+                    // without shard metadata rather than discarding every reconnect attempt.
+                    connectionShardingInfo = null;
+                }
+
+                if (usesClientRoutes)
+                {
+                    nextShardingInfo = connectionShardingInfo;
+                }
+                else if (previousShardingInfo == null && connectionShardingInfo != null)
+                {
+                    nextShardingInfo = connectionShardingInfo;
+                }
+            }
+
+            // Reading a candidate's metadata can race with its Closing callback. Compute the
+            // prospective state first, then validate membership and publish under the same lock
+            // used by admission and removal. A rejected candidate must not change either field.
+            lock (_connectionHandoffLock)
+            {
+                if (!TryAddConnectionToPool(c, false, out _))
+                {
+                    return false;
+                }
+
+                if (!ReferenceEquals(previousShardingInfo, nextShardingInfo))
+                {
+                    // Distance changes share this lock. Derive the target only after
+                    // validation so a newer distance cannot be overwritten by a saved target.
+                    Interlocked.Exchange(ref _shardingInfo, nextShardingInfo);
+                    // Each open can parse a fresh metadata object for the same layout.
+                    // Preserve adaptive growth when the shard count is unchanged.
+                    if (previousShardingInfo?.ScyllaNrShards != nextShardingInfo?.ScyllaNrShards)
+                    {
+                        _expectedConnectionLength = GetCoreConnectionTarget(nextShardingInfo);
+                    }
+                }
+
+                return true;
+            }
+        }
+
+        private int GetCoreConnectionTarget(ShardingInfo shardingInfo)
+        {
+            var coreSize = _poolingOptions.GetCoreConnectionsPerHost(_distance);
+            return shardingInfo == null
+                ? coreSize
+                : shardingInfo.ScyllaNrShards * HostConnectionPool.CeilingDivide(coreSize, shardingInfo.ScyllaNrShards);
         }
 
         private int GetConnectionsPerShardTarget(int shardCount)
@@ -1581,8 +1810,7 @@ namespace Cassandra.Connections
         {
             try
             {
-                var c = await CreateOpenConnection(false, false).ConfigureAwait(false);
-                UpdateShardingInfo(c);
+                await CreateOpenConnection(false, false).ConfigureAwait(false);
             }
             catch
             {
@@ -1590,9 +1818,10 @@ namespace Cassandra.Connections
                 throw;
             }
 
-            var length = _expectedConnectionLength;
-
-            for (var i = 1; i < length; i++)
+            // A route-to-direct transition can retain opted-out routed transports. They do
+            // not fill the new shard target, so allow warmup to acquire its direct connections.
+            for (var i = 1; i < _expectedConnectionLength +
+                (_connections.Count - GetConnectionCountForTarget(_connections.GetSnapshot())); i++)
             {
                 try
                 {
@@ -1604,6 +1833,7 @@ namespace Cassandra.Connections
                     {
                         try
                         {
+                            var shardingInfo = Volatile.Read(ref _shardingInfo);
                             HostConnectionPool.Logger.Warning(
                                 "Pool #{0} for host {1} failed to open a warmup connection: {2} of {3} open, " +
                                 "attempted shard: {4}, shard count: {5}, error: {6}",
