@@ -580,7 +580,7 @@ of `Diagnostics.CassandraTraceSwitch`.
 ### `RoutingTarget` replaces `HostShard`
 
 Query plans and replica lookups return `RoutingTarget` values instead of `HostShard`
-objects: `ILoadBalancingPolicy.NewQueryPlan()`, `Metadata.GetReplicas()` and
+objects: the load balancing policy methods, `Metadata.GetReplicas()` and
 `ICluster.GetReplicas()`. `RoutingTarget` is a `readonly record struct` with the same
 `Host` and `Shard` properties, but `Shard` is an `int?`: `null` replaces `-1`, which
 meant "let the connection pool choose the shard".
@@ -593,36 +593,75 @@ meant "let the connection pool choose the shard".
 | `target == null` | `target.Host == null`, for a `default(RoutingTarget)` |
 
 Two targets are equal when their host and shard are equal, as with `HostShard`. A
-query plan that yields `default(RoutingTarget)` ends there, as a `null` element did.
+policy must set the host of every target it returns: the driver skips a target without
+a host, where a `null` element used to end the query plan.
 
-### `ILoadBalancingPolicy.NewQueryPlan` takes the routing information
+### `ILoadBalancingPolicy.NewQueryPlan` is split into `Pick` and `Fallback`
 
 `ILoadBalancingPolicy.NewQueryPlan(string keyspace, IStatement query)` is replaced by
-`NewQueryPlan(RoutingInfo routing, ClusterState cluster)`, and
-`IExtendedLoadBalancingPolicy` is removed. Its `routeAsLwt` parameter is now
-`RoutingInfo.ShouldRouteAsLwt`, so every policy gets it, and a policy wrapping another
-one passes `routing` and `cluster` on.
+two methods, and `IExtendedLoadBalancingPolicy` is removed:
+
+- `RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot metadata)` returns the
+  target of the first attempt, or `null`. Each request calls it once.
+- `IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot metadata)`
+  returns the targets to try when the first one can't be used, for retries on another
+  node and speculative executions, or when `Pick` returns `null`. The driver calls it at
+  most once per request, only when the plan goes past the pick, and skips the node of
+  `Pick` if it comes again. It should return every target the request can use,
+  including the one of `Pick`: a wrapping policy such as `TokenAwarePolicy` can pick a
+  replica instead and take the other nodes from the fallback only.
+
+To migrate a policy, rename `NewQueryPlan` to `Fallback` and implement `Pick` to choose
+the first target without building the rest of the plan. A policy that rotates through
+nodes uses a separate rotation in each method: if `Fallback` advanced the rotation of
+`Pick`, every request that needs its fallback targets would move the first target of the
+next request, and if it only read it, its order wouldn't rotate when `Pick` isn't called,
+for instance by a wrapping policy that picks a replica instead. The `routeAsLwt`
+parameter of `IExtendedLoadBalancingPolicy` is now `RoutingInfo.ShouldRouteAsLwt`, so
+every policy gets it, and a policy wrapping another one passes `routing` and `metadata`
+on to the methods of its child it calls.
+
+`MetadataSnapshot` is an immutable view of the nodes, the token map and the cached
+tablets, taken for each query plan: everything a policy reads from it comes from the
+same metadata, even when the driver learns about changes while the plan is used. Read
+the nodes from it rather than from the cluster passed to `Initialize()`. The state of
+each node, such as `Host.IsUp`, can still change.
 
 | 3.x | 4.0 |
 |---|---|
 | `keyspace` parameter | `routing.Keyspace`, which is now the statement's keyspace, or else the session's |
 | `query.RoutingKey`, `query.TableName` | `routing.RoutingKey`, `routing.Table` |
-| `query.ShouldRouteAsLwt()`, `routeAsLwt` | `routing.ShouldRouteAsLwt`, which also covers a serial consistency level set only in the execution profile |
-| `query` | `routing.Statement`, still `null` for requests issued by the driver |
-| `cluster.Metadata.GetReplicas(keyspace, routingKey)` | `cluster.GetReplicas(routing)`, which returns the replicas the driver routes to: from the cached tablet owning the partition when tablets of the table are cached (none when no cached tablet owns it), and from the token map otherwise |
-| `cluster.AllHosts()`, kept from `Initialize()` | `cluster.Hosts` |
+| `query.ShouldRouteAsLwt()`, `routeAsLwt` | `routing.ShouldRouteAsLwt`, derived from `routing.IsConfirmedLwt` and `routing.Consistency`, so it also covers a serial consistency level set only in the execution profile. The driver no longer calls `IStatement.ShouldRouteAsLwt()` to route requests, so an override of it in a statement class has no effect on routing |
+| `query.ConsistencyLevel`, `query.SerialConsistencyLevel` | `routing.Consistency`, `routing.SerialConsistency`: the effective levels of the first attempt, with the execution profile's when the statement sets none, and `null` for requests issued by the driver |
+| `query`, for anything else | Not available: a policy receives the routing inputs, not the statement |
+| `cluster.Metadata.GetReplicas(keyspace, routingKey)` | `metadata.GetReplicas(routing)`, which reuses the token it computed for `routing` while the partitioner and the routing key's bytes stay the same, and which returns the replicas the driver routes to: from the cached tablet owning the partition when tablets of the table are cached (none when no cached tablet owns it), and from the token map otherwise |
+| `cluster.AllHosts()`, kept from `Initialize()` | `metadata.Hosts` |
 | `class MyPolicy : IExtendedLoadBalancingPolicy` | `class MyPolicy : ILoadBalancingPolicy` |
 
 New routing inputs are added to `RoutingInfo` as properties, without changing the
 method's signature again.
 
-To call `NewQueryPlan` yourself, for instance to test a policy or to see where a
-request would be routed, create both arguments:
+To call the policy yourself, for instance to test it or to see where a request would
+be routed, create both arguments:
 
 ```csharp
 var routing = new RoutingInfo { Keyspace = "ks", Table = "tbl", RoutingKey = routingKey };
-var plan = policy.NewQueryPlan(routing, new ClusterState(cluster));
+var metadata = new MetadataSnapshot(cluster);
+ILoadBalancingPolicy policy = myPolicy;
+var first = policy.Pick(routing, metadata);
+var fallback = policy.Fallback(routing, metadata);
 ```
+
+`new MetadataSnapshot(cluster)` needs a connected cluster. To unit test a policy without
+one, create the snapshot from the nodes and a replica lookup instead, for example
+`new MetadataSnapshot(new[] { host1, host2 }, routing => new[] { new RoutingTarget(host1, null) })`,
+with hosts created by `new Host(address, reconnectionPolicy)`. Their datacenter can't be
+set this way. `GetReplicas` then returns the lookup's result, or no replicas when it
+returns null. The lookup is only called for requests with a routing key: a request
+without one has no replicas. The snapshot copies the hosts and each list of replicas the
+lookup returns. The lookup must describe the same metadata each time it is called: the
+snapshot calls it again for the same request when its routing key changes. The
+collections the snapshot returns are read-only.
 
 ### `ExecuteAsync` returns `AsyncRowSet`
 

@@ -65,7 +65,7 @@ namespace Cassandra.Tests
             Assert.AreEqual(HostDistance.Local, policy.Distance(zeroToken));
 
             // ...and still appears in the query plan alongside the normal host.
-            var plan = policy.NewQueryPlan(clusterMock.Object, null, new SimpleStatement()).Select(h => h.Host).ToList();
+            var plan = policy.Plan(clusterMock.Object, null, new SimpleStatement()).Select(h => h.Host).ToList();
             CollectionAssert.Contains(plan, zeroToken);
             CollectionAssert.Contains(plan, normal);
         }
@@ -84,7 +84,7 @@ namespace Cassandra.Tests
 
             Assert.AreEqual(HostDistance.Local, policy.Distance(zeroToken));
 
-            var plan = policy.NewQueryPlan(clusterMock.Object, null, new SimpleStatement()).Select(h => h.Host).ToList();
+            var plan = policy.Plan(clusterMock.Object, null, new SimpleStatement()).Select(h => h.Host).ToList();
             CollectionAssert.Contains(plan, zeroToken);
             CollectionAssert.Contains(plan, normal);
         }

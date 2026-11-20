@@ -374,6 +374,14 @@ namespace Cassandra.Tests.ExecutionProfiles
 
         private class FakeLoadBalancingPolicy : ILoadBalancingPolicy
         {
+            // The same hosts on every call, as a cluster's: a host without an ID only equals itself, so the query plan
+            // tells the picked host apart from the same host returned again by Fallback
+            private readonly IReadOnlyList<RoutingTarget> _targets = new[]
+            {
+                new RoutingTarget(new Host(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042), contactPoint: null), null),
+                new RoutingTarget(new Host(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042), contactPoint: null), null) // 2 hosts for speculative execution policy
+            };
+
             public long Count;
 
             public void Initialize(ICluster cluster)
@@ -385,14 +393,20 @@ namespace Cassandra.Tests.ExecutionProfiles
                 return HostDistance.Local;
             }
 
-            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
+            public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot cluster)
+            {
+                foreach (var target in Fallback(routing, cluster))
+                {
+                    return target;
+                }
+
+                return null;
+            }
+
+            public IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot cluster)
             {
                 Interlocked.Increment(ref Count);
-                return new List<RoutingTarget>
-                {
-                    new RoutingTarget(new Host(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042), contactPoint: null), null),
-                    new RoutingTarget(new Host(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042), contactPoint: null), null) // 2 hosts for speculative execution policy
-                };
+                return _targets;
             }
         }
 

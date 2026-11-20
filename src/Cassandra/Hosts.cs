@@ -105,6 +105,24 @@ namespace Cassandra
         }
 
         /// <summary>
+        /// Gets the current hosts, as <see cref="ToCollection"/> does, and the hosts with an ID by ID. Neither changes.
+        /// Without hosts lacking an ID, which only internal or test registration adds, the hosts are the values of the
+        /// dictionary, the same instance until a host is added or removed.
+        /// </summary>
+        public (IReadOnlyCollection<Host> Hosts, IReadOnlyDictionary<Guid, Host> HostsById) Snapshot()
+        {
+            var byId = _hosts.MapSnapshot;
+            var identified = (IReadOnlyCollection<Host>)byId.Values;
+            var unidentified = _unidentified.ValuesSnapshot;
+            if (unidentified.Count == 0)
+            {
+                return (identified, byId);
+            }
+
+            return (identified.Count == 0 ? unidentified : Array.AsReadOnly(identified.Concat(unidentified).ToArray()), byId);
+        }
+
+        /// <summary>
         /// Adds the host if not exists
         /// </summary>
         public Host Add(IPEndPoint key)

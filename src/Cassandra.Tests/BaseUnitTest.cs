@@ -64,6 +64,14 @@ namespace Cassandra.Tests
         {
             private readonly HostDistance _distance;
 
+            // The same hosts on every call, as a cluster's: a host without an ID only equals itself, so the query plan
+            // tells the picked host apart from the same host returned again by Fallback
+            private readonly IReadOnlyList<RoutingTarget> _targets = new[]
+            {
+                new RoutingTarget(new Host(new IPEndPoint(101L, 9042), ReconnectionPolicy), null),
+                new RoutingTarget(new Host(new IPEndPoint(102L, 9042), ReconnectionPolicy), null)
+            };
+
             public TestLoadBalancingPolicy(HostDistance distance = HostDistance.Local)
             {
                 _distance = distance;
@@ -79,13 +87,19 @@ namespace Cassandra.Tests
                 return _distance;
             }
 
-            public IEnumerable<RoutingTarget> NewQueryPlan(RoutingInfo routing, ClusterState cluster)
+            public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot cluster)
             {
-                return new[]
+                foreach (var target in Fallback(routing, cluster))
                 {
-                    new RoutingTarget(new Host(new IPEndPoint(101L, 9042), ReconnectionPolicy), null),
-                    new RoutingTarget(new Host(new IPEndPoint(102L, 9042), ReconnectionPolicy), null)
-                };
+                    return target;
+                }
+
+                return null;
+            }
+
+            public IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot cluster)
+            {
+                return _targets;
             }
         }
     }

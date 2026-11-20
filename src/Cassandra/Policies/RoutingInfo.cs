@@ -13,6 +13,9 @@
 //   See the License for the specific language governing permissions and
 //   limitations under the License.
 //
+using System;
+using System.Collections.Generic;
+using System.Threading;
 using Cassandra.ExecutionProfiles;
 
 namespace Cassandra
@@ -21,11 +24,14 @@ namespace Cassandra
     /// What a load balancing policy knows about a request when it builds its query plan.
     /// <para>
     /// New routing inputs are added as properties, so that adding one doesn't change the signature of
-    /// <see cref="ILoadBalancingPolicy.NewQueryPlan"/>.
+    /// <see cref="ILoadBalancingPolicy.Pick"/> and <see cref="ILoadBalancingPolicy.Fallback"/>.
     /// </para>
     /// </summary>
     public sealed class RoutingInfo
     {
+        private TokenCache _token;
+        private ReplicaCache _replicas;
+
         /// <summary>
         /// Gets the keyspace of the request: the statement's keyspace, or else the session's. It can be null.
         /// </summary>
@@ -49,19 +55,33 @@ namespace Cassandra
         public bool IsConfirmedLwt { get; init; }
 
         /// <summary>
-        /// Gets whether the request should be routed as a lightweight transaction: it is a confirmed LWT, or its
-        /// effective consistency level is <see cref="ConsistencyLevel.Serial"/> or
-        /// <see cref="ConsistencyLevel.LocalSerial"/>, including when only the execution profile sets it. A policy
-        /// should then try the replicas in the same order for every request, so that concurrent LWTs on a
-        /// partition reach the same coordinator first.
+        /// Gets the effective consistency level of the request: the statement's, or else the one of the execution
+        /// profile or the cluster. It is null for a request issued by the driver itself, such as a prepare request.
+        /// <para>
+        /// It is the consistency level of the first attempt. The retry policy can retry with another one.
+        /// </para>
         /// </summary>
-        public bool ShouldRouteAsLwt { get; init; }
+        public ConsistencyLevel? Consistency { get; init; }
 
         /// <summary>
-        /// Gets the statement of the request, or null for a request issued by the driver itself, such as a prepare
-        /// request.
+        /// Gets the effective serial consistency level of the request, used for the serial phase of a lightweight
+        /// transaction: the statement's, or else the one of the execution profile or the cluster. It is null for a
+        /// request issued by the driver itself.
+        /// <para>
+        /// The driver sends it with every statement, so it doesn't tell whether the request is a lightweight
+        /// transaction and doesn't affect <see cref="ShouldRouteAsLwt"/>.
+        /// </para>
         /// </summary>
-        public IStatement Statement { get; init; }
+        public ConsistencyLevel? SerialConsistency { get; init; }
+
+        /// <summary>
+        /// Gets whether the request should be routed as a lightweight transaction: it is a confirmed LWT
+        /// (<see cref="IsConfirmedLwt"/>), or its <see cref="Consistency"/> is <see cref="ConsistencyLevel.Serial"/>
+        /// or <see cref="ConsistencyLevel.LocalSerial"/>, which reads the result of lightweight transactions. A
+        /// policy should then try the replicas in the same order for every request, so that concurrent LWTs on a
+        /// partition reach the same coordinator first.
+        /// </summary>
+        public bool ShouldRouteAsLwt => IsConfirmedLwt || Consistency?.IsSerialConsistencyLevel() == true;
 
         /// <summary>
         /// Builds the routing information of a statement executed by a session.
@@ -73,20 +93,18 @@ namespace Cassandra
                 return ForKeyspace(sessionKeyspace);
             }
 
-            // Either the statement itself says so, or the effective consistency level, from the request options or
-            // execution profile, is serial
-            var routeAsLwt = statement.ShouldRouteAsLwt()
-                || (statement is Statement stmt
-                    && stmt.ConsistencyLevel == null
-                    && requestOptions.ConsistencyLevel.IsSerialConsistencyLevel());
             return new RoutingInfo
             {
                 Keyspace = statement.Keyspace ?? sessionKeyspace,
                 Table = statement.TableName,
                 RoutingKey = statement.RoutingKey,
                 IsConfirmedLwt = statement.IsLwt(),
-                ShouldRouteAsLwt = routeAsLwt,
-                Statement = statement
+                Consistency = statement.ConsistencyLevel ?? requestOptions.ConsistencyLevel,
+
+                // ConsistencyLevel.Any is the statement's "not set" value, as when the driver builds the request
+                SerialConsistency = statement.SerialConsistencyLevel != ConsistencyLevel.Any
+                    ? statement.SerialConsistencyLevel
+                    : requestOptions.SerialConsistencyLevel
             };
         }
 
@@ -96,6 +114,94 @@ namespace Cassandra
         internal static RoutingInfo ForKeyspace(string keyspace)
         {
             return new RoutingInfo { Keyspace = keyspace };
+        }
+
+        /// <summary>
+        /// Gets the token of <see cref="RoutingKey"/> for the partitioner of <paramref name="factory"/>. The last token
+        /// computed is kept with its partitioner and a copy of the routing key, so the policies of a request and their
+        /// replica lookups reuse it while neither changes. The routing key can be replaced or its bytes changed.
+        /// </summary>
+        internal IToken GetToken(TokenFactory factory)
+        {
+            var key = RoutingKey.RawRoutingKey;
+            var cached = Volatile.Read(ref _token);
+            if (cached != null && ReferenceEquals(cached.Factory, factory) && HasSameBytes(cached.Key, key))
+            {
+                return cached.Token;
+            }
+
+            // The token is computed from the cached copy: a token can keep the array it was computed from, as the
+            // ordered partitioner's does, and the caller can reuse the routing key's array once it's replaced
+            var keyCopy = CopyOf(key);
+            var token = factory.Hash(keyCopy);
+            Volatile.Write(ref _token, new TokenCache(factory, keyCopy, token));
+            return token;
+        }
+
+        /// <summary>
+        /// Gets the replicas cached by <see cref="CacheReplicas"/> for <paramref name="metadata"/> and the current
+        /// bytes of the routing key, or null.
+        /// </summary>
+        internal IReadOnlyList<RoutingTarget> GetCachedReplicas(MetadataSnapshot metadata)
+        {
+            var cached = Volatile.Read(ref _replicas);
+            return cached != null
+                && ReferenceEquals(cached.Metadata, metadata)
+                && HasSameBytes(cached.Key, RoutingKey?.RawRoutingKey)
+                ? cached.Replicas
+                : null;
+        }
+
+        /// <summary>
+        /// Caches the replicas of the request in <paramref name="metadata"/>, so that the policies of the request,
+        /// such as <see cref="ILoadBalancingPolicy.Pick"/> and then <see cref="ILoadBalancingPolicy.Fallback"/>, look
+        /// them up once.
+        /// </summary>
+        internal void CacheReplicas(MetadataSnapshot metadata, IReadOnlyList<RoutingTarget> replicas)
+        {
+            var key = RoutingKey?.RawRoutingKey;
+
+            // Shares the copy of the key kept with the token when it has the same bytes: a request copies its key once
+            var token = Volatile.Read(ref _token);
+            var keyCopy = token != null && HasSameBytes(token.Key, key) ? token.Key : CopyOf(key);
+            Volatile.Write(ref _replicas, new ReplicaCache(metadata, keyCopy, replicas));
+        }
+
+        private static byte[] CopyOf(byte[] key) => (byte[])key?.Clone();
+
+        private static bool HasSameBytes(byte[] cached, byte[] key) =>
+            cached == null ? key == null : key != null && cached.AsSpan().SequenceEqual(key);
+
+        private sealed class ReplicaCache
+        {
+            public ReplicaCache(MetadataSnapshot metadata, byte[] key, IReadOnlyList<RoutingTarget> replicas)
+            {
+                Metadata = metadata;
+                Key = key;
+                Replicas = replicas;
+            }
+
+            public MetadataSnapshot Metadata { get; }
+
+            public byte[] Key { get; }
+
+            public IReadOnlyList<RoutingTarget> Replicas { get; }
+        }
+
+        private sealed class TokenCache
+        {
+            public TokenCache(TokenFactory factory, byte[] key, IToken token)
+            {
+                Factory = factory;
+                Key = key;
+                Token = token;
+            }
+
+            public TokenFactory Factory { get; }
+
+            public byte[] Key { get; }
+
+            public IToken Token { get; }
         }
     }
 }

@@ -19,7 +19,7 @@ namespace Cassandra
     /// <summary>
     /// A node to send a request to, and optionally the shard of that node to send it to.
     /// </summary>
-    /// <param name="Host">The node. A target without a node, such as <c>default(RoutingTarget)</c>, ends a query plan.</param>
+    /// <param name="Host">The node. A load balancing policy must set it: the driver skips a target without a node.</param>
     /// <param name="Shard">
     /// The shard to send the request to, or null to let the connection pool choose it. The driver treats it as a
     /// hint: it uses another shard of the node when the shard is out of range or has no open connection.
