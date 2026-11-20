@@ -34,6 +34,17 @@ ID returns, discovery creates a new `Host` object and queues a new `HostAdded` n
 to the same dispatch check. An old public removal is skipped if its Host ID is present again at
 dispatch. Callback invocation is not serialized with concurrent topology refreshes.
 
+### Removed Host objects
+
+`Host.SetAsRemoved()` now permanently removes that `Host` object and raises its removal
+notification only once. After removal, `IsUp` is false, and both `BringUpIfDown()` and
+`SetDown()` return false without raising status events. Previously, `BringUpIfDown()`
+could revive a removed object and repeated removal calls could repeat notifications.
+
+This prevents a late pool reconnect from reviving a node that topology has removed.
+If the node returns, obtain its new `Host` object from cluster metadata instead of
+reusing the removed object.
+
 ### Local consistency defaults
 
 Statements and batches executed through `ISession` now default to `LOCAL_QUORUM`. For clusters
