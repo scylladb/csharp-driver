@@ -42,7 +42,7 @@ namespace Cassandra.Connections
 
         /// <param name="runtime">The cluster's client-routes runtime.</param>
         /// <param name="dnsResolver">Resolves route hostnames on each connection attempt.</param>
-        /// <param name="fallbackResolver">Resolves direct endpoints for hosts without routes.</param>
+        /// <param name="fallbackResolver">Resolves endpoints for connections to hosts without client routes.</param>
         /// <param name="initialSnapshotWaitTimeout">
         /// How long a pool connection waits for the first complete route snapshot. Later refreshes
         /// never block endpoint resolution; readers use the last complete snapshot. Null uses the
@@ -103,7 +103,7 @@ namespace Cassandra.Connections
         {
             ArgumentNullException.ThrowIfNull(defaultResolutionPlanFactory);
 
-            // Preserve the direct fallback owned by this resolver. Invoking the control
+            // Preserve this resolver's fallback for hosts without client routes. Invoking the control
             // connection's default factory here could route back through EndPointResolver,
             // which is this instance when client routes are enabled.
             var hasRoutes = _runtime.TryGetHostSnapshot(
@@ -237,13 +237,13 @@ namespace Cassandra.Connections
             int shardAwarePort,
             bool hasRoutes,
             ImmutableArray<ClientRouteEndpoint> routes,
-            bool directFallbackConfirmed)
+            bool clientRoutesSnapshotConfirmed)
         {
             ArgumentNullException.ThrowIfNull(host);
 
             if (!hasRoutes)
             {
-                if (!directFallbackConfirmed)
+                if (!clientRoutesSnapshotConfirmed)
                 {
                     var exception = new DriverException(
                         $"Client routes for host {host.HostId} are not available yet: no complete " +

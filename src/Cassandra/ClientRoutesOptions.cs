@@ -54,5 +54,12 @@ namespace Cassandra
         public IReadOnlyDictionary<string, string> AddressOverrides => Selection.AddressOverrides;
 
         internal ClientRoutesSelection Selection => _snapshot.Selection;
+
+        internal static bool ShouldUseShardAwareness(
+            PoolingOptions poolingOptions, ClientRoutesOptions clientRoutesOptions, bool usesClientRoutes)
+        {
+            return !poolingOptions.GetDisableShardAwareness() &&
+                   (!usesClientRoutes || clientRoutesOptions == null || clientRoutesOptions.ShardAwarenessEnabled);
+        }
     }
 }
