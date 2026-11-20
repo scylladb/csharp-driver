@@ -356,17 +356,6 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public void Should_ReturnDefaultInsightsMonitoringEnabled_When_NotProvidedToBuilder()
-        {
-            const bool expected = MonitorReportingOptions.DefaultMonitorReportingEnabled;
-            var cluster = Cluster.Builder()
-                                .AddContactPoint("192.168.1.10")
-                                .Build();
-            Assert.AreEqual(expected, cluster.Configuration.MonitorReportingOptions.MonitorReportingEnabled);
-            Assert.AreEqual(MonitorReportingOptions.DefaultStatusEventDelayMilliseconds, cluster.Configuration.MonitorReportingOptions.StatusEventDelayMilliseconds);
-        }
-
-        [Test]
         public void Should_ReturnDefaultDriverConfigReportingEnabled_When_NotProvidedToBuilder()
         {
             var cluster = Cluster.Builder()

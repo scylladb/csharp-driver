@@ -114,8 +114,6 @@ namespace Cassandra.Tests
 
         public IRequestTracker RequestTracker { get; set; }
 
-        public MonitorReportingOptions MonitorReportingOptions { get; set; } = new MonitorReportingOptions();
-
         public TypeSerializerDefinitions TypeSerializerDefinitions { get; set; } = new TypeSerializerDefinitions();
 
         public Configuration Build()
@@ -138,7 +136,6 @@ namespace Cassandra.Tests
                 ClusterId,
                 ApplicationVersion,
                 ApplicationName,
-                MonitorReportingOptions,
                 TypeSerializerDefinitions,
                 KeepContactPointsUnresolved,
                 AllowBetaProtocolVersions,

@@ -70,7 +70,6 @@ namespace Cassandra
         private IDriverMetricsProvider _driverMetricsProvider;
         private IRequestTracker _requestTracker;
         private DriverMetricsOptions _metricsOptions;
-        private MonitorReportingOptions _monitorReportingOptions = new MonitorReportingOptions();
         private string _sessionName;
         private bool? _keepContactPointsUnresolved;
         private bool? _allowBetaProtocolVersions;
@@ -181,7 +180,6 @@ namespace Cassandra
                 ClusterId,
                 ApplicationVersion,
                 ApplicationName,
-                _monitorReportingOptions,
                 typeSerializerDefinitions,
                 _keepContactPointsUnresolved,
                 _allowBetaProtocolVersions,
@@ -1076,27 +1074,6 @@ namespace Cassandra
         public Builder WithSessionName(string sessionName)
         {
             _sessionName = sessionName ?? throw new ArgumentNullException(nameof(sessionName));
-            return this;
-        }
-
-        /// <summary>
-        /// Configures options related to Monitor Reporting for the new cluster.
-        /// By default, Monitor Reporting is enabled for server types and versions that support it.
-        /// </summary>
-        /// <returns>This Builder.</returns>
-        public Builder WithMonitorReporting(bool enabled)
-        {
-            return WithMonitorReporting(_monitorReportingOptions.SetMonitorReportingEnabled(enabled));
-        }
-
-        /// <summary>
-        /// Configures options related to Monitor Reporting for the new cluster.
-        /// By default, Monitor Reporting is enabled server types and versions that support it.
-        /// </summary>
-        /// <returns>This Builder.</returns>
-        internal Builder WithMonitorReporting(MonitorReportingOptions options)
-        {
-            _monitorReportingOptions = options;
             return this;
         }
 

@@ -609,6 +609,13 @@ the table named after the class, `User` in the example above. With `[Table("user
 the class maps to `users` instead, so give `TableAttribute` the name of the table that
 your code reads and writes.
 
+#### Monitor reporting
+
+`Builder.WithMonitorReporting(bool)`, `Configuration.MonitorReportingOptions` and the
+`MonitorReportingOptions` class are removed. They configured reporting to DataStax
+Insights, which this driver does not implement, so nothing read them. Remove the code
+that calls them.
+
 ### `RoutingTarget` replaces `HostShard`
 
 Query plans and replica lookups return `RoutingTarget` values instead of `HostShard`
