@@ -27,6 +27,7 @@ using System.Threading.Tasks;
 using Cassandra.Connections.Control;
 using Cassandra.Compression;
 using Cassandra.Metrics;
+using Cassandra.Metrics.Registries;
 using Cassandra.Observers.Abstractions;
 using Cassandra.Requests;
 using Cassandra.Responses;
@@ -183,6 +184,8 @@ namespace Cassandra.Connections
 
         /// <inheritdoc />
         public bool UseMetadataId => _useMetadataId;
+
+        public INodeMetrics NodeMetrics => _connectionObserver.NodeMetrics;
 
         /// <summary>
         /// Decides whether this connection exchanges result metadata ids, and so how its frames are

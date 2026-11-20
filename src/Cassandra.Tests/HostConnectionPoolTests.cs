@@ -652,6 +652,27 @@ namespace Cassandra.Tests
             pool.Dispose();
         }
 
+        [TestCase(-1, 0, true)]
+        [TestCase(0, 0, true)]
+        [TestCase(2, 1, false)]
+        [TestCase(2, 2, true)]
+        public void CheckHealth_UsesConfiguredDefunctThreshold(int threshold, int timedOutOperations, bool shouldClose)
+        {
+            var config = new TestConfigurationBuilder
+            {
+                SocketOptions = new SocketOptions().SetDefunctReadTimeoutThreshold(threshold)
+            }.Build();
+            using var timer = config.Timer;
+            using var pool = new HostConnectionPool(
+                Host1, config, SerializerManager.Default, NullObserverFactory.Instance, M3PToken.Factory);
+            var connection = new Mock<IConnection>();
+            connection.SetupGet(value => value.TimedOutOperations).Returns(timedOutOperations);
+
+            pool.CheckHealth(connection.Object);
+
+            connection.Verify(value => value.Dispose(), shouldClose ? Times.Once() : Times.Never());
+        }
+
         [Test]
         public async Task CheckHealth_Removes_Connection()
         {
@@ -825,6 +846,38 @@ namespace Cassandra.Tests
             for (var shardId = 0; shardId < shardCount; shardId++)
             {
                 Assert.AreEqual(1, pool.ConnectionsSnapshot.Count(c => c.ShardID == shardId));
+            }
+        }
+
+        [Test]
+        public async Task Warmup_Should_Bring_Down_Host_Up_After_Opening_Connections()
+        {
+            var host = TestHelper.CreateHost("127.0.0.9");
+            host.SetDown();
+            var opened = new TaskCompletionSource<IConnection>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _mock = GetPoolMock(host, GetConfig(1, 1));
+            _mock.Setup(pool => pool.DoCreateAndOpen(It.IsAny<bool>(), -1, 0, 0)).Returns(opened.Task);
+            var upEvents = 0;
+            host.Up += _ => Interlocked.Increment(ref upEvents);
+            var pool = _mock.Object;
+            pool.SetDistance(HostDistance.Local);
+            try
+            {
+                var warmup = pool.Warmup();
+                Assert.IsFalse(warmup.IsCompleted);
+                Assert.IsFalse(host.IsUp);
+                Assert.AreEqual(0, Volatile.Read(ref upEvents));
+
+                opened.SetResult(CreateConnection(9));
+                await warmup.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+                Assert.IsTrue(host.IsUp);
+                Assert.AreEqual(1, Volatile.Read(ref upEvents));
+                Assert.AreEqual(1, pool.OpenConnections);
+            }
+            finally
+            {
+                opened.TrySetCanceled();
             }
         }
 
