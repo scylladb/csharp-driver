@@ -25,6 +25,10 @@ namespace Cassandra.Serialization
     {
         private static readonly Logger Logger = new Logger(typeof(GenericSerializer));
 
+        // CLR types that are written as a primitive CQL type, but that an application could already serialize with a
+        // CustomTypeSerializer<T> before: such a serializer keeps replacing the primitive one
+        private static readonly Type[] PrimitiveAliasesForCustomSerializers = { typeof(DateOnly), typeof(TimeOnly) };
+
         private readonly IDictionary<ColumnTypeCode, ITypeSerializer> _primitiveDeserializers = new Dictionary<ColumnTypeCode, ITypeSerializer>
         {
             { ColumnTypeCode.Ascii, TypeSerializer.PrimitiveAsciiStringSerializer },
@@ -372,6 +376,10 @@ namespace Cassandra.Serialization
             _primitiveSerializers.Add(typeof(TimeUuid), TypeSerializer.PrimitiveTimeUuidSerializer);
             //Allow DateTime as timestamp
             _primitiveSerializers.Add(typeof(DateTime), TypeSerializer.PrimitiveDateTimeSerializer);
+
+            // Allow DateOnly as date and TimeOnly as time
+            _primitiveSerializers.Add(typeof(DateOnly), TypeSerializer.PrimitiveDateOnlySerializer);
+            _primitiveSerializers.Add(typeof(TimeOnly), TypeSerializer.PrimitiveTimeOnlySerializer);
         }
 
         private void InitDefaultTypes()
@@ -600,6 +608,11 @@ namespace Cassandra.Serialization
                 {
                     _customDeserializers[ts.TypeInfo] = ts;
                     _customSerializers[ts.Type] = ts;
+                    if (Array.IndexOf(GenericSerializer.PrimitiveAliasesForCustomSerializers, ts.Type) >= 0)
+                    {
+                        _primitiveSerializers.Remove(ts.Type);
+                    }
+
                     Logger.Info($"Using {ts.GetType().Name} serializer for custom type '{((CustomColumnInfo)ts.TypeInfo).CustomTypeName}'");
                     continue;
                 }

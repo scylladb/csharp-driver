@@ -115,6 +115,14 @@ namespace Cassandra
         }
 
         /// <summary>
+        /// Creates a LocalTime from a TimeOnly.
+        /// </summary>
+        public static LocalTime FromTimeOnly(TimeOnly time)
+        {
+            return new LocalTime(time.Ticks * 100L);
+        }
+
+        /// <summary>
         /// Creates a new <see cref="LocalTime"/> instance based on the string representation.
         /// </summary>
         public static LocalTime Parse(string value)
@@ -135,6 +143,15 @@ namespace Cassandra
                 nanos = (int)(NanosInSeconds * (decimalSeconds - integralPart));
             }
             return new LocalTime(Convert.ToInt32(parts[0]), Convert.ToInt32(parts[1]), seconds, nanos);
+        }
+
+        /// <summary>
+        /// Returns the TimeOnly representation of the LocalTime. A TimeOnly has a precision of 100 nanoseconds: the
+        /// nanoseconds below it are truncated.
+        /// </summary>
+        public TimeOnly ToTimeOnly()
+        {
+            return new TimeOnly(TotalNanoseconds / 100L);
         }
 
         public override string ToString()

@@ -229,6 +229,26 @@ namespace Cassandra
                         return (TimeUuid)guid;
                     }
                     return value;
+                case ColumnTypeCode.Date:
+                    // The type of the value is LocalDate, unless a TypeSerializer<T> of another type replaced the date
+                    // serializer, whose values are returned as they are
+                    if (value is LocalDate localDate
+                        && !targetType.GetTypeInfo().IsAssignableFrom(typeof(LocalDate))
+                        && targetType.GetTypeInfo().IsAssignableFrom(typeof(DateOnly)))
+                    {
+                        return localDate.ToDateOnly();
+                    }
+                    return value;
+                case ColumnTypeCode.Time:
+                    // The type of the value is LocalTime, unless a TypeSerializer<T> of another type replaced the time
+                    // serializer, whose values are returned as they are
+                    if (value is LocalTime localTime
+                        && !targetType.GetTypeInfo().IsAssignableFrom(typeof(LocalTime))
+                        && targetType.GetTypeInfo().IsAssignableFrom(typeof(TimeOnly)))
+                    {
+                        return localTime.ToTimeOnly();
+                    }
+                    return value;
                 case ColumnTypeCode.Custom:
                     return column.TypeInfo is VectorColumnInfo ? TryConvertToCollection(value, column, targetType) : value;
 

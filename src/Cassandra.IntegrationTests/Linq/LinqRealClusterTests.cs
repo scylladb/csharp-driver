@@ -90,6 +90,44 @@ namespace Cassandra.IntegrationTests.Linq
         }
 
         [Test]
+        [TestCassandraVersion(2, 2)]
+        public void DateOnly_And_TimeOnly_Should_Round_Trip_Through_Linq_And_The_Mapper()
+        {
+            var udtName = $"udt_schedule_{Randomm.RandomAlphaNum(12)}";
+            Session.Execute($"CREATE TYPE IF NOT EXISTS {udtName} (day date, start time)");
+            Session.UserDefinedTypes.Define(UdtMap.For<ScheduleUdt>(udtName));
+            var config = new MappingConfiguration().Define(new Map<DateOnlyEntity>()
+                .TableName(TestUtils.GetUniqueTableName().ToLower())
+                .PartitionKey(e => e.Id)
+                .Column(e => e.Schedule, c => c.AsFrozen()));
+            var table = new Table<DateOnlyEntity>(Session, config);
+            table.Create();
+            var entity = new DateOnlyEntity
+            {
+                Id = Guid.NewGuid(),
+                Day = new DateOnly(2024, 2, 29),
+                OptionalDay = new DateOnly(2024, 3, 2),
+                Start = new TimeOnly(8, 30, 15, 250),
+                Days = new List<DateOnly> { DateOnly.MinValue, DateOnly.MaxValue },
+                Schedule = new ScheduleUdt { Day = new DateOnly(2024, 3, 1), Start = new TimeOnly(9, 0) }
+            };
+
+            table.Insert(entity).Execute();
+
+            var read = table.Where(e => e.Id == entity.Id && e.Day == entity.Day).AllowFiltering().Execute().Single();
+            var fetched = new Mapper(Session, config).Single<DateOnlyEntity>("WHERE id = ?", entity.Id);
+            foreach (var item in new[] { read, fetched })
+            {
+                Assert.AreEqual(entity.Day, item.Day);
+                Assert.AreEqual(entity.OptionalDay, item.OptionalDay);
+                Assert.AreEqual(entity.Start, item.Start);
+                CollectionAssert.AreEqual(entity.Days, item.Days);
+                Assert.AreEqual(entity.Schedule.Day, item.Schedule.Day);
+                Assert.AreEqual(entity.Schedule.Start, item.Schedule.Start);
+            }
+        }
+
+        [Test]
         public void ExecutePaged_Fetches_Only_PageSize()
         {
             const int pageSize = 10;
@@ -466,6 +504,28 @@ namespace Cassandra.IntegrationTests.Linq
             public int? PropertyInt { get; set; }
 
             public string PropertyString { get; set; }
+        }
+
+        internal class DateOnlyEntity
+        {
+            public Guid Id { get; set; }
+
+            public DateOnly Day { get; set; }
+
+            public DateOnly? OptionalDay { get; set; }
+
+            public TimeOnly Start { get; set; }
+
+            public List<DateOnly> Days { get; set; }
+
+            public ScheduleUdt Schedule { get; set; }
+        }
+
+        internal class ScheduleUdt
+        {
+            public DateOnly Day { get; set; }
+
+            public TimeOnly Start { get; set; }
         }
     }
 }

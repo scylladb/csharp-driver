@@ -126,13 +126,11 @@ namespace Cassandra.Mapping.TypeConversion
         /// </summary>
         internal object ConvertToDbFromUdtFieldValue(Type valueType, Type dbType, object value)
         {
-            if (valueType.GetTypeInfo().IsGenericType && valueType.GetGenericTypeDefinition() == typeof(Nullable<>))
+            // A nullable of the database type needs no conversion. The database type can be a class, such as string
+            // for a nullable enum, which can't be made nullable.
+            if (Nullable.GetUnderlyingType(valueType) == dbType)
             {
-                var nullableType = typeof(Nullable<>).MakeGenericType(dbType);
-                if (valueType == nullableType)
-                {
-                    return value;
-                }
+                return value;
             }
 
             var converter = GetToDbConverter(valueType, dbType);
@@ -281,6 +279,18 @@ namespace Cassandra.Mapping.TypeConversion
             {
                 Func<Guid, TimeUuid> timeUuidMapper = v => (TimeUuid)v;
                 return timeUuidMapper;
+            }
+            // A UDT passes null field values to the converter: a null becomes the default value, as it does for the
+            // struct database types, such as a timestamp for a DateTime property
+            if (dbType == typeof(LocalDate) && pocoType == typeof(DateOnly))
+            {
+                Func<LocalDate, DateOnly> dateOnlyMapper = v => v == null ? default : v.ToDateOnly();
+                return dateOnlyMapper;
+            }
+            if (dbType == typeof(LocalTime) && pocoType == typeof(TimeOnly))
+            {
+                Func<LocalTime, TimeOnly> timeOnlyMapper = v => v == null ? default : v.ToTimeOnly();
+                return timeOnlyMapper;
             }
 
             if (dbType.GetTypeInfo().IsGenericType || dbType.GetInterfaces().Any(i => i.IsGenericType))
@@ -486,6 +496,16 @@ namespace Cassandra.Mapping.TypeConversion
             {
                 Guid TimeUuidConverter(TimeUuid a) => a.ToGuid();
                 return (Func<TimeUuid, Guid>)TimeUuidConverter;
+            }
+            if (dbType == typeof(LocalDate) && pocoType == typeof(DateOnly))
+            {
+                Func<DateOnly, LocalDate> localDateConverter = LocalDate.FromDateOnly;
+                return localDateConverter;
+            }
+            if (dbType == typeof(LocalTime) && pocoType == typeof(TimeOnly))
+            {
+                Func<TimeOnly, LocalTime> localTimeConverter = LocalTime.FromTimeOnly;
+                return localTimeConverter;
             }
             if (typeof(IEnumerable).GetTypeInfo().IsAssignableFrom(dbType) && dbType.GetTypeInfo().IsGenericType)
             {
