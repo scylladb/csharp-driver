@@ -616,6 +616,33 @@ your code reads and writes.
 Insights, which this driver does not implement, so nothing read them. Remove the code
 that calls them.
 
+#### Constructors of types the driver creates
+
+The public constructors of these types are now internal. The driver creates the
+objects, and an application gets them from the driver:
+
+| Type | Where to get it |
+|---|---|
+| `Policies` | `Policies.DefaultPolicies`, or `Configuration.Policies`. Set the policies with the `Builder` methods, such as `WithLoadBalancingPolicy`, `WithReconnectionPolicy` and `WithRetryPolicy`. |
+| `ClientOptions`, `ProtocolOptions` | `Configuration.ClientOptions` and `Configuration.ProtocolOptions`. Set the options with the `Builder` methods, such as `WithQueryTimeout`, `WithPort` and `WithCompression`. |
+| `AggregateMetadata`, `FunctionMetadata`, `IndexMetadata`, `TableColumn`, `TableOptions` | The schema metadata, from `ICluster.Metadata`. |
+
+Classes outside the driver can no longer derive from these types. A class deriving
+from `TableMetadata` or `MaterializedViewMetadata`, for instance a test double, can
+still set their protected properties, but can no longer create the `TableColumn`,
+`TableOptions` or `IndexMetadata` values to set them to.
+
+The `BoundStatement()` constructor is now protected. It created a statement without a
+prepared statement, which the driver couldn't execute. Create bound statements with
+`PreparedStatement.Bind`. A mocking framework, or a class that derives from
+`BoundStatement`, can still call it.
+
+The `Tablet` and `HostShardPair` classes, which the driver uses to cache tablet
+replicas, are no longer public, and neither is `DecimalSerializer`, the driver's
+serializer for `decimal` values. With it, the `Cassandra.Serialization.Primitive`
+namespace has no public types left. To read and write `decimal` values as another type,
+register a `TypeSerializer<T>` as shown in the `TypeAdapters` section above.
+
 ### `RoutingTarget` replaces `HostShard`
 
 Query plans and replica lookups return `RoutingTarget` values instead of `HostShard`

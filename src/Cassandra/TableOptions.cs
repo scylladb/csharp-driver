@@ -157,11 +157,11 @@ namespace Cassandra
         /// </summary>
         public IDictionary<string, string> NodeSync { get; internal set; }
 
-        public TableOptions()
+        internal TableOptions()
         {
         }
 
-        public TableOptions(string comment, double readRepair, double localReadRepair, bool replicateOnWrite, int gcGrace, double bfFpChance,
+        internal TableOptions(string comment, double readRepair, double localReadRepair, bool replicateOnWrite, int gcGrace, double bfFpChance,
                             string caching, SortedDictionary<string, string> compactionOptions, SortedDictionary<string, string> compressionParams)
         {
             this.comment = comment;

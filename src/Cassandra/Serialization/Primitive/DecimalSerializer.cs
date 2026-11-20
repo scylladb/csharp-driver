@@ -22,9 +22,9 @@ using System.Numerics;
 namespace Cassandra.Serialization.Primitive
 {
     /// <summary>
-    /// Deprecated: this class will be made internal in the next major version.
+    /// A serializer for CQL type decimal, CLR type decimal.
     /// </summary>
-    public class DecimalSerializer : TypeSerializer<decimal>
+    internal class DecimalSerializer : TypeSerializer<decimal>
     {
         public override ColumnTypeCode CqlType
         {

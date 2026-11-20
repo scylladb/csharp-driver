@@ -63,7 +63,7 @@ namespace Cassandra
         /// </summary>
         public IDictionary<string, string> Options { get; private set; }
 
-        public IndexMetadata(string name, string target, IndexKind kind, IDictionary<string, string> options)
+        internal IndexMetadata(string name, string target, IndexKind kind, IDictionary<string, string> options)
         {
             Name = name;
             Target = target;

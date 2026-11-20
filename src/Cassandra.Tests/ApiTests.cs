@@ -53,8 +53,7 @@ namespace Cassandra.Tests
                 "Cassandra.Mapping.Utils",
                 "Cassandra.Metrics",
                 "Cassandra.Metrics.Abstractions",
-                "Cassandra.Serialization",
-                "Cassandra.Serialization.Primitive"
+                "Cassandra.Serialization"
             }, set);
         }
 

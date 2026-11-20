@@ -191,9 +191,8 @@ namespace Cassandra
             get { return _columnEncryptionPolicy; }
         }
 
-        public Policies() : this(null, null, null, null, null, null)
+        internal Policies() : this(null, null, null, null, null, null)
         {
-            //Part of the public API can not be removed
         }
 
         /// <summary>
@@ -202,10 +201,9 @@ namespace Cassandra
         /// <param name="loadBalancingPolicy"> the load balancing policy to use. </param>
         /// <param name="reconnectionPolicy"> the reconnection policy to use. </param>
         /// <param name="retryPolicy"> the retry policy to use.</param>
-        public Policies(ILoadBalancingPolicy loadBalancingPolicy, IReconnectionPolicy reconnectionPolicy, IRetryPolicy retryPolicy)
+        internal Policies(ILoadBalancingPolicy loadBalancingPolicy, IReconnectionPolicy reconnectionPolicy, IRetryPolicy retryPolicy)
             : this(loadBalancingPolicy, reconnectionPolicy, retryPolicy, DefaultSpeculativeExecutionPolicy, DefaultTimestampGenerator, null)
         {
-            //Part of the public API can not be removed
         }
 
         internal Policies(ILoadBalancingPolicy loadBalancingPolicy,

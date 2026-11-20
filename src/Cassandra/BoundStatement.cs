@@ -95,14 +95,6 @@ namespace Cassandra
         }
 
         /// <summary>
-        /// Initializes a new instance of the Cassandra.BoundStatement class
-        /// </summary>
-        public BoundStatement()
-        {
-            //Default constructor for client test and mocking frameworks
-        }
-
-        /// <summary>
         ///  Creates a new <c>BoundStatement</c> from the provided prepared
         ///  statement.
         /// </summary>
@@ -119,6 +111,14 @@ namespace Cassandra
             {
                 SetIdempotence(statement.IsIdempotent.Value);
             }
+        }
+
+        /// <summary>
+        /// Initializes a new instance of the Cassandra.BoundStatement class
+        /// </summary>
+        protected BoundStatement()
+        {
+            // For mocking frameworks and derived classes
         }
 
         /// <summary>
