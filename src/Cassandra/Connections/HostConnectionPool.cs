@@ -242,14 +242,10 @@ namespace Cassandra.Connections
 
         public void CheckHealth(IConnection c)
         {
-            var timedOutOps = c.TimedOutOperations;
-            if (timedOutOps < _config.SocketOptions.DefunctReadTimeoutThreshold)
+            if (IsDefunct(c, _config.SocketOptions, _host.Address))
             {
-                return;
+                Remove(c);
             }
-            HostConnectionPool.Logger.Warning("Connection to {0} considered as unhealthy after {1} timed out operations",
-                _host.Address, timedOutOps);
-            Remove(c);
         }
 
         /// <inheritdoc />
@@ -1387,6 +1383,19 @@ namespace Cassandra.Connections
                     break;
                 }
             }
+        }
+
+        internal static bool IsDefunct(IConnection connection, SocketOptions socketOptions, IPEndPoint address)
+        {
+            var timedOutOperations = connection.TimedOutOperations;
+            if (timedOutOperations < socketOptions.DefunctReadTimeoutThreshold)
+            {
+                return false;
+            }
+
+            HostConnectionPool.Logger.Warning("Connection to {0} considered as unhealthy after {1} timed out operations",
+                address, timedOutOperations);
+            return true;
         }
     }
 }

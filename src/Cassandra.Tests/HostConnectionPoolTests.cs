@@ -652,6 +652,27 @@ namespace Cassandra.Tests
             pool.Dispose();
         }
 
+        [TestCase(-1, 0, true)]
+        [TestCase(0, 0, true)]
+        [TestCase(2, 1, false)]
+        [TestCase(2, 2, true)]
+        public void CheckHealth_UsesConfiguredDefunctThreshold(int threshold, int timedOutOperations, bool shouldClose)
+        {
+            var config = new TestConfigurationBuilder
+            {
+                SocketOptions = new SocketOptions().SetDefunctReadTimeoutThreshold(threshold)
+            }.Build();
+            using var timer = config.Timer;
+            using var pool = new HostConnectionPool(
+                Host1, config, SerializerManager.Default, NullObserverFactory.Instance, M3PToken.Factory);
+            var connection = new Mock<IConnection>();
+            connection.SetupGet(value => value.TimedOutOperations).Returns(timedOutOperations);
+
+            pool.CheckHealth(connection.Object);
+
+            connection.Verify(value => value.Dispose(), shouldClose ? Times.Once() : Times.Never());
+        }
+
         [Test]
         public async Task CheckHealth_Removes_Connection()
         {
