@@ -139,7 +139,7 @@ namespace Cassandra
         ///  Creates a new <c>ProtocolOptions</c> instance using the
         ///  <c>DEFAULT_PORT</c>.
         /// </summary>
-        public ProtocolOptions()
+        internal ProtocolOptions()
             : this(DefaultPort)
         {
         }
@@ -148,7 +148,7 @@ namespace Cassandra
         ///  Creates a new <c>ProtocolOptions</c> instance using the provided port.
         /// </summary>
         /// <param name="port"> the port to use for the binary protocol.</param>
-        public ProtocolOptions(int port)
+        internal ProtocolOptions(int port)
         {
             _port = port;
         }
@@ -159,7 +159,7 @@ namespace Cassandra
         /// </summary>
         /// <param name="port">the port to use for the binary protocol.</param>
         /// <param name="sslOptions">sslOptions the SSL options to use. Use null if SSL is not to be used.</param>
-        public ProtocolOptions(int port, SSLOptions sslOptions)
+        internal ProtocolOptions(int port, SSLOptions sslOptions)
         {
             _port = port;
             _sslOptions = sslOptions;

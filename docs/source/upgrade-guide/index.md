@@ -577,6 +577,72 @@ driver writes its own should use its own logging instead. To receive the driver'
 messages, add an `ILoggerProvider` with `Diagnostics.AddLoggerProvider`, or set the level
 of `Diagnostics.CassandraTraceSwitch`.
 
+#### `TableNameAttribute` and `PrimaryKeyAttribute`
+
+The `Cassandra.Mapping.TableNameAttribute` and `Cassandra.Mapping.PrimaryKeyAttribute`
+classes are removed. Their documentation called them deprecated, and the mapper ignored
+them: a class marked with them was mapped as if they were absent. Use the attributes of
+`Cassandra.Mapping.Attributes` instead:
+
+```csharp
+// Before
+[TableName("users")]
+[PrimaryKey("id")]
+public class User
+{
+    public Guid Id { get; set; }
+}
+
+// After
+[Table("users")]
+public class User
+{
+    [PartitionKey]
+    public Guid Id { get; set; }
+}
+```
+
+Mark clustering columns with `ClusteringKeyAttribute`.
+
+Since the mapper ignored `TableNameAttribute`, a class marked with it was mapped to
+the table named after the class, `User` in the example above. With `[Table("users")]`,
+the class maps to `users` instead, so give `TableAttribute` the name of the table that
+your code reads and writes.
+
+#### Monitor reporting
+
+`Builder.WithMonitorReporting(bool)`, `Configuration.MonitorReportingOptions` and the
+`MonitorReportingOptions` class are removed. They configured reporting to DataStax
+Insights, which this driver does not implement, so nothing read them. Remove the code
+that calls them.
+
+#### Constructors of types the driver creates
+
+The public constructors of these types are now internal. The driver creates the
+objects, and an application gets them from the driver:
+
+| Type | Where to get it |
+|---|---|
+| `Policies` | `Policies.DefaultPolicies`, or `Configuration.Policies`. Set the policies with the `Builder` methods, such as `WithLoadBalancingPolicy`, `WithReconnectionPolicy` and `WithRetryPolicy`. |
+| `ClientOptions`, `ProtocolOptions` | `Configuration.ClientOptions` and `Configuration.ProtocolOptions`. Set the options with the `Builder` methods, such as `WithQueryTimeout`, `WithPort` and `WithCompression`. |
+| `AggregateMetadata`, `FunctionMetadata`, `IndexMetadata`, `TableColumn`, `TableOptions` | The schema metadata, from `ICluster.Metadata`. |
+
+Classes outside the driver can no longer derive from these types. A class deriving
+from `TableMetadata` or `MaterializedViewMetadata`, for instance a test double, can
+still set their protected properties, but can no longer create the `TableColumn`,
+`TableOptions` or `IndexMetadata` values to set them to.
+
+The `BoundStatement()` constructor is now protected. It created a statement without a
+prepared statement, which the driver couldn't execute. Create bound statements with
+`PreparedStatement.Bind`. A mocking framework, or a class that derives from
+`BoundStatement`, can still call it.
+
+The `Tablet` and `HostShardPair` classes, which the driver uses to cache tablet
+replicas, are no longer public, and neither is `DecimalSerializer`, the driver's
+serializer for `decimal` values. With it, the `Cassandra.Serialization.Primitive`
+namespace has no public types left. To read and write `decimal` values as another type,
+register a `TypeSerializer<T>` as shown in the `TypeAdapters` section above.
+
 ### `RoutingTarget` replaces `HostShard`
 
 Query plans and replica lookups return `RoutingTarget` values instead of `HostShard`

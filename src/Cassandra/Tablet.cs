@@ -3,7 +3,7 @@ using System.Collections.Generic;
 
 namespace Cassandra
 {
-    public class HostShardPair
+    internal class HostShardPair
     {
         public Guid HostID { get; }
         public int Shard { get; }
@@ -17,7 +17,7 @@ namespace Cassandra
         public override string ToString() => $"HostShardPair{{host={HostID}, shard={Shard}}}";
     }
 
-    public class Tablet : IComparable<Tablet>, IEquatable<Tablet>
+    internal class Tablet : IComparable<Tablet>, IEquatable<Tablet>
     {
         public long FirstToken { get; }
         public long LastToken { get; }

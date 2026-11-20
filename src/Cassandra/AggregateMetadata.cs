@@ -72,24 +72,9 @@ namespace Cassandra
         /// </summary>
         public bool Deterministic { get; internal set; }
 
-        public AggregateMetadata()
+        internal AggregateMetadata()
         {
 
-        }
-
-        public AggregateMetadata(string name, string keyspaceName, string[] signature, ColumnDesc[] argumentTypes,
-                                 string stateFunction, ColumnDesc stateType, string finalFunction,
-                                 string initialCondition, ColumnDesc returnType)
-        {
-            Name = name;
-            KeyspaceName = keyspaceName;
-            Signature = signature;
-            ArgumentTypes = argumentTypes;
-            StateFunction = stateFunction;
-            StateType = stateType;
-            FinalFunction = finalFunction;
-            InitialCondition = initialCondition;
-            ReturnType = returnType;
         }
     }
 }

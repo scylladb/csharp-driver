@@ -97,26 +97,9 @@ namespace Cassandra
         /// <summary>
         /// Creates a new instance of Function metadata.
         /// </summary>
-        public FunctionMetadata()
+        internal FunctionMetadata()
         {
 
-        }
-
-        /// <summary>
-        /// Creates a new instance of Function metadata.
-        /// </summary>
-        public FunctionMetadata(string name, string keyspaceName, string[] signature, string[] argumentNames, ColumnDesc[] argumentTypes,
-                                string body, bool calledOnNullInput, string language, ColumnDesc returnType)
-        {
-            Name = name;
-            KeyspaceName = keyspaceName;
-            Signature = signature;
-            ArgumentNames = argumentNames;
-            ArgumentTypes = argumentTypes;
-            Body = body;
-            CalledOnNullInput = calledOnNullInput;
-            Language = language;
-            ReturnType = returnType;
         }
     }
 }

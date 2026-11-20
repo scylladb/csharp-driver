@@ -222,11 +222,6 @@ namespace Cassandra
         /// </summary>
         internal IReadOnlyDictionary<string, IRequestOptions> RequestOptions { get; }
 
-        /// <summary>
-        /// Configuration options for monitor reporting
-        /// </summary>
-        public MonitorReportingOptions MonitorReportingOptions { get; }
-
         internal IRequestOptions DefaultRequestOptions => RequestOptions[Configuration.DefaultExecutionProfileName];
 
 
@@ -282,7 +277,6 @@ namespace Cassandra
                                Guid? clusterId,
                                string appVersion,
                                string appName,
-                               MonitorReportingOptions monitorReportingOptions,
                                TypeSerializerDefinitions typeSerializerDefinitions,
                                bool? keepContactPointsUnresolved,
                                bool? allowBetaProtocolVersions,
@@ -364,7 +358,6 @@ namespace Cassandra
             RequestOptions = RequestOptionsMapper.BuildRequestOptionsDictionary(executionProfiles, policies, socketOptions, clientOptions, queryOptions);
             ExecutionProfiles = BuildExecutionProfilesDictionary(executionProfiles, RequestOptions);
 
-            MonitorReportingOptions = monitorReportingOptions ?? new MonitorReportingOptions();
             ServerNameResolver = serverNameResolver ?? new ServerNameResolver(ProtocolOptions);
             EndPointResolver = endPointResolver ?? new EndPointResolver(ServerNameResolver);
             EndPointResolutionPlanProvider = EndPointResolver as IEndPointResolutionPlanProvider ??

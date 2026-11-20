@@ -23,6 +23,10 @@ namespace Cassandra
     /// </summary>
     public class TableColumn : CqlColumn
     {
+        internal TableColumn()
+        {
+        }
+
         /// <summary>
         /// Gets or sets the column key type.
         /// <para>

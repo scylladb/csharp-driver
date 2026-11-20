@@ -52,11 +52,11 @@ namespace Cassandra
             get { return _defaultKeyspace; }
         }
 
-        public ClientOptions()
+        internal ClientOptions()
         {
         }
 
-        public ClientOptions(bool withoutRowSetBuffering, int queryAbortTimeout, string defaultKeyspace)
+        internal ClientOptions(bool withoutRowSetBuffering, int queryAbortTimeout, string defaultKeyspace)
         {
             ClientOptions.ValidateQueryAbortTimeout(queryAbortTimeout);
 

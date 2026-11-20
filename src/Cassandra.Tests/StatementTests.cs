@@ -334,5 +334,19 @@ namespace Cassandra.Tests
             Assert.AreEqual(1, lookups.Count);
             Assert.That(lookups.Select(r => (r.Keyspace, r.Table, r.RoutingKey.RawRoutingKey)), Is.All.EqualTo(("ks1", (string)null, rawRoutingKey)));
         }
+
+        [Test]
+        public void BoundStatement_Without_A_PreparedStatement_Can_Be_Mocked_And_Derived()
+        {
+            var mock = new Mock<BoundStatement>();
+            var derived = new DerivedBoundStatement();
+
+            Assert.IsNull(mock.Object.PreparedStatement);
+            Assert.IsNull(derived.PreparedStatement);
+        }
+
+        private class DerivedBoundStatement : BoundStatement
+        {
+        }
     }
 }

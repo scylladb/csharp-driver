@@ -26,7 +26,6 @@ This section contains the API reference documentation for the ScyllaDB C# Driver
 ### Advanced
 - [Cassandra.Connections](xref:Cassandra.Connections) - Connection management
 - [Cassandra.Serialization](xref:Cassandra.Serialization) - Serialization
-- [Cassandra.Serialization.Primitive](xref:Cassandra.Serialization.Primitive) - Primitive serializers
 
 ---
 
