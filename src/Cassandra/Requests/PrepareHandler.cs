@@ -130,7 +130,8 @@ namespace Cassandra.Requests
                     session, queryPlan, triedHosts, failedHosts, connectionKeyspace).ConfigureAwait(false);
                 var connection = hostConnectionTuple.Item2;
                 var host = hostConnectionTuple.Item1;
-                var nodeRequestInfo = new NodeRequestInfo(host, info.PrepareRequest ?? new PrepareRequest(request.Query, request.Keyspace));
+                var nodeRequestInfo = new NodeRequestInfo(
+                    host, info.PrepareRequest ?? new PrepareRequest(request.Query, request.Keyspace), connection.NodeMetrics);
                 var responseReceived = false;
                 try
                 {
@@ -194,6 +195,14 @@ namespace Cassandra.Requests
             Host host;
             while ((host = GetNextHost(queryPlan, out HostDistance distance)) != null)
             {
+                // Custom query plans may supply an unidentified alias. Resolve it
+                // before acquisition so PREPARE and propagation retain the selected
+                // node's identity rather than treating its alias as another node.
+                var metadata = session.InternalCluster.Metadata;
+                if (!host.IsRemoved)
+                {
+                    host = (host.HostId == Guid.Empty ? metadata.GetHost(host.Address) : metadata.GetHost(host.HostId)) ?? host;
+                }
                 var attemptErrors = new Dictionary<IPEndPoint, Exception>();
                 var connection = await RequestHandler.GetConnectionFromHostWithKeyspaceAsync(
                     host, distance, session, attemptErrors, connectionKeyspace).ConfigureAwait(false);

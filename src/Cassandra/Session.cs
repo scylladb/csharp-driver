@@ -333,13 +333,22 @@ namespace Cassandra
         /// <inheritdoc />
         IHostConnectionPool IInternalSession.GetOrCreateConnectionPool(Host host, HostDistance distance)
         {
+            if (!host.IsRemoved)
+            {
+                var currentHost = host.HostId == Guid.Empty
+                    ? _cluster.Metadata.GetHost(host.Address)
+                    : _cluster.Metadata.GetHost(host.HostId);
+                host = currentHost ?? host;
+            }
             var hostPool = _connectionPool.GetOrAdd(host, owner =>
             {
                 var newPool = Configuration.HostConnectionPoolFactory.Create(
                     host, Configuration, _serializerManager, _observerFactory, Cluster.Metadata.GetTokenFactory());
                 newPool.AllConnectionClosed += InternalRef.OnAllConnectionClosed;
                 newPool.SetDistance(distance);
-                _metricsManager.GetOrCreateNodeMetrics(host).InitializePoolGauges(newPool);
+                var nodeMetrics = _metricsManager.GetOrCreateNodeMetrics(host);
+                newPool.NodeMetrics = nodeMetrics;
+                nodeMetrics.InitializePoolGauges(newPool);
                 return newPool;
             });
             return hostPool;

@@ -17,6 +17,7 @@
 using System;
 using System.Threading.Tasks;
 using Cassandra.Connections;
+using Cassandra.Metrics.Registries;
 using Cassandra.Observers.Abstractions;
 using Cassandra.Requests;
 
@@ -29,6 +30,15 @@ namespace Cassandra.Observers.RequestTracker
         public RequestTrackerObserver(IRequestTracker requestTracker)
         {
             _requestTracker = requestTracker;
+        }
+
+        public void OnNodePoolSelected(Host host, INodeMetrics metrics)
+        {
+        }
+
+        public Action CreateSpeculativeExecutionCallback(Host host, long delay)
+        {
+            return () => OnSpeculativeExecution(host, delay);
         }
 
         public Task OnNodeRequestErrorAsync(

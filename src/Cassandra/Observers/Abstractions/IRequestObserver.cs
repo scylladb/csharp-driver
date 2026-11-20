@@ -17,6 +17,7 @@
 using System;
 using System.Threading.Tasks;
 using Cassandra.Connections;
+using Cassandra.Metrics.Registries;
 using Cassandra.Requests;
 
 namespace Cassandra.Observers.Abstractions
@@ -26,6 +27,10 @@ namespace Cassandra.Observers.Abstractions
     /// </summary>
     internal interface IRequestObserver
     {
+        void OnNodePoolSelected(Host host, INodeMetrics metrics);
+
+        Action CreateSpeculativeExecutionCallback(Host host, long delay);
+
         void OnSpeculativeExecution(Host host, long delay);
 
         Task OnNodeStartAsync(SessionRequestInfo sessionRequestInfo, NodeRequestInfo nodeRequestInfo);
