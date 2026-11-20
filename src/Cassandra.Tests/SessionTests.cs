@@ -109,6 +109,7 @@ namespace Cassandra.Tests
 
             var config = new TestConfigurationBuilder
             {
+                SessionName = "session",
                 MetricsProvider = provider.Object,
                 MetricsOptions = options,
                 ControlConnectionFactory = new FakeControlConnectionFactory(),
@@ -120,9 +121,23 @@ namespace Cassandra.Tests
             using var cluster = Cluster.BuildFrom(initializer, new[] { "127.0.0.1" }, config);
             try
             {
+                using var warnings = new CleanupWarningListener();
                 var actual = await Assert.ThrowsAsync(expected.GetType(), () =>
                     cluster.ConnectAsync().WaitAsync(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
                 Assert.AreSame(expected, actual);
+                var shutdownContext = $"while shutting down session {config.SessionName} after initialization failed";
+                if (!fatalCleanup || fatalInitialization)
+                {
+                    warnings.AssertWarnings(
+                        cleanupFailure,
+                        $"while retiring session metrics {config.SessionName} after initialization failed",
+                        shutdownContext);
+                }
+                else
+                {
+                    warnings.AssertWarnings(cleanupFailure, shutdownContext);
+                }
+
                 provider.Verify(value => value.Timer(It.IsAny<string>(), SessionMetric.Timers.CqlRequests), Times.Once);
                 provider.Verify(value => value.ShutdownMetricsBucket(It.IsAny<string>()), Times.AtLeastOnce);
                 Assert.IsEmpty(cluster.InternalRef.GetConnectedSessions());
@@ -344,13 +359,20 @@ namespace Cassandra.Tests
 
             public void AssertWarning(Exception cleanupFailure, string context, bool expected)
             {
-                var warnings = _listener.Messages.Values
+                AssertWarnings(cleanupFailure, expected ? new[] { context } : Array.Empty<string>());
+            }
+
+            public void AssertWarnings(Exception cleanupFailure, params string[] contexts)
+            {
+                var warnings = _listener.Messages.OrderBy(message => message.Key).Select(message => message.Value)
                     .Where(message => message.Contains("#WARN") && message.Contains("Additional lifecycle failure"))
                     .ToArray();
-                Assert.AreEqual(expected ? 1 : 0, warnings.Length);
-                if (expected)
+                Assert.AreEqual(contexts.Length, warnings.Length);
+                for (var i = 0; i < contexts.Length; i++)
                 {
-                    Assert.That(warnings[0], Does.Contain($"Additional lifecycle failure {context}: {cleanupFailure}"));
+                    Assert.That(warnings[i], Does.Contain($"Additional lifecycle failure {contexts[i]}:")
+                        .And.Contain(cleanupFailure.GetType().FullName)
+                        .And.Contain(cleanupFailure.Message));
                 }
             }
 
