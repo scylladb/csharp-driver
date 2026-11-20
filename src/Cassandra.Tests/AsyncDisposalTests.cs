@@ -156,13 +156,13 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public void Strict_Moq_Mocks_Should_Throw_On_DisposeAsync_Without_A_Setup()
+        public async Task Strict_Moq_Mocks_Should_Throw_On_DisposeAsync_Without_A_Setup()
         {
             var session = new Mock<ISession>(MockBehavior.Strict);
             var cluster = new Mock<ICluster>(MockBehavior.Strict);
 
-            Assert.ThrowsAsync<MockException>(async () => await ((IAsyncDisposable)session.Object).DisposeAsync().ConfigureAwait(false));
-            Assert.ThrowsAsync<MockException>(async () => await ((IAsyncDisposable)cluster.Object).DisposeAsync().ConfigureAwait(false));
+            await Assert.ThrowsAsync<MockException>(async () => await ((IAsyncDisposable)session.Object).DisposeAsync().ConfigureAwait(false));
+            await Assert.ThrowsAsync<MockException>(async () => await ((IAsyncDisposable)cluster.Object).DisposeAsync().ConfigureAwait(false));
         }
 
         private static Task DisposeWithinTimeoutAsync(IAsyncDisposable disposable)

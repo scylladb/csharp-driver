@@ -633,7 +633,7 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public void SchemaParserV2_GetKeyspaces_Should_Propagate_Other_Scylla_Keyspaces_Query_Errors()
+        public async Task SchemaParserV2_GetKeyspaces_Should_Propagate_Other_Scylla_Keyspaces_Query_Errors()
         {
             var queryProviderMock = new Mock<IControlConnection>(MockBehavior.Strict);
             queryProviderMock
@@ -644,7 +644,7 @@ namespace Cassandra.Tests
                 .Returns(() => Task.FromException<IEnumerable<IRow>>(new UnauthorizedException("User has no SELECT permission on scylla_keyspaces")));
             var parser = GetV2Instance(queryProviderMock.Object, supportsTablets: true);
 
-            Assert.ThrowsAsync<UnauthorizedException>(() => parser.GetKeyspacesAsync(false));
+            await Assert.ThrowsAsync<UnauthorizedException>(() => parser.GetKeyspacesAsync(false)).ConfigureAwait(false);
         }
 
         private static IRow CreateNetworkTopologyKeyspaceRow(string name)
