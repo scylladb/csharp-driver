@@ -412,13 +412,317 @@ namespace Cassandra.Tests.Connections
             }
         }
 
+        [Test]
+        public async Task Status_Should_TrackFirstConnectionPartialLossAndLastLoss()
+        {
+            using var target = CreatePool(coreConnections: 2, reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            var initial = target.Status;
+            Assert.AreEqual(NodeConnectivity.Initializing, initial.Connectivity);
+            Assert.AreEqual(PoolLifecycle.Running, initial.Lifecycle);
+            Assert.AreEqual(0, initial.AvailableConnections);
+            Assert.AreEqual(0, initial.Revision);
+            var notifications = new System.Collections.Concurrent.ConcurrentQueue<NodeStatus>();
+            target.StatusChanged += notifications.Enqueue;
+
+            await target.Warmup().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            var connected = target.Status;
+            Assert.AreEqual(NodeConnectivity.Connected, connected.Connectivity);
+            Assert.AreEqual(2, connected.AvailableConnections);
+            Assert.AreEqual(2, connected.Revision);
+            Assert.AreEqual(0, initial.AvailableConnections, "Previously obtained snapshots must stay immutable.");
+
+            var connections = target.ConnectionsSnapshot;
+            target.OnConnectionClosing(connections[0]);
+            Assert.AreEqual(NodeConnectivity.Connected, target.Status.Connectivity);
+            Assert.AreEqual(1, target.Status.AvailableConnections);
+            var partial = target.Status;
+            target.OnConnectionClosing(connections[0]);
+            Assert.AreSame(partial, target.Status, "Repeated close observations must not publish transitions.");
+            target.OnConnectionClosing(connections[1]);
+            Assert.AreEqual(NodeConnectivity.Disconnected, target.Status.Connectivity);
+            Assert.AreEqual(PoolLifecycle.Running, target.Status.Lifecycle);
+            Assert.AreEqual(0, target.Status.AvailableConnections);
+            Assert.AreEqual(4, target.Status.Revision);
+            TestHelper.RetryAssert(() => Assert.AreEqual(4, notifications.Count));
+            CollectionAssert.AreEqual(new long[] { 1, 2, 3, 4 }, notifications.Select(status => status.Revision));
+        }
+
+        [Test]
+        public async Task Status_Should_DistinguishFailedInitializationFromInitializingPool()
+        {
+            var failure = new SocketException((int)SocketError.ConnectionRefused);
+            using var target = CreatePool(
+                connectionFactory: new FakeConnectionFactory((IConnectionEndPoint endPoint) => CreateConnection(endPoint, failure).Object),
+                coreConnections: 1,
+                reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            await Assert.ThrowsAsync<SocketException>(() => target.BorrowConnectionAsync().WaitAsync(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
+            Assert.AreEqual(NodeConnectivity.Disconnected, target.Status.Connectivity);
+            Assert.AreEqual(PoolLifecycle.Running, target.Status.Lifecycle);
+            Assert.AreEqual(0, target.Status.AvailableConnections);
+            var revision = target.Status.Revision;
+            await Assert.ThrowsAsync<SocketException>(() => target.BorrowConnectionAsync().WaitAsync(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
+            Assert.AreEqual(revision, target.Status.Revision);
+        }
+
+        [Test]
+        public async Task Status_Should_ExcludeDrainingConnectionsAndObserveDrainCompletion()
+        {
+            using var target = CreatePool(coreConnections: 1);
+            await target.Warmup().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            var connection = Mock.Get(target.ConnectionsSnapshot.Single());
+            var pending = true;
+            connection.SetupGet(value => value.HasPendingOperations).Returns(() => Volatile.Read(ref pending));
+            _host.SetDistance(HostDistance.Local);
+
+            _host.SetDistance(HostDistance.Ignored);
+
+            var draining = target.Status;
+            Assert.AreEqual(PoolLifecycle.Draining, draining.Lifecycle);
+            Assert.AreEqual(NodeConnectivity.Disconnected, draining.Connectivity);
+            Assert.AreEqual(0, draining.AvailableConnections);
+            Assert.Throws<SocketException>(() => target.BorrowExistingConnection(null));
+            connection.Verify(value => value.Dispose(), Times.Never);
+            Volatile.Write(ref pending, false);
+            TestHelper.RetryAssert(() => Assert.AreEqual(PoolLifecycle.Running, target.Status.Lifecycle), msPerRetry: 50, maxRetries: 99);
+            Assert.AreEqual(NodeConnectivity.Disconnected, target.Status.Connectivity);
+            Assert.AreEqual(draining.Revision + 1, target.Status.Revision);
+            connection.Verify(value => value.Dispose(), Times.Once);
+        }
+
+        [Test]
+        public async Task Status_Should_RetainRetirementAndLetDisposalSupersedeIt()
+        {
+            using var target = CreatePool(coreConnections: 1);
+            await target.Warmup().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            var connection = Mock.Get(target.ConnectionsSnapshot.Single());
+            target.OnHostRemoved();
+            var retired = target.Status;
+            Assert.AreEqual(PoolLifecycle.Retired, retired.Lifecycle);
+            Assert.AreEqual(NodeConnectivity.Disconnected, retired.Connectivity);
+            Assert.AreEqual(0, retired.AvailableConnections);
+            target.OnHostRemoved();
+            Assert.AreSame(retired, target.Status);
+            TestHelper.RetryAssert(() => connection.Verify(value => value.Dispose(), Times.Once), msPerRetry: 50, maxRetries: 99);
+            Assert.AreSame(retired, target.Status, "A delayed drain completion must not revive a retired pool.");
+
+            target.Dispose();
+            var disposed = target.Status;
+            Assert.AreEqual(PoolLifecycle.Disposed, disposed.Lifecycle);
+            Assert.AreEqual(retired.Revision + 1, disposed.Revision);
+            target.OnHostRemoved();
+            target.Dispose();
+            Assert.AreSame(disposed, target.Status);
+        }
+
+        [Test]
+        public async Task Status_Should_SerializeCallbacksOutsideOwnershipLock()
+        {
+            using var target = CreatePool(coreConnections: 1);
+            var callbackEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseCallback = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var notificationsComplete = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var observed = new System.Collections.Concurrent.ConcurrentQueue<NodeStatus>();
+            target.StatusChanged += status =>
+            {
+                if (status.Connectivity == NodeConnectivity.Connected)
+                {
+                    callbackEntered.TrySetResult(true);
+                    releaseCallback.Task.GetAwaiter().GetResult();
+                }
+
+                observed.Enqueue(status);
+                if (status.Lifecycle == PoolLifecycle.Disposed)
+                {
+                    notificationsComplete.TrySetResult(true);
+                }
+            };
+            Task disposal = null;
+            try
+            {
+                await target.Warmup().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await callbackEntered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+                // Only the finally block releases the subscriber, after the disposal assertion.
+                disposal = Task.Run(target.Dispose);
+                await disposal.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.AreEqual(PoolLifecycle.Disposed, target.Status.Lifecycle);
+            }
+            finally
+            {
+                releaseCallback.TrySetResult(true);
+                if (disposal != null)
+                {
+                    await disposal.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                }
+            }
+
+            await notificationsComplete.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            CollectionAssert.AreEqual(new long[] { 1, 2 }, observed.Select(status => status.Revision));
+        }
+
+        [Test]
+        public async Task Status_Should_IsolateThrowingSubscribersAndPermitReentrantDisposal()
+        {
+            using var target = CreatePool(coreConnections: 1);
+            var observed = new System.Collections.Concurrent.ConcurrentQueue<NodeStatus>();
+            target.StatusChanged += _ => throw new InvalidOperationException("subscriber failed");
+            target.StatusChanged += status =>
+            {
+                observed.Enqueue(status);
+                if (status.Connectivity == NodeConnectivity.Connected)
+                {
+                    target.Dispose();
+                }
+            };
+            try
+            {
+                await target.Warmup().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
+            catch (SocketException)
+            {
+                // Reentrant disposal can win the final admission recheck.
+            }
+
+            TestHelper.RetryAssert(() => Assert.AreEqual(2, observed.Count));
+            CollectionAssert.AreEqual(new long[] { 1, 2 }, observed.Select(status => status.Revision));
+            Assert.AreEqual(PoolLifecycle.Disposed, target.Status.Lifecycle);
+        }
+
+        [Test]
+        [NonParallelizable]
+        public async Task Status_Should_ContinueAfterSubscriberDiagnosticThrows()
+        {
+            using var target = CreatePool(coreConnections: 1, reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            var subscriberFailure = new InvalidOperationException("status subscriber test failure");
+            using var listener = new ThrowingStatusTraceListener(subscriberFailure.Message);
+            var connected = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var disconnected = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var observed = new System.Collections.Concurrent.ConcurrentQueue<NodeStatus>();
+            Action<NodeStatus> failingSubscriber = _ => throw subscriberFailure;
+            Action<NodeStatus> observer = status =>
+            {
+                observed.Enqueue(status);
+                if (status.Connectivity == NodeConnectivity.Connected)
+                {
+                    connected.TrySetResult(true);
+                }
+                else if (status.Connectivity == NodeConnectivity.Disconnected && status.Lifecycle == PoolLifecycle.Running)
+                {
+                    disconnected.TrySetResult(true);
+                }
+            };
+            target.StatusChanged += failingSubscriber;
+            target.StatusChanged += observer;
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            Diagnostics.CassandraTraceSwitch.Level = System.Diagnostics.TraceLevel.Warning;
+            System.Diagnostics.Trace.Listeners.Add(listener);
+            try
+            {
+                await target.Warmup().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await listener.Attempted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await connected.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                target.OnConnectionClosing(target.ConnectionsSnapshot.Single());
+                await disconnected.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                CollectionAssert.AreEqual(new long[] { 1, 2 }, observed.Select(status => status.Revision));
+                Assert.AreEqual(2, listener.Messages.Count);
+            }
+            finally
+            {
+                target.StatusChanged -= failingSubscriber;
+                target.StatusChanged -= observer;
+                System.Diagnostics.Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+        }
+
+        [Test]
+        public async Task Status_Should_BelongToOnePoolEvenWhenHostIsShared()
+        {
+            using var first = CreatePool(coreConnections: 1);
+            using var second = CreatePool(coreConnections: 1, host: _host);
+            var secondInitial = second.Status;
+            await first.Warmup().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.AreEqual(NodeConnectivity.Connected, first.Status.Connectivity);
+            Assert.AreSame(secondInitial, second.Status);
+            Assert.AreEqual(NodeConnectivity.Initializing, second.Status.Connectivity);
+            second.OnHostRemoved();
+            Assert.AreEqual(NodeConnectivity.Connected, first.Status.Connectivity);
+            Assert.AreEqual(PoolLifecycle.Retired, second.Status.Lifecycle);
+        }
+
+        [Test]
+        public async Task Status_Should_GiveConcurrentReadersConsistentSnapshots()
+        {
+            using var target = CreatePool(coreConnections: 32, reconnectionPolicy: new ConstantReconnectionPolicy(60000));
+            using var stopReading = new CancellationTokenSource();
+            var initialObservations = Enumerable.Range(0, 4)
+                .Select(_ => new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)).ToArray();
+            var connectedObservations = Enumerable.Range(0, 4)
+                .Select(_ => new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)).ToArray();
+            var disconnectedObservations = Enumerable.Range(0, 4)
+                .Select(_ => new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)).ToArray();
+            var disposedObservations = Enumerable.Range(0, 4)
+                .Select(_ => new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)).ToArray();
+            var readers = Enumerable.Range(0, 4).Select(index => Task.Run(() =>
+            {
+                long revision = 0;
+                while (!stopReading.IsCancellationRequested)
+                {
+                    var status = target.Status;
+                    Assert.GreaterOrEqual(status.Revision, revision);
+                    Assert.AreEqual(status.AvailableConnections > 0, status.Connectivity == NodeConnectivity.Connected);
+                    if (status.Lifecycle != PoolLifecycle.Running)
+                    {
+                        Assert.AreEqual(0, status.AvailableConnections);
+                    }
+
+                    revision = status.Revision;
+                    initialObservations[index].TrySetResult(true);
+                    if (status.Connectivity == NodeConnectivity.Connected)
+                    {
+                        connectedObservations[index].TrySetResult(true);
+                    }
+
+                    if (status.Connectivity == NodeConnectivity.Disconnected && status.Lifecycle == PoolLifecycle.Running)
+                    {
+                        disconnectedObservations[index].TrySetResult(true);
+                    }
+
+                    if (status.Lifecycle == PoolLifecycle.Disposed)
+                    {
+                        disposedObservations[index].TrySetResult(true);
+                    }
+                }
+            })).ToArray();
+            try
+            {
+                await Task.WhenAll(initialObservations.Select(observation => observation.Task))
+                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await target.Warmup().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await Task.WhenAll(connectedObservations.Select(observation => observation.Task))
+                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Parallel.ForEach(target.ConnectionsSnapshot, connection => target.OnConnectionClosing(connection));
+                await Task.WhenAll(disconnectedObservations.Select(observation => observation.Task))
+                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                target.Dispose();
+                await Task.WhenAll(disposedObservations.Select(observation => observation.Task))
+                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
+            finally
+            {
+                stopReading.Cancel();
+                await Task.WhenAll(readers).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
+        }
+
         private HostConnectionPool CreatePool(
             IEndPointResolver res = null,
             IConnectionFactory connectionFactory = null,
             int coreConnections = 2,
-            IReconnectionPolicy reconnectionPolicy = null)
+            IReconnectionPolicy reconnectionPolicy = null,
+            Host host = null)
         {
-            _host = new Host(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042), contactPoint: null);
+            _host = host ?? new Host(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9042), contactPoint: null);
             _resolver = res ?? Mock.Of<IEndPointResolver>();
 
             var config = new TestConfigurationBuilder
@@ -472,6 +776,31 @@ namespace Cassandra.Tests.Connections
                 connection.Setup(c => c.Open()).ThrowsAsync(openException);
             }
             return connection;
+        }
+
+        private sealed class ThrowingStatusTraceListener : LoggingTests.TestTraceListener
+        {
+            private readonly string _subscriberFailure;
+
+            public ThrowingStatusTraceListener(string subscriberFailure)
+            {
+                _subscriberFailure = subscriberFailure;
+            }
+
+            public TaskCompletionSource<bool> Attempted { get; } =
+                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            public override void WriteLine(string message, string category)
+            {
+                if (category != nameof(HostConnectionPool) || !message.Contains(_subscriberFailure))
+                {
+                    return;
+                }
+
+                WriteLine(message);
+                Attempted.TrySetResult(true);
+                throw new InvalidOperationException("diagnostic listener failure");
+            }
         }
     }
 }
