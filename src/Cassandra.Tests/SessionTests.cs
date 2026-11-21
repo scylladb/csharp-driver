@@ -18,6 +18,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net;
+using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Connections;
@@ -25,6 +26,7 @@ using Cassandra.Observers.Abstractions;
 using Cassandra.Requests;
 using Cassandra.Serialization;
 using Cassandra.SessionManagement;
+using Cassandra.Tasks;
 using Cassandra.Tests.Connections.TestHelpers;
 using Moq;
 using NUnit.Framework;
@@ -174,7 +176,144 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public async Task Should_PropagateFatalWarmupFailure_WhenAnotherHostFailsNormally()
+        public async Task Should_PropagateSynchronousFatalPoolWarmupException()
+        {
+            var failure = new OutOfMemoryException("fatal pool warmup failure");
+            var pool = new Mock<IHostConnectionPool>();
+            pool.Setup(value => value.Warmup()).Throws(failure);
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                           It.IsAny<Host>(),
+                           It.IsAny<Configuration>(),
+                           It.IsAny<ISerializerManager>(),
+                           It.IsAny<IObserverFactory>(),
+                           It.IsAny<TokenFactory>()))
+                       .Returns(pool.Object);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object
+            }.Build();
+
+            using (var session = CreateWarmupSession(config, "fatal-warmup-failure-test"))
+            {
+                var ex = await Assert.ThrowsAsync<OutOfMemoryException>(async () =>
+                    await ((IInternalSession)session).Init().ConfigureAwait(false)).ConfigureAwait(false);
+
+                Assert.AreSame(failure, ex);
+            }
+        }
+
+        [Test]
+        public async Task Should_PropagateSynchronousPoolWarmupException()
+        {
+            var failure = new InvalidOperationException("synchronous pool warmup failure");
+            var pool = new Mock<IHostConnectionPool>();
+            pool.Setup(value => value.Warmup()).Throws(failure);
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                           It.IsAny<Host>(),
+                           It.IsAny<Configuration>(),
+                           It.IsAny<ISerializerManager>(),
+                           It.IsAny<IObserverFactory>(),
+                           It.IsAny<TokenFactory>()))
+                       .Returns(pool.Object);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object
+            }.Build();
+
+            using (var session = CreateWarmupSession(config, "synchronous-warmup-failure-test"))
+            {
+                var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                    await ((IInternalSession)session).Init().ConfigureAwait(false)).ConfigureAwait(false);
+
+                Assert.AreSame(failure, ex);
+            }
+        }
+
+        [Test]
+        public async Task Should_PropagatePoolFactoryNotConnectedExceptionDuringWarmup()
+        {
+            var failure = new SocketException((int)SocketError.NotConnected);
+            var poolFactory = new Mock<IHostConnectionPoolFactory>();
+            poolFactory.Setup(value => value.Create(
+                           It.IsAny<Host>(),
+                           It.IsAny<Configuration>(),
+                           It.IsAny<ISerializerManager>(),
+                           It.IsAny<IObserverFactory>(),
+                           It.IsAny<TokenFactory>()))
+                       .Throws(failure);
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = poolFactory.Object
+            }.Build();
+
+            using (var session = CreateWarmupSession(config, "factory-not-connected-test"))
+            {
+                var ex = await Assert.ThrowsAsync<SocketException>(async () =>
+                    await ((IInternalSession)session).Init().ConfigureAwait(false)).ConfigureAwait(false);
+
+                Assert.AreSame(failure, ex);
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_PreserveOrdinarySetupFailure_WhenAnotherHostWarmupCompletes(bool warmupFails)
+        {
+            var setupFailure = new InvalidOperationException("Original setup failure");
+            var warmupFailure = new InvalidOperationException("Other host warmup failure");
+            var warmup = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var setupPool = new Mock<IHostConnectionPool>();
+            setupPool.Setup(value => value.Warmup()).Throws(setupFailure);
+            var otherPool = new Mock<IHostConnectionPool>();
+            otherPool.Setup(value => value.Warmup()).Returns(warmup.Task);
+            var factory = new Mock<IHostConnectionPoolFactory>();
+            factory.SetupSequence(value => value.Create(
+                    It.IsAny<Host>(),
+                    It.IsAny<Configuration>(),
+                    It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(),
+                    It.IsAny<TokenFactory>()))
+                .Returns(setupPool.Object)
+                .Returns(otherPool.Object);
+            var config = new TestConfigurationBuilder { HostConnectionPoolFactory = factory.Object }.Build();
+            using var session = CreateWarmupSession(config, "ordinary-setup-priority");
+            var internalSession = (IInternalSession)session;
+            AddHost(internalSession.InternalCluster.Metadata, new IPEndPoint(IPAddress.Parse("127.0.0.12"), 9042));
+            try
+            {
+                var initialization = internalSession.Init();
+                otherPool.Verify(value => value.Warmup(), Times.Once);
+                Assert.IsFalse(initialization.IsCompleted, "Initialization must observe the other host's started warmup.");
+                if (warmupFails)
+                {
+                    warmup.SetException(warmupFailure);
+                }
+                else
+                {
+                    warmup.SetResult(true);
+                }
+
+                var observed = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                    initialization.WaitToCompleteAsync(5000)).ConfigureAwait(false);
+                Assert.AreSame(setupFailure, observed);
+            }
+            finally
+            {
+                warmup.TrySetResult(true);
+                config.Timer.Dispose();
+            }
+        }
+
+        [TestCase(false, false, false)]
+        [TestCase(false, true, false)]
+        [TestCase(true, false, false)]
+        [TestCase(true, true, false)]
+        [TestCase(true, false, true)]
+        [TestCase(true, true, true)]
+        public async Task Should_PropagateFatalWarmupFailure_WhenAnotherHostFailsNormally(
+            bool synchronousSetupFailure, bool delayedFatalFailure, bool ordinaryWarmupBeforeSetup)
         {
             var ordinaryFailure = new InvalidOperationException("connection unavailable");
             var fatalFailure = new OutOfMemoryException("fatal warmup failure");
@@ -189,12 +328,25 @@ namespace Cassandra.Tests
             {
                 pools[host.Address] = Mock.Of<IHostConnectionPool>();
             }
-            Mock.Get(pools[hosts[0].Address]).Setup(pool => pool.Warmup())
-                .Returns(Task.FromException(ordinaryFailure));
-            Mock.Get(pools[hosts[1].Address]).Setup(pool => pool.Warmup())
-                .Returns(Task.FromException(fatalFailure));
-            Mock.Get(pools[hosts[2].Address]).Setup(pool => pool.Warmup())
-                .Returns(Task.CompletedTask);
+
+            var setupHostIndex = ordinaryWarmupBeforeSetup ? 1 : 0;
+            var fatalHostIndex = ordinaryWarmupBeforeSetup ? 2 : 1;
+            var completedHostIndex = ordinaryWarmupBeforeSetup ? 0 : 2;
+            if (synchronousSetupFailure)
+            {
+                Mock.Get(pools[hosts[setupHostIndex].Address]).Setup(pool => pool.Warmup()).Throws(ordinaryFailure);
+            }
+            else
+            {
+                Mock.Get(pools[hosts[0].Address]).Setup(pool => pool.Warmup())
+                    .Returns(Task.FromException(ordinaryFailure));
+            }
+
+            var fatalWarmup = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Mock.Get(pools[hosts[fatalHostIndex].Address]).Setup(pool => pool.Warmup())
+                .Returns(delayedFatalFailure ? fatalWarmup.Task : Task.FromException(fatalFailure));
+            Mock.Get(pools[hosts[completedHostIndex].Address]).Setup(pool => pool.Warmup())
+                .Returns(ordinaryWarmupBeforeSetup ? Task.FromException(ordinaryFailure) : Task.CompletedTask);
 
             var poolFactory = new Mock<IHostConnectionPoolFactory>();
             poolFactory.Setup(factory => factory.Create(
@@ -213,13 +365,33 @@ namespace Cassandra.Tests
             cluster.Setup(value => value.AllHosts()).Returns(hosts);
             cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>()))
                 .Returns(HostDistance.Local);
-            cluster.SetupGet(value => value.Metadata).Returns(new Metadata(config));
-            var session = new Session(cluster.Object, config, null, SerializerManager.Default, null);
+            var metadata = new Metadata(config);
+            foreach (var host in hosts)
+            {
+                AddHost(metadata, host.Address);
+            }
 
-            var actual = await Assert.ThrowsAsync<OutOfMemoryException>(
-                () => ((IInternalSession)session).Init());
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            using var session = new Session(cluster.Object, config, null, SerializerManager.Default, null);
+            try
+            {
+                var initialization = ((IInternalSession)session).Init();
+                if (delayedFatalFailure)
+                {
+                    Assert.IsFalse(initialization.IsCompleted);
+                    fatalWarmup.SetException(fatalFailure);
+                }
 
-            Assert.AreSame(fatalFailure, actual);
+                var actual = await Assert.ThrowsAsync<OutOfMemoryException>(() =>
+                    initialization.WaitToCompleteAsync(5000)).ConfigureAwait(false);
+
+                Assert.AreSame(fatalFailure, actual);
+                Mock.Get(pools[hosts[fatalHostIndex].Address]).Verify(pool => pool.Warmup(), Times.Once);
+            }
+            finally
+            {
+                fatalWarmup.TrySetResult(true);
+            }
         }
 
         [Test]
@@ -258,9 +430,15 @@ namespace Cassandra.Tests
             }
         }
 
-        private static Host AddHost(Metadata metadata, IPEndPoint address, Guid hostId)
+        private static Host AddHost(Metadata metadata, IPEndPoint address, Guid? hostId = null)
         {
-            return metadata.AddOrUpdateHost(hostId, address, null, CreateHostInfo(hostId));
+            if (hostId == null && metadata.GetHost(address) is Host existing)
+            {
+                return existing;
+            }
+
+            var id = hostId ?? Guid.NewGuid();
+            return metadata.AddOrUpdateHost(id, address, null, CreateHostInfo(id));
         }
 
         private static IRow CreateHostInfo(Guid hostId)
@@ -271,8 +449,19 @@ namespace Cassandra.Tests
                 { "data_center", "dc1" },
                 { "rack", "rack1" },
                 { "release_version", "2026.1" },
-                { "tokens", new string[0] }
+                { "tokens", Array.Empty<string>() }
             });
+        }
+
+        private static Session CreateWarmupSession(Configuration config, string sessionName)
+        {
+            var metadata = new Metadata(config);
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            cluster.Setup(value => value.AllHosts()).Returns(() => metadata.AllHosts());
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            AddHost(metadata, new IPEndPoint(IPAddress.Parse("127.0.0.11"), 9042), Guid.NewGuid());
+            return new Session(cluster.Object, config, null, SerializerManager.Default, sessionName);
         }
     }
 }
