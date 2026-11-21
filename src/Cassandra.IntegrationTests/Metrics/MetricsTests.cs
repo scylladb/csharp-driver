@@ -131,6 +131,15 @@ namespace Cassandra.IntegrationTests.Metrics
             {
                 TestHelper.RetryAssert(() => { Assert.AreEqual(2, cluster.Metadata.Hosts.Count, "metadata hosts count failed"); }, 200, 50);
                 TestHelper.RetryAssert(() => { Assert.AreEqual(2, metrics.NodeMetrics.Count, "Node metrics count failed"); }, 10, 500);
+                TestHelper.RetryAssert(
+                    () =>
+                    {
+                        var removed = _metricsRoot.Snapshot.GetForContext(gauge.Context);
+                        Assert.False(removed.IsNotEmpty());
+                        Assert.AreEqual(0, removed.Gauges.Count());
+                    },
+                    10,
+                    500);
             }
             catch
             {
@@ -157,8 +166,14 @@ namespace Cassandra.IntegrationTests.Metrics
             TestHelper.RetryAssert(() => { Assert.AreEqual(3, metrics.NodeMetrics.Count, "Node metrics count after bootstrap failed"); }, 10,
                 500);
 
-            // Check node's metrics were added again
+            // The replacement registration owns a new context; the removed context stays empty.
+            var replacementHost = cluster.Metadata.Hosts.First(h => h.Address.Address.Equals(IPAddress.Parse(address)));
+            var replacementGauge = metrics.GetNodeGauge(replacementHost, NodeMetric.Gauges.OpenConnections);
+            Assert.AreNotEqual(gauge.Context, replacementGauge.Context);
             context = _metricsRoot.Snapshot.GetForContext(gauge.Context);
+            Assert.False(context.IsNotEmpty());
+            Assert.AreEqual(0, context.Gauges.Count());
+            context = _metricsRoot.Snapshot.GetForContext(replacementGauge.Context);
             Assert.True(context.IsNotEmpty());
             Assert.AreEqual(2, context.Gauges.Count());
         }

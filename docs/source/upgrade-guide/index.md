@@ -23,10 +23,16 @@ not remove these custom objects. Their pools and metric buckets remain until the
 so creating new custom hosts for each query plan can grow these resources without bound. Use hosts
 from cluster metadata for a topology-managed lifecycle.
 
-Node metric buckets now use `session.nodes.<host-id>`, replacing `session.nodes.<address>`.
-Unidentified custom hosts have distinct `session.nodes.custom-<UUID>` buckets. Update dashboards and
-provider integrations accordingly. No framework, SDK, or language-version policy changes accompany
-this migration.
+Node metric buckets initially use `session.nodes.<host-id>`, replacing `session.nodes.<address>`.
+Each later bucket construction for that Host ID within the session appends `.registration-N`, starting
+at 2. Removal and rediscovery start a new metric series. A failed provider construction also consumes
+its reserved name, so a retry uses the next suffix. Unique names prevent delayed cleanup from shutting
+down a newer bucket. Match the optional suffix in dashboards, alerts, and provider integrations that
+aggregate a server's metrics across registrations.
+
+Unidentified custom hosts have distinct `session.nodes.custom-<UUID>` buckets and use the same suffix
+rule on repeated construction. No framework, SDK, or language-version policy changes accompany this
+migration.
 
 `HostAdded` and `HostRemoved` notifications need not form pairs. A queued addition can be skipped if
 its exact `Host` has been removed before dispatch, while its removal is still reported. When a Host

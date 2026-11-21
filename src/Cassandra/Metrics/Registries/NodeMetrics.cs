@@ -16,6 +16,7 @@
 
 using System;
 using System.Linq;
+using System.Threading;
 using Cassandra.Connections;
 using Cassandra.Metrics.Abstractions;
 
@@ -26,14 +27,17 @@ namespace Cassandra.Metrics.Registries
     {
         private readonly IDriverMetricsProvider _driverMetricsProvider;
         private readonly string _bucketName;
+        private readonly bool _metricsEnabled;
 
         private IHostConnectionPool _hostConnectionPool = null;
+        private int _disposed;
 
         public NodeMetrics(
             IDriverMetricsProvider driverMetricsProvider, DriverMetricsOptions metricOptions, bool metricsEnabled, string bucketName)
         {
             _driverMetricsProvider = driverMetricsProvider;
             _bucketName = bucketName;
+            _metricsEnabled = metricsEnabled;
             MetricsRegistry = new InternalMetricsRegistry<NodeMetric>(
                 driverMetricsProvider, NodeMetric.AllNodeMetrics.Except(metricOptions.EnabledNodeMetrics), metricsEnabled);
 
@@ -93,11 +97,27 @@ namespace Cassandra.Metrics.Registries
         /// <inheritdoc />
         public void InitializePoolGauges(IHostConnectionPool pool)
         {
-            _hostConnectionPool = pool;
+            if (!_metricsEnabled || Volatile.Read(ref _disposed) != 0 ||
+                ReferenceEquals(Volatile.Read(ref _hostConnectionPool), pool))
+            {
+                return;
+            }
+
+            Interlocked.Exchange(ref _hostConnectionPool, pool);
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                Interlocked.Exchange(ref _hostConnectionPool, null);
+            }
         }
 
         public void Dispose()
         {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            Interlocked.Exchange(ref _hostConnectionPool, null);
             _driverMetricsProvider.ShutdownMetricsBucket(_bucketName);
         }
     }

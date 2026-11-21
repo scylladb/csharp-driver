@@ -777,6 +777,53 @@ namespace Cassandra.Tests.Connections
             fallback.VerifyNoOtherCalls();
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_RejectPlanAfterRouteSnapshotChanges(bool initiallyRouted)
+        {
+            var host = CreateHost("192.0.2.99", Guid.NewGuid());
+            var rows = initiallyRouted
+                ? new[] { Route(host.HostId, "old.proxy", 9042, 9142, "primary") }
+                : Array.Empty<IRow>();
+            var runtime = new ClientRoutesRuntime(
+                new ClientRoutesOptions(
+                    new[] { new ClientRouteProxy("primary") },
+                    AdvertisedPort,
+                    false),
+                false);
+            var provider = new Mock<IMetadataQueryProvider>();
+            provider.Setup(value => value.QueryUnpagedAsync(It.IsAny<string>(), It.IsAny<bool>()))
+                .ReturnsAsync(() => rows);
+            var cache = runtime.Bind(provider.Object);
+            try
+            {
+                await cache.FullRefreshBarrierAsync(new[] { host.HostId }, false).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                runtime.CompleteLifecyclePass();
+                var resolver = new ClientRoutesEndPointResolver(runtime, Mock.Of<IDnsResolver>(), Mock.Of<IEndPointResolver>());
+                var plan = await resolver.GetConnectionEndPointResolutionPlanAsync(host, false, false, 0).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.IsTrue(plan.IsCurrent());
+                await cache.FullRefreshBarrierAsync(new[] { host.HostId }, false).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.IsTrue(plan.IsCurrent(), "An unchanged route refresh must preserve the attempt.");
+                if (initiallyRouted)
+                {
+                    rows = new[] { Route(host.HostId, "old.proxy", -1, 9142, "primary") };
+                    await cache.FullRefreshBarrierAsync(new[] { host.HostId }, false)
+                        .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    Assert.IsTrue(runtime.TryGetHostSnapshot(host.HostId, out _, out _, out var covered));
+                    Assert.IsFalse(covered);
+                    Assert.IsTrue(plan.IsCurrent(), "Retained positive routes do not depend on direct-fallback coverage.");
+                }
+
+                rows = new[] { Route(host.HostId, "new.proxy", 9242, 9342, "primary") };
+                await cache.FullRefreshBarrierAsync(new[] { host.HostId }, false).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.IsFalse(plan.IsCurrent());
+            }
+            finally
+            {
+                runtime.Shutdown();
+            }
+        }
+
         private static async Task<ClientRoutesRuntime> CreateRuntimeAsync(
             IEnumerable<string> connectionIds,
             bool useTls,

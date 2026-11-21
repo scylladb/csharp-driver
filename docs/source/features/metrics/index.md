@@ -31,7 +31,7 @@ Here are the same examples but with a bucket prefix set in the `Builder`:
 
 ### Node identity and bucket names
 
-Node buckets use the server Host ID in UUID format. A node keeps its bucket when its advertised address changes. Nodes with different Host IDs have separate buckets, even when they reuse an address. Removal and return with the same Host ID use the same bucket. Unidentified custom hosts use a unique `custom-<UUID>` bucket token; this token is not a server Host ID.
+Node buckets use the server Host ID in UUID format. A node keeps its bucket when its advertised address changes. Nodes with different Host IDs have separate buckets, even when they reuse an address. A session uses the unsuffixed name the first time it constructs a bucket. Each later construction for the same Host ID appends `.registration-N`, starting at 2. Removing and rediscovering a node therefore starts a new metric series. Names are reserved before provider calls, so a failed construction also consumes its name and its retry uses the next suffix. This prevents delayed provider cleanup from shutting down a newer bucket. Unidentified custom hosts use a unique `custom-<UUID>` bucket token; this token is not a server Host ID. Repeated construction for the same custom host also appends `.registration-N`, starting at 2, and a failed construction consumes its reserved name.
 
 This replaces the previous address-based node bucket names. Update dashboards, alerts, and provider integrations that matched the old names. Session bucket names are unchanged.
 

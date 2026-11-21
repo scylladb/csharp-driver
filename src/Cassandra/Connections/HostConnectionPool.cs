@@ -19,6 +19,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -129,9 +130,9 @@ namespace Cassandra.Connections
         public int InFlight => _connections.Sum(c => c.InFlight);
 
         /// <summary>
-        /// Determines whether the pool is not on the initial state.
+        /// Determines whether the pool has left its initial state or its host registration is retired.
         /// </summary>
-        private bool IsClosing => Volatile.Read(ref _state) != PoolState.Init;
+        private bool IsClosing => Volatile.Read(ref _state) != PoolState.Init || !_host.Registration.IsActive;
 
         /// <inheritdoc />
         public IConnection[] ConnectionsSnapshot => _connections.GetSnapshot().GetAllItems();
@@ -359,15 +360,42 @@ namespace Cassandra.Connections
             int shardID,
             int shardAwarePort,
             int shardCount,
-            Func<ConnectionCandidateHandoff, bool> tryAddToPool)
+            Func<ConnectionCandidateHandoff, Func<bool>, bool> tryAddToPool,
+            long? capturedEndPointRevision = null)
         {
-            var resolutionPlan = await _config.EndPointResolutionPlanProvider
-                .GetConnectionEndPointResolutionPlanAsync(
-                    _host,
-                    isReconnection,
-                    shardAwarePort != 0,
-                    shardAwarePort)
-                .ConfigureAwait(false);
+            long endPointRevision;
+            lock (_host.Registration.SyncRoot)
+            {
+                endPointRevision = capturedEndPointRevision ?? _host.Registration.EndPointRevision;
+            }
+
+            ConnectionEndPointResolutionPlan resolutionPlan;
+            try
+            {
+                resolutionPlan = await _config.EndPointResolutionPlanProvider
+                    .GetConnectionEndPointResolutionPlanAsync(
+                        _host,
+                        isReconnection,
+                        shardAwarePort != 0,
+                        shardAwarePort)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex) when (!Utils.IsFatalException(ex))
+            {
+                bool superseded;
+                lock (_host.Registration.SyncRoot)
+                {
+                    superseded = IsClosing || _host.Registration.EndPointRevision != endPointRevision;
+                }
+
+                if (superseded)
+                {
+                    HostConnectionPool.Logger.Info("Connection attempt to {0} was superseded after failure: {1}", _host.Address, ex);
+                    throw new SupersededConnectionAttemptException();
+                }
+
+                throw;
+            }
 
             // Surface the last failure, except that a socket error never replaces a non-socket one
             // (for example authentication or protocol version), so a backup route timing out does not hide it.
@@ -382,7 +410,24 @@ namespace Cassandra.Connections
                 }
                 catch (Exception ex)
                 {
-                    if (Utils.IsFatalException(ex) || surfacedFailure == null)
+                    if (Utils.IsFatalException(ex))
+                    {
+                        throw;
+                    }
+
+                    bool superseded;
+                    lock (_host.Registration.SyncRoot)
+                    {
+                        superseded = !IsAttemptCurrent(endPointRevision, resolutionPlan.IsCurrent);
+                    }
+
+                    if (superseded)
+                    {
+                        HostConnectionPool.Logger.Info("Connection attempt to {0} was superseded after failure: {1}", _host.Address, ex);
+                        throw new SupersededConnectionAttemptException();
+                    }
+
+                    if (surfacedFailure == null)
                     {
                         throw;
                     }
@@ -397,11 +442,27 @@ namespace Cassandra.Connections
                 }
                 if (endPoints == null)
                 {
+                    lock (_host.Registration.SyncRoot)
+                    {
+                        if (!IsAttemptCurrent(endPointRevision, resolutionPlan.IsCurrent))
+                        {
+                            throw new SupersededConnectionAttemptException();
+                        }
+                    }
+
                     break;
                 }
 
                 foreach (var endPoint in endPoints)
                 {
+                    lock (_host.Registration.SyncRoot)
+                    {
+                        if (!IsAttemptCurrent(endPointRevision, resolutionPlan.IsCurrent))
+                        {
+                            throw new SupersededConnectionAttemptException();
+                        }
+                    }
+
                     IConnection c = null;
                     ConnectionCandidateHandoff handoff = null;
                     var admissionFailed = false;
@@ -433,7 +494,7 @@ namespace Cassandra.Connections
 
                         if (tryAddToPool != null)
                         {
-                            if (!tryAddToPool(handoff))
+                            if (!tryAddToPool(handoff, () => IsAttemptCurrent(endPointRevision, resolutionPlan.IsCurrent)))
                             {
                                 // A candidate that closes during handoff is an ordinary socket failure
                                 // and must not prevent the remaining endpoints from being tried.
@@ -441,11 +502,7 @@ namespace Cassandra.Connections
                                 throw new SocketException((int)SocketError.NotConnected);
                             }
                         }
-                        else if (!handoff.TryTransfer(
-                                     _connectionHandoffLock,
-                                     connection => connection.Closing += OnConnectionClosing,
-                                     connection => true,
-                                     connection => connection.Closing -= OnConnectionClosing))
+                        else if (!TryTransferUnpooledCandidate(handoff, endPointRevision, resolutionPlan.IsCurrent))
                         {
                             throw new SocketException((int)SocketError.NotConnected);
                         }
@@ -472,9 +529,26 @@ namespace Cassandra.Connections
                             }
                         }
 
+                        if (Utils.IsFatalException(ex) || ex is SupersededConnectionAttemptException)
+                        {
+                            throw;
+                        }
+
+                        bool superseded;
+                        lock (_host.Registration.SyncRoot)
+                        {
+                            superseded = !IsAttemptCurrent(endPointRevision, resolutionPlan.IsCurrent);
+                        }
+
+                        if (superseded)
+                        {
+                            HostConnectionPool.Logger.Info("Connection attempt to {0} was superseded after failure: {1}", _host.Address, ex);
+                            throw new SupersededConnectionAttemptException();
+                        }
+
                         var attemptFailure = new ConnectionAttemptFailure(ex);
                         attemptFailures.Add(attemptFailure);
-                        if (Utils.IsFatalException(ex) || IsClosing)
+                        if (IsClosing)
                         {
                             throw;
                         }
@@ -529,64 +603,93 @@ namespace Cassandra.Connections
             throw new DriverInternalError("The preferred connection failure did not propagate.");
         }
 
-        private bool TryTransferConnectionToPool(
-            ConnectionCandidateHandoff handoff,
-            out int connectionCount)
+        private bool IsAttemptCurrent(long endPointRevision, Func<bool> isCurrentRoute)
         {
-            lock (_connectionHandoffLock)
+            return !IsClosing && _host.Registration.EndPointRevision == endPointRevision && isCurrentRoute();
+        }
+
+        private bool TryTransferUnpooledCandidate(
+            ConnectionCandidateHandoff handoff, long endPointRevision, Func<bool> isCurrentRoute)
+        {
+            lock (_host.Registration.SyncRoot)
             {
-                var currentConnectionCount = 0;
-                var transferred = handoff.TryTransfer(
+                return handoff.TryTransfer(
                     _connectionHandoffLock,
                     connection => connection.Closing += OnConnectionClosing,
                     connection =>
                     {
-                        currentConnectionCount = _connections.Count;
-                        // Recheck under the pool lock immediately before publication. The handoff
-                        // performs another check afterwards and rolls the add back if close wins there.
-                        if (IsClosing || handoff.IsUnavailable)
+                        if (!IsAttemptCurrent(endPointRevision, isCurrentRoute))
                         {
-                            return false;
+                            throw new SupersededConnectionAttemptException();
                         }
 
-                        currentConnectionCount = _connections.AddNew(connection);
                         return true;
                     },
-                    connection =>
-                    {
-                        connection.Closing -= OnConnectionClosing;
-                        _connections.Remove(connection);
-                        currentConnectionCount = _connections.Count;
-                    });
-                connectionCount = currentConnectionCount;
-                UpdateStatus();
-                return transferred;
+                    connection => connection.Closing -= OnConnectionClosing);
+            }
+        }
+
+        private bool TryTransferConnectionToPool(
+            ConnectionCandidateHandoff handoff,
+            Func<bool> isCurrent,
+            out int connectionCount)
+        {
+            lock (_host.Registration.SyncRoot)
+            {
+                lock (_connectionHandoffLock)
+                {
+                    var currentConnectionCount = 0;
+                    var transferred = handoff.TryTransfer(
+                        _connectionHandoffLock,
+                        connection => connection.Closing += OnConnectionClosing,
+                        connection =>
+                        {
+                            currentConnectionCount = _connections.Count;
+                            // Recheck under the pool lock immediately before publication. The handoff
+                            // performs another check afterwards and rolls the add back if close wins there.
+                            if (IsClosing || !isCurrent())
+                            {
+                                throw new SupersededConnectionAttemptException();
+                            }
+
+                            if (handoff.IsUnavailable)
+                            {
+                                return false;
+                            }
+
+                            currentConnectionCount = _connections.AddNew(connection);
+                            return true;
+                        },
+                        connection =>
+                        {
+                            connection.Closing -= OnConnectionClosing;
+                            _connections.Remove(connection);
+                            currentConnectionCount = _connections.Count;
+                        });
+                    connectionCount = currentConnectionCount;
+                    UpdateStatus();
+                    return transferred;
+                }
             }
         }
 
         private bool TryAddConnectionToPool(
             IConnection connection,
-            bool addIfMissing,
+            long endPointRevision,
             out int connectionCount)
         {
-            lock (_connectionHandoffLock)
+            lock (_host.Registration.SyncRoot)
             {
-                connectionCount = _connections.Count;
-                if (IsClosing ||
-                    connection.IsDisposed ||
-                    connection.IsClosed)
+                lock (_connectionHandoffLock)
                 {
-                    if (!addIfMissing)
+                    connectionCount = _connections.Count;
+                    if (IsClosing || _host.Registration.EndPointRevision != endPointRevision ||
+                        connection.IsDisposed ||
+                        connection.IsClosed)
                     {
-                        _connections.Remove(connection);
-                        connectionCount = _connections.Count;
-                        UpdateStatus();
+                        return false;
                     }
-                    return false;
-                }
 
-                if (addIfMissing)
-                {
                     if (IsClosing ||
                         connection.IsDisposed ||
                         connection.IsClosed)
@@ -598,13 +701,6 @@ namespace Cassandra.Connections
                     UpdateStatus();
                     return true;
                 }
-
-                if (!_connections.Contains(connection))
-                {
-                    return false;
-                }
-
-                return true;
             }
         }
 
@@ -891,10 +987,10 @@ namespace Cassandra.Connections
         {
             var schedule = _config.Policies.ReconnectionPolicy.NewSchedule();
             _reconnectionSchedule = schedule;
-            SetNewConnectionTimeout(immediate ? null : schedule);
+            SetNewConnectionTimeout(schedule, immediate);
         }
 
-        private void SetNewConnectionTimeout(IReconnectionSchedule schedule)
+        private void SetNewConnectionTimeout(IReconnectionSchedule schedule, bool immediate = false)
         {
             if (schedule != null && _reconnectionSchedule != schedule)
             {
@@ -902,7 +998,7 @@ namespace Cassandra.Connections
                 return;
             }
             HashedWheelTimer.ITimeout timeout = null;
-            if (schedule != null)
+            if (schedule != null && !immediate)
             {
                 // Schedule the creation
                 var delay = schedule.NextDelayMs();
@@ -910,11 +1006,11 @@ namespace Cassandra.Connections
                 timeout = _timer.NewTimeout(_ => Task.Run(() => StartCreatingConnection(schedule)), null, delay);
             }
             CancelNewConnectionTimeout(timeout);
-            if (schedule == null)
+            if (schedule == null || immediate)
             {
                 // Start creating immediately after de-scheduling the timer
                 HostConnectionPool.Logger.Info("Starting reconnection from pool #{0} to {1}", GetHashCode(), _host.Address);
-                StartCreatingConnection(null);
+                StartCreatingConnection(schedule, immediate);
             }
         }
 
@@ -923,7 +1019,8 @@ namespace Cassandra.Connections
         /// A <c>null</c> schedule signals that the pool is not reconnecting but growing to the expected size.
         /// </summary>
         /// <param name="schedule"></param>
-        private void StartCreatingConnection(IReconnectionSchedule schedule)
+        /// <param name="immediate">Whether this is an immediate attempt owned by the supplied schedule.</param>
+        private void StartCreatingConnection(IReconnectionSchedule schedule, bool immediate = false)
         {
             var count = _connections.Count;
             if (count >= _expectedConnectionLength)
@@ -936,22 +1033,35 @@ namespace Cassandra.Connections
                 return;
             }
 
-            CreateOrScheduleReconnectAsync(schedule).Forget();
+            CreateOrScheduleReconnectAsync(schedule, immediate).Forget();
         }
 
-        private async Task CreateOrScheduleReconnectAsync(IReconnectionSchedule schedule)
+        private async Task CreateOrScheduleReconnectAsync(IReconnectionSchedule schedule, bool immediate = false)
         {
             if (IsClosing)
             {
                 return;
             }
 
+            var joinedOpen = schedule != null ? new StrongBox<Task<IConnection>>() : null;
             try
             {
-                var t = await CreateOpenConnection(false, schedule != null).ConfigureAwait(false);
+                var t = await CreateOpenConnection(false, schedule != null && !immediate, schedule, joinedOpen)
+                    .ConfigureAwait(false);
                 UpdateShardingInfo(t);
                 StartCreatingConnection(null);
-                _host.BringUpIfDown();
+                _host.BringUpIfActive();
+            }
+            catch (SupersededConnectionAttemptException)
+            {
+                // The creator owns the shared attempt's retry. A different owner whose immediate
+                // request or expired timer joined that attempt must continue its consumed intent.
+                // FinishOpen clears the shared task before completing it, so this starts a fresh open.
+                var joinedTask = joinedOpen?.Value;
+                if (joinedTask != null && !ReferenceEquals(joinedTask.AsyncState, schedule))
+                {
+                    StartCreatingConnection(schedule, immediate);
+                }
             }
             catch (Exception)
             {
@@ -962,7 +1072,7 @@ namespace Cassandra.Connections
                     return;
                 }
 
-                if (schedule == null)
+                if (schedule == null || immediate)
                 {
                     // As it failed, we need a new schedule for the following attempts
                     schedule = _config.Policies.ReconnectionPolicy.NewSchedule();
@@ -987,24 +1097,41 @@ namespace Cassandra.Connections
         /// Determines whether the Task should be marked as completed when there is a connection already opened.
         /// </param>
         /// <param name="isReconnection">Determines whether this is a reconnection</param>
+        /// <param name="schedule">The schedule that owns this background attempt, when supplied.</param>
+        /// <param name="joinedOpen">Records the shared open joined by an owned background request.</param>
         /// <exception cref="SocketException">Throws a SocketException when the connection could not be established with the host</exception>
         /// <exception cref="AuthenticationException" />
         /// <exception cref="UnsupportedProtocolVersionException" />
-        private async Task<IConnection> CreateOpenConnection(bool satisfyWithAnOpenConnection, bool isReconnection)
+        private async Task<IConnection> CreateOpenConnection(
+            bool satisfyWithAnOpenConnection,
+            bool isReconnection,
+            IReconnectionSchedule schedule = null,
+            StrongBox<Task<IConnection>> joinedOpen = null)
         {
             var concurrentOpenTcs = Volatile.Read(ref _connectionOpenTcs);
             // Try to exit early (cheap) as there could be another thread creating / finishing creating
             if (concurrentOpenTcs != null)
             {
                 // There is another thread opening a new connection
+                if (joinedOpen != null)
+                {
+                    joinedOpen.Value = concurrentOpenTcs.Task;
+                }
+
                 return await concurrentOpenTcs.Task.ConfigureAwait(false);
             }
-            var tcs = new TaskCompletionSource<IConnection>();
+            var attemptSchedule = schedule ?? _reconnectionSchedule;
+            var tcs = new TaskCompletionSource<IConnection>(attemptSchedule);
             // Try to set the creation task source
             concurrentOpenTcs = Interlocked.CompareExchange(ref _connectionOpenTcs, tcs, null);
             if (concurrentOpenTcs != null)
             {
                 // There is another thread opening a new connection
+                if (joinedOpen != null)
+                {
+                    joinedOpen.Value = concurrentOpenTcs.Task;
+                }
+
                 return await concurrentOpenTcs.Task.ConfigureAwait(false);
             }
 
@@ -1045,6 +1172,12 @@ namespace Cassandra.Connections
             }
 
             HostConnectionPool.Logger.Info("Creating a new connection to {0}", _host.Address);
+            long endPointRevision;
+            lock (_host.Registration.SyncRoot)
+            {
+                endPointRevision = _host.Registration.EndPointRevision;
+            }
+
             IConnection c;
             var addedDuringOpen = false;
             var newLength = 0;
@@ -1074,10 +1207,12 @@ namespace Cassandra.Connections
                             shardID,
                             shardAwarePort,
                             shardCount,
-                            handoff =>
+                            (handoff, isCurrent) =>
                                 addedDuringOpen = TryTransferConnectionToPool(
                                     handoff,
-                                    out newLength))
+                                    isCurrent,
+                                    out newLength),
+                            endPointRevision)
                         .ConfigureAwait(false);
                 }
                 else
@@ -1097,10 +1232,18 @@ namespace Cassandra.Connections
                 }
 
                 HostConnectionPool.Logger.Info("Connection to {0} could not be created: {1}", _host.Address, ex);
-                return await FinishOpen(tcs, true, ex).ConfigureAwait(false);
+                return await FinishOpen(
+                        tcs,
+                        !(ex is SupersededConnectionAttemptException),
+                        ex,
+                        reconnectionSchedule: attemptSchedule)
+                    .ConfigureAwait(false);
             }
 
-            if (!TryAddConnectionToPool(c, !addedDuringOpen, out newLength))
+            // The concrete pool has already committed admission under the registration and pool
+            // locks. Endpoint changes after that commit apply to later attempts; do not reject an
+            // admitted connection after its recovery notification. Overrides still need admission.
+            if (!addedDuringOpen && !TryAddConnectionToPool(c, endPointRevision, out newLength))
             {
                 lock (_connectionHandoffLock)
                 {
@@ -1112,10 +1255,18 @@ namespace Cassandra.Connections
                     _host.Address,
                     GetHashCode());
                 c.Dispose();
+                bool superseded;
+                lock (_host.Registration.SyncRoot)
+                {
+                    superseded = !_host.Registration.IsActive ||
+                        _host.Registration.EndPointRevision != endPointRevision;
+                }
+
                 return await FinishOpen(
                         tcs,
-                        !IsClosing,
-                        HostConnectionPool.GetNotConnectedException())
+                        !superseded && !IsClosing,
+                        superseded ? new SupersededConnectionAttemptException() : HostConnectionPool.GetNotConnectedException(),
+                        reconnectionSchedule: attemptSchedule)
                     .ConfigureAwait(false);
             }
 
@@ -1158,7 +1309,8 @@ namespace Cassandra.Connections
             TaskCompletionSource<IConnection> tcs,
             bool preventForeground,
             Exception ex,
-            IConnection c = null)
+            IConnection c = null,
+            IReconnectionSchedule reconnectionSchedule = null)
         {
             // Instruction ordering: canCreateForeground flag must be set before resetting of the tcs
             if (preventForeground)
@@ -1167,6 +1319,18 @@ namespace Cassandra.Connections
             }
             Interlocked.Exchange(ref _connectionOpenTcs, null);
             tcs.TrySet(ex, c);
+            if (ex is SupersededConnectionAttemptException && !IsClosing)
+            {
+                if (reconnectionSchedule == null)
+                {
+                    ScheduleReconnection();
+                }
+                else
+                {
+                    SetNewConnectionTimeout(reconnectionSchedule);
+                }
+            }
+
             return tcs.Task;
         }
 
@@ -1211,7 +1375,7 @@ namespace Cassandra.Connections
                 c = await CreateOpenConnection(true, false).ConfigureAwait(false);
                 UpdateShardingInfo(c);
             }
-            catch (Exception)
+            catch (Exception ex) when (!(ex is SupersededConnectionAttemptException))
             {
                 OnConnectionClosing();
                 throw;
@@ -1254,7 +1418,7 @@ namespace Cassandra.Connections
         public void MarkAsDownAndScheduleReconnection()
         {
             // By setting the host as down, all pools should cancel any outstanding reconnection attempt
-            if (_host.SetDown())
+            if (_host.SetDownIfActive())
             {
                 // Only attempt reconnection with 1 connection pool
                 ScheduleReconnection();
@@ -1401,7 +1565,7 @@ namespace Cassandra.Connections
                 var c = await CreateOpenConnection(false, false).ConfigureAwait(false);
                 UpdateShardingInfo(c);
             }
-            catch
+            catch (Exception ex) when (!(ex is SupersededConnectionAttemptException))
             {
                 OnConnectionClosing();
                 throw;
@@ -1423,7 +1587,11 @@ namespace Cassandra.Connections
                         GetHashCode(), _host.Address, _connections.Count, _expectedConnectionLength,
                         shardingInfo == null ? "unknown" : lastAttemptedShard.ToString(),
                         shardingInfo == null ? "unknown" : shardingInfo.ScyllaNrShards.ToString(), ex);
-                    OnConnectionClosing();
+                    if (!(ex is SupersededConnectionAttemptException))
+                    {
+                        OnConnectionClosing();
+                    }
+
                     break;
                 }
             }
@@ -1538,6 +1706,14 @@ namespace Cassandra.Connections
                     _publishingStatus = false;
                     StartPublishingStatusChanges();
                 }
+            }
+        }
+
+        private sealed class SupersededConnectionAttemptException : SocketException
+        {
+            public SupersededConnectionAttemptException()
+                : base((int)SocketError.NotConnected)
+            {
             }
         }
     }
