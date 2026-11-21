@@ -20,3 +20,8 @@ dotnet_diagnostic.SA1602.severity = silent
 
 # SA1600: Elements should be documented
 dotnet_diagnostic.SA1600.severity = silent
+
+[TestHelperTests.cs]
+
+# Preserve the ScyllaDB attribution on newly authored test infrastructure.
+stylecop.documentation.companyName = ScyllaDB

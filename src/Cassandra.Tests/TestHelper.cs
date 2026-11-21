@@ -17,6 +17,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Reflection;
@@ -269,6 +270,46 @@ namespace Cassandra.Tests
         }
 
         /// <summary>
+        /// Runs every cleanup action and reports nonfatal failures after cleanup has finished.
+        /// Fatal failures escape immediately.
+        /// </summary>
+        public static void RunAllCleanupActions(params Action[] cleanupActions)
+        {
+            if (cleanupActions == null)
+            {
+                throw new ArgumentNullException(nameof(cleanupActions));
+            }
+
+            List<Exception> exceptions = null;
+            foreach (var cleanupAction in cleanupActions)
+            {
+                if (cleanupAction == null)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    cleanupAction();
+                }
+                catch (Exception ex) when (!Utils.IsFatalException(ex))
+                {
+                    if (exceptions == null)
+                    {
+                        exceptions = new List<Exception>();
+                    }
+
+                    exceptions.Add(ex);
+                }
+            }
+
+            if (exceptions != null)
+            {
+                throw new AggregateException("One or more cleanup actions failed.", exceptions);
+            }
+        }
+
+        /// <summary>
         /// Waits on the current thread until the condition is met and returns the number of attempts made
         /// </summary>
         public static int WaitUntil(Func<bool> condition, int intervals = 500, int attempts = 10)
@@ -292,6 +333,31 @@ namespace Cassandra.Tests
                 await Task.Delay(intervals).ConfigureAwait(false);
             }
             return i;
+        }
+
+        public static async Task WaitUntilOrFailAsync(
+            Func<bool> condition,
+            TimeSpan timeout,
+            TimeSpan interval,
+            string failureMessage)
+        {
+            if (interval < TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(interval), "The polling interval must not be negative.");
+            }
+
+            var elapsed = Stopwatch.StartNew();
+            while (!condition())
+            {
+                var remaining = timeout - elapsed.Elapsed;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    Assert.Fail(failureMessage);
+                    return;
+                }
+
+                await Task.Delay(interval < remaining ? interval : remaining).ConfigureAwait(false);
+            }
         }
 
         public static void AssertPropertiesEqual(object actual, object expected)
@@ -543,6 +609,43 @@ namespace Cassandra.Tests
             return null;
         }
 
+        internal static async Task RetryAssertUntilAsync(
+            Action assertion,
+            TimeSpan timeout,
+            TimeSpan interval,
+            string failureMessage,
+            Func<Exception, bool> exceptionFilter)
+        {
+            if (interval < TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(interval), "The polling interval must not be negative.");
+            }
+
+            var elapsed = Stopwatch.StartNew();
+            while (true)
+            {
+                var lastException = await TryAssertAsync(
+                    () =>
+                    {
+                        assertion();
+                        return Task.CompletedTask;
+                    },
+                    exceptionFilter).ConfigureAwait(false);
+                if (lastException == null)
+                {
+                    return;
+                }
+
+                var remaining = timeout - elapsed.Elapsed;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    throw new AssertionException(failureMessage + " " + lastException);
+                }
+
+                await Task.Delay(interval < remaining ? interval : remaining).ConfigureAwait(false);
+            }
+        }
+
         internal static void VerifyUpdateCqlColumns(string tableName, string query, string[] setColumns, string[] whereColumns,
                                                     object[] expectedValues, object[] values, string complement = null)
         {
@@ -645,27 +748,34 @@ namespace Cassandra.Tests
             var i = 0;
             do
             {
-                using (new TestExecutionContext.IsolatedContext())
+                lastException = await TryAssertAsync(
+                    func,
+                    ex => ex is MockException || ex is AssertionException).ConfigureAwait(false);
+                if (lastException == null)
                 {
-                    try
-                    {
-                        await func().ConfigureAwait(false);
-                        return;
-                    }
-                    catch (MockException ex1)
-                    {
-                        lastException = ex1;
-                    }
-                    catch (AssertionException ex2)
-                    {
-                        lastException = ex2;
-                    }
+                    return;
                 }
 
                 await Task.Delay(msPerRetry).ConfigureAwait(false);
             } while (i++ < maxRetries);
 
             throw lastException;
+        }
+
+        private static async Task<Exception> TryAssertAsync(Func<Task> assertion, Func<Exception, bool> exceptionFilter)
+        {
+            using (new TestExecutionContext.IsolatedContext())
+            {
+                try
+                {
+                    await assertion().ConfigureAwait(false);
+                    return null;
+                }
+                catch (Exception ex) when (exceptionFilter(ex))
+                {
+                    return ex;
+                }
+            }
         }
 
         private class SendReceiveCounter
