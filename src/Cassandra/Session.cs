@@ -40,7 +40,7 @@ namespace Cassandra
     {
         private readonly ISerializerManager _serializerManager;
         private static readonly Logger Logger = new Logger(typeof(Session));
-        private readonly IThreadSafeDictionary<Host, IHostConnectionPool> _connectionPool;
+        private readonly IThreadSafeDictionary<NodeRegistration, IHostConnectionPool> _connectionPool;
         private readonly IInternalCluster _cluster;
         private int _disposed;
         private long _initialized;
@@ -111,7 +111,7 @@ namespace Cassandra
             Keyspace = keyspace;
             SessionName = sessionName;
             UserDefinedTypes = new UdtMappingDefinitions(this, serializerManager);
-            _connectionPool = new CopyOnWriteDictionary<Host, IHostConnectionPool>();
+            _connectionPool = new CopyOnWriteDictionary<NodeRegistration, IHostConnectionPool>();
             _cluster.HostRetired += OnHostRetired;
             _metricsManager = new MetricsManager(configuration.MetricsProvider, Configuration.MetricsOptions, Configuration.MetricsEnabled, SessionName);
             _observerFactory = configuration.ObserverFactoryBuilder.Build(_metricsManager);
@@ -241,6 +241,11 @@ namespace Cassandra
                 {
                     var pool = InternalRef.GetOrCreateConnectionPool(hosts[i], HostDistance.Local);
                     poolCreations[i] = Task.FromResult(pool.Warmup());
+                }
+                catch (RetiredRegistrationException failure) when (ReferenceEquals(failure.Registration, hosts[i].Registration))
+                {
+                    // A retired registration is a recoverable warmup failure, not an active host setup failure.
+                    poolCreations[i] = Task.FromResult(Task.FromException(failure));
                 }
                 catch (Exception failure) when (!Utils.IsFatalException(failure))
                 {
@@ -376,38 +381,95 @@ namespace Cassandra
         /// <inheritdoc />
         IHostConnectionPool IInternalSession.GetOrCreateConnectionPool(Host host, HostDistance distance)
         {
-            var hostPool = _connectionPool.GetOrAdd(host, owner =>
+            var registration = host.Registration;
+            if (IsDisposed)
             {
-                var newPool = Configuration.HostConnectionPoolFactory.Create(
-                    host, Configuration, _serializerManager, _observerFactory, Cluster.Metadata.GetTokenFactory());
-                newPool.AllConnectionClosed += InternalRef.OnAllConnectionClosed;
-                newPool.SetDistance(distance);
-                _metricsManager.GetOrCreateNodeMetrics(host).InitializePoolGauges(newPool);
-                return newPool;
-            });
-            return hostPool;
+                throw new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.NotConnected);
+            }
+
+            if (!registration.IsActive)
+            {
+                throw new RetiredRegistrationException(registration);
+            }
+
+            if (registration.IsActive && _connectionPool.TryGetValue(registration, out var existing))
+            {
+                _metricsManager.GetOrCreateNodeMetrics(host).InitializePoolGauges(existing);
+                return existing;
+            }
+
+            // Factories and observers can invoke application code. Construct outside the ownership
+            // boundary, then validate membership again at publication.
+            var candidate = Configuration.HostConnectionPoolFactory.Create(
+                host, Configuration, _serializerManager, _observerFactory, Cluster.Metadata.GetTokenFactory());
+            if (registration.IsActive && !IsDisposed)
+            {
+                candidate.AllConnectionClosed += InternalRef.OnAllConnectionClosed;
+                candidate.SetDistance(distance);
+            }
+
+            IHostConnectionPool selected = null;
+            bool retired;
+            bool disposed;
+            lock (registration.SyncRoot)
+            {
+                retired = !registration.IsActive;
+                disposed = IsDisposed;
+                if (!retired && !disposed)
+                {
+                    selected = _connectionPool.GetOrAdd(registration, candidate);
+                }
+            }
+
+            if (!ReferenceEquals(candidate, selected))
+            {
+                candidate.Dispose();
+            }
+
+            if (selected == null)
+            {
+                if (retired && !disposed)
+                {
+                    throw new RetiredRegistrationException(registration);
+                }
+
+                throw new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.NotConnected);
+            }
+
+            if (ReferenceEquals(candidate, selected))
+            {
+                _metricsManager.GetOrCreateNodeMetrics(host).InitializePoolGauges(candidate);
+            }
+
+            return selected;
         }
 
         /// <inheritdoc />
         IEnumerable<KeyValuePair<IPEndPoint, IHostConnectionPool>> IInternalSession.GetPools()
         {
-            return _connectionPool.Select(kvp => new KeyValuePair<IPEndPoint, IHostConnectionPool>(kvp.Key.Address, kvp.Value));
+            return _connectionPool.Select(kvp => new KeyValuePair<IPEndPoint, IHostConnectionPool>(kvp.Key.Host.Address, kvp.Value));
         }
 
         IEnumerable<KeyValuePair<Host, IHostConnectionPool>> IInternalSession.GetNodePools()
         {
-            var currentHosts = new HashSet<Host>(_cluster.AllHosts());
-            return _connectionPool.ToArray().Where(pair => pair.Key.HostId == Guid.Empty || currentHosts.Contains(pair.Key));
+            return _connectionPool.ToArray().Where(pair => pair.Key.IsActive)
+                .Select(pair => new KeyValuePair<Host, IHostConnectionPool>(pair.Key.Host, pair.Value));
         }
 
         IHostConnectionPool IInternalSession.GetExistingPool(Host host)
         {
-            _connectionPool.TryGetValue(host, out var pool);
+            _connectionPool.TryGetValue(host.Registration, out var pool);
             return pool;
         }
 
         void IInternalSession.OnAllConnectionClosed(Host host, IHostConnectionPool pool)
         {
+            if (!host.Registration.IsActive ||
+                !_connectionPool.TryGetValue(host.Registration, out var current) || !ReferenceEquals(current, pool))
+            {
+                return;
+            }
+
             if (_cluster.AnyOpenConnections(host))
             {
                 pool.ScheduleReconnection();
@@ -428,7 +490,7 @@ namespace Cassandra
 
         bool IInternalSession.HasConnections(Host host)
         {
-            if (_connectionPool.TryGetValue(host, out var pool))
+            if (_connectionPool.TryGetValue(host.Registration, out var pool))
             {
                 return pool.HasConnections;
             }
@@ -444,7 +506,7 @@ namespace Cassandra
 
         void IInternalSession.CheckHealth(Host host, IConnection connection)
         {
-            if (!_connectionPool.TryGetValue(host, out var pool))
+            if (!_connectionPool.TryGetValue(host.Registration, out var pool))
             {
                 // A host can retire after a request acquires its connection and before
                 // the timeout callback. Close this defunct connection immediately
@@ -547,7 +609,7 @@ namespace Cassandra
             {
                 Utils.CaptureOrLog(ex, ref failure, Logger, $"for Host ID {host.HostId}");
             }
-            if (_connectionPool.TryRemove(host, out var pool))
+            if (_connectionPool.TryRemove(host.Registration, out var pool))
             {
                 try
                 {
@@ -567,6 +629,17 @@ namespace Cassandra
                 }
             }
             failure?.Throw();
+        }
+
+        internal sealed class RetiredRegistrationException : System.Net.Sockets.SocketException
+        {
+            public RetiredRegistrationException(NodeRegistration registration)
+                : base((int)System.Net.Sockets.SocketError.NotConnected)
+            {
+                Registration = registration;
+            }
+
+            public NodeRegistration Registration { get; }
         }
     }
 }

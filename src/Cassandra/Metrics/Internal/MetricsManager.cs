@@ -15,11 +15,15 @@
 //
 
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Threading;
 
 using Cassandra.Collections;
 using Cassandra.Metrics.Abstractions;
+using Cassandra.Metrics.Providers.Null;
 using Cassandra.Metrics.Registries;
 using Cassandra.SessionManagement;
 
@@ -35,8 +39,17 @@ namespace Cassandra.Metrics.Internal
         private readonly bool _metricsEnabled;
         private readonly string _sessionBucket;
         private readonly ISessionMetrics _sessionMetrics;
-        private readonly CopyOnWriteDictionary<Host, IMetricsRegistry<NodeMetric>> _nodeMetricsRegistryCollection;
-        private readonly CopyOnWriteDictionary<Host, INodeMetrics> _nodeMetricsCollection;
+        private readonly CopyOnWriteDictionary<NodeRegistration, IMetricsRegistry<NodeMetric>> _nodeMetricsRegistryCollection;
+        private readonly CopyOnWriteDictionary<NodeRegistration, INodeMetrics> _nodeMetricsCollection;
+        private readonly NodeMetricsView _nodeMetricsView;
+
+        // Accessed only by the node-metrics dictionary's serialized value factory. A bucket name
+        // is never reused while old callbacks can still shut down an earlier registration.
+        private readonly Dictionary<string, int> _nodeBucketGenerations = new Dictionary<string, int>();
+        private readonly ConditionalWeakTable<NodeRegistration, StrongBox<int>> _customNodeBucketGenerations =
+            new ConditionalWeakTable<NodeRegistration, StrongBox<int>>();
+
+        private readonly INodeMetrics _retiredNodeMetrics;
         private readonly bool _disabledSessionTimerMetrics;
         private readonly bool _disabledNodeTimerMetrics;
 
@@ -47,8 +60,10 @@ namespace Cassandra.Metrics.Internal
             _metricsEnabled = metricsEnabled;
             _sessionBucket = metricsOptions.BucketPrefix != null ? $"{metricsOptions.BucketPrefix}.{sessionName}" : sessionName;
             _sessionMetrics = new SessionMetrics(_driverMetricsProvider, metricsOptions, metricsEnabled, _sessionBucket);
-            _nodeMetricsRegistryCollection = new CopyOnWriteDictionary<Host, IMetricsRegistry<NodeMetric>>();
-            _nodeMetricsCollection = new CopyOnWriteDictionary<Host, INodeMetrics>();
+            _nodeMetricsRegistryCollection = new CopyOnWriteDictionary<NodeRegistration, IMetricsRegistry<NodeMetric>>();
+            _nodeMetricsCollection = new CopyOnWriteDictionary<NodeRegistration, INodeMetrics>();
+            _nodeMetricsView = new NodeMetricsView(this);
+            _retiredNodeMetrics = new NodeMetrics(new NullDriverMetricsProvider(), metricsOptions, false, _sessionBucket + ".retired");
             _disabledSessionTimerMetrics = !metricsEnabled || !metricsOptions.EnabledSessionMetrics.Contains(SessionMetric.Timers.CqlRequests);
             _disabledNodeTimerMetrics = !metricsEnabled || !metricsOptions.EnabledNodeMetrics.Contains(NodeMetric.Timers.CqlMessages);
         }
@@ -57,7 +72,7 @@ namespace Cassandra.Metrics.Internal
         public IMetricsRegistry<SessionMetric> SessionMetrics => _sessionMetrics.MetricsRegistry;
 
         /// <inheritdoc/>
-        public IReadOnlyDictionary<Host, IMetricsRegistry<NodeMetric>> NodeMetrics => _nodeMetricsRegistryCollection;
+        public IReadOnlyDictionary<Host, IMetricsRegistry<NodeMetric>> NodeMetrics => _nodeMetricsView;
 
         /// <inheritdoc/>
         public bool AreMetricsEnabled => _metricsEnabled;
@@ -65,13 +80,12 @@ namespace Cassandra.Metrics.Internal
         /// <inheritdoc />
         public TMetricType GetNodeMetric<TMetricType>(Host host, NodeMetric nodeMetric) where TMetricType : class, IDriverMetric
         {
-            if (!_nodeMetricsCollection.TryGetValue(host, out var nodeMetrics))
+            if (!_nodeMetricsView.TryGetValue(host, out var registry))
             {
                 throw new ArgumentException("Could not retrieve metrics for this host: " + host.Address);
             }
 
-            var metric = nodeMetrics.MetricsRegistry.GetMetric(nodeMetric);
-            if (metric == null)
+            if (!registry.Metrics.TryGetValue(nodeMetric, out var metric) || metric == null)
             {
                 throw new ArgumentException("Could not find the provided metric: ", nodeMetric.Name);
             }
@@ -112,12 +126,12 @@ namespace Cassandra.Metrics.Internal
         /// <inheritdoc />
         public void RemoveNodeMetrics(Host host)
         {
-            if (!_nodeMetricsCollection.TryRemove(host, out var nodeMetrics))
+            if (!_nodeMetricsCollection.TryRemove(host.Registration, out var nodeMetrics))
             {
                 return;
             }
 
-            _nodeMetricsRegistryCollection.TryRemove(host, out _);
+            _nodeMetricsView.Remove(host.Registration);
             nodeMetrics.Dispose();
         }
 
@@ -136,15 +150,49 @@ namespace Cassandra.Metrics.Internal
         /// <inheritdoc />
         public INodeMetrics GetOrCreateNodeMetrics(Host host)
         {
-            var value = _nodeMetricsCollection.GetOrAdd(host, h =>
+            var registration = host.Registration;
+            if (!registration.IsActive)
             {
+                return _retiredNodeMetrics;
+            }
+
+            var value = _nodeMetricsCollection.GetOrAdd(registration, owner =>
+            {
+                if (!registration.IsActive)
+                {
+                    return _retiredNodeMetrics;
+                }
+
                 var nodeBucket = $"{_sessionBucket}.nodes.{host.MetricKey}";
+                int generation;
+                if (host.HostId == Guid.Empty)
+                {
+                    var attempts = _customNodeBucketGenerations.GetOrCreateValue(registration);
+                    generation = Interlocked.Increment(ref attempts.Value);
+                }
+                else
+                {
+                    _nodeBucketGenerations.TryGetValue(nodeBucket, out generation);
+                    _nodeBucketGenerations[nodeBucket] = ++generation;
+                }
+
+                if (generation > 1)
+                {
+                    nodeBucket += ".registration-" + generation;
+                }
 
                 var newRegistry = new NodeMetrics(_driverMetricsProvider, _metricsOptions, _metricsEnabled, nodeBucket);
-                _nodeMetricsRegistryCollection.Add(host, newRegistry.MetricsRegistry);
+                _nodeMetricsView.Add(registration, newRegistry.MetricsRegistry);
 
                 return newRegistry;
             });
+            if (!registration.IsActive)
+            {
+                // A provider callback can retire the host while constructing its metrics. The
+                // replacement registration owns a different map entry and physical bucket.
+                RemoveNodeMetrics(host);
+                return _retiredNodeMetrics;
+            }
 
             return value;
         }
@@ -155,6 +203,134 @@ namespace Cassandra.Metrics.Internal
             foreach (var nodeMetrics in _nodeMetricsCollection.Values)
             {
                 nodeMetrics.Dispose();
+            }
+        }
+
+        private sealed class NodeMetricsView : IReadOnlyDictionary<Host, IMetricsRegistry<NodeMetric>>
+        {
+            private readonly MetricsManager _owner;
+            private readonly Lock _gate = new Lock();
+            private Dictionary<Host, KeyValuePair<NodeRegistration, IMetricsRegistry<NodeMetric>>> _snapshot;
+
+            public NodeMetricsView(MetricsManager owner)
+            {
+                _owner = owner;
+            }
+
+            public IEnumerable<Host> Keys => Snapshot.Keys;
+
+            public IEnumerable<IMetricsRegistry<NodeMetric>> Values => Snapshot.Values.Select(pair => pair.Value);
+
+            public int Count => Snapshot.Count;
+
+            private Dictionary<Host, KeyValuePair<NodeRegistration, IMetricsRegistry<NodeMetric>>> Snapshot
+            {
+                get
+                {
+                    while (true)
+                    {
+                        var current = Volatile.Read(ref _snapshot);
+                        if (IsCurrent(current))
+                        {
+                            return current;
+                        }
+
+                        // Host equality can be overridden by application code. Build outside
+                        // the gate, then publish only against the same immutable source map.
+                        var source = _owner._nodeMetricsRegistryCollection.MapSnapshot;
+                        var candidate = new Dictionary<Host, KeyValuePair<NodeRegistration, IMetricsRegistry<NodeMetric>>>();
+                        foreach (var pair in source)
+                        {
+                            if (pair.Key.IsActive)
+                            {
+                                candidate.TryAdd(pair.Key.Host, pair);
+                            }
+                        }
+
+                        lock (_gate)
+                        {
+                            if (!ReferenceEquals(source, _owner._nodeMetricsRegistryCollection.MapSnapshot) || !IsCurrent(candidate))
+                            {
+                                continue;
+                            }
+
+                            current = _snapshot;
+                            if (!IsCurrent(current))
+                            {
+                                current = candidate;
+                                Volatile.Write(ref _snapshot, current);
+                            }
+
+                            return current;
+                        }
+                    }
+                }
+            }
+
+            public IMetricsRegistry<NodeMetric> this[Host key] =>
+                TryGetValue(key, out var value) ? value : throw new KeyNotFoundException();
+
+            public bool ContainsKey(Host key) => TryGetValue(key, out _);
+
+            public bool TryGetValue(Host key, out IMetricsRegistry<NodeMetric> value)
+            {
+                ArgumentNullException.ThrowIfNull(key);
+                var snapshot = Volatile.Read(ref _snapshot);
+                if (snapshot == null ||
+                    (snapshot.TryGetValue(key, out var cached) && !cached.Key.IsActive))
+                {
+                    snapshot = Snapshot;
+                }
+
+                if (snapshot.TryGetValue(key, out var selected))
+                {
+                    value = selected.Value;
+                    return true;
+                }
+
+                value = null;
+                return false;
+            }
+
+            public IEnumerator<KeyValuePair<Host, IMetricsRegistry<NodeMetric>>> GetEnumerator() =>
+                Snapshot.Select(pair => new KeyValuePair<Host, IMetricsRegistry<NodeMetric>>(pair.Key, pair.Value.Value)).GetEnumerator();
+
+            IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+            public void Add(NodeRegistration registration, IMetricsRegistry<NodeMetric> registry)
+            {
+                lock (_gate)
+                {
+                    _owner._nodeMetricsRegistryCollection.Add(registration, registry);
+                    Volatile.Write(ref _snapshot, null);
+                }
+            }
+
+            public void Remove(NodeRegistration registration)
+            {
+                lock (_gate)
+                {
+                    _owner._nodeMetricsRegistryCollection.TryRemove(registration, out _);
+                    Volatile.Write(ref _snapshot, null);
+                }
+            }
+
+            private static bool IsCurrent(Dictionary<Host, KeyValuePair<NodeRegistration, IMetricsRegistry<NodeMetric>>> snapshot)
+            {
+                if (snapshot == null)
+                {
+                    return false;
+                }
+
+                foreach (var pair in snapshot.Values)
+                {
+                    if (!pair.Key.IsActive)
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
             }
         }
     }

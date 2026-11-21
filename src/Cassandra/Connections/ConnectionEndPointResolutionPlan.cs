@@ -55,6 +55,9 @@ namespace Cassandra.Connections
         private int _nextStep;
         private bool _resolvedAnyEndPoints;
 
+        // Pool admission checks this after asynchronous resolution/open and before publication.
+        internal Func<bool> IsCurrent { get; set; } = () => true;
+
         /// <summary>
         /// Gets a snapshot of resolution failures that have not yet been followed by a successful
         /// connection. Resolving another endpoint does not recover these failures: that endpoint

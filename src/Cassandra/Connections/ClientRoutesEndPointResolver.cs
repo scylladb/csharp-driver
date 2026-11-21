@@ -254,7 +254,10 @@ namespace Cassandra.Connections
                             (Func<Task<IReadOnlyList<IConnectionEndPoint>>>)(() =>
                                 Task.FromException<IReadOnlyList<IConnectionEndPoint>>(exception))
                         },
-                        errors => errors.Count == 1 ? errors[0] : exception);
+                        errors => errors.Count == 1 ? errors[0] : exception)
+                    {
+                        IsCurrent = () => IsCurrentRouteSnapshot(host.HostId, hasRoutes, routes, directFallbackConfirmed)
+                    };
                 }
 
                 if (_hostsReportedWithoutRoutes.TryAdd(host.HostId, true))
@@ -270,7 +273,10 @@ namespace Cassandra.Connections
                     ? (Func<Task<IReadOnlyList<IConnectionEndPoint>>>)(() => _fallbackResolver
                         .GetConnectionShardAwareEndPointsAsync(host, refreshCache, shardAwarePort))
                     : () => _fallbackResolver.GetConnectionEndPointsAsync(host, refreshCache);
-                return new ConnectionEndPointResolutionPlan(new[] { fallback });
+                return new ConnectionEndPointResolutionPlan(new[] { fallback })
+                {
+                    IsCurrent = () => IsCurrentRouteSnapshot(host.HostId, hasRoutes, routes, directFallbackConfirmed)
+                };
             }
 
             _hostsReportedWithoutRoutes.TryRemove(host.HostId, out _);
@@ -285,7 +291,18 @@ namespace Cassandra.Connections
 
             return new ConnectionEndPointResolutionPlan(
                 resolutionSteps,
-                errors => CreateNoRoutesResolvedException(host, errors));
+                errors => CreateNoRoutesResolvedException(host, errors))
+            {
+                IsCurrent = () => IsCurrentRouteSnapshot(host.HostId, hasRoutes, routes, directFallbackConfirmed)
+            };
+        }
+
+        private bool IsCurrentRouteSnapshot(
+            Guid hostId, bool hadRoutes, ImmutableArray<ClientRouteEndpoint> expected, bool directFallbackConfirmed)
+        {
+            var hasRoutes = _runtime.TryGetHostSnapshot(hostId, out var current, out var complete, out var covered);
+            return hasRoutes == hadRoutes && current.SequenceEqual(expected) &&
+                (hadRoutes || directFallbackConfirmed == (complete && covered));
         }
 
         private async Task<IReadOnlyList<IConnectionEndPoint>> ResolveRouteAsync(

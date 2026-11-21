@@ -466,7 +466,16 @@ namespace Cassandra.Requests
             RoutingKey routingKey,
             int shardID = -1)
         {
-            var hostPool = session.GetOrCreateConnectionPool(host, distance);
+            IHostConnectionPool hostPool;
+            try
+            {
+                hostPool = session.GetOrCreateConnectionPool(host, distance);
+            }
+            catch (Session.RetiredRegistrationException ex) when (ReferenceEquals(ex.Registration, host.Registration))
+            {
+                triedHosts[host.Address] = ex;
+                return null;
+            }
 
             try
             {
