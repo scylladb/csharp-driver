@@ -35,6 +35,21 @@ namespace Cassandra.Tests
     [TestFixture]
     public class SessionTests
     {
+        [Test]
+        public void StatusInspection_Should_NotCreateMissingPool()
+        {
+            var factory = new Mock<IHostConnectionPoolFactory>(MockBehavior.Strict);
+            var config = new TestConfigurationBuilder { HostConnectionPoolFactory = factory.Object }.Build();
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(new Metadata(config));
+            using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "status-inspection");
+            var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), contactPoint: null);
+
+            Assert.IsNull(((IInternalSession)session).GetExistingPool(host)?.Status);
+            Assert.IsEmpty(((IInternalSession)session).GetPools());
+            factory.VerifyNoOtherCalls();
+        }
+
         [TestCase(false, false)]
         [TestCase(false, true)]
         [TestCase(true, false)]
