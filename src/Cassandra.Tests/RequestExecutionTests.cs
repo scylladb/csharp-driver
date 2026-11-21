@@ -18,9 +18,11 @@ using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Reflection;
+using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Connections;
 using Cassandra.ExecutionProfiles;
+using Cassandra.Observers.Abstractions;
 using Cassandra.Observers.Null;
 using Cassandra.Observers.RequestTracker;
 using Cassandra.Requests;
@@ -71,6 +73,154 @@ namespace Cassandra.Tests
             await send.ConfigureAwait(false);
 
             Assert.IsFalse(operation.CanBeWritten());
+        }
+
+        [Test]
+        [TestCase(true)]
+        [TestCase(false)]
+        public async Task Should_Not_Send_Or_Try_Other_Hosts_When_Cancelled_While_Waiting_For_A_Connection(bool connectionObtained)
+        {
+            var config = new TestConfigurationBuilder().Build();
+            var host = new Host(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9047), new ConstantReconnectionPolicy(1));
+            var validHost = ValidHost.New(host, HostDistance.Local);
+            // Completing it runs the execution's continuation synchronously, so the checks below don't need to wait
+            var pendingConnection = new TaskCompletionSource<IConnection>();
+            var connection = new Mock<IConnection>();
+            var parent = new Mock<IRequestHandler>();
+            parent.SetupGet(m => m.RequestOptions).Returns(config.DefaultRequestOptions);
+            // Without the cancellation check, the next host would be asked for: fail instead of looping on this one
+            parent
+                .SetupSequence(m => m.GetNextValidHost(It.IsAny<Dictionary<IPEndPoint, Exception>>()))
+                .Returns(validHost)
+                .Throws(new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>()));
+            parent
+                .Setup(m => m.GetConnectionToValidHostAsync(validHost, It.IsAny<Dictionary<IPEndPoint, Exception>>()))
+                .Returns(pendingConnection.Task);
+            var execution = new RequestExecution(
+                parent.Object, Mock.Of<IInternalSession>(), Mock.Of<IRequest>(), NullRequestObserver.Instance,
+                new SessionRequestInfo(Mock.Of<IStatement>(), "ks1"));
+
+            execution.Start(false);
+            execution.Cancel();
+            pendingConnection.SetResult(connectionObtained ? connection.Object : null);
+
+            connection.Verify(
+                c => c.SendWithKeyspace(
+                    It.IsAny<IRequest>(), It.IsAny<string>(), It.IsAny<Func<IRequestError, Response, Task>>(),
+                    It.IsAny<int>(), It.IsAny<bool>()),
+                Times.Never);
+            // Only the host chosen when the execution started
+            parent.Verify(m => m.GetNextValidHost(It.IsAny<Dictionary<IPEndPoint, Exception>>()), Times.Once);
+        }
+
+        [Test]
+        public async Task Should_Not_Send_When_Cancelled_Before_Sending()
+        {
+            var connection = new Mock<IConnection>();
+            var parent = new Mock<IRequestHandler>();
+            parent.SetupGet(m => m.RequestOptions).Returns(new TestConfigurationBuilder().Build().DefaultRequestOptions);
+            parent.Setup(m => m.OnNewNodeExecution(It.IsAny<NodeRequestInfo>())).Returns(true);
+            var observer = new Mock<IRequestObserver>();
+            var execution = new RequestExecution(
+                parent.Object, Mock.Of<IInternalSession>(), Mock.Of<IRequest>(), observer.Object,
+                new SessionRequestInfo(Mock.Of<IStatement>(), null));
+            typeof(RequestExecution).GetField("_connection", BindingFlags.Instance | BindingFlags.NonPublic)
+                .SetValue(execution, connection.Object);
+            var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), new ConstantReconnectionPolicy(1));
+
+            execution.CancelUnsent();
+            await ((Task)typeof(RequestExecution)
+                .GetMethod("SendAsync", BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(execution, new object[]
+                {
+                    Mock.Of<IRequest>(), host, (Func<IRequestError, Response, NodeRequestInfo, Task>)((_, __, ___) => Task.CompletedTask)
+                })).ConfigureAwait(false);
+
+            connection.Verify(
+                c => c.SendWithKeyspace(
+                    It.IsAny<IRequest>(), It.IsAny<string>(), It.IsAny<Func<IRequestError, Response, Task>>(),
+                    It.IsAny<int>(), It.IsAny<bool>()),
+                Times.Never);
+            // Stopped before the execution is even reported as started
+            observer.Verify(o => o.OnNodeStartAsync(It.IsAny<SessionRequestInfo>(), It.IsAny<NodeRequestInfo>()), Times.Never);
+        }
+
+        [Test]
+        public async Task Should_Not_Send_When_Cancelled_While_The_Request_Observer_Is_Notified()
+        {
+            var connection = new Mock<IConnection>();
+            var parent = new Mock<IRequestHandler>();
+            parent.SetupGet(m => m.RequestOptions).Returns(new TestConfigurationBuilder().Build().DefaultRequestOptions);
+            parent.Setup(m => m.OnNewNodeExecution(It.IsAny<NodeRequestInfo>())).Returns(true);
+            var nodeStart = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var observer = new Mock<IRequestObserver>();
+            observer
+                .Setup(o => o.OnNodeStartAsync(It.IsAny<SessionRequestInfo>(), It.IsAny<NodeRequestInfo>()))
+                .Returns(nodeStart.Task);
+            var execution = new RequestExecution(
+                parent.Object, Mock.Of<IInternalSession>(), Mock.Of<IRequest>(), observer.Object,
+                new SessionRequestInfo(Mock.Of<IStatement>(), null));
+            typeof(RequestExecution).GetField("_connection", BindingFlags.Instance | BindingFlags.NonPublic)
+                .SetValue(execution, connection.Object);
+            var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), new ConstantReconnectionPolicy(1));
+
+            var send = (Task)typeof(RequestExecution)
+                .GetMethod("SendAsync", BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(execution, new object[]
+                {
+                    Mock.Of<IRequest>(), host, (Func<IRequestError, Response, NodeRequestInfo, Task>)((_, __, ___) => Task.CompletedTask)
+                });
+            execution.CancelUnsent();
+            nodeStart.SetResult();
+            await send.ConfigureAwait(false);
+
+            connection.Verify(
+                c => c.SendWithKeyspace(
+                    It.IsAny<IRequest>(), It.IsAny<string>(), It.IsAny<Func<IRequestError, Response, Task>>(),
+                    It.IsAny<int>(), It.IsAny<bool>()),
+                Times.Never);
+        }
+
+        [Test]
+        public async Task Should_Not_Retry_When_Cancelled_While_Handling_An_Error()
+        {
+            var parent = new Mock<IRequestHandler>();
+            parent.SetupGet(m => m.RequestOptions).Returns(new TestConfigurationBuilder().Build().DefaultRequestOptions);
+            var execution = new RequestExecution(
+                parent.Object, Mock.Of<IInternalSession>(), Mock.Of<IRequest>(), NullRequestObserver.Instance,
+                new SessionRequestInfo(Mock.Of<IStatement>(), null));
+            var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), new ConstantReconnectionPolicy(1));
+
+            execution.CancelUnsent();
+            await ((Task)typeof(RequestExecution)
+                .GetMethod("RetryExecutionAsync", BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(execution, new object[] { false, host })).ConfigureAwait(false);
+
+            parent.Verify(m => m.GetNextValidHost(It.IsAny<Dictionary<IPEndPoint, Exception>>()), Times.Never);
+        }
+
+        [Test]
+        public async Task Should_Check_The_Connection_When_A_Request_Left_Running_After_Cancellation_Times_Out()
+        {
+            var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), new ConstantReconnectionPolicy(1));
+            var connection = Mock.Of<IConnection>();
+            var session = new Mock<IInternalSession>();
+            var parent = new Mock<IRequestHandler>();
+            parent.SetupGet(m => m.RequestOptions).Returns(new TestConfigurationBuilder().Build().DefaultRequestOptions);
+            // The caller cancelled the request, which completed the handler
+            parent.Setup(m => m.HasCompleted()).Returns(true);
+            var execution = new RequestExecution(
+                parent.Object, session.Object, Mock.Of<IRequest>(), NullRequestObserver.Instance,
+                new SessionRequestInfo(Mock.Of<IStatement>(), null));
+            typeof(RequestExecution).GetField("_connection", BindingFlags.Instance | BindingFlags.NonPublic)
+                .SetValue(execution, connection);
+            var timeout = RequestError.CreateClientError(new OperationTimedOutException(host.Address, 1000), false);
+
+            await ((Task)typeof(RequestExecution)
+                .GetMethod("HandleResponseAsync", BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(execution, new object[] { timeout, null, new NodeRequestInfo(host, null) })).ConfigureAwait(false);
+
+            session.Verify(s => s.CheckHealth(host, connection), Times.Once);
         }
 
         [TestCase("USE ks2", true)]
@@ -409,6 +559,66 @@ namespace Cassandra.Tests
                 pendingSend.TrySetResult(null);
                 await callbackTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             }
+        }
+
+        [Test]
+        public async Task Should_Not_Retry_A_Reprepare_That_Fails_After_The_Request_Completed()
+        {
+            var serializerManager = new SerializerManager(ProtocolVersion.V4);
+            var preparedStatement = new PreparedStatement(
+                null, new byte[] { 1 }, null, "SELECT * FROM table1", null, serializerManager, false);
+            var boundStatement = preparedStatement.Bind();
+            var host = new Host(new IPEndPoint(IPAddress.Parse("127.0.0.1"), 9047), new ConstantReconnectionPolicy(1));
+            var validHost = ValidHost.New(host, HostDistance.Local);
+            var executeSent = new TaskCompletionSource<Func<IRequestError, Response, Task>>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var reprepareSent = new TaskCompletionSource<Func<IRequestError, Response, Task>>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var connection = new Mock<IConnection>();
+            var connectionEndPoint = new Mock<IConnectionEndPoint>();
+            connectionEndPoint.SetupGet(value => value.EndpointFriendlyName).Returns("test-node");
+            connection.SetupGet(value => value.EndPoint).Returns(connectionEndPoint.Object);
+            connection
+                .Setup(value => value.SendWithKeyspace(
+                    It.IsAny<IRequest>(), It.IsAny<string>(),
+                    It.IsAny<Func<IRequestError, Response, Task>>(), It.IsAny<int>(), It.IsAny<bool>()))
+                .Returns<IRequest, string, Func<IRequestError, Response, Task>, int, bool>((sentRequest, _, callback, __, ___) =>
+                {
+                    (sentRequest is InternalPrepareRequest ? reprepareSent : executeSent).SetResult(callback);
+                    return Task.FromResult<OperationState>(null);
+                });
+            var session = new Mock<IInternalSession>();
+            session.SetupGet(value => value.Keyspace).Returns((string)null);
+            var retryPolicy = new Mock<IExtendedRetryPolicy>(MockBehavior.Strict);
+            var completed = false;
+            var parent = new Mock<IRequestHandler>();
+            parent.SetupGet(value => value.Serializer).Returns(serializerManager.GetCurrentSerializer());
+            parent.SetupGet(value => value.Statement).Returns(boundStatement);
+            parent.SetupGet(value => value.RetryPolicy).Returns(retryPolicy.Object);
+            parent.SetupGet(value => value.RequestOptions).Returns(new TestConfigurationBuilder().Build().DefaultRequestOptions);
+            parent.Setup(value => value.GetNextValidHost(It.IsAny<Dictionary<IPEndPoint, Exception>>())).Returns(validHost);
+            parent
+                .Setup(value => value.GetConnectionToValidHostAsync(validHost, It.IsAny<IDictionary<IPEndPoint, Exception>>()))
+                .ReturnsAsync(connection.Object);
+            parent.Setup(value => value.SetNodeExecutionCompleted(It.IsAny<Guid>())).Returns(true);
+            parent.Setup(value => value.HasCompleted()).Returns(() => completed);
+            var execution = new RequestExecution(
+                parent.Object, session.Object, Mock.Of<IRequest>(), NullRequestObserver.Instance,
+                new SessionRequestInfo(boundStatement, null));
+
+            execution.Start(false);
+            var executeCallback = await executeSent.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            await executeCallback(
+                RequestError.CreateServerError(new PreparedQueryNotFoundException("not prepared", new byte[] { 1 })), null)
+                .ConfigureAwait(false);
+            var reprepareCallback = await reprepareSent.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            // The caller cancels while the PREPARE runs, then the PREPARE fails
+            completed = true;
+            await reprepareCallback(RequestError.CreateServerError(new OverloadedException("overloaded")), null).ConfigureAwait(false);
+
+            retryPolicy.VerifyNoOtherCalls();
+            parent.Verify(value => value.GetNextValidHost(It.IsAny<Dictionary<IPEndPoint, Exception>>()), Times.Once);
+            parent.Verify(value => value.SetCompletedAsync(It.IsAny<Exception>(), It.IsAny<RowSet>()), Times.Never);
         }
 
         [Test]

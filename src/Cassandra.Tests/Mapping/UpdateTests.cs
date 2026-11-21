@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Mapping;
 using Cassandra.Tests.Mapping.Pocos;
@@ -46,7 +47,7 @@ namespace Cassandra.Tests.Mapping
             sessionMock.Setup(s => s.Keyspace).Returns<string>(null);
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BoundStatement>(), It.IsAny<string>()))
-                .Callback<IStatement, string>((b, profile) =>
+                .Callback<IStatement, string, CancellationToken>((b, profile, _) =>
                 {
                     query = ((BoundStatement)b).PreparedStatement.Cql;
                     parameters = b.QueryValues;
@@ -55,7 +56,7 @@ namespace Cassandra.Tests.Mapping
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns<string>(cql => TestHelper.DelayedTask(GetPrepared(cql)))
+                .Returns<string, CancellationToken>((cql, _) => TestHelper.DelayedTask(GetPrepared(cql)))
                 .Verifiable();
             var mapper = GetMappingClient(sessionMock, new MappingConfiguration()
                 .Define(new Map<Song>().PartitionKey(s => s.Id)));
@@ -82,7 +83,7 @@ namespace Cassandra.Tests.Mapping
             sessionMock.Setup(s => s.Keyspace).Returns<string>(null);
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BoundStatement>(), It.IsAny<string>()))
-                .Callback<IStatement, string>((b, profile) =>
+                .Callback<IStatement, string, CancellationToken>((b, profile, _) =>
                 {
                     query = ((BoundStatement)b).PreparedStatement.Cql;
                     parameters = b.QueryValues;
@@ -91,7 +92,7 @@ namespace Cassandra.Tests.Mapping
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns<string>(cql => TestHelper.DelayedTask(GetPrepared(cql)))
+                .Returns<string, CancellationToken>((cql, _) => TestHelper.DelayedTask(GetPrepared(cql)))
                 .Verifiable();
             var mapper = GetMappingClient(sessionMock, new MappingConfiguration()
                 .Define(new Map<Song>().PartitionKey(s => s.Title, s => s.Id)));
@@ -127,7 +128,7 @@ namespace Cassandra.Tests.Mapping
             sessionMock.Setup(s => s.Keyspace).Returns<string>(null);
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BoundStatement>(), It.IsAny<string>()))
-                .Callback<IStatement, string>((b, profile) =>
+                .Callback<IStatement, string, CancellationToken>((b, profile, _) =>
                 {
                     query = ((BoundStatement)b).PreparedStatement.Cql;
                     parameters = b.QueryValues;
@@ -136,7 +137,7 @@ namespace Cassandra.Tests.Mapping
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns<string>(cql => TestHelper.DelayedTask(GetPrepared(cql)))
+                .Returns<string, CancellationToken>((cql, _) => TestHelper.DelayedTask(GetPrepared(cql)))
                 .Verifiable();
             var mapper = GetMappingClient(sessionMock, new MappingConfiguration()
                 .Define(new Map<Song>().PartitionKey(s => s.Id).ClusteringKey(s => s.ReleaseDate)));
@@ -163,7 +164,7 @@ namespace Cassandra.Tests.Mapping
             sessionMock.Setup(s => s.Keyspace).Returns<string>(null);
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BoundStatement>(), It.IsAny<string>()))
-                .Callback<IStatement, string>((b, profile) =>
+                .Callback<IStatement, string, CancellationToken>((b, profile, _) =>
                 {
                     consistency = b.ConsistencyLevel;
                     serialConsistency = b.SerialConsistencyLevel;
@@ -172,7 +173,7 @@ namespace Cassandra.Tests.Mapping
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns<string>(cql => TestHelper.DelayedTask(GetPrepared(cql)))
+                .Returns<string, CancellationToken>((cql, _) => TestHelper.DelayedTask(GetPrepared(cql)))
                 .Verifiable();
             var mapper = GetMappingClient(sessionMock, new MappingConfiguration()
                 .Define(new Map<Song>().PartitionKey(s => s.Title)));
@@ -211,7 +212,7 @@ namespace Cassandra.Tests.Mapping
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BoundStatement>()))
                 .Returns(TestHelper.DelayedTask(TestDataHelper.CreateMultipleValuesRowSet(new[] { "[applied]" }, new[] { true }).ToAsyncRowSet()))
-                .Callback<IStatement>(stmt =>
+                .Callback<IStatement, CancellationToken>((stmt, _) =>
                 {
                     var b = (BoundStatement)stmt;
                     parameters = b.QueryValues;
@@ -220,7 +221,7 @@ namespace Cassandra.Tests.Mapping
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns<string>(cql => TestHelper.DelayedTask(GetPrepared(cql)))
+                .Returns<string, CancellationToken>((cql, _) => TestHelper.DelayedTask(GetPrepared(cql)))
                 .Verifiable();
             var mapper = GetMappingClient(sessionMock);
             const string partialQuery = "SET title = ?, releasedate = ? WHERE id = ? IF artist = ?";
@@ -247,7 +248,7 @@ namespace Cassandra.Tests.Mapping
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BoundStatement>()))
                 .Returns(TestHelper.DelayedTask(TestDataHelper.CreateMultipleValuesRowSet(new[] { "[applied]", "id", "artist" }, new object[] { false, id, "Jimmy Page" }).ToAsyncRowSet()))
-                .Callback<IStatement>(stmt =>
+                .Callback<IStatement, CancellationToken>((stmt, _) =>
                 {
                     var b = (BoundStatement)stmt;
                     parameters = b.QueryValues;
@@ -256,7 +257,7 @@ namespace Cassandra.Tests.Mapping
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns<string>(cql => TestHelper.DelayedTask(GetPrepared(cql)))
+                .Returns<string, CancellationToken>((cql, _) => TestHelper.DelayedTask(GetPrepared(cql)))
                 .Verifiable();
             var mapper = GetMappingClient(sessionMock);
             const string partialQuery = "SET title = ?, releasedate = ? WHERE id = ? IF artist = ?";
@@ -280,16 +281,16 @@ namespace Cassandra.Tests.Mapping
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BoundStatement>(), It.IsAny<string>()))
                 .Returns(() => TestHelper.DelayedTask(RowSet.Empty()).ToAsyncRowSet())
-                .Callback<IStatement, string>((stmt, profile) => statement = (BoundStatement)stmt)
+                .Callback<IStatement, string, CancellationToken>((stmt, profile, _) => statement = (BoundStatement)stmt)
                 .Verifiable();
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BoundStatement>()))
                 .Returns(() => TestHelper.DelayedTask(RowSet.Empty()).ToAsyncRowSet())
-                .Callback<IStatement>(stmt => statement = (BoundStatement)stmt)
+                .Callback<IStatement, CancellationToken>((stmt, _) => statement = (BoundStatement)stmt)
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns<string>((cql) => TestHelper.DelayedTask(GetPrepared(cql)))
+                .Returns<string, CancellationToken>((cql, _) => TestHelper.DelayedTask(GetPrepared(cql)))
                 .Verifiable();
             var mapper = GetMappingClient(sessionMock);
             var song = new Song { Id = Guid.NewGuid(), Title = "t2", ReleaseDate = DateTimeOffset.Now };

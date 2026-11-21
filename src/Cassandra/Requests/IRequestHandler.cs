@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Generic;
 using System.Net;
+using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Connections;
 using Cassandra.ExecutionProfiles;
@@ -89,7 +90,12 @@ namespace Cassandra.Requests
         /// <exception cref="NoHostAvailableException">If every host from the query plan is unavailable.</exception>
         Task<IConnection> ValidateHostAndGetConnectionAsync(RoutingTarget host, Dictionary<IPEndPoint, Exception> triedHosts);
 
-        Task<RowSet> SendAsync();
+        /// <summary>
+        /// Sends the request, completing the task as cancelled when <paramref name="cancellationToken"/> is cancelled
+        /// first. Cancelling stops the retries and speculative executions, and the executions whose request is not
+        /// written yet, except a keyspace switch.
+        /// </summary>
+        Task<RowSet> SendAsync(CancellationToken cancellationToken);
 
         /// <summary>
         /// Builds the Request to send to a cassandra node based on the statement type

@@ -19,6 +19,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Connections.Control;
 using Cassandra.Data.Linq;
@@ -359,14 +360,14 @@ APPLY BATCH".Replace("\r", ""));
                 .Returns(Task<AsyncRowSet>.Factory.StartNew(() => new RowSet().ToAsyncRowSet()));
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Callback<string>(actualCqlQueries.Add)
+                .Callback<string, CancellationToken>((query, _) => actualCqlQueries.Add(query))
                 .Returns(Task.FromResult(GetPrepared("Mock query")));
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<IStatement>(), It.IsAny<string>()))
                 .Returns(Task<AsyncRowSet>.Factory.StartNew(() => new RowSet().ToAsyncRowSet()));
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Callback<string>(query => actualCqlQueries.Add(query))
+                .Callback<string, CancellationToken>((query, _) => actualCqlQueries.Add(query))
                 .Returns(Task.FromResult(GetPrepared("Mock query")));
 
             //Execute all linq queries

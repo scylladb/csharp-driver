@@ -1246,6 +1246,14 @@ namespace Cassandra.Connections
                     state.InvokeCallback(RequestError.CreateClientError(new SocketException((int)SocketError.NotConnected), true), timestamp);
                     break;
                 }
+                if (!state.TryStartWriting())
+                {
+                    // Cancelled since it was dequeued, for instance by a caller cancelling its request: don't write it
+                    _freeOperations.Push(streamId);
+                    DecrementInFlight();
+                    state.CompleteWithoutWire();
+                    continue;
+                }
                 _pendingOperations.AddOrUpdate(streamId, state, (k, oldValue) => state);
                 var startLength = stream?.Length ?? 0;
                 try

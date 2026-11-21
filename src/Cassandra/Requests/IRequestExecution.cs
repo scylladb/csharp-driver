@@ -21,6 +21,13 @@ namespace Cassandra.Requests
         void Cancel();
 
         /// <summary>
+        /// Stops the execution when its caller cancels the request. Unlike <see cref="Cancel"/>, a request already
+        /// written or switching the keyspace isn't cancelled: its read timeout keeps running, so that the connection
+        /// still detects a node that stops responding, and its response is ignored.
+        /// </summary>
+        void CancelUnsent();
+
+        /// <summary>
         /// Starts a new execution using the current request. Note that an I/O task is scheduled here in a fire and forget manner.
         /// <para/>
         /// In some scenarios, some exceptions are thrown before the scheduling of any I/O task in order to fail fast.

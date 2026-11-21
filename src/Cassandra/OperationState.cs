@@ -36,11 +36,14 @@ namespace Cassandra
     {
         private static readonly Logger Logger = new Logger(typeof(OperationState));
 
-        private readonly IOperationObserver _operationObserver;
         private const int StateInit = 0;
         private const int StateCancelled = 1;
         private const int StateTimedout = 2;
         private const int StateCompleted = 3;
+        private const int WriteStateQueued = 0;
+        private const int WriteStateWriting = 1;
+        private const int WriteStateWithdrawn = 2;
+        private readonly IOperationObserver _operationObserver;
         private Func<IRequestError, Response, long, Task> _callback;
         public static readonly Func<IRequestError, Response, long, Task> Noop = (_, __, ___) => TaskHelper.Completed;
         private volatile bool _timeoutCallbackSet;
@@ -49,6 +52,7 @@ namespace Cassandra
         private Action _cancellationHandler;
         private Action _wireCompletionHandler;
         private int _wireCompleted;
+        private int _writeState = WriteStateQueued;
 
         /// <summary>
         /// See docs for <see cref="IRequest.ResultMetadata"/>.
@@ -100,10 +104,37 @@ namespace Cassandra
             short streamId, MemoryStream memoryStream, ISerializer serializer, bool useMetadataId, long timestamp)
         {
             var frameLength = Request.WriteFrame(streamId, memoryStream, serializer, useMetadataId);
+            Volatile.Write(ref _writeState, WriteStateWriting);
             _operationObserver.OnOperationSend(frameLength, timestamp);
             //We will not use the request any more, stop reference it.
             Request = null;
             return frameLength;
+        }
+
+        /// <summary>
+        /// Claims the operation for the connection's writer, which then writes its frame, unless it was cancelled or
+        /// withdrawn with <see cref="TryCancelUnwritten"/> first.
+        /// </summary>
+        internal bool TryStartWriting()
+        {
+            return Volatile.Read(ref _state) == OperationState.StateInit
+                && Interlocked.CompareExchange(ref _writeState, WriteStateWriting, WriteStateQueued) == WriteStateQueued;
+        }
+
+        /// <summary>
+        /// Cancels the operation unless the connection's writer has claimed it, atomically with
+        /// <see cref="TryStartWriting"/>: either the frame is never written, or it is written and the operation keeps
+        /// its read timeout. Returns false in the second case.
+        /// </summary>
+        internal bool TryCancelUnwritten()
+        {
+            if (Interlocked.CompareExchange(ref _writeState, WriteStateWithdrawn, WriteStateQueued) != WriteStateQueued)
+            {
+                return false;
+            }
+
+            Cancel();
+            return true;
         }
 
         public bool CanBeWritten()

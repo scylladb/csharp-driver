@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Generic;
 using System.Net;
+using System.Threading;
 using System.Threading.Tasks;
 
 using Cassandra.Connections;
@@ -100,6 +101,7 @@ namespace Cassandra.SessionManagement
         /// Executes a statement, returning the rows as a RowSet, shared by the synchronous and asynchronous
         /// execution methods.
         /// </summary>
-        Task<RowSet> ExecuteInternalAsync(IStatement statement, IRequestOptions requestOptions);
+        Task<RowSet> ExecuteInternalAsync(
+            IStatement statement, IRequestOptions requestOptions, CancellationToken cancellationToken);
     }
 }

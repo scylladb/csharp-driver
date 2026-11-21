@@ -16,6 +16,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Metrics;
 
@@ -156,11 +157,18 @@ namespace Cassandra
         /// Executes a query asynchronously
         /// </summary>
         /// <param name="statement">The statement to execute (simple, bound or batch statement)</param>
+        /// <param name="cancellationToken">
+        /// A token to stop the request. Cancelling it stops waiting for the response and stops retries and speculative
+        /// executions; the task is then cancelled. A request already written can't be recalled: the node still runs it,
+        /// and a write may still be applied. The token doesn't apply to the following pages: cancelling the token
+        /// passed to the enumeration or to <see cref="AsyncRowSet.FetchMoreResultsAsync"/> stops waiting for a page,
+        /// but not the page request.
+        /// </param>
         /// <returns>
         /// A task representing the asynchronous operation. Its result is iterated asynchronously, retrieving the
         /// following pages without blocking.
         /// </returns>
-        Task<AsyncRowSet> ExecuteAsync(IStatement statement);
+        Task<AsyncRowSet> ExecuteAsync(IStatement statement, CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Executes a query asynchronously with the provided execution profile.
@@ -168,11 +176,19 @@ namespace Cassandra
         /// </summary>
         /// <param name="statement">The statement to execute (simple, bound or batch statement)</param>
         /// <param name="executionProfileName">ExecutionProfile name to be used while executing the statement.</param>
+        /// <param name="cancellationToken">
+        /// A token to stop the request. Cancelling it stops waiting for the response and stops retries and speculative
+        /// executions; the task is then cancelled. A request already written can't be recalled: the node still runs it,
+        /// and a write may still be applied. The token doesn't apply to the following pages: cancelling the token
+        /// passed to the enumeration or to <see cref="AsyncRowSet.FetchMoreResultsAsync"/> stops waiting for a page,
+        /// but not the page request.
+        /// </param>
         /// <returns>
         /// A task representing the asynchronous operation. Its result is iterated asynchronously, retrieving the
         /// following pages without blocking.
         /// </returns>
-        Task<AsyncRowSet> ExecuteAsync(IStatement statement, string executionProfileName);
+        Task<AsyncRowSet> ExecuteAsync(
+            IStatement statement, string executionProfileName, CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Prepares the provided query string.
@@ -251,6 +267,10 @@ namespace Cassandra
         /// Prepares the provided query string asynchronously.
         /// </summary>
         /// <param name="cqlQuery">cql query to prepare</param>
+        /// <param name="cancellationToken">
+        /// A token to stop waiting for the preparation, cancelling the task. The preparation itself isn't stopped,
+        /// and nodes that prepare the statement keep it.
+        /// </param>
         /// <exception cref="PreparedStatementIdMismatchException">
         /// When different hosts return different IDs for the prepared statement.
         /// </exception>
@@ -261,13 +281,17 @@ namespace Cassandra
         /// Prepared statements are cached per cluster using the query and effective keyspace. Concurrent calls
         /// for the same statement share a single preparation attempt; failed attempts are not cached.
         /// </remarks>
-        Task<PreparedStatement> PrepareAsync(string cqlQuery);
+        Task<PreparedStatement> PrepareAsync(string cqlQuery, CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Prepares the provided query string asynchronously, and sending the custom payload request.
         /// </summary>
         /// <param name="cqlQuery">cql query to prepare</param>
         /// <param name="customPayload">Custom outgoing payload to send with the prepare request</param>
+        /// <param name="cancellationToken">
+        /// A token to stop waiting for the preparation, cancelling the task. The preparation itself isn't stopped,
+        /// and nodes that prepare the statement keep it.
+        /// </param>
         /// <exception cref="PreparedStatementIdMismatchException">
         /// When different hosts return different IDs for the prepared statement.
         /// </exception>
@@ -279,13 +303,18 @@ namespace Cassandra
         /// separate prepare request. Existing server-side-ID tracking for prepare-on-up can still cause the call
         /// to return a previously prepared instance.
         /// </remarks>
-        Task<PreparedStatement> PrepareAsync(string cqlQuery, IDictionary<string, byte[]> customPayload);
+        Task<PreparedStatement> PrepareAsync(
+            string cqlQuery, IDictionary<string, byte[]> customPayload, CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Prepares the query asynchronously on the provided keyspace.
         /// </summary>
         /// <param name="cqlQuery">Cql query to prepare</param>
         /// <param name="keyspace">The keyspace to prepare this query with</param>
+        /// <param name="cancellationToken">
+        /// A token to stop waiting for the preparation, cancelling the task. The preparation itself isn't stopped,
+        /// and nodes that prepare the statement keep it.
+        /// </param>
         /// <exception cref="PreparedStatementIdMismatchException">
         /// When different hosts return different IDs for the prepared statement.
         /// </exception>
@@ -297,7 +326,8 @@ namespace Cassandra
         /// Prepared statements are cached per cluster using the query and effective keyspace. Concurrent calls
         /// for the same statement share a single preparation attempt; failed attempts are not cached.
         /// </remarks>
-        Task<PreparedStatement> PrepareAsync(string cqlQuery, string keyspace);
+        Task<PreparedStatement> PrepareAsync(
+            string cqlQuery, string keyspace, CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Prepares the provided query asynchronously on the provided keyspace, sending the custom payload
@@ -306,6 +336,10 @@ namespace Cassandra
         /// <param name="cqlQuery">Cql query to prepare</param>
         /// <param name="keyspace">The keyspace to prepare this query with</param>
         /// <param name="customPayload">Custom outgoing payload to send with the prepare request</param>
+        /// <param name="cancellationToken">
+        /// A token to stop waiting for the preparation, cancelling the task. The preparation itself isn't stopped,
+        /// and nodes that prepare the statement keep it.
+        /// </param>
         /// <exception cref="PreparedStatementIdMismatchException">
         /// When different hosts return different IDs for the prepared statement.
         /// </exception>
@@ -318,7 +352,11 @@ namespace Cassandra
         /// separate prepare request. Existing server-side-ID tracking for prepare-on-up can still cause the call
         /// to return a previously prepared instance.
         /// </remarks>
-        Task<PreparedStatement> PrepareAsync(string cqlQuery, string keyspace, IDictionary<string, byte[]> customPayload);
+        Task<PreparedStatement> PrepareAsync(
+            string cqlQuery,
+            string keyspace,
+            IDictionary<string, byte[]> customPayload,
+            CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Retrieves the driver metrics for this session.

@@ -46,7 +46,7 @@ namespace Cassandra
     /// </para>
     /// <para>
     /// Iterating a RowSet blocks the calling thread while each following page is retrieved. To iterate without
-    /// blocking, execute the query with <see cref="ISession.ExecuteAsync(IStatement)"/>, which returns an
+    /// blocking, execute the query with <see cref="ISession.ExecuteAsync(IStatement, System.Threading.CancellationToken)"/>, which returns an
     /// <see cref="AsyncRowSet"/>.
     /// </para>
     /// </summary>
