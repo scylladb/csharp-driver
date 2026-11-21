@@ -35,6 +35,25 @@ namespace Cassandra.Tests.Requests
     public class RequestHandlerConnectionTests
     {
         [Test]
+        public async Task GetConnectionFromHostAsync_Should_Propagate_Unrelated_Pool_Lookup_Socket_Failure()
+        {
+            var host = new Host(new IPEndPoint(IPAddress.Loopback, 9042), contactPoint: null);
+            var failure = new SocketException((int)SocketError.NotConnected);
+            var session = new Mock<IInternalSession>();
+            session.Setup(value => value.GetOrCreateConnectionPool(host, HostDistance.Local)).Throws(failure);
+            var triedHosts = new Dictionary<IPEndPoint, Exception>();
+
+            var actual = await Assert.CatchAsync<SocketException>(async () => await RequestHandler.GetConnectionFromHostAsync(
+                    host, HostDistance.Local, session.Object, triedHosts)
+                .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false)).ConfigureAwait(false);
+
+            Assert.IsTrue(host.Registration.IsActive);
+            Assert.AreSame(failure, actual);
+            Assert.IsEmpty(triedHosts);
+            session.Verify(value => value.GetOrCreateConnectionPool(host, HostDistance.Local), Times.Once);
+        }
+
+        [Test]
         public async Task GetConnectionFromHostAsync_Should_Preserve_Shard_Id_On_Socket_Retry()
         {
             const int shardId = 7;

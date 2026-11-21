@@ -81,6 +81,9 @@ namespace Cassandra.Metrics
         /// <code>
         /// Format: &lt;bucket-prefix&gt;.&lt;bucket-name&gt;.&lt;metric-name&gt;
         /// </code>
+        /// If a node bucket name has already been used in the session, a new bucket appends
+        /// <c>.registration-N</c>, where N starts at 2. This keeps cleanup of an earlier registration
+        /// from shutting down metrics for a rediscovered node with the same Host ID.
         /// Here is how the full metric path will look like for <see cref="NodeMetric.Counters.Retries"/> in practice with the AppMetrics provider:
         /// <code>
         /// // Set metric prefix

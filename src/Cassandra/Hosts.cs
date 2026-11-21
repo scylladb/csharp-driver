@@ -180,11 +180,23 @@ namespace Cassandra
                 else
                 {
                     addressChanged = !host.Address.Equals(address);
-                    host.SetInfo(row, advertisedPort);
-                    host.SetEndPoint(address, contactPoint);
+                    lock (host.Registration.SyncRoot)
+                    {
+                        var previousContactPoint = host.ContactPoint;
+                        var previousPort = host.AdvertisedPort;
+                        host.SetInfo(row, advertisedPort);
+                        host.SetEndPoint(address, contactPoint);
+                        if (addressChanged || !Equals(previousContactPoint, host.ContactPoint) ||
+                            previousPort != host.AdvertisedPort)
+                        {
+                            host.Registration.EndPointRevision++;
+                        }
+                    }
                 }
 
-                _unidentified.TryRemove(address, out provisional);
+                _unidentified.TryGetValue(address, out provisional);
+                provisional?.Registration.Retire();
+                _unidentified.TryRemove(address, out _);
                 if (added || addressChanged)
                 {
                     RebuildAddressIndex();
@@ -206,12 +218,18 @@ namespace Cassandra
 
         private void OnHostDown(Host sender)
         {
-            Down?.Invoke(sender);
+            if (sender.Registration.IsActive)
+            {
+                Down?.Invoke(sender);
+            }
         }
 
         private void OnHostUp(Host sender)
         {
-            Up?.Invoke(sender);
+            if (sender.Registration.IsActive)
+            {
+                Up?.Invoke(sender);
+            }
         }
 
         public void RemoveIfExists(IPEndPoint ep)
@@ -232,6 +250,7 @@ namespace Cassandra
                     {
                         return;
                     }
+                    host.Registration.Retire();
                     _unidentified.Remove(host.Address);
                 }
                 else
@@ -240,6 +259,7 @@ namespace Cassandra
                     {
                         return;
                     }
+                    host.Registration.Retire();
                     _hosts.Remove(host.HostId);
                     RebuildAddressIndex();
                 }

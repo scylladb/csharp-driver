@@ -175,6 +175,85 @@ namespace Cassandra.Tests
             }
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_PreserveSessionDisposalFailureWhenRegistrationAlsoRetires(bool duringPoolCreation)
+        {
+            Session disposedSession = null;
+            var factory = new Mock<IHostConnectionPoolFactory>();
+            var config = new TestConfigurationBuilder { HostConnectionPoolFactory = factory.Object }.Build();
+            using var timer = config.Timer;
+            using var metadata = new Metadata(config);
+            var host = AddHost(metadata, new IPEndPoint(IPAddress.Loopback, 9042), Guid.NewGuid());
+            var candidate = new Mock<IHostConnectionPool>();
+            factory.Setup(value => value.Create(
+                    host, config, It.IsAny<ISerializerManager>(), It.IsAny<IObserverFactory>(), It.IsAny<TokenFactory>()))
+                .Callback(() =>
+                {
+                    disposedSession.Dispose();
+                    metadata.RemoveHost(host);
+                })
+                .Returns(candidate.Object);
+            var cluster = new Mock<IInternalCluster>();
+            cluster.Setup(value => value.AllHosts()).Returns(new[] { host });
+            cluster.Setup(value => value.RetrieveAndSetDistance(host)).Returns(HostDistance.Local);
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "disposed-retirement");
+            disposedSession = session;
+            if (!duringPoolCreation)
+            {
+                session.Dispose();
+                metadata.RemoveHost(host);
+            }
+
+            var failure = await Assert.CatchAsync<SocketException>(async () =>
+                await ((IInternalSession)session).Init().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false)).ConfigureAwait(false);
+            Assert.AreEqual(typeof(SocketException), failure.GetType());
+            Assert.IsTrue(session.IsDisposed);
+            Assert.IsFalse(host.Registration.IsActive);
+            candidate.Verify(value => value.Dispose(), duringPoolCreation ? Times.Once() : Times.Never());
+        }
+
+        [Test]
+        public async Task Should_ContinueWarmup_WhenRegistrationRetiresDuringPoolCreation()
+        {
+            var factory = new Mock<IHostConnectionPoolFactory>();
+            var config = new TestConfigurationBuilder { HostConnectionPoolFactory = factory.Object }.Build();
+            using var timer = config.Timer;
+            using var metadata = new Metadata(config);
+            var retired = AddHost(metadata, new IPEndPoint(IPAddress.Loopback, 9042), Guid.NewGuid());
+            var current = AddHost(metadata, new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042), Guid.NewGuid());
+            var oldPool = new Mock<IHostConnectionPool>();
+            var currentPool = new Mock<IHostConnectionPool>();
+            currentPool.Setup(value => value.Warmup()).Returns(Task.CompletedTask);
+            factory.Setup(value => value.Create(
+                    retired,
+                    config,
+                    It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(),
+                    It.IsAny<TokenFactory>()))
+                .Callback(() => metadata.RemoveHost(retired))
+                .Returns(oldPool.Object);
+            factory.Setup(value => value.Create(
+                    current,
+                    config,
+                    It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(),
+                    It.IsAny<TokenFactory>()))
+                .Returns(currentPool.Object);
+            var cluster = new Mock<IInternalCluster>();
+            cluster.Setup(value => value.AllHosts()).Returns(new[] { retired, current });
+            cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
+            cluster.SetupGet(value => value.Metadata).Returns(metadata);
+            using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "warmup-retirement");
+
+            await ((IInternalSession)session).Init().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            oldPool.Verify(value => value.Dispose(), Times.Once);
+            oldPool.Verify(value => value.Warmup(), Times.Never);
+            currentPool.Verify(value => value.Warmup(), Times.Once);
+        }
+
         [Test]
         public async Task Should_PropagateSynchronousFatalPoolWarmupException()
         {
@@ -231,30 +310,63 @@ namespace Cassandra.Tests
             }
         }
 
-        [Test]
-        public async Task Should_PropagatePoolFactoryNotConnectedExceptionDuringWarmup()
+        [TestCase(false, false)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public async Task Should_PropagatePoolFactoryNotConnectedExceptionDuringWarmup(
+            bool retireDuringFailure, bool rejectOtherRegistration)
         {
             var failure = new SocketException((int)SocketError.NotConnected);
             var poolFactory = new Mock<IHostConnectionPoolFactory>();
-            poolFactory.Setup(value => value.Create(
-                           It.IsAny<Host>(),
-                           It.IsAny<Configuration>(),
-                           It.IsAny<ISerializerManager>(),
-                           It.IsAny<IObserverFactory>(),
-                           It.IsAny<TokenFactory>()))
-                       .Throws(failure);
             var config = new TestConfigurationBuilder
             {
                 HostConnectionPoolFactory = poolFactory.Object
             }.Build();
-
-            using (var session = CreateWarmupSession(config, "factory-not-connected-test"))
+            using var timer = config.Timer;
+            using var session = CreateWarmupSession(config, "factory-not-connected-test");
+            var owner = (IInternalSession)session;
+            var metadata = owner.InternalCluster.Metadata;
+            var failingHost = AddHost(metadata, new IPEndPoint(IPAddress.Parse("127.0.0.11"), 9042));
+            AddHost(metadata, new IPEndPoint(IPAddress.Parse("127.0.0.12"), 9042));
+            Host otherRetired = null;
+            if (rejectOtherRegistration)
             {
-                var ex = await Assert.ThrowsAsync<SocketException>(async () =>
-                    await ((IInternalSession)session).Init().ConfigureAwait(false)).ConfigureAwait(false);
-
-                Assert.AreSame(failure, ex);
+                otherRetired = AddHost(metadata, new IPEndPoint(IPAddress.Parse("127.0.0.13"), 9042));
+                metadata.RemoveHost(otherRetired);
             }
+
+            var healthyPool = new Mock<IHostConnectionPool>();
+            healthyPool.Setup(value => value.Warmup()).Returns(Task.CompletedTask);
+            poolFactory.Setup(value => value.Create(
+                    It.IsAny<Host>(),
+                    It.IsAny<Configuration>(),
+                    It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(),
+                    It.IsAny<TokenFactory>()))
+                .Returns((Host host, Configuration _, ISerializerManager _, IObserverFactory _, TokenFactory _) =>
+                {
+                    if (!ReferenceEquals(host, failingHost))
+                    {
+                        return healthyPool.Object;
+                    }
+
+                    if (retireDuringFailure)
+                    {
+                        metadata.RemoveHost(host);
+                    }
+
+                    if (rejectOtherRegistration)
+                    {
+                        failure = Assert.Catch<SocketException>(
+                            () => owner.GetOrCreateConnectionPool(otherRetired, HostDistance.Local));
+                    }
+
+                    throw failure;
+                });
+            var ex = await Assert.CatchAsync<SocketException>(
+                async () => await owner.Init().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false)).ConfigureAwait(false);
+            Assert.AreSame(failure, ex);
+            healthyPool.Verify(value => value.Warmup(), Times.Once);
         }
 
         [TestCase(false)]
