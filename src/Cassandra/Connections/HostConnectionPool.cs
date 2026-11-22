@@ -44,10 +44,11 @@ namespace Cassandra.Connections
         /// Possible state transitions:
         ///  - From Init to Closing: The pool must be closed because the host is ignored or because the pool should
         ///    not attempt more reconnections (another pool is trying to reconnect to a UP host).
-        ///  - From Init to ShuttingDown: The pool is being shutdown as a result of a client shutdown.
+        ///  - From Init or Closing to Retired: The host is removed; detached connections keep draining.
+        ///  - From Init, Closing or Retired to ShuttingDown: Dispose releases pool ownership,
+        ///    including after host removal. Previously detached connections keep their drain deadline.
         ///  - From Closing to Init: The pool finished closing connections (is now ignored) and it resets to
         ///    initial state in case the host is marked as local/remote in the future.
-        ///  - From Closing to ShuttingDown (rare): It was marked as ignored, now the client is being shutdown.
         ///  - From ShuttingDown to Shutdown: Finished shutting down, the pool should not be reused.
         /// </summary>
         private static class PoolState
@@ -68,6 +69,11 @@ namespace Cassandra.Connections
             /// When the pool has being shutdown
             /// </summary>
             public const int Shutdown = 3;
+
+            /// <summary>
+            /// The host registration has retired; existing requests may still be draining.
+            /// </summary>
+            public const int Retired = 4;
         }
 
         private readonly Configuration _config;
@@ -75,6 +81,8 @@ namespace Cassandra.Connections
         private readonly IObserverFactory _observerFactory;
         private readonly CopyOnWriteShardedList<IConnection> _connections = new CopyOnWriteShardedList<IConnection>();
         private readonly Lock _connectionHandoffLock = new Lock();
+        private readonly Queue<(NodeStatus Status, Action<NodeStatus> Subscribers)> _statusNotifications =
+            new Queue<(NodeStatus, Action<NodeStatus>)>();
         private volatile HostDistance _distance;
         private readonly HashedWheelTimer _timer;
         private readonly SemaphoreSlim _allConnectionClosedEventLock = new SemaphoreSlim(1, 1);
@@ -92,6 +100,8 @@ namespace Cassandra.Connections
         private int _connectionIndex;
         private readonly int _maxRequestsPerConnection;
         private readonly PoolingOptions _poolingOptions;
+        private NodeStatus _status = new NodeStatus(NodeConnectivity.Initializing, PoolLifecycle.Running, 0, 0);
+        private bool _publishingStatus;
 
         private sealed class ConnectionAttemptFailure
         {
@@ -104,6 +114,10 @@ namespace Cassandra.Connections
         }
 
         public event Action<Host, HostConnectionPool> AllConnectionClosed;
+
+        public event Action<NodeStatus> StatusChanged;
+
+        public NodeStatus Status => Volatile.Read(ref _status);
 
         /// <inheritdoc />
         public bool HasConnections => _connections.Count > 0;
@@ -306,21 +320,19 @@ namespace Cassandra.Connections
         /// </summary>
         public void Dispose()
         {
-            var markShuttingDown =
-                (Interlocked.CompareExchange(ref _state, PoolState.ShuttingDown, PoolState.Init) == PoolState.Init) ||
-                (Interlocked.CompareExchange(ref _state, PoolState.ShuttingDown, PoolState.Closing) ==
-                    PoolState.Closing);
-            if (!markShuttingDown)
-            {
-                // The pool is already being shutdown, never mind
-                return;
-            }
-            HostConnectionPool.Logger.Info("Disposing connection pool #{0} to {1}", GetHashCode(), _host.Address);
             ShardedList<IConnection> connections;
             lock (_connectionHandoffLock)
             {
+                if (_state == PoolState.ShuttingDown || _state == PoolState.Shutdown)
+                {
+                    return;
+                }
+
+                Interlocked.Exchange(ref _state, PoolState.ShuttingDown);
                 connections = _connections.ClearAndGet();
+                UpdateStatus();
             }
+            HostConnectionPool.Logger.Info("Disposing connection pool #{0} to {1}", GetHashCode(), _host.Address);
             foreach (var c in connections)
             {
                 c.Dispose();
@@ -452,6 +464,7 @@ namespace Cassandra.Connections
                             lock (_connectionHandoffLock)
                             {
                                 _connections.Remove(c);
+                                UpdateStatus();
                             }
                             if (!c.IsDisposed)
                             {
@@ -520,31 +533,35 @@ namespace Cassandra.Connections
             ConnectionCandidateHandoff handoff,
             out int connectionCount)
         {
-            var currentConnectionCount = 0;
-            var transferred = handoff.TryTransfer(
-                _connectionHandoffLock,
-                connection => connection.Closing += OnConnectionClosing,
-                connection =>
-                {
-                    currentConnectionCount = _connections.Count;
-                    // Recheck under the pool lock immediately before publication. The handoff
-                    // performs another check afterwards and rolls the add back if close wins there.
-                    if (IsClosing || handoff.IsUnavailable)
+            lock (_connectionHandoffLock)
+            {
+                var currentConnectionCount = 0;
+                var transferred = handoff.TryTransfer(
+                    _connectionHandoffLock,
+                    connection => connection.Closing += OnConnectionClosing,
+                    connection =>
                     {
-                        return false;
-                    }
+                        currentConnectionCount = _connections.Count;
+                        // Recheck under the pool lock immediately before publication. The handoff
+                        // performs another check afterwards and rolls the add back if close wins there.
+                        if (IsClosing || handoff.IsUnavailable)
+                        {
+                            return false;
+                        }
 
-                    currentConnectionCount = _connections.AddNew(connection);
-                    return true;
-                },
-                connection =>
-                {
-                    connection.Closing -= OnConnectionClosing;
-                    _connections.Remove(connection);
-                    currentConnectionCount = _connections.Count;
-                });
-            connectionCount = currentConnectionCount;
-            return transferred;
+                        currentConnectionCount = _connections.AddNew(connection);
+                        return true;
+                    },
+                    connection =>
+                    {
+                        connection.Closing -= OnConnectionClosing;
+                        _connections.Remove(connection);
+                        currentConnectionCount = _connections.Count;
+                    });
+                connectionCount = currentConnectionCount;
+                UpdateStatus();
+                return transferred;
+            }
         }
 
         private bool TryAddConnectionToPool(
@@ -563,6 +580,7 @@ namespace Cassandra.Connections
                     {
                         _connections.Remove(connection);
                         connectionCount = _connections.Count;
+                        UpdateStatus();
                     }
                     return false;
                 }
@@ -577,6 +595,7 @@ namespace Cassandra.Connections
                     }
 
                     connectionCount = _connections.AddNew(connection);
+                    UpdateStatus();
                     return true;
                 }
 
@@ -591,16 +610,11 @@ namespace Cassandra.Connections
 
         public void OnHostRemoved()
         {
-            var previousState = Interlocked.Exchange(ref _state, PoolState.ShuttingDown);
-            if (previousState == PoolState.Shutdown)
+            if (!DrainConnections(PoolState.Retired, null))
             {
-                // It was already shutdown
-                Interlocked.Exchange(ref _state, PoolState.Shutdown);
                 return;
             }
             HostConnectionPool.Logger.Info("Host decommissioned. Closing pool #{0} to {1}", GetHashCode(), _host.Address);
-
-            DrainConnections(() => Interlocked.Exchange(ref _state, PoolState.Shutdown));
 
             CancelNewConnectionTimeout();
             var t = _resizingEndTimeout;
@@ -678,6 +692,7 @@ namespace Cassandra.Connections
                 lock (_connectionHandoffLock)
                 {
                     removalInfo = _connections.RemoveAndCount(c);
+                    UpdateStatus();
                 }
                 currentLength = removalInfo.Item2;
                 var removed = removalInfo.Item1;
@@ -741,45 +756,58 @@ namespace Cassandra.Connections
             {
                 return;
             }
+
+            // Cancel the old retry before draining can schedule a new retry for a local host.
+            CancelNewConnectionTimeout();
+
             // Host is now ignored
-            var isClosing = Interlocked.CompareExchange(ref _state, PoolState.Closing, PoolState.Init) ==
-                PoolState.Init;
-            if (!isClosing)
+            if (!DrainConnections(PoolState.Closing, () =>
             {
-                // Is already shutting down or shutdown, don't mind
-                return;
-            }
-            HostConnectionPool.Logger.Info("Host ignored. Closing pool #{0} to {1}", GetHashCode(), _host.Address);
-            DrainConnections(() =>
-            {
-                // A host can become local again while the old connections are draining.
-                // The immediate reconnect is skipped while the pool is Closing, so retry
-                // once the pool can accept connections again.
-                if (Interlocked.CompareExchange(ref _state, PoolState.Init, PoolState.Closing) ==
-                    PoolState.Closing && _distance != HostDistance.Ignored)
+                // A host may become local while its previous connections are draining.
+                bool reconnect;
+                lock (_connectionHandoffLock)
+                {
+                    reconnect = Interlocked.CompareExchange(ref _state, PoolState.Init, PoolState.Closing) ==
+                        PoolState.Closing && _distance != HostDistance.Ignored;
+                    UpdateStatus();
+                }
+
+                if (reconnect)
                 {
                     ScheduleReconnection(true);
                 }
-            });
-            CancelNewConnectionTimeout();
+            }))
+            {
+                return;
+            }
+
+            HostConnectionPool.Logger.Info("Host ignored. Closing pool #{0} to {1}", GetHashCode(), _host.Address);
         }
 
         /// <summary>
         /// Removes the connections from the pool and defers the closing of the connections until twice the
         /// readTimeout. The connection might be already selected and sending requests.
         /// </summary>
-        private void DrainConnections(Action afterDrainHandler)
+        private bool DrainConnections(int state, Action afterDrainHandler)
         {
             ShardedList<IConnection> connections;
             lock (_connectionHandoffLock)
             {
+                if (_state == PoolState.Shutdown || _state == PoolState.ShuttingDown || _state == PoolState.Retired ||
+                    (state == PoolState.Closing && _state != PoolState.Init))
+                {
+                    return false;
+                }
+
+                Interlocked.Exchange(ref _state, state);
                 connections = _connections.ClearAndGet();
+                UpdateStatus();
             }
             if (connections.Length == 0)
             {
                 HostConnectionPool.Logger.Info("Pool #{0} to {1} had no connections", GetHashCode(), _host.Address);
                 afterDrainHandler?.Invoke();
-                return;
+                return true;
             }
             // The request handler might execute up to 2 queries with a single connection:
             // Changing the keyspace + the actual query
@@ -791,6 +819,7 @@ namespace Cassandra.Connections
                 delay = maxDelay;
             }
             DrainConnectionsTimer(connections, afterDrainHandler, delay / 1000);
+            return true;
         }
 
         private void DrainConnectionsTimer(ShardedList<IConnection> connections, Action afterDrainHandler, int steps)
@@ -992,7 +1021,12 @@ namespace Cassandra.Connections
             {
                 if (connectionsSnapshot.Length == 0)
                 {
-                    // Avoid race condition while removing
+                    // A zero-sized pool has completed initialization without a usable connection.
+                    lock (_connectionHandoffLock)
+                    {
+                        UpdateStatus(initializationCompleted: true);
+                    }
+
                     return await FinishOpen(tcs, false, HostConnectionPool.GetNotConnectedException()).ConfigureAwait(false);
                 }
                 return await FinishOpen(tcs, true, null, connectionsSnapshot[0]).ConfigureAwait(false);
@@ -1057,12 +1091,22 @@ namespace Cassandra.Connections
             }
             catch (Exception ex)
             {
+                lock (_connectionHandoffLock)
+                {
+                    UpdateStatus(initializationCompleted: true);
+                }
+
                 HostConnectionPool.Logger.Info("Connection to {0} could not be created: {1}", _host.Address, ex);
                 return await FinishOpen(tcs, true, ex).ConfigureAwait(false);
             }
 
             if (!TryAddConnectionToPool(c, !addedDuringOpen, out newLength))
             {
+                lock (_connectionHandoffLock)
+                {
+                    UpdateStatus(initializationCompleted: true);
+                }
+
                 HostConnectionPool.Logger.Info(
                     "Connection to {0} opened successfully but could not be added to pool #{1}",
                     _host.Address,
@@ -1396,6 +1440,105 @@ namespace Cassandra.Connections
             HostConnectionPool.Logger.Warning("Connection to {0} considered as unhealthy after {1} timed out operations",
                 address, timedOutOperations);
             return true;
+        }
+
+        // The caller holds _connectionHandoffLock. Connection admission, rollback, removal and
+        // lifecycle changes therefore share one observation boundary, with no independent state machine.
+        private void UpdateStatus(bool initializationCompleted = false)
+        {
+            var lifecycle = _state switch
+            {
+                PoolState.Init => PoolLifecycle.Running,
+                PoolState.Closing => PoolLifecycle.Draining,
+                PoolState.Retired => PoolLifecycle.Retired,
+                _ => PoolLifecycle.Disposed
+            };
+            var count = _connections.Count;
+            var previous = _status;
+            var connectivity = count > 0
+                ? NodeConnectivity.Connected
+                : previous.Connectivity == NodeConnectivity.Initializing && !initializationCompleted &&
+                  lifecycle == PoolLifecycle.Running
+                    ? NodeConnectivity.Initializing
+                    : NodeConnectivity.Disconnected;
+            if (previous.Connectivity == connectivity && previous.Lifecycle == lifecycle &&
+                previous.AvailableConnections == count)
+            {
+                return;
+            }
+
+            var status = new NodeStatus(connectivity, lifecycle, count, previous.Revision + 1);
+            Volatile.Write(ref _status, status);
+            var subscribers = StatusChanged;
+            if (subscribers == null)
+            {
+                return;
+            }
+
+            _statusNotifications.Enqueue((status, subscribers));
+            StartPublishingStatusChanges();
+        }
+
+        // The caller holds _connectionHandoffLock.
+        private void StartPublishingStatusChanges()
+        {
+            if (_publishingStatus || _statusNotifications.Count == 0)
+            {
+                return;
+            }
+
+            _publishingStatus = true;
+
+            // Asynchronous delivery also covers reentrant Closing callbacks during handoff.
+            // The dispatcher takes the ownership lock before releasing each queued observation.
+            Task.Run(PublishStatusChanges).Forget();
+        }
+
+        private void PublishStatusChanges()
+        {
+            try
+            {
+                while (true)
+                {
+                    (NodeStatus Status, Action<NodeStatus> Subscribers) notification;
+                    lock (_connectionHandoffLock)
+                    {
+                        if (_statusNotifications.Count == 0)
+                        {
+                            return;
+                        }
+
+                        notification = _statusNotifications.Dequeue();
+                    }
+
+                    foreach (Action<NodeStatus> subscriber in notification.Subscribers.GetInvocationList())
+                    {
+                        try
+                        {
+                            subscriber(notification.Status);
+                        }
+                        catch (Exception ex) when (!Utils.IsFatalException(ex))
+                        {
+                            try
+                            {
+                                Logger.Warning("Pool status subscriber failed: {0}", ex);
+                            }
+                            catch (Exception loggingException) when (!Utils.IsFatalException(loggingException))
+                            {
+                                // Diagnostic sink failures must not prevent later subscribers or revisions.
+                            }
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                lock (_connectionHandoffLock)
+                {
+                    _publishingStatus = false;
+                    StartPublishingStatusChanges();
+                }
+            }
         }
     }
 }

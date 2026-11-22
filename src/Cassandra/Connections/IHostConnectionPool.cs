@@ -25,6 +25,12 @@ namespace Cassandra.Connections
     internal interface IHostConnectionPool : IDisposable
     {
         /// <summary>
+        /// Observes committed transitions in revision order, outside pool ownership locks.
+        /// The snapshot can precede the current Status; consumers must order observations by revision.
+        /// </summary>
+        event Action<NodeStatus> StatusChanged;
+
+        /// <summary>
         /// Gets the total amount of open connections.
         /// </summary>
         int OpenConnections { get; }
@@ -40,6 +46,11 @@ namespace Cassandra.Connections
         bool HasConnections { get; }
 
         event Action<Host, HostConnectionPool> AllConnectionClosed;
+
+        /// <summary>
+        /// Gets the immutable availability snapshot owned by this pool.
+        /// </summary>
+        NodeStatus Status { get; }
 
         /// <summary>
         /// Gets a snapshot of the current state of the pool.

@@ -37,6 +37,68 @@ namespace Cassandra.Tests
     [TestFixture]
     public class SessionTests
     {
+        [Test]
+        public async Task StatusInspection_Should_DistinguishMissingInitializingAndDisconnectedPools()
+        {
+            var connection = new Mock<IConnection>();
+            connection.SetupGet(value => value.ShardID).Returns(-1);
+            connection.Setup(value => value.Open()).ThrowsAsync(new SocketException((int)SocketError.ConnectionRefused));
+            var resolver = new Mock<IEndPointResolver>();
+            resolver.Setup(value => value.GetConnectionEndPointsAsync(It.IsAny<Host>(), It.IsAny<bool>()))
+                .ReturnsAsync(new IConnectionEndPoint[] { new FakeConnectionEndPoint("127.0.0.1", 9042) });
+            var factory = new Mock<IHostConnectionPoolFactory>(MockBehavior.Strict);
+            factory.Setup(value => value.Create(
+                    It.IsAny<Host>(),
+                    It.IsAny<Configuration>(),
+                    It.IsAny<ISerializerManager>(),
+                    It.IsAny<IObserverFactory>(),
+                    It.IsAny<TokenFactory>()))
+                .Returns((
+                    Host host,
+                    Configuration configuration,
+                    ISerializerManager serializers,
+                    IObserverFactory observers,
+                    TokenFactory tokens) =>
+                    new HostConnectionPool(host, configuration, serializers, observers, tokens));
+            var config = new TestConfigurationBuilder
+            {
+                HostConnectionPoolFactory = factory.Object,
+                EndPointResolver = resolver.Object,
+                ConnectionFactory = new FakeConnectionFactory((IConnectionEndPoint _) => connection.Object)
+            }.Build();
+            var cluster = new Mock<IInternalCluster>();
+            cluster.SetupGet(value => value.Metadata).Returns(new Metadata(config));
+            using var timer = config.Timer;
+            using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "status-inspection");
+            var present = new Host(new IPEndPoint(IPAddress.Loopback, 9042), contactPoint: null);
+            var missing = new Host(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 9042), contactPoint: null);
+            var internalSession = (IInternalSession)session;
+            var pool = internalSession.GetOrCreateConnectionPool(present, HostDistance.Local);
+            factory.Verify(
+                value => value.Create(
+                    present,
+                    config,
+                    SerializerManager.Default,
+                    It.IsAny<IObserverFactory>(),
+                    It.IsAny<TokenFactory>()),
+                Times.Once);
+            factory.Invocations.Clear();
+
+            var initializing = internalSession.GetExistingPool(present)?.Status;
+            Assert.IsNotNull(initializing);
+            Assert.AreEqual(NodeConnectivity.Initializing, initializing.Connectivity);
+            Assert.IsNull(internalSession.GetExistingPool(missing)?.Status);
+
+            await Assert.ThrowsAsync<SocketException>(() => pool.Warmup().WaitAsync(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
+
+            var disconnected = internalSession.GetExistingPool(present)?.Status;
+            Assert.IsNotNull(disconnected);
+            Assert.AreEqual(NodeConnectivity.Disconnected, disconnected.Connectivity);
+            Assert.IsNull(internalSession.GetExistingPool(missing)?.Status);
+            Assert.AreEqual(1, System.Linq.Enumerable.Count(internalSession.GetPools()));
+            factory.VerifyNoOtherCalls();
+        }
+
         [TestCase(false, false)]
         [TestCase(false, true)]
         [TestCase(true, false)]
