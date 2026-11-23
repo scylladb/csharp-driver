@@ -15,6 +15,7 @@
 //
 using System;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Mapping;
 using Cassandra.Tests.Mapping.Pocos;
@@ -47,12 +48,12 @@ namespace Cassandra.Tests.Mapping
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BatchStatement>()))
                 .Returns(() => getRowSetFunc().ToAsyncRowSet())
-                .Callback<IStatement>(stmt => statementCallback((BatchStatement)stmt))
+                .Callback<IStatement, CancellationToken>((stmt, _) => statementCallback((BatchStatement)stmt))
                 .Verifiable();
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BatchStatement>(), It.IsAny<string>()))
                 .Returns(() => getRowSetFunc().ToAsyncRowSet())
-                .Callback<IStatement, string>((stmt, profile) => statementCallback((BatchStatement)stmt))
+                .Callback<IStatement, string, CancellationToken>((stmt, profile, _) => statementCallback((BatchStatement)stmt))
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
@@ -76,12 +77,12 @@ namespace Cassandra.Tests.Mapping
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BatchStatement>()))
                 .Returns(() => getRowSetFunc().ToAsyncRowSet())
-                .Callback<IStatement>(stmt => statementCallback((BatchStatement)stmt))
+                .Callback<IStatement, CancellationToken>((stmt, _) => statementCallback((BatchStatement)stmt))
                 .Verifiable();
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<IStatement>(), It.IsAny<string>()))
                 .Returns(() => getRowSetFunc().ToAsyncRowSet())
-                .Callback<IStatement, string>((stmt, ep) => statementCallback((BatchStatement)stmt))
+                .Callback<IStatement, string, CancellationToken>((stmt, ep, _) => statementCallback((BatchStatement)stmt))
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))

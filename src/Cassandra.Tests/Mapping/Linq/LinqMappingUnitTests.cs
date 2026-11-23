@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Data.Linq;
 using Cassandra.Mapping;
@@ -149,12 +150,12 @@ namespace Cassandra.Tests.Mapping.Linq
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BoundStatement>()))
                 .Returns(TestHelper.DelayedTask(rs.ToAsyncRowSet()))
-                .Callback<IStatement>(s => stmt = (BoundStatement)s)
+                .Callback<IStatement, CancellationToken>((s, _) => stmt = (BoundStatement)s)
                 .Verifiable();
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BoundStatement>(), It.IsAny<string>()))
                 .Returns(TestHelper.DelayedTask(rs.ToAsyncRowSet()))
-                .Callback<IStatement, string>((s, profile) => stmt = (BoundStatement)s)
+                .Callback<IStatement, string, CancellationToken>((s, profile, _) => stmt = (BoundStatement)s)
                 .Verifiable();
             sessionMock.Setup(s => s.PrepareAsync(It.IsAny<string>())).Returns(Task.FromResult(GetPrepared("Mock query")));
             sessionMock.Setup(s => s.BinaryProtocolVersion).Returns(2);

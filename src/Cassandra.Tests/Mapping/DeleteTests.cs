@@ -15,6 +15,7 @@
 //
 
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Mapping;
 using Cassandra.Tests.Mapping.Pocos;
@@ -97,20 +98,20 @@ namespace Cassandra.Tests.Mapping
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BoundStatement>()))
                 .Returns(() => TestHelper.DelayedTask(RowSet.Empty()).ToAsyncRowSet())
-                .Callback<IStatement>(stmt => statement = (BoundStatement)stmt)
+                .Callback<IStatement, CancellationToken>((stmt, _) => statement = (BoundStatement)stmt)
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns<string>(query => Task.FromResult(GetPrepared(query)))
+                .Returns<string, CancellationToken>((query, _) => Task.FromResult(GetPrepared(query)))
                 .Verifiable();
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BoundStatement>(), It.IsAny<string>()))
                 .Returns(() => TestHelper.DelayedTask(RowSet.Empty()).ToAsyncRowSet())
-                .Callback<IStatement, string>((stmt, profile) => statement = (BoundStatement)stmt)
+                .Callback<IStatement, string, CancellationToken>((stmt, profile, _) => statement = (BoundStatement)stmt)
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns<string>(query => Task.FromResult(GetPrepared(query)))
+                .Returns<string, CancellationToken>((query, _) => Task.FromResult(GetPrepared(query)))
                 .Verifiable();
             var mapper = GetMappingClient(sessionMock);
             var song = new Song { Id = Guid.NewGuid(), Title = "t2", ReleaseDate = DateTimeOffset.Now };

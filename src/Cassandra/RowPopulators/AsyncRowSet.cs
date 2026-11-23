@@ -25,7 +25,7 @@ using System.Threading.Tasks;
 namespace Cassandra
 {
     /// <summary>
-    /// Represents the result of a query executed with <see cref="ISession.ExecuteAsync(IStatement)"/>. Its rows are
+    /// Represents the result of a query executed with <see cref="ISession.ExecuteAsync(IStatement, System.Threading.CancellationToken)"/>. Its rows are
     /// iterated asynchronously, using the asynchronous <c>foreach</c> statement or the operators of
     /// <c>System.Linq.AsyncEnumerable</c>, which retrieve the following pages without blocking the calling thread.
     /// <para>

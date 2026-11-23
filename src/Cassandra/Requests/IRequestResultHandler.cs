@@ -15,6 +15,7 @@
 //
 
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Cassandra.Requests
@@ -28,6 +29,12 @@ namespace Cassandra.Requests
         Task TrySetResultAsync(RowSet result, SessionRequestInfo sessionRequestInfo);
 
         Task TrySetExceptionAsync(Exception exception, SessionRequestInfo sessionRequestInfo);
+
+        /// <summary>
+        /// Completes the task as cancelled with the caller's token, unless it is already complete. The task is
+        /// completed even when a request observer throws.
+        /// </summary>
+        Task TrySetCanceledAsync(CancellationToken cancellationToken, SessionRequestInfo sessionRequestInfo);
 
         Task<RowSet> Task { get; }
     }

@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Mapping;
 using Cassandra.Metrics.Internal;
@@ -221,7 +222,7 @@ namespace Cassandra.Tests.Mapping
             sessionMock.Setup(s => s.Keyspace).Returns<string>(null);
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BoundStatement>()))
-                .Callback<IStatement>(s => stmt = (BoundStatement)s)
+                .Callback<IStatement, CancellationToken>((s, _) => stmt = (BoundStatement)s)
                 .Returns(() => TestHelper.DelayedTask(rs).ToAsyncRowSet())
                 .Verifiable();
             sessionMock
@@ -251,7 +252,7 @@ namespace Cassandra.Tests.Mapping
             sessionMock.Setup(s => s.Keyspace).Returns<string>(null);
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BoundStatement>()))
-                .Callback<IStatement>(s => stmt = (BoundStatement)s)
+                .Callback<IStatement, CancellationToken>((s, _) => stmt = (BoundStatement)s)
                 .Returns(() => TestHelper.DelayedTask(rs, 50).ToAsyncRowSet())
                 .Verifiable();
             sessionMock
@@ -296,7 +297,7 @@ namespace Cassandra.Tests.Mapping
             sessionMock.Setup(s => s.Keyspace).Returns<string>(null);
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BoundStatement>()))
-                .Callback<IStatement>(b =>
+                .Callback<IStatement, CancellationToken>((b, _) =>
                 {
                     consistency = b.ConsistencyLevel;
                     serialConsistency = b.SerialConsistencyLevel;

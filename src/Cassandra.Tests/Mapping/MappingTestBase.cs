@@ -15,6 +15,7 @@
 //
 
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Data.Linq;
 using Cassandra.Mapping;
@@ -66,16 +67,16 @@ namespace Cassandra.Tests.Mapping
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BoundStatement>()))
                 .Returns(() => getRowSetFunc().ToAsyncRowSet())
-                .Callback<IStatement>(stmt => { var s = (BoundStatement)stmt; queryCallback(s.PreparedStatement.Cql, s.QueryValues); })
+                .Callback<IStatement, CancellationToken>((stmt, _) => { var s = (BoundStatement)stmt; queryCallback(s.PreparedStatement.Cql, s.QueryValues); })
                 .Verifiable();
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<BoundStatement>(), It.IsAny<string>()))
                 .Returns(() => getRowSetFunc().ToAsyncRowSet())
-                .Callback<IStatement, string>((stmt, profile) => { var s = (BoundStatement)stmt; queryCallback(s.PreparedStatement.Cql, s.QueryValues); })
+                .Callback<IStatement, string, CancellationToken>((stmt, profile, _) => { var s = (BoundStatement)stmt; queryCallback(s.PreparedStatement.Cql, s.QueryValues); })
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns<string>(q => Task.FromResult(GetPrepared(q)))
+                .Returns<string, CancellationToken>((q, _) => Task.FromResult(GetPrepared(q)))
                 .Verifiable();
             return new MapperAndSessionTuple
             {
@@ -116,22 +117,22 @@ namespace Cassandra.Tests.Mapping
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<IStatement>()))
                 .Returns(() => Task.FromResult(rs).ToAsyncRowSet())
-                .Callback<IStatement>(stmt => callback((TStatement)stmt))
+                .Callback<IStatement, CancellationToken>((stmt, _) => callback((TStatement)stmt))
                 .Verifiable();
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<IStatement>(), It.IsAny<string>()))
                 .Returns(() => Task.FromResult(rs).ToAsyncRowSet())
-                .Callback<IStatement, string>(
-                    (stmt, execProfile) =>
+                .Callback<IStatement, string, CancellationToken>(
+                    (stmt, execProfile, _) =>
                         callback((TStatement)stmt))
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns<string>(query => Task.FromResult(GetPrepared(query)))
+                .Returns<string, CancellationToken>((query, _) => Task.FromResult(GetPrepared(query)))
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns<string>(query => Task.FromResult(GetPrepared(query)))
+                .Returns<string, CancellationToken>((query, _) => Task.FromResult(GetPrepared(query)))
                 .Verifiable();
             sessionMock
                 .Setup(s => s.BinaryProtocolVersion)
@@ -177,7 +178,7 @@ namespace Cassandra.Tests.Mapping
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns<string>(query => Task.FromResult(GetPrepared(query)))
+                .Returns<string, CancellationToken>((query, _) => Task.FromResult(GetPrepared(query)))
                 .Verifiable();
             sessionMock
                 .Setup(s => s.ExecuteAsync(It.IsAny<IStatement>(), It.IsAny<string>()))
@@ -185,7 +186,7 @@ namespace Cassandra.Tests.Mapping
                 .Verifiable();
             sessionMock
                 .Setup(s => s.PrepareAsync(It.IsAny<string>()))
-                .Returns<string>(query => Task.FromResult(GetPrepared(query)))
+                .Returns<string, CancellationToken>((query, _) => Task.FromResult(GetPrepared(query)))
                 .Verifiable();
 
             var trace = new Mock<QueryTrace>(MockBehavior.Strict, Guid.NewGuid(), sessionMock.Object);

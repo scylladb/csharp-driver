@@ -23,7 +23,7 @@ namespace Cassandra
     /// </para>
     /// <para>
     /// You can use these profiles via their name (that is set when adding them to the cluster through <see cref="Builder.WithExecutionProfiles"/>)
-    /// with the multiple driver APIs that execute requests (LINQ, Mapper and Session). Example with <see cref="ISession.ExecuteAsync(IStatement, string)"/>:
+    /// with the multiple driver APIs that execute requests (LINQ, Mapper and Session). Example with <see cref="ISession.ExecuteAsync(IStatement, string, System.Threading.CancellationToken)"/>:
     /// </para>
     /// <para>
     /// <code>

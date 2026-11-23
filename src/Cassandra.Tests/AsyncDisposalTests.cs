@@ -231,16 +231,16 @@ namespace Cassandra.Tests
             public RowSet Execute(string cqlQuery, string executionProfileName) => throw new NotSupportedException();
             public RowSet Execute(string cqlQuery, ConsistencyLevel consistency) => throw new NotSupportedException();
             public RowSet Execute(string cqlQuery, int pageSize) => throw new NotSupportedException();
-            public Task<AsyncRowSet> ExecuteAsync(IStatement statement) => throw new NotSupportedException();
-            public Task<AsyncRowSet> ExecuteAsync(IStatement statement, string executionProfileName) => throw new NotSupportedException();
+            public Task<AsyncRowSet> ExecuteAsync(IStatement statement, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            public Task<AsyncRowSet> ExecuteAsync(IStatement statement, string executionProfileName, CancellationToken cancellationToken = default) => throw new NotSupportedException();
             public PreparedStatement Prepare(string cqlQuery) => throw new NotSupportedException();
             public PreparedStatement Prepare(string cqlQuery, IDictionary<string, byte[]> customPayload) => throw new NotSupportedException();
             public PreparedStatement Prepare(string cqlQuery, string keyspace) => throw new NotSupportedException();
             public PreparedStatement Prepare(string cqlQuery, string keyspace, IDictionary<string, byte[]> customPayload) => throw new NotSupportedException();
-            public Task<PreparedStatement> PrepareAsync(string cqlQuery) => throw new NotSupportedException();
-            public Task<PreparedStatement> PrepareAsync(string cqlQuery, IDictionary<string, byte[]> customPayload) => throw new NotSupportedException();
-            public Task<PreparedStatement> PrepareAsync(string cqlQuery, string keyspace) => throw new NotSupportedException();
-            public Task<PreparedStatement> PrepareAsync(string cqlQuery, string keyspace, IDictionary<string, byte[]> customPayload) => throw new NotSupportedException();
+            public Task<PreparedStatement> PrepareAsync(string cqlQuery, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            public Task<PreparedStatement> PrepareAsync(string cqlQuery, IDictionary<string, byte[]> customPayload, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            public Task<PreparedStatement> PrepareAsync(string cqlQuery, string keyspace, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            public Task<PreparedStatement> PrepareAsync(string cqlQuery, string keyspace, IDictionary<string, byte[]> customPayload, CancellationToken cancellationToken = default) => throw new NotSupportedException();
             public IDriverMetrics GetMetrics() => throw new NotSupportedException();
         }
 
