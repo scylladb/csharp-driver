@@ -919,11 +919,11 @@ implement `ISession` must add the parameter. A method group, such as
 `queries.Select(session.PrepareAsync)`, no longer converts to a delegate without the
 token, since optional parameters don't apply to delegate conversions: use a lambda,
 such as `queries.Select(q => session.PrepareAsync(q))`. A call that passes the `default`
-literal as its second argument, such as `session.ExecuteAsync(statement, default)`, no
-longer compiles either: it's ambiguous between the execution profile name and the token.
-In 3.x it passed a null profile name, which threw at run time, so pass the token or a
-profile name instead. Mocks of these methods must
-accept it too. With Moq, a setup that omits the token only matches calls that pass no
+literal as its second argument, such as `session.ExecuteAsync(statement, default)`, now
+passes the default token: the overload that takes the token needs no default argument,
+so it's preferred over the one that takes an execution profile name. In 3.x the call
+passed a null profile name, which threw at run time. Mocks of these methods must accept
+it too. With Moq, a setup that omits the token only matches calls that pass no
 token or the default one, so code under test that passes another token needs
 `It.IsAny<CancellationToken>()`, for example
 `Setup(s => s.ExecuteAsync(It.IsAny<IStatement>(), It.IsAny<CancellationToken>()))`.
