@@ -105,9 +105,7 @@ namespace Cassandra.Tests.ExecutionProfiles
             var cluster = Cluster.BuildFrom(initializerMock, new List<string>(), testConfig);
             cluster.Connect();
 
-            Assert.IsTrue(lbps.Skip(1).All(lbp => lbp.InitializeCount == 1));
             Assert.IsTrue(seps.Skip(1).All(sep => sep.InitializeCount == 1));
-            Assert.AreEqual(0, lbps[0].InitializeCount);
             Assert.AreEqual(0, seps[0].InitializeCount);
         }
 
@@ -139,7 +137,6 @@ namespace Cassandra.Tests.ExecutionProfiles
             var cluster = Cluster.BuildFrom(initializerMock, new List<string>(), testConfig);
             cluster.Connect();
 
-            Assert.AreEqual(1, lbp.InitializeCount);
             Assert.AreEqual(1, sep.InitializeCount);
         }
 
@@ -320,9 +317,7 @@ namespace Cassandra.Tests.ExecutionProfiles
             var cluster = Cluster.BuildFrom(initializerMock, new List<string>(), testConfig);
             cluster.Connect();
 
-            Assert.AreEqual(0, lbp1.InitializeCount);
             Assert.AreEqual(0, sep1.InitializeCount);
-            Assert.AreEqual(1, lbp2.InitializeCount);
             Assert.AreEqual(1, sep2.InitializeCount);
         }
 
@@ -349,15 +344,6 @@ namespace Cassandra.Tests.ExecutionProfiles
 
         internal class FakeLoadBalancingPolicy : ILoadBalancingPolicy
         {
-            public volatile int InitializeCount;
-            private ICluster _cluster;
-
-            public void Initialize(ICluster cluster)
-            {
-                _cluster = cluster;
-                InitializeCount++;
-            }
-
             public HostDistance Distance(Host host)
             {
                 return HostDistance.Local;
@@ -375,7 +361,7 @@ namespace Cassandra.Tests.ExecutionProfiles
 
             public IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot cluster)
             {
-                return _cluster.AllHosts().Select(h => new RoutingTarget(h, null));
+                return cluster.Hosts.Select(h => new RoutingTarget(h, null));
             }
         }
     }

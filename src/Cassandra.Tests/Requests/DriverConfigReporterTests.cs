@@ -30,8 +30,6 @@ using Cassandra.Requests;
 
 using Json.Schema;
 
-using Moq;
-
 using Newtonsoft.Json.Linq;
 
 using NUnit.Framework;
@@ -165,7 +163,6 @@ namespace Cassandra.Tests.Requests
                 "\"read\":{\"timeout-ms\":12000}," +
                 "\"requests\":{\"in-flight\":{\"max\":2048},\"orphaned\":{\"max\":64}}," +
                 "\"pool\":{\"shard-aware\":{\"enabled\":true}}," +
-                "\"node-preference\":{\"type\":\"dc-auto\"}," +
                 "\"socket\":{\"tcp-no-delay\":true,\"keep-alive\":true,\"reuse-address\":false}," +
                 "\"reconnection\":{\"policy\":{\"type\":\"exponential\",\"base-ms\":1000,\"max-ms\":600000}}}," +
                 "\"control-plane\":{" +
@@ -175,8 +172,7 @@ namespace Cassandra.Tests.Requests
                 "\"defaults\":{\"page\":{\"size\":5000},\"consistency\":\"LOCAL_QUORUM\",\"serial-consistency\":\"LOCAL_SERIAL\"," +
                 "\"idempotence\":false,\"client-timestamps\":true,\"request\":{\"timeout-ms\":60000}}," +
                 "\"retry\":{\"policy\":{\"type\":\"standard-error-aware\"}}," +
-                "\"load-balancing\":{\"policy\":{\"type\":\"token-aware\",\"load-distribution\":\"shuffle\",\"fallback-to-non-preferred-nodes\":false}," +
-                "\"node-preference\":{\"type\":\"dc-auto\"}}}}",
+                "\"load-balancing\":{\"policy\":{\"type\":\"token-aware\",\"load-distribution\":\"shuffle\",\"fallback-to-non-preferred-nodes\":false}}}}",
                 report.ToString(Newtonsoft.Json.Formatting.None));
         }
 
@@ -775,50 +771,16 @@ namespace Cassandra.Tests.Requests
         }
 
         [Test]
-        public void Should_ReportAnInferredDatacenterPreference_When_NoDatacenterIsConfigured()
+        [TestCase(null)]
+        [TestCase("")]
+        public void Should_ReportNoDatacenterPreference_When_NoDatacenterIsConfigured(string localDc)
         {
+            // Without a local datacenter, the default policy uses every datacenter, and has no preference to report
             var report = DriverConfigReporterTests.BuildReport(
-                DriverConfigReporterTests.WithPolicies(loadBalancingPolicy: new DCAwareRoundRobinPolicy()));
+                DriverConfigReporterTests.WithPolicies(loadBalancingPolicy: new DefaultLoadBalancingPolicy(localDc)));
 
-            // The datacenter is not known while the first control connection is being opened, so the preference
-            // is reported as inferred with no name yet.
-            var preference = report["query"]["load-balancing"]["node-preference"];
-            Assert.AreEqual("dc-auto", preference["type"].Value<string>());
-            Assert.IsNull(preference["local-dc"]);
-            DriverConfigReporterTests.AssertConformsToSchema(report);
-        }
-
-        [Test]
-        public void Should_ReportTheInferredDatacenter_Once_ThePolicyHasDiscoveredIt()
-        {
-            // The report is rebuilt for every control connection, so a later one describes a policy that has
-            // since inferred its datacenter: still "dc-auto", but now with the name it settled on.
-            var clusterMock = new Mock<ICluster>();
-            clusterMock.Setup(c => c.AllHosts()).Returns(new[] { TestHelper.CreateHost("127.0.0.1", "dc9") });
-
-            var dcAware = new DCAwareRoundRobinPolicy();
-            dcAware.Initialize(clusterMock.Object);
-
-            var report = DriverConfigReporterTests.BuildReport(
-                DriverConfigReporterTests.WithPolicies(loadBalancingPolicy: new TokenAwarePolicy(dcAware)));
-
-            var preference = report["query"]["load-balancing"]["node-preference"];
-            Assert.AreEqual("dc-auto", preference["type"].Value<string>());
-            Assert.AreEqual("dc9", preference["local-dc"].Value<string>());
-            DriverConfigReporterTests.AssertConformsToSchema(report);
-        }
-
-        [Test]
-        public void Should_ReportAnInferredDatacenterPreference_When_TheConfiguredDatacenterIsEmpty()
-        {
-            // The schema requires a non-empty name, and a policy configured this way would reject every
-            // datacenter when it initializes, so an empty name is treated as no name at all.
-            var report = DriverConfigReporterTests.BuildReport(
-                DriverConfigReporterTests.WithPolicies(loadBalancingPolicy: new DCAwareRoundRobinPolicy(string.Empty)));
-
-            var preference = report["query"]["load-balancing"]["node-preference"];
-            Assert.AreEqual("dc-auto", preference["type"].Value<string>());
-            Assert.IsNull(preference["local-dc"]);
+            Assert.IsNull(report["query"]["load-balancing"]["node-preference"]);
+            Assert.IsNull(report["connection"]["node-preference"]);
             DriverConfigReporterTests.AssertConformsToSchema(report);
         }
 
@@ -1314,10 +1276,6 @@ namespace Cassandra.Tests.Requests
 
         private class FakeLoadBalancingPolicy : ILoadBalancingPolicy
         {
-            public void Initialize(ICluster cluster)
-            {
-            }
-
             public HostDistance Distance(Host host)
             {
                 return HostDistance.Local;

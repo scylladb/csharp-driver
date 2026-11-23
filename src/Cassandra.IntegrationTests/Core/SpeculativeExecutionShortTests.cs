@@ -252,7 +252,6 @@ namespace Cassandra.IntegrationTests.Core
         private class OrderedLoadBalancingPolicy : ILoadBalancingPolicy
         {
             private readonly string[] _addresses;
-            private ICluster _cluster;
             private int _hostYielded;
 
             public int HostYielded
@@ -263,11 +262,6 @@ namespace Cassandra.IntegrationTests.Core
             public OrderedLoadBalancingPolicy(params string[] addresses)
             {
                 _addresses = addresses;
-            }
-
-            public void Initialize(ICluster cluster)
-            {
-                _cluster = cluster;
             }
 
             public HostDistance Distance(Host host)
@@ -287,7 +281,7 @@ namespace Cassandra.IntegrationTests.Core
 
             public IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot cluster)
             {
-                var hosts = _cluster.AllHosts().ToArray();
+                var hosts = cluster.Hosts.ToArray();
                 foreach (var addr in _addresses)
                 {
                     var host = hosts.Single(h => h.Address.Address.ToString() == addr);

@@ -57,7 +57,7 @@ namespace Cassandra.Tests.ExecutionProfiles
             var sep = new ConstantSpeculativeExecutionPolicy(1000, 1);
             var rp = new LoggingRetryPolicy(new DefaultRetryPolicy());
             var sepProfile = new ConstantSpeculativeExecutionPolicy(200, 50);
-            var lbpProfile = new TokenAwarePolicy(new DCAwareRoundRobinPolicy());
+            var lbpProfile = new TokenAwarePolicy(new DCAwareRoundRobinPolicy("dc1"));
             var rpProfile = new LoggingRetryPolicy(new IdempotenceAwareRetryPolicy(new DefaultRetryPolicy()));
             var baseProfileBuilder = new ExecutionProfileBuilder();
             baseProfileBuilder

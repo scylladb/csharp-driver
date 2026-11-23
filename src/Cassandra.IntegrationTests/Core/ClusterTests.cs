@@ -15,13 +15,11 @@
 //
 
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
 using Cassandra.IntegrationTests.TestBase;
-using Cassandra.SessionManagement;
 using Cassandra.IntegrationTests.TestClusterManagement;
 using Cassandra.IntegrationTests.TestClusterManagement.Simulacron;
 using Cassandra.Tests;
@@ -46,22 +44,21 @@ namespace Cassandra.IntegrationTests.Core
         }
 
         [Test]
-        [TestCase(true)]
-        [TestCase(false)]
-        public Task Cluster_Connect_Should_Initialize_Loadbalancing_With_ControlConnection_Address_Set(bool asyncConnect)
+        public void Cluster_Connect_Should_Succeed_And_Requests_Fail_When_The_Local_Datacenter_Matches_No_Node()
         {
-            _testCluster = SimulacronCluster.CreateNew(2);
-            var lbp = new TestLoadBalancingPolicy();
-            var cluster = ClusterBuilder()
-                          .AddContactPoint(_testCluster.InitialContactPoint)
-                          .WithLoadBalancingPolicy(lbp)
-                          .Build();
+            _testCluster = SimulacronCluster.CreateNew(1);
+            using var cluster = ClusterBuilder()
+                                .AddContactPoint(_testCluster.InitialContactPoint)
+                                .WithLocalDatacenter("dc2")
+                                .Build();
 
-            return TestGlobals.ConnectAndDispose(cluster, asyncConnect, session =>
-            {
-                Assert.NotNull(lbp.ControlConnectionHost);
-                Assert.AreEqual(_testCluster.InitialContactPoint, lbp.ControlConnectionHost.Address);
-            });
+            // The node is in dc1
+            var session = cluster.Connect();
+            Assert.Throws<NoHostAvailableException>(
+                () => session.Execute("SELECT * FROM system.local WHERE key='local'"));
+
+            // Connecting with a keyspace borrows a connection, which fails the same way
+            Assert.Throws<NoHostAvailableException>(() => cluster.Connect("ks"));
         }
 
         [Test]
@@ -73,15 +70,14 @@ namespace Cassandra.IntegrationTests.Core
             var nodes = _testCluster.GetNodes().ToArray();
             var contactPoints = nodes.Select(n => n.ContactPoint).ToArray();
             nodes[0].DisableConnectionListener().GetAwaiter().GetResult();
-            var lbp = new TestLoadBalancingPolicy();
             var cluster = ClusterBuilder()
                           .AddContactPoints(contactPoints.Select(s => s.Split(':').First()))
-                          .WithLoadBalancingPolicy(lbp)
                           .Build();
             return TestGlobals.ConnectAndDispose(cluster, asyncConnect, session =>
             {
-                Assert.NotNull(lbp.ControlConnectionHost);
-                Assert.AreEqual(contactPoints[1], lbp.ControlConnectionHost.Address.ToString());
+                var controlConnectionHost = cluster.InternalRef.GetControlConnection().Host;
+                Assert.NotNull(controlConnectionHost);
+                Assert.AreEqual(contactPoints[1], controlConnectionHost.Address.ToString());
             });
         }
 
@@ -228,38 +224,6 @@ namespace Cassandra.IntegrationTests.Core
                 }
                 Assert.False(queried, "Removed node should be queried");
             }).ConfigureAwait(false);
-        }
-
-        private class TestLoadBalancingPolicy : ILoadBalancingPolicy
-        {
-            private ICluster _cluster;
-            public Host ControlConnectionHost { get; private set; }
-
-            public void Initialize(ICluster cluster)
-            {
-                _cluster = cluster;
-                ControlConnectionHost = ((IInternalCluster)cluster).GetControlConnection().Host;
-            }
-
-            public HostDistance Distance(Host host)
-            {
-                return HostDistance.Local;
-            }
-
-            public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot cluster)
-            {
-                foreach (var target in Fallback(routing, cluster))
-                {
-                    return target;
-                }
-
-                return null;
-            }
-
-            public IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot cluster)
-            {
-                return _cluster.AllHosts().Select(h => new RoutingTarget(h, null));
-            }
         }
     }
 }

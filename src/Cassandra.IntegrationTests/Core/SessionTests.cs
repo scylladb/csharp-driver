@@ -329,11 +329,6 @@ namespace Cassandra.IntegrationTests.Core
                 _ignoredHost = h;
             }
 
-            public void Initialize(ICluster cluster)
-            {
-                _childPolicy.Initialize(cluster);
-            }
-
             public HostDistance Distance(Host host)
             {
                 if (host == _ignoredHost)

@@ -275,16 +275,10 @@ namespace Cassandra.Tests
         internal class FakeHostDistanceLbp : ILoadBalancingPolicy
         {
             private readonly IDictionary<string, HostDistance> _distances;
-            private ICluster _cluster;
 
             public FakeHostDistanceLbp(IDictionary<string, HostDistance> distances)
             {
                 _distances = distances;
-            }
-
-            public void Initialize(ICluster cluster)
-            {
-                _cluster = cluster;
             }
 
             public HostDistance Distance(Host host)
@@ -304,7 +298,7 @@ namespace Cassandra.Tests
 
             public IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot cluster)
             {
-                return _cluster.AllHosts()
+                return cluster.Hosts
                     .OrderBy(h => Guid.NewGuid().GetHashCode())
                     .Take(_distances.Count)
                     .Select(h => new RoutingTarget(h, null));

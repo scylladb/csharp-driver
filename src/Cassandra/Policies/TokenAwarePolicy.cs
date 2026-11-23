@@ -56,11 +56,6 @@ namespace Cassandra
 
         public ILoadBalancingPolicy ChildPolicy { get; }
 
-        public void Initialize(ICluster cluster)
-        {
-            ChildPolicy.Initialize(cluster);
-        }
-
         /// <summary>
         ///  Return the HostDistance for the provided host.
         /// </summary>

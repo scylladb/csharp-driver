@@ -101,14 +101,9 @@ namespace Cassandra.Requests
         public const int MaxDriverConfigLength = 32 * 1024;
 
         /// <summary>
-        /// Upper bound on the number of policies visited while walking a load balancing or retry policy chain.
-        /// <para>
-        /// The built-in chains are three policies deep at most, so reaching this bound means a malformed chain
-        /// rather than a legitimately deep one. Only the driver's own wrapper policies are followed and none of
-        /// them can be built cyclically, so this is insurance against a future chainable policy rather than a
-        /// reachable case today — and it is the one failure mode <see cref="AddStartupOptions"/> could not
-        /// contain, since it would hang the cluster initialization path rather than throw.
-        /// </para>
+        /// Upper bound on the number of policies visited while walking a retry policy chain, as
+        /// <see cref="LoadBalancingPolicyChain.MaxLength"/> is for a load balancing policy chain: an application can
+        /// nest wrapper policies deeper than the driver does, and walking stops there rather than reporting them all.
         /// </summary>
         private const int MaxPolicyChainLength = 16;
 
@@ -149,9 +144,7 @@ namespace Cassandra.Requests
 
         /// <summary>
         /// Builds the JSON configuration report. It is built for every control connection rather than cached,
-        /// so that it always describes the configuration as it is at that point in time. That matters for the
-        /// datacenter a <see cref="DCAwareRoundRobinPolicy"/> infers, which is unknown while the first control
-        /// connection is being opened and known by the time a later one is.
+        /// so that it always describes the configuration as it is at that point in time.
         /// </summary>
         /// <remarks>
         /// <c>protected virtual</c> so tests can override it (via <c>InternalsVisibleTo</c>) to exercise the
@@ -721,35 +714,17 @@ namespace Cassandra.Requests
 
         private static JObject NodeLocationPreference(IEnumerable<ILoadBalancingPolicy> chain)
         {
-            DCAwareRoundRobinPolicy dcAware = null;
-            foreach (var policy in chain)
-            {
-                if (policy is DCAwareRoundRobinPolicy dcAwarePolicy)
-                {
-                    dcAware = dcAwarePolicy;
-                }
-            }
-
+            var dcAware = LoadBalancingPolicyChain.FindDatacenterAware(chain);
             if (dcAware == null)
             {
                 return null;
             }
 
-            // An explicitly configured datacenter is reported as such; otherwise the policy infers it from the
-            // node the control connection uses, which is not known while the first report is being built and is
-            // by the time a later one is. An empty name is treated as absent: the schema requires a non-empty
-            // string, and the policy would reject such a datacenter when it initializes anyway.
-            var localDc = dcAware.LocalDc;
-            if (string.IsNullOrEmpty(localDc))
-            {
-                return new JObject { ["type"] = "dc-auto" };
-            }
-
             // The driver has no rack-aware policy, so "rack"/"rack-auto" are never reported.
             return new JObject
             {
-                ["type"] = dcAware.LocalDcIsExplicit ? "dc" : "dc-auto",
-                ["local-dc"] = localDc
+                ["type"] = "dc",
+                ["local-dc"] = dcAware.LocalDc
             };
         }
 
@@ -761,41 +736,15 @@ namespace Cassandra.Requests
         /// </summary>
         private static IList<ILoadBalancingPolicy> PolicyChain(ILoadBalancingPolicy policy)
         {
-            var chain = new List<ILoadBalancingPolicy>();
-            var current = policy;
-            while (current != null && chain.Count < DriverConfigReporter.MaxPolicyChainLength)
-            {
-                chain.Add(current);
-                current = DriverConfigReporter.ChildPolicy(current);
-            }
-
-            if (current != null)
+            var chain = LoadBalancingPolicyChain.Of(policy, out var truncated);
+            if (truncated)
             {
                 DriverConfigReporter.Logger.Warning(
                     "Stopped walking the load balancing policy chain after {0} policies, only those are reported.",
-                    DriverConfigReporter.MaxPolicyChainLength);
+                    LoadBalancingPolicyChain.MaxLength);
             }
 
             return chain;
-        }
-
-        /// <summary>
-        /// The policy <paramref name="policy"/> delegates to, or <c>null</c> when it is not one of the driver's
-        /// wrapper policies. There is no interface shared by the wrappers, hence the type tests.
-        /// </summary>
-        private static ILoadBalancingPolicy ChildPolicy(ILoadBalancingPolicy policy)
-        {
-            if (policy is DefaultLoadBalancingPolicy defaultPolicy)
-            {
-                return defaultPolicy.ChildPolicy;
-            }
-
-            if (policy is TokenAwarePolicy tokenAware)
-            {
-                return tokenAware.ChildPolicy;
-            }
-
-            return null;
         }
 
         /// <summary>

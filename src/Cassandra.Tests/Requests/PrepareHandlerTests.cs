@@ -900,10 +900,6 @@ namespace Cassandra.Tests.Requests
             public long DistanceCount;
             public long NewQueryPlanCount;
 
-            public void Initialize(ICluster cluster)
-            {
-            }
-
             public HostDistance Distance(Host host)
             {
                 Interlocked.Increment(ref DistanceCount);

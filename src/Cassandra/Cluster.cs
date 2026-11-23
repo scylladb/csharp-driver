@@ -290,11 +290,7 @@ namespace Cassandra
                         throw newEx;
                     }
 
-                    // Initialize policies
-                    foreach (var lbp in loadBalancingPolicies)
-                    {
-                        lbp.Initialize(this);
-                    }
+                    WarnAboutLocalDatacenters(loadBalancingPolicies);
 
                     foreach (var sep in speculativeExecutionPolicies)
                     {
@@ -336,6 +332,61 @@ namespace Cassandra
 
             Cluster.Logger.Info("Cluster #{0} [{1}] has been initialized.", GetHashCode(), Metadata.ClusterName);
             return;
+        }
+
+        private void WarnAboutLocalDatacenters(IEnumerable<ILoadBalancingPolicy> policies)
+        {
+            foreach (var warning in Cluster.LocalDatacenterWarnings(AllHosts(), policies))
+            {
+                Cluster.Logger.Warning("{0}", warning);
+            }
+        }
+
+        /// <summary>
+        /// Returns the warnings for <paramref name="policies"/>: a default policy without a local datacenter while
+        /// the hosts are in more than one, which then uses the hosts of every datacenter, or a datacenter aware policy
+        /// whose local datacenter matches no host. Only the driver's own wrapper policies are looked into, up to
+        /// <see cref="LoadBalancingPolicyChain.MaxLength"/> policies deep.
+        /// </summary>
+        internal static IEnumerable<string> LocalDatacenterWarnings(
+            IEnumerable<Host> hosts, IEnumerable<ILoadBalancingPolicy> policies)
+        {
+            var hostList = hosts.ToList();
+            var datacenters = hostList.Select(h => h.Datacenter).Where(dc => dc != null).Distinct().ToList();
+            var hasHostsWithoutDatacenter = hostList.Any(h => h.Datacenter == null);
+            var available = datacenters.Count == 0 ? "none" : string.Join(", ", datacenters);
+            var withoutLocalDc = false;
+            var localDcs = new HashSet<string>();
+            foreach (var policy in policies)
+            {
+                var chain = LoadBalancingPolicyChain.Of(policy, out _);
+                var dcAware = LoadBalancingPolicyChain.FindDatacenterAware(chain);
+                if (dcAware != null)
+                {
+                    localDcs.Add(dcAware.LocalDc);
+                }
+                else if (chain.Any(p => p is DefaultLoadBalancingPolicy))
+                {
+                    withoutLocalDc = true;
+                }
+            }
+
+            if (withoutLocalDc && datacenters.Count > 1)
+            {
+                yield return "A DefaultLoadBalancingPolicy has no local datacenter, so it uses the nodes of every " +
+                             $"datacenter: {available}. To only use the nodes of one, set it with " +
+                             "Builder.WithLocalDatacenter() when the driver uses its default policy, or create the " +
+                             "policy with Policies.NewDefaultLoadBalancingPolicy().";
+            }
+
+            foreach (var localDc in localDcs.Where(dc => !datacenters.Contains(dc)))
+            {
+                var consequence = hasHostsWithoutDatacenter
+                    ? "so requests using it only go to the nodes whose datacenter is unknown"
+                    : "so requests using it fail with a NoHostAvailableException";
+                yield return $"The local datacenter {localDc} of a load balancing policy doesn't match any node, " +
+                             $"{consequence}. Available datacenters: {available}.";
+            }
         }
 
         private void InitializeHostDistances()

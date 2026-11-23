@@ -208,10 +208,6 @@ namespace Cassandra.Tests.Policies
 
             public int FallbackCalls { get; private set; }
 
-            public void Initialize(ICluster cluster)
-            {
-            }
-
             public HostDistance Distance(Host host) => HostDistance.Local;
 
             public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot metadata) => _pick;

@@ -25,17 +25,6 @@ namespace Cassandra
     public interface ILoadBalancingPolicy
     {
         /// <summary>
-        ///  Initialize this load balancing policy. 
-        /// <para>
-        ///  Note that the driver guarantees
-        ///  that it will call this method exactly once per policy object and will do so
-        ///  before any call to another of the methods of the policy.
-        /// </para>
-        /// </summary>
-        /// <param name="cluster">The information about the session instance for which the policy is created.</param>
-        void Initialize(ICluster cluster);
-
-        /// <summary>
         ///  Returns the distance assigned by this policy to the provided host. <p> The
         ///  distance of an host influence how much connections are kept to the node (see
         ///  <link>HostDistance</link>). A policy should assign a <c>* LOCAL</c>
@@ -59,8 +48,8 @@ namespace Cassandra
         /// <param name="routing">What is known about the request: its keyspace, table, routing key, consistency
         ///  levels and whether it should be routed as a lightweight transaction.</param>
         /// <param name="metadata">The snapshot of the cluster metadata for this request: the nodes and the replicas of
-        ///  the request. A policy should read the nodes from it rather than from the cluster it was initialized with,
-        ///  so that the whole plan is built from the same metadata.</param>
+        ///  the request. A policy should read the nodes from it rather than from a cluster it keeps, so that the whole
+        ///  plan is built from the same metadata.</param>
         /// <returns>The first target, or null to use the targets of <see cref="Fallback"/> only.</returns>
         RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot metadata);
 

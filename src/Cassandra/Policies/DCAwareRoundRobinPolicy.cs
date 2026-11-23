@@ -17,8 +17,6 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
-using System.Linq;
-using Cassandra.SessionManagement;
 
 namespace Cassandra
 {
@@ -27,22 +25,19 @@ namespace Cassandra
     /// <para>
     /// This policy provides round-robin queries over the nodes of the local datacenter. Query plans never include nodes
     /// of remote datacenters: whether a request may fail over to another datacenter depends on the application's
-    /// semantics, which the driver doesn't know.
+    /// semantics, which the driver doesn't know. A node whose datacenter is unknown, because its peer row has none, is
+    /// treated as local until the driver learns its datacenter.
     /// </para>
     /// </summary>
     public class DCAwareRoundRobinPolicy : ILoadBalancingPolicy
     {
-        private static readonly Logger Logger = new Logger(typeof(DCAwareRoundRobinPolicy));
-
-        private volatile string _localDc;
-        private readonly bool _localDcIsExplicit;
+        private readonly string _localDc;
 
         private readonly int _maxIndex = Int32.MaxValue - 10000;
 
         // The local hosts, computed from a snapshot's host collection, which is a new instance whenever hosts change
         private volatile LocalHosts _localHosts;
         private readonly Lock _localHostsLock = new Lock();
-        ICluster _cluster;
 
         // Separate rotations: requests that need their fallback targets don't move the first target of the next
         // requests, and the fallback order rotates even when Pick isn't called, for instance by a wrapping policy
@@ -51,100 +46,29 @@ namespace Cassandra
         private int _fallbackIndex;
 
         /// <summary>
-        /// Creates a new datacenter aware round robin policy that auto-discover the local data-center.
-        /// <para>
-        /// If this constructor is used, the data-center used as local will the
-        /// data-center of the first Cassandra node the driver connects to. This
-        /// will always be ok if all the contact points use at <see cref="Cluster"/>
-        /// creation are in the local data-center. If it's not the case, you should
-        /// provide the local data-center name yourself by using one of the other
-        /// constructor of this class.
-        /// </para>
-        /// </summary>
-        public DCAwareRoundRobinPolicy() : this(null)
-        {
-        }
-
-        /// <summary>
         ///  Creates a new datacenter aware round robin policy given the name of the local
         ///  datacenter. <p> The name of the local datacenter provided must be the local
         ///  datacenter name as known by Cassandra. </p><p> The query plans of the policy
         ///  contain only hosts of the local datacenter.</p>
         /// </summary>
-        /// <param name="localDc"> the name of the local datacenter (as known by Cassandra).</param>
+        /// <param name="localDc">The name of the local datacenter, as known by the cluster.</param>
+        /// <exception cref="ArgumentException"><paramref name="localDc"/> is null or empty.</exception>
         public DCAwareRoundRobinPolicy(string localDc)
         {
-            _localDc = localDc;
-            _localDcIsExplicit = localDc != null;
-        }
-
-        /// <summary>
-        /// Gets the Local Datacenter. This value is provided in the constructor.
-        /// </summary>
-        public string LocalDc => _localDc;
-
-        /// <summary>
-        /// Whether <see cref="LocalDc"/> was provided by the application rather than inferred by
-        /// <see cref="Initialize"/> from the datacenter of the host the control connection uses.
-        /// <para>
-        /// <see cref="LocalDc"/> alone cannot answer this: <see cref="Initialize"/> overwrites the field when no
-        /// datacenter was configured, so both cases look the same afterwards. The driver configuration report
-        /// needs the distinction to tell an explicit datacenter preference from an inferred one.
-        /// </para>
-        /// </summary>
-        internal bool LocalDcIsExplicit => _localDcIsExplicit;
-
-        public void Initialize(ICluster cluster)
-        {
-            _cluster = cluster;
-
-            var availableDcs = _cluster.AllHosts().Select(h => h.Datacenter).Where(dc => dc != null).Distinct().ToList();
-            var availableDcsStr = string.Join(", ", availableDcs);
-
-            if (_localDc == null)
-            {
-                DCAwareRoundRobinPolicy.Logger.Warning(
-                    "Local datacenter was not specified. In the next major release of the driver " +
-                    "applications will be required to specify the local datacenter in the load balancing policy. " +
-                    $"Available datacenters: {availableDcsStr}.");
-
-                var host = GetLocalHost();
-                if (host == null)
-                {
-                    throw new DriverInternalError("Local datacenter could not be determined");
-                }
-
-                _localDc = host.Datacenter;
-                return;
-            }
-
-            //Check that the datacenter exists
-            if (!availableDcs.Contains(_localDc))
+            if (string.IsNullOrEmpty(localDc))
             {
                 throw new ArgumentException(
-                    $"Datacenter {_localDc} does not match any of the nodes, available datacenters: {availableDcsStr}.");
+                    "The local datacenter can't be null or empty. To use the nodes of every datacenter, use a " +
+                    "RoundRobinPolicy.", nameof(localDc));
             }
+
+            _localDc = localDc;
         }
 
         /// <summary>
-        /// Gets the current local host.
-        /// If can not be determined, it returns any of the nodes.
+        /// Gets the local datacenter provided in the constructor.
         /// </summary>
-        private Host GetLocalHost()
-        {
-            if (!(_cluster is IInternalCluster clusterImplementation))
-            {
-                //fallback to use any of the hosts
-                return _cluster.AllHosts().FirstOrDefault(h => h.Datacenter != null);
-            }
-            var cc = clusterImplementation.GetControlConnection();
-            if (cc == null)
-            {
-                throw new DriverInternalError("ControlConnection was not correctly set");
-            }
-            //Use the host used by the control connection
-            return cc.Host;
-        }
+        public string LocalDc => _localDc;
 
         /// <summary>
         ///  Return the HostDistance for the provided host. <p> This policy considers nodes
@@ -155,11 +79,11 @@ namespace Cassandra
         /// <returns>the HostDistance to <c>host</c>.</returns>
         public HostDistance Distance(Host host)
         {
-            var dc = GetDatacenter(host);
-            if (dc == _localDc)
+            if (GetDatacenter(host) == _localDc)
             {
                 return HostDistance.Local;
             }
+
             return HostDistance.Remote;
         }
 
@@ -225,13 +149,12 @@ namespace Cassandra
 
         /// <summary>
         /// Gets the nodes of the local datacenter among <paramref name="hosts"/>, reusing the previous result while
-        /// the snapshots share the same host collection and the local datacenter is the same.
+        /// the snapshots share the same host collection.
         /// </summary>
         internal IReadOnlyList<Host> GetHosts(IReadOnlyCollection<Host> hosts)
         {
-            var localDc = _localDc;
             var cached = _localHosts;
-            if (cached != null && cached.IsFor(hosts, localDc))
+            if (cached != null && cached.IsFor(hosts))
             {
                 return cached.Hosts;
             }
@@ -240,7 +163,7 @@ namespace Cassandra
             {
                 // Another plan may have computed them while this one waited for the lock
                 cached = _localHosts;
-                if (cached != null && cached.IsFor(hosts, localDc))
+                if (cached != null && cached.IsFor(hosts))
                 {
                     return cached.Hosts;
                 }
@@ -254,15 +177,13 @@ namespace Cassandra
                         (hostsWithoutDatacenter ??= new List<Host>()).Add(host);
                     }
 
-                    if ((host.Datacenter ?? localDc) == localDc)
+                    if ((host.Datacenter ?? _localDc) == _localDc)
                     {
                         localHosts.Add(host);
                     }
                 }
 
-                // Before Initialize infers the local datacenter, the list is built for a null one, which the local
-                // datacenter of the cache then tells apart
-                _localHosts = new LocalHosts(hosts, localDc, localHosts, hostsWithoutDatacenter);
+                _localHosts = new LocalHosts(hosts, localHosts, hostsWithoutDatacenter);
                 return localHosts;
             }
         }
@@ -274,23 +195,20 @@ namespace Cassandra
             private readonly IReadOnlyList<Host> _hostsWithoutDatacenter;
 
             public LocalHosts(
-                IReadOnlyCollection<Host> source, string localDc, IReadOnlyList<Host> hosts, IReadOnlyList<Host> hostsWithoutDatacenter)
+                IReadOnlyCollection<Host> source, IReadOnlyList<Host> hosts, IReadOnlyList<Host> hostsWithoutDatacenter)
             {
                 Source = source;
-                LocalDc = localDc;
                 Hosts = hosts;
                 _hostsWithoutDatacenter = hostsWithoutDatacenter;
             }
 
             public IReadOnlyCollection<Host> Source { get; }
 
-            public string LocalDc { get; }
-
             public IReadOnlyList<Host> Hosts { get; }
 
-            public bool IsFor(IReadOnlyCollection<Host> hosts, string localDc)
+            public bool IsFor(IReadOnlyCollection<Host> hosts)
             {
-                if (!ReferenceEquals(Source, hosts) || LocalDc != localDc)
+                if (!ReferenceEquals(Source, hosts))
                 {
                     return false;
                 }

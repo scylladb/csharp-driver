@@ -42,13 +42,6 @@ namespace Cassandra
         private int _fallbackIndex;
 
         /// <summary>
-        /// Does nothing: the policy reads the hosts from the metadata snapshot of each query plan.
-        /// </summary>
-        public void Initialize(ICluster cluster)
-        {
-        }
-
-        /// <summary>
         ///  Return the HostDistance for the provided host. <p> This policy consider all
         ///  nodes as local. This is generally the right thing to do in a single
         ///  datacenter deployment. If you use multiple datacenter, see
