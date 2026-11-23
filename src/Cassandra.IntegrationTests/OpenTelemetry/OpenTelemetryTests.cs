@@ -246,7 +246,7 @@ namespace Cassandra.IntegrationTests.OpenTelemetry
                 ReleaseDate = DateTimeOffset.UtcNow
             };
 
-            await mapper.InsertIfNotExistsAsync(songOne, testProfile, true, null)
+            await mapper.InsertIfNotExistsAsync(songOne, testProfile, true)
                 .ContinueWith(t =>
                 {
                     RetryUntilActivities(localDateTime, $"{SessionActivityName}({nameof(BoundStatement)}) {keyspace}", 1);
