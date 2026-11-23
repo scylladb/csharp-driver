@@ -20,6 +20,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -258,7 +259,7 @@ namespace Cassandra.Requests
 
             if (ex != null)
             {
-                await _requestResultHandler.TrySetExceptionAsync(ex, _sessionRequestInfo).ConfigureAwait(false);
+                await ClearNodeExecutionsAndCompleteAsync(ex, null).ConfigureAwait(false);
                 return true;
             }
             if (action != null)
@@ -430,10 +431,22 @@ namespace Cassandra.Requests
                     return;
                 }
             }
+            // An observer that throws doesn't keep the other executions from being reported; the first exception is
+            // rethrown after all of them
+            ExceptionDispatchInfo firstError = null;
             foreach (var kvp in executions)
             {
-                await _requestObserver.OnNodeRequestAbortedAsync(_sessionRequestInfo, kvp.Value).ConfigureAwait(false);
+                try
+                {
+                    await _requestObserver.OnNodeRequestAbortedAsync(_sessionRequestInfo, kvp.Value).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    firstError ??= ExceptionDispatchInfo.Capture(ex);
+                }
             }
+
+            firstError?.Throw();
         }
 
         public Task SetNoMoreHostsAsync(NoHostAvailableException ex, IRequestExecution execution)

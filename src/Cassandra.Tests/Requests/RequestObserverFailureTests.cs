@@ -106,6 +106,55 @@ namespace Cassandra.Tests.Requests
         }
 
         [Test]
+        public async Task RequestHandler_Should_Report_A_Running_Execution_As_Aborted_When_The_Request_Fails()
+        {
+            var observer = new Mock<IRequestObserver>();
+            var execution = new Mock<IRequestExecution>();
+            execution.Setup(e => e.Start(false)).Returns(Host);
+            var handler = BuildRequestHandler(observer.Object, execution);
+            var task = handler.SendAsync(CancellationToken.None);
+            // A speculative execution is still running when the request fails
+            var running = new NodeRequestInfo(Host, null);
+            Assert.IsTrue(handler.OnNewNodeExecution(running));
+            var error = new OverloadedException("overloaded");
+
+            Assert.IsTrue(await handler.SetCompletedAsync(error).ConfigureAwait(false));
+
+            var ex = await Assert.ThrowsAsync<OverloadedException>(async () => await task.WaitAsync(Timeout).ConfigureAwait(false));
+            Assert.AreSame(error, ex);
+            observer.Verify(o => o.OnNodeRequestAbortedAsync(It.IsAny<SessionRequestInfo>(), running), Times.Once);
+
+            // Its outcome, when it arrives, is no longer reported
+            Assert.IsFalse(handler.SetNodeExecutionCompleted(running.ExecutionId));
+        }
+
+        [Test]
+        public async Task RequestHandler_Should_Report_Every_Running_Execution_As_Aborted_When_The_Request_Observer_Throws()
+        {
+            var observer = new Mock<IRequestObserver>();
+            observer
+                .Setup(o => o.OnNodeRequestAbortedAsync(It.IsAny<SessionRequestInfo>(), It.IsAny<NodeRequestInfo>()))
+                .ThrowsAsync(new InvalidOperationException("Observer failure"));
+            var execution = new Mock<IRequestExecution>();
+            execution.Setup(e => e.Start(false)).Returns(Host);
+            var handler = BuildRequestHandler(observer.Object, execution);
+            var task = handler.SendAsync(CancellationToken.None);
+            // Two speculative executions are still running when the request fails
+            var first = new NodeRequestInfo(Host, null);
+            var second = new NodeRequestInfo(Host, null);
+            Assert.IsTrue(handler.OnNewNodeExecution(first));
+            Assert.IsTrue(handler.OnNewNodeExecution(second));
+            var error = new OverloadedException("overloaded");
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() => handler.SetCompletedAsync(error));
+
+            var ex = await Assert.ThrowsAsync<OverloadedException>(async () => await task.WaitAsync(Timeout).ConfigureAwait(false));
+            Assert.AreSame(error, ex);
+            observer.Verify(o => o.OnNodeRequestAbortedAsync(It.IsAny<SessionRequestInfo>(), first), Times.Once);
+            observer.Verify(o => o.OnNodeRequestAbortedAsync(It.IsAny<SessionRequestInfo>(), second), Times.Once);
+        }
+
+        [Test]
         public async Task RequestHandler_Should_Fail_With_The_Request_Error_When_The_Request_Observer_Throws()
         {
             var observer = new Mock<IRequestObserver>();
