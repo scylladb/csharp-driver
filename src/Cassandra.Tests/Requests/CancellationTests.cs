@@ -348,7 +348,7 @@ namespace Cassandra.Tests.Requests
         [Test]
         public async Task RequestHandler_Should_Fail_When_The_Original_And_The_Speculative_Execution_Find_No_Host()
         {
-            // The speculative execution starts 1 ms after the original one
+            // The speculative execution is scheduled 1 ms after the original one, which the timer rounds up to its tick
             var plan = new Mock<ISpeculativeExecutionPlan>();
             plan.SetupSequence(p => p.NextExecution(It.IsAny<Host>())).Returns(1).Returns(0);
             var policy = new Mock<ISpeculativeExecutionPolicy>();
@@ -383,12 +383,65 @@ namespace Cassandra.Tests.Requests
         }
 
         [Test]
-        public async Task RequestHandler_Should_Stop_A_Started_Execution_When_Scheduling_The_Next_One_Fails()
+        public async Task RequestHandler_Should_Wait_For_A_Running_Execution_When_A_Speculative_Execution_Finds_No_Host()
         {
-            // The execution starts and waits for its connection, then the speculative execution policy fails
+            // The speculative execution is scheduled 1 ms after the original one, which the timer rounds up to its
+            // tick. The original execution keeps running.
+            var plan = new Mock<ISpeculativeExecutionPlan>();
+            plan.SetupSequence(p => p.NextExecution(It.IsAny<Host>())).Returns(1).Returns(0);
+            var policy = new Mock<ISpeculativeExecutionPolicy>();
+            policy.Setup(p => p.NewPlan(It.IsAny<string>(), It.IsAny<IStatement>())).Returns(plan.Object);
+            var original = new Mock<IRequestExecution>();
+            original.Setup(e => e.Start(false)).Returns(new Host(new IPEndPoint(IPAddress.Loopback, 9042), contactPoint: null));
+            var speculativeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var speculative = new Mock<IRequestExecution>();
+            speculative.Setup(e => e.Start(false)).Returns(() =>
+            {
+                speculativeStarted.TrySetResult();
+                throw new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>());
+            });
+            var executionFactory = new Mock<IRequestExecutionFactory>();
+            executionFactory
+                .SetupSequence(f => f.Create(
+                    It.IsAny<IRequestHandler>(), It.IsAny<IInternalSession>(), It.IsAny<IRequest>(),
+                    It.IsAny<IRequestObserver>(), It.IsAny<SessionRequestInfo>()))
+                .Returns(original.Object)
+                .Returns(speculative.Object);
+            using var setup = BuildRequestHandler(speculativeExecutionPolicy: policy.Object, requestExecutionFactory: executionFactory.Object);
+
+            var task = setup.RequestHandler.SendAsync(CancellationToken.None);
+            await speculativeStarted.Task.WaitAsync(Timeout).ConfigureAwait(false);
+
+            // The speculative execution's failure is handled right after it throws, on the thread that started it
+            await Task.Delay(100).ConfigureAwait(false);
+            Assert.IsFalse(task.IsCompleted);
+
+            // The original execution then completes the request
+            var result = new RowSet();
+            await setup.RequestHandler.SetCompletedAsync(result, () => Task.CompletedTask).ConfigureAwait(false);
+            Assert.AreSame(result, await task.WaitAsync(Timeout).ConfigureAwait(false));
+        }
+
+        [Test]
+        [TestCase(true)]
+        [TestCase(false)]
+        public async Task RequestHandler_Should_Stop_A_Started_Execution_When_Scheduling_The_Next_One_Fails(bool newPlanFails)
+        {
+            // The execution starts and waits for its connection, then the speculative execution policy or its plan
+            // fails
             var error = new InvalidOperationException("Speculative execution policy failure");
             var policy = new Mock<ISpeculativeExecutionPolicy>();
-            policy.Setup(p => p.NewPlan(It.IsAny<string>(), It.IsAny<IStatement>())).Throws(error);
+            if (newPlanFails)
+            {
+                policy.Setup(p => p.NewPlan(It.IsAny<string>(), It.IsAny<IStatement>())).Throws(error);
+            }
+            else
+            {
+                var plan = new Mock<ISpeculativeExecutionPlan>();
+                plan.Setup(p => p.NextExecution(It.IsAny<Host>())).Throws(error);
+                policy.Setup(p => p.NewPlan(It.IsAny<string>(), It.IsAny<IStatement>())).Returns(plan.Object);
+            }
+
             var config = new TestConfigurationBuilder().Build();
             var validHost = ValidHost.New(
                 new Host(new IPEndPoint(IPAddress.Loopback, 9042), new ConstantReconnectionPolicy(1)), HostDistance.Local);

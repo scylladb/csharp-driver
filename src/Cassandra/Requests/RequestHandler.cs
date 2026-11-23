@@ -718,7 +718,7 @@ namespace Cassandra.Requests
 
                 ScheduleNext(lastHost);
             }
-            catch (NoHostAvailableException ex)
+            catch (Exception ex)
             {
                 // An execution that started stays with the running ones, for instance when scheduling the next one
                 // fails: it may still wait for a connection, and completing the request must stop it
@@ -727,23 +727,17 @@ namespace Cassandra.Requests
                     _running.Remove(execution);
                 }
 
-                // As in SetNoMoreHostsAsync: the last execution to fail completes the request, so that an execution
-                // failing concurrently, such as the one a speculative execution follows, doesn't leave it to this one
-                if (_running.Count == 0)
+                // As in SetNoMoreHostsAsync: when no host is available, the last execution to fail completes the
+                // request, so that an execution failing concurrently, such as the one a speculative execution follows,
+                // doesn't leave it to this one
+                if (ex is NoHostAvailableException && _running.Count > 0)
                 {
-                    //There isn't any host available, yield it to the user
-                    await SetCompletedAsync(ex).ConfigureAwait(false);
-                }
-                //Let's wait for the other executions
-            }
-            catch (Exception ex)
-            {
-                if (execution != null && !started)
-                {
-                    _running.Remove(execution);
+                    return;
                 }
 
-                //There was an Exception before sending: a protocol error or the keyspace does not exists
+                // No host is available, or something else failed: while the execution starts, the statement, for
+                // instance its routing key, or the load balancing policy, and once it started, the speculative
+                // execution policy
                 await SetCompletedAsync(ex).ConfigureAwait(false);
             }
         }
