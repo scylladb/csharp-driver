@@ -88,6 +88,7 @@ namespace Cassandra.Tests.Requests
 
             var task = setup.RequestHandler.SendAsync(cts.Token);
             var operation = await setup.FirstOperation.Task.WaitAsync(Timeout).ConfigureAwait(false);
+            Assert.IsTrue(operation.TryStartWriting());
             operation.WriteFrame(1, new MemoryStream(), setup.Serializer, false, 0);
             cts.Cancel();
 
