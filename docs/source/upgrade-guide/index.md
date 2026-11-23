@@ -666,6 +666,8 @@ replicas, are no longer public, and neither is `DecimalSerializer`, the driver's
 serializer for `decimal` values. With it, the `Cassandra.Serialization.Primitive`
 namespace has no public types left. To read and write `decimal` values as another type,
 register a `TypeSerializer<T>` as shown in the `TypeAdapters` section above.
+Code that created a `DecimalSerializer` to encode or decode `decimal` values in its own
+serializer can use the public `TypeSerializer.PrimitiveDecimalSerializer` instead.
 
 ### `RoutingTarget` replaces `HostShard`
 
