@@ -319,8 +319,8 @@ A class without attributes is mapped exactly as before.
 
 As before, `GetTable<T>()` creates that mapping only when the global configuration
 doesn't have one for the class yet. An existing mapping takes precedence: a fluent
-mapping, or the one created by an earlier `GetTable<T>()` call or `Table<T>`
-constructor using the global configuration.
+mapping, or the one created when the class was first used with the global
+configuration, by a `GetTable<T>()` call, a `Table<T>` constructor or a `Mapper`.
 
 #### `ISession.WaitForSchemaAgreement`
 
@@ -605,9 +605,33 @@ public class User
 Mark clustering columns with `ClusteringKeyAttribute`.
 
 Since the mapper ignored `TableNameAttribute`, a class marked with it was mapped to
-the table named after the class, `User` in the example above. With `[Table("users")]`,
-the class maps to `users` instead, so give `TableAttribute` the name of the table that
-your code reads and writes.
+the table named after the class. With `[Table("users")]`, the class maps to `users`
+instead, so give `TableAttribute` the name of the table that your code reads and writes.
+
+Adding `TableAttribute` can also change the case of the names. The mapper creates the
+mapping of a class when the class is first used, and keeps it. The mappers and tables
+that use the same `MappingConfiguration` share these mappings, as
+`ISession.GetTable<T>()`, `new Mapper(session)` and `new Table<T>(session)` do with
+`MappingConfiguration.Global`: see
+[`Cassandra.Data.Linq` mapping attributes](#cassandradatalinq-mapping-attributes).
+`MappingConfiguration.ConvertTypesUsing()` starts a new set of mappings, which only the
+mappers and tables created afterwards use. Without `TableAttribute`:
+
+- When the deprecated `ISession.GetTable<T>()` extension created that mapping, the names
+  were case-sensitive, for every use of the class with that configuration: the class in
+  the example above was mapped to the table `"User"` and its property to the column
+  `"Id"`.
+- When an `IMapper` or a `Table<T>` constructor created it, the names were
+  case-insensitive, also for a later `GetTable<T>()`: the class was mapped to the table
+  `user` and its property to the column `id`.
+
+`TableAttribute` makes the names case-insensitive in both cases, since its
+`CaseSensitive` property is `false` by default. To keep case-sensitive names, use
+`[Table("User", CaseSensitive = true)]`. A fluent mapping of the class, defined with
+`MappingConfiguration.Define`, applies instead of the attributes, except where the
+mapping of the class was already created from them: define it before the class is first
+used. Defining a second fluent mapping of the same class throws an `ArgumentException`.
+The driver always quotes names that are reserved keywords, such as `Order`.
 
 #### Monitor reporting
 
