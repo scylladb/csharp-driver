@@ -100,11 +100,14 @@ namespace Cassandra
             _timeout = value;
         }
 
+        /// <summary>
+        /// Writes the frame of the request. The connection's writer calls it once it has claimed the operation with
+        /// <see cref="TryStartWriting"/>.
+        /// </summary>
         public long WriteFrame(
             short streamId, MemoryStream memoryStream, ISerializer serializer, bool useMetadataId, long timestamp)
         {
             var frameLength = Request.WriteFrame(streamId, memoryStream, serializer, useMetadataId);
-            Volatile.Write(ref _writeState, WriteStateWriting);
             _operationObserver.OnOperationSend(frameLength, timestamp);
             //We will not use the request any more, stop reference it.
             Request = null;
