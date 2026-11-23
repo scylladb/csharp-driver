@@ -17,6 +17,7 @@
 using System;
 using System.Linq;
 using System.Linq.Expressions;
+using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Mapping;
 using Cassandra.Mapping.Statements;
@@ -165,21 +166,37 @@ namespace Cassandra.Data.Linq
             }
         }
 
-        public async Task CreateAsync()
+        /// <summary>
+        /// Creates the table and its secondary indexes asynchronously.
+        /// </summary>
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops the statement being executed as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does, and the following ones aren't
+        /// executed, so the table can then exist without some of its secondary indexes.
+        /// </param>
+        public async Task CreateAsync(CancellationToken cancellationToken = default)
         {
             var serializer = _session.Cluster.Metadata.ControlConnection.Serializer.GetCurrentSerializer();
             var cqlQueries = CqlGenerator.GetCreate(serializer, PocoData, Name, KeyspaceName, false);
             foreach (var cql in cqlQueries)
             {
-                await _session.ExecuteAsync(new SimpleStatement(cql)).ConfigureAwait(false);
+                await _session.ExecuteAsync(new SimpleStatement(cql), cancellationToken).ConfigureAwait(false);
             }
         }
 
-        public async Task CreateIfNotExistsAsync()
+        /// <summary>
+        /// Creates the table and its secondary indexes asynchronously, unless the table already exists.
+        /// </summary>
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops the statement being executed as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does, and the following ones aren't
+        /// executed, so the table can then exist without some of its secondary indexes.
+        /// </param>
+        public async Task CreateIfNotExistsAsync(CancellationToken cancellationToken = default)
         {
             try
             {
-                await CreateAsync().ConfigureAwait(false);
+                await CreateAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (AlreadyExistsException)
             {

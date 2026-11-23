@@ -1020,6 +1020,43 @@ default. With `default` in place of `null`, the following calls fail the same wa
 In 3.x these calls passed null query options, so remove the `null` or `default`
 argument, or name it: `queryOptions: null`.
 
+### Cancellation tokens on LINQ methods
+
+The asynchronous LINQ methods take an optional `CancellationToken` as their last
+parameter:
+
+- `ExecuteAsync()` and `ExecutePagedAsync()` of a query, and `ExecuteAsync()` of the
+  queries that `First()`, `FirstOrDefault()` and `Count()` return;
+- `ExecuteAsync()` of the commands that `Insert()`, `Update()`, `Delete()` and their
+  conditional forms return, and of a `Batch`;
+- `Table<T>.CreateAsync()` and `CreateIfNotExistsAsync()`.
+
+```csharp
+var users = await table.Where(u => u.Id == id).ExecuteAsync(cancellationToken);
+await table.Insert(user).ExecuteAsync(cancellationToken);
+```
+
+Cancelling the token stops waiting for the preparation of a query or command, which
+continues, as with `ISession.PrepareAsync()` and the mapper, which doesn't pass the
+token to `ISession.PrepareAsync()`, and cancels the request as described for
+`ISession.ExecuteAsync()`. A batch isn't prepared. `CreateAsync()` executes a
+`CREATE TABLE` statement, then a `CREATE INDEX` statement for each secondary index:
+cancelling the token cancels the statement being executed, and the following ones aren't
+executed, so the table can then exist without some of its indexes.
+
+The token only applies to the first page. `ExecuteAsync()` of a query returns the rows
+of the first page, and reads the following pages while the result is enumerated.
+`ExecuteAsync()` of an `Insert()`, `Update()` or `Delete()` command returns an
+`AsyncRowSet`, whose following pages are retrieved as for `ISession.ExecuteAsync()`.
+A conditional command returns an `AppliedInfo<T>`.
+
+Calls that don't pass a token compile unchanged. Code compiled against 3.x must be
+recompiled, method groups no longer convert to delegates without the token, and code
+that calls these methods through reflection must pass the token, since reflection
+doesn't fill in optional parameters. A call that passes the `default` literal, such as
+`query.ExecuteAsync(default)`, now passes the default token. In 3.x it passed a null
+execution profile name, which failed.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.
