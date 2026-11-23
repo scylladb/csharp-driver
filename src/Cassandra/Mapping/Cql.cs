@@ -15,6 +15,7 @@
 //
 
 using System;
+using System.Threading;
 
 namespace Cassandra.Mapping
 {
@@ -51,6 +52,10 @@ namespace Cassandra.Mapping
         /// <summary>
         /// Creates a new Cql instance using the CQL string and bind variable values specified.
         /// </summary>
+        /// <exception cref="ArgumentException">
+        /// One of the parameter values is a <see cref="CancellationToken"/>, which can't be a parameter
+        /// value: pass it as the cancellationToken argument of an asynchronous <see cref="IMapper"/> method instead.
+        /// </exception>
         public Cql(string cql, params object[] args)
             : this(cql, args, new CqlQueryOptions())
         {
@@ -58,6 +63,16 @@ namespace Cassandra.Mapping
 
         private Cql(string cql, object[] args, CqlQueryOptions queryOptions)
         {
+            if (args != null && Array.Exists(args, arg => arg is CancellationToken))
+            {
+                // A token passed to a mapper overload that takes the parameter values as params, which can't take a
+                // token
+                throw new ArgumentException(
+                    "A CancellationToken can't be a query parameter value: pass it as the cancellationToken argument " +
+                    "of an asynchronous mapper method, such as the overloads that take a Cql.",
+                    nameof(args));
+            }
+
             AutoPage = true;
             Statement = cql;
             Arguments = args;
@@ -92,6 +107,10 @@ namespace Cassandra.Mapping
         /// <summary>
         /// Creates a new CQL instance from the CQL statement and parameters specified.
         /// </summary>
+        /// <exception cref="ArgumentException">
+        /// One of the parameter values is a <see cref="CancellationToken"/>, which can't be a parameter
+        /// value: pass it as the cancellationToken argument of an asynchronous <see cref="IMapper"/> method instead.
+        /// </exception>
         public static Cql New(string cql, params object[] args)
         {
             return new Cql(cql, args);

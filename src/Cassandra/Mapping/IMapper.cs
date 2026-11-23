@@ -14,6 +14,7 @@
 //   limitations under the License.
 //
 
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Cassandra.Mapping
@@ -67,22 +68,37 @@ namespace Cassandra.Mapping
         /// <summary>
         /// Executes the batch specified asynchronously.
         /// </summary>
+        /// <param name="batch">The batch to execute.</param>
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops waiting for the preparation of the
+        /// queries, if they're prepared, which continues, and stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied.
+        /// </param>
         /// <remarks>
         /// To set the consistency level, timestamp and other batch options, use
         /// <see cref="ICqlBatch.WithOptions(System.Action{CqlQueryOptions})"/>. Individual options for each
         /// query within the batch will be ignored.
         /// </remarks>
-        Task ExecuteAsync(ICqlBatch batch);
+        Task ExecuteAsync(ICqlBatch batch, CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Executes the batch specified asynchronously with the provided execution profile.
         /// </summary>
+        /// <param name="batch">The batch to execute.</param>
+        /// <param name="executionProfile">The execution profile to use when executing the request.</param>
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops waiting for the preparation of the
+        /// queries, if they're prepared, which continues, and stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied.
+        /// </param>
         /// <remarks>
         /// To set the consistency level, timestamp and other batch options, use
         /// <see cref="ICqlBatch.WithOptions(System.Action{CqlQueryOptions})"/>. Individual options for each
         /// query within the batch will be ignored.
         /// </remarks>
-        Task ExecuteAsync(ICqlBatch batch, string executionProfile);
+        Task ExecuteAsync(ICqlBatch batch, string executionProfile, CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Allows you to convert an argument/bind variable value being used in a CQL statement using the same converters that are being used by the client
@@ -149,7 +165,20 @@ namespace Cassandra.Mapping
         /// <summary>
         /// Inserts the specified POCO in Cassandra using the provided execution profile.
         /// </summary>
-        Task InsertAsync<T>(T poco, string executionProfile, CqlQueryOptions queryOptions = null);
+        /// <param name="poco">The POCO instance</param>
+        /// <param name="executionProfile">The execution profile to use when executing the request.</param>
+        /// <param name="queryOptions">Optional query options</param>
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops waiting for the preparation of the
+        /// query, if it's prepared, which continues, and stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied.
+        /// </param>
+        Task InsertAsync<T>(
+            T poco,
+            string executionProfile,
+            CqlQueryOptions queryOptions = null,
+            CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Inserts the specified POCO in Cassandra using the provided execution profile.
@@ -171,8 +200,20 @@ namespace Cassandra.Mapping
         /// <param name="ttl">Time to live (in seconds) for the inserted values. If set, the inserted values are automatically removed
         /// from the database after the specified time.</param>
         /// <param name="queryOptions">Optional query options</param>
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops waiting for the preparation of the
+        /// query, if it's prepared, which continues, and stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied.
+        /// </param>
         /// <returns></returns>
-        Task InsertAsync<T>(T poco, string executionProfile, bool insertNulls, int? ttl, CqlQueryOptions queryOptions = null);
+        Task InsertAsync<T>(
+            T poco,
+            string executionProfile,
+            bool insertNulls,
+            int? ttl,
+            CqlQueryOptions queryOptions = null,
+            CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Inserts the specified POCO in Cassandra using the provided execution profile.
@@ -192,8 +233,19 @@ namespace Cassandra.Mapping
         /// </para>
         /// </param>
         /// <param name="queryOptions">Optional query options</param>
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops waiting for the preparation of the
+        /// query, if it's prepared, which continues, and stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied.
+        /// </param>
         /// <returns></returns>
-        Task InsertAsync<T>(T poco, string executionProfile, bool insertNulls, CqlQueryOptions queryOptions = null);
+        Task InsertAsync<T>(
+            T poco,
+            string executionProfile,
+            bool insertNulls,
+            CqlQueryOptions queryOptions = null,
+            CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Updates the POCO specified in Cassandra using the provided execution profile.
@@ -203,7 +255,20 @@ namespace Cassandra.Mapping
         /// <summary>
         /// Updates the POCO specified in Cassandra using the provided execution profile.
         /// </summary>
-        Task UpdateAsync<T>(T poco, string executionProfile, CqlQueryOptions queryOptions = null);
+        /// <param name="poco">The POCO instance</param>
+        /// <param name="executionProfile">The execution profile to use when executing the request.</param>
+        /// <param name="queryOptions">Optional query options</param>
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops waiting for the preparation of the
+        /// query, if it's prepared, which continues, and stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied.
+        /// </param>
+        Task UpdateAsync<T>(
+            T poco,
+            string executionProfile,
+            CqlQueryOptions queryOptions = null,
+            CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Deletes the specified POCO from Cassandra using the provided execution profile.
@@ -213,7 +278,20 @@ namespace Cassandra.Mapping
         /// <summary>
         /// Deletes the specified POCO from Cassandra using the provided execution profile.
         /// </summary>
-        Task DeleteAsync<T>(T poco, string executionProfile, CqlQueryOptions queryOptions = null);
+        /// <param name="poco">The POCO instance</param>
+        /// <param name="executionProfile">The execution profile to use when executing the request.</param>
+        /// <param name="queryOptions">Optional query options</param>
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops waiting for the preparation of the
+        /// query, if it's prepared, which continues, and stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied.
+        /// </param>
+        Task DeleteAsync<T>(
+            T poco,
+            string executionProfile,
+            CqlQueryOptions queryOptions = null,
+            CancellationToken cancellationToken = default);
 
         ////Lightweight transaction support methods must be included at IMapper level as conditional queries are not supported in batches
 
@@ -242,6 +320,10 @@ namespace Cassandra.Mapping
         /// Returns information whether it was applied or not. If it was not applied, it returns details of the existing values.
         /// </para>
         /// </summary>
+        /// <exception cref="System.ArgumentException">
+        /// One of <paramref name="args"/> is a <see cref="CancellationToken"/>, which can't be a parameter value. To
+        /// cancel the query, pass <c>Cql.New(cql, args)</c> and the token to the overload that takes a <see cref="Cql"/>.
+        /// </exception>
         Task<AppliedInfo<T>> DeleteIfAsync<T>(string cql, params object[] args);
 
         /// <summary>
@@ -251,7 +333,14 @@ namespace Cassandra.Mapping
         /// Returns information whether it was applied or not. If it was not applied, it returns details of the existing values.
         /// </para>
         /// </summary>
-        Task<AppliedInfo<T>> DeleteIfAsync<T>(Cql cql);
+        /// <param name="cql">The query, with its parameter values and options.</param>
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops waiting for the preparation of the
+        /// query, if it's prepared, which continues, and stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied.
+        /// </param>
+        Task<AppliedInfo<T>> DeleteIfAsync<T>(Cql cql, CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Inserts the specified POCO in Cassandra, if not exists.
@@ -259,7 +348,16 @@ namespace Cassandra.Mapping
         /// Returns information whether it was applied or not. If it was not applied, it returns details of the existing values.
         /// </para>
         /// </summary>
-        Task<AppliedInfo<T>> InsertIfNotExistsAsync<T>(T poco, CqlQueryOptions queryOptions = null);
+        /// <param name="poco">The POCO instance</param>
+        /// <param name="queryOptions">Optional query options</param>
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops waiting for the preparation of the
+        /// query, if it's prepared, which continues, and stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied.
+        /// </param>
+        Task<AppliedInfo<T>> InsertIfNotExistsAsync<T>(
+            T poco, CqlQueryOptions queryOptions = null, CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Inserts the specified POCO in Cassandra, if not exists, with the provided execution profile.
@@ -267,7 +365,20 @@ namespace Cassandra.Mapping
         /// Returns information whether it was applied or not. If it was not applied, it returns details of the existing values.
         /// </para>
         /// </summary>
-        Task<AppliedInfo<T>> InsertIfNotExistsAsync<T>(T poco, string executionProfile, CqlQueryOptions queryOptions = null);
+        /// <param name="poco">The POCO instance</param>
+        /// <param name="executionProfile">The execution profile to use when executing the request.</param>
+        /// <param name="queryOptions">Optional query options</param>
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops waiting for the preparation of the
+        /// query, if it's prepared, which continues, and stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied.
+        /// </param>
+        Task<AppliedInfo<T>> InsertIfNotExistsAsync<T>(
+            T poco,
+            string executionProfile,
+            CqlQueryOptions queryOptions = null,
+            CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Inserts the specified POCO in Cassandra, if not exists.
@@ -286,8 +397,18 @@ namespace Cassandra.Mapping
         /// </para>
         /// </param>
         /// <param name="queryOptions">Optional query options</param>
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops waiting for the preparation of the
+        /// query, if it's prepared, which continues, and stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied.
+        /// </param>
         /// <returns></returns>
-        Task<AppliedInfo<T>> InsertIfNotExistsAsync<T>(T poco, bool insertNulls, CqlQueryOptions queryOptions = null);
+        Task<AppliedInfo<T>> InsertIfNotExistsAsync<T>(
+            T poco,
+            bool insertNulls,
+            CqlQueryOptions queryOptions = null,
+            CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Inserts the specified POCO in Cassandra, if not exists, with the provided execution profile.
@@ -307,8 +428,19 @@ namespace Cassandra.Mapping
         /// </para>
         /// </param>
         /// <param name="queryOptions">Optional query options</param>
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops waiting for the preparation of the
+        /// query, if it's prepared, which continues, and stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied.
+        /// </param>
         /// <returns></returns>
-        Task<AppliedInfo<T>> InsertIfNotExistsAsync<T>(T poco, string executionProfile, bool insertNulls, CqlQueryOptions queryOptions = null);
+        Task<AppliedInfo<T>> InsertIfNotExistsAsync<T>(
+            T poco,
+            string executionProfile,
+            bool insertNulls,
+            CqlQueryOptions queryOptions = null,
+            CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Inserts the specified POCO in Cassandra, if not exists.
@@ -329,8 +461,19 @@ namespace Cassandra.Mapping
         /// <param name="ttl">Time to live (in seconds) for the inserted values. If set, the inserted values are automatically removed
         /// from the database after the specified time.</param>
         /// <param name="queryOptions">Optional query options</param>
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops waiting for the preparation of the
+        /// query, if it's prepared, which continues, and stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied.
+        /// </param>
         /// <returns></returns>
-        Task<AppliedInfo<T>> InsertIfNotExistsAsync<T>(T poco, bool insertNulls, int? ttl, CqlQueryOptions queryOptions = null);
+        Task<AppliedInfo<T>> InsertIfNotExistsAsync<T>(
+            T poco,
+            bool insertNulls,
+            int? ttl,
+            CqlQueryOptions queryOptions = null,
+            CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Inserts the specified POCO in Cassandra, if not exists, with the provided execution profile.
@@ -352,8 +495,20 @@ namespace Cassandra.Mapping
         /// <param name="ttl">Time to live (in seconds) for the inserted values. If set, the inserted values are automatically removed
         /// from the database after the specified time.</param>
         /// <param name="queryOptions">Optional query options</param>
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops waiting for the preparation of the
+        /// query, if it's prepared, which continues, and stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied.
+        /// </param>
         /// <returns></returns>
-        Task<AppliedInfo<T>> InsertIfNotExistsAsync<T>(T poco, string executionProfile, bool insertNulls, int? ttl, CqlQueryOptions queryOptions = null);
+        Task<AppliedInfo<T>> InsertIfNotExistsAsync<T>(
+            T poco,
+            string executionProfile,
+            bool insertNulls,
+            int? ttl,
+            CqlQueryOptions queryOptions = null,
+            CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Inserts the specified POCO in Cassandra, if not exists.
@@ -482,7 +637,14 @@ namespace Cassandra.Mapping
         /// Returns information whether it was applied or not. If it was not applied, it returns details of the existing values.
         /// </para>
         /// </summary>
-        Task<AppliedInfo<T>> UpdateIfAsync<T>(Cql cql);
+        /// <param name="cql">The query, with its parameter values and options.</param>
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops waiting for the preparation of the
+        /// query, if it's prepared, which continues, and stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied.
+        /// </param>
+        Task<AppliedInfo<T>> UpdateIfAsync<T>(Cql cql, CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Updates the table for the poco type specified (T) using the CQL statement specified, using lightweight transactions.
@@ -491,6 +653,10 @@ namespace Cassandra.Mapping
         /// Returns information whether it was applied or not. If it was not applied, it returns details of the existing values.
         /// </para>
         /// </summary>
+        /// <exception cref="System.ArgumentException">
+        /// One of <paramref name="args"/> is a <see cref="CancellationToken"/>, which can't be a parameter value. To
+        /// cancel the query, pass <c>Cql.New(cql, args)</c> and the token to the overload that takes a <see cref="Cql"/>.
+        /// </exception>
         Task<AppliedInfo<T>> UpdateIfAsync<T>(string cql, params object[] args);
 
         /// <summary>
@@ -499,12 +665,19 @@ namespace Cassandra.Mapping
         /// <para>
         /// Returns information whether it was applied or not. If it was not applied, it returns details of the existing values.
         /// </para>
+        /// <param name="batch">The batch to execute.</param>
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops waiting for the preparation of the
+        /// queries, if they're prepared, which continues, and stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied.
+        /// </param>
         /// <remarks>
         /// To set the consistency level, timestamp and other batch options, use
         /// <see cref="ICqlBatch.WithOptions(System.Action{CqlQueryOptions})"/>. Individual options for each
         /// query within the batch will be ignored.
         /// </remarks>
-        Task<AppliedInfo<T>> ExecuteConditionalAsync<T>(ICqlBatch batch);
+        Task<AppliedInfo<T>> ExecuteConditionalAsync<T>(ICqlBatch batch, CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Executes a batch that contains a Lightweight transaction with the provided execution profile.
@@ -512,12 +685,21 @@ namespace Cassandra.Mapping
         /// <para>
         /// Returns information whether it was applied or not. If it was not applied, it returns details of the existing values.
         /// </para>
+        /// <param name="batch">The batch to execute.</param>
+        /// <param name="executionProfile">The execution profile to use when executing the request.</param>
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops waiting for the preparation of the
+        /// queries, if they're prepared, which continues, and stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied.
+        /// </param>
         /// <remarks>
         /// To set the consistency level, timestamp and other batch options, use
         /// <see cref="ICqlBatch.WithOptions(System.Action{CqlQueryOptions})"/>. Individual options for each
         /// query within the batch will be ignored.
         /// </remarks>
-        Task<AppliedInfo<T>> ExecuteConditionalAsync<T>(ICqlBatch batch, string executionProfile);
+        Task<AppliedInfo<T>> ExecuteConditionalAsync<T>(
+            ICqlBatch batch, string executionProfile, CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Executes a batch that contains a Lightweight transaction. 
