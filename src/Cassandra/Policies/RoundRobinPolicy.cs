@@ -15,6 +15,7 @@
 //
 
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Linq;
 
@@ -41,6 +42,11 @@ namespace Cassandra
         int _index;
         private int _fallbackIndex;
 
+        // The hosts of each snapshot's host collection as a list. A collection is a new instance whenever hosts change,
+        // and its entry goes away with it, so a policy shared by several clusters keeps a list for each
+        private readonly ConditionalWeakTable<IReadOnlyCollection<Host>, Host[]> _hosts =
+            new ConditionalWeakTable<IReadOnlyCollection<Host>, Host[]>();
+
         /// <summary>
         ///  Return the HostDistance for the provided host. <p> This policy consider all
         ///  nodes as local. This is generally the right thing to do in a single
@@ -62,13 +68,13 @@ namespace Cassandra
         /// <param name="metadata">The snapshot of the cluster metadata, which gives the hosts.</param>
         public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot metadata)
         {
-            var hosts = (metadata ?? MetadataSnapshot.Empty).Hosts;
+            var hosts = GetHosts((metadata ?? MetadataSnapshot.Empty).Hosts);
             if (hosts.Count == 0)
             {
                 return null;
             }
 
-            return new RoutingTarget(hosts.ElementAt(NextStartIndex(routing, ref _index) % hosts.Count), null);
+            return new RoutingTarget(hosts[NextStartIndex(routing, ref _index) % hosts.Count], null);
         }
 
         /// <summary>
@@ -80,12 +86,20 @@ namespace Cassandra
         /// <param name="metadata">The snapshot of the cluster metadata, which gives the hosts.</param>
         public IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot metadata)
         {
-            var hosts = (metadata ?? MetadataSnapshot.Empty).Hosts.ToArray();
+            var hosts = GetHosts((metadata ?? MetadataSnapshot.Empty).Hosts);
             var startIndex = NextStartIndex(routing, ref _fallbackIndex);
-            for (var i = 0; i < hosts.Length; i++)
+            for (var i = 0; i < hosts.Count; i++)
             {
-                yield return new RoutingTarget(hosts[(startIndex + i) % hosts.Length], null);
+                yield return new RoutingTarget(hosts[(startIndex + i) % hosts.Count], null);
             }
+        }
+
+        /// <summary>
+        /// Gets <paramref name="hosts"/> as a list, reusing the one computed for the same host collection.
+        /// </summary>
+        internal IReadOnlyList<Host> GetHosts(IReadOnlyCollection<Host> hosts)
+        {
+            return _hosts.GetValue(hosts, static collection => collection.ToArray());
         }
 
         // A request routed as a lightweight transaction tries the hosts in the same order every time

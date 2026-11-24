@@ -312,6 +312,48 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public void RoundRobinPolicyRebuildsItsHostsWhenHostsChange()
+        {
+            var metadata = new Metadata(new Configuration());
+            var h1 = AddHost(metadata, "127.0.0.1", "dc1");
+            var h2 = AddHost(metadata, "127.0.0.2", "dc2");
+            var policy = new RoundRobinPolicy();
+
+            var hosts = policy.GetHosts(metadata.GetSnapshot().Hosts);
+            CollectionAssert.AreEquivalent(new[] { h1, h2 }, hosts);
+
+            // Reused while the hosts don't change
+            Assert.AreSame(hosts, policy.GetHosts(metadata.GetSnapshot().Hosts));
+
+            var h3 = AddHost(metadata, "127.0.0.3", "dc1");
+            CollectionAssert.AreEquivalent(new[] { h1, h2, h3 }, policy.GetHosts(metadata.GetSnapshot().Hosts));
+            CollectionAssert.AreEquivalent(
+                new[] { h1, h2, h3 }, policy.Fallback(null, metadata.GetSnapshot()).Select(t => t.Host));
+
+            metadata.Hosts.RemoveIfExists(h2.Address);
+            CollectionAssert.AreEquivalent(new[] { h1, h3 }, policy.GetHosts(metadata.GetSnapshot().Hosts));
+            CollectionAssert.AreEquivalent(
+                new[] { h1, h3 }, policy.Fallback(null, metadata.GetSnapshot()).Select(t => t.Host));
+        }
+
+        [Test]
+        public void RoundRobinPolicyKeepsTheHostsOfEachClusterItIsSharedBy()
+        {
+            var metadata1 = new Metadata(new Configuration());
+            AddHost(metadata1, "127.0.0.1", "dc1");
+            var metadata2 = new Metadata(new Configuration());
+            AddHost(metadata2, "127.0.0.2", "dc1");
+            var policy = new RoundRobinPolicy();
+
+            var hosts1 = policy.GetHosts(metadata1.GetSnapshot().Hosts);
+            var hosts2 = policy.GetHosts(metadata2.GetSnapshot().Hosts);
+
+            // Alternating between the clusters reuses each one's list
+            Assert.AreSame(hosts1, policy.GetHosts(metadata1.GetSnapshot().Hosts));
+            Assert.AreSame(hosts2, policy.GetHosts(metadata2.GetSnapshot().Hosts));
+        }
+
+        [Test]
         public void DCAwareRoundRobinPolicyDropsAHostOnceItsDatacenterTurnsOutRemote()
         {
             var metadata = new Metadata(new Configuration());
