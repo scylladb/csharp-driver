@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using Cassandra.Requests;
 using Cassandra.Serialization;
 using Cassandra.SessionManagement;
@@ -343,6 +344,13 @@ namespace Cassandra.Tests
 
             Assert.IsNull(mock.Object.PreparedStatement);
             Assert.IsNull(derived.PreparedStatement);
+
+            // The tests and Moq can also call an internal constructor, so its accessibility is checked: code outside
+            // the driver can call it because it is protected
+            var constructor = typeof(BoundStatement).GetConstructor(
+                BindingFlags.Instance | BindingFlags.NonPublic, Type.EmptyTypes);
+            Assert.IsNotNull(constructor);
+            Assert.IsTrue(constructor.IsFamily);
         }
 
         private class DerivedBoundStatement : BoundStatement
