@@ -306,7 +306,27 @@ A PR that claims a performance improvement should include before/after results f
 
 ## License headers
 
-The code analysis that runs on CI builds will return errors if the license headers are missing.
+Every file starts with a license header. With the code analyzers enabled, StyleCop reports a file without one (SA1633), and its code fix inserts the header that [src/stylecop.json](./src/stylecop.json) configures. New files use this ScyllaDB header:
+
+```csharp
+//
+//      Copyright (C) ScyllaDB
+//
+//   Licensed under the Apache License, Version 2.0 (the "License");
+//   you may not use this file except in compliance with the License.
+//   You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+//   Unless required by applicable law or agreed to in writing, software
+//   distributed under the License is distributed on an "AS IS" BASIS,
+//   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+//   See the License for the specific language governing permissions and
+//   limitations under the License.
+//
+```
+
+Files inherited from the DataStax driver keep their DataStax header: the Apache License requires keeping their copyright notice. SA1636, which reports a header that doesn't match the configured one, is therefore turned off, since its code fix would replace it.
 
 ## Commits
 
