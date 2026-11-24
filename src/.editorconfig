@@ -226,7 +226,9 @@ dotnet_diagnostic.SA1120.severity = silent
 dotnet_diagnostic.SA1611.severity = silent
 
 # SA1636: File header copyright text should match
-dotnet_diagnostic.SA1636.severity = suggestion
+# Off: its code fix replaces the whole header, which would drop the copyright notice of the files inherited from the
+# DataStax driver. New files get the configured header from the SA1633 code fix.
+dotnet_diagnostic.SA1636.severity = none
 
 # SA1615: Element return value should be documented
 dotnet_diagnostic.SA1615.severity = silent
