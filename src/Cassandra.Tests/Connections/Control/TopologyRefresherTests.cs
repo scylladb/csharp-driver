@@ -42,6 +42,25 @@ namespace Cassandra.Tests.Connections.Control
 
         private ISerializer _serializer = new SerializerManager(ProtocolVersion.MaxSupported).GetCurrentSerializer();
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public void NullAddressTranslationRetainsAdvertisedEndpoint(bool peersV2)
+        {
+            var address = IPAddress.Parse("127.0.0.2");
+            var row = TestHelper.CreateRow(new Dictionary<string, object>
+            {
+                { "rpc_address", address }, { "native_address", address }, { "native_port", 9142 }
+            });
+            var translator = new Mock<IAddressTranslator>();
+            translator.Setup(value => value.Translate(It.IsAny<IPEndPoint>())).Returns((IPEndPoint)null);
+            var config = new TestConfigurationBuilder().Build();
+            using var metadata = new Metadata(config);
+            var refresher = new TopologyRefresher(metadata, config);
+
+            Assert.AreEqual(new IPEndPoint(address, peersV2 ? 9142 : 9042),
+                refresher.GetRpcEndPoint(peersV2, row, translator.Object, 9042));
+        }
+
         private FakeMetadataRequestHandler CreateFakeMetadataRequestHandler(
             IRow localRow = null,
             IEnumerable<IRow> peersRows = null,
@@ -373,23 +392,33 @@ namespace Cassandra.Tests.Connections.Control
             Assert.AreEqual(1, _metadata.AllHosts().Count(h => h.Address.Address.ToString() == "127.0.0.10"));
         }
 
-        [TestCase(false)]
-        [TestCase(true)]
-        public void NullAddressTranslationRetainsAdvertisedEndpoint(bool peersV2)
-        {
-            var address = IPAddress.Parse("127.0.0.2");
-            var row = TestHelper.CreateRow(new Dictionary<string, object>
-            {
-                { "rpc_address", address }, { "native_address", address }, { "native_port", 9142 }
-            });
-            var translator = new Mock<IAddressTranslator>();
-            translator.Setup(value => value.Translate(It.IsAny<IPEndPoint>())).Returns((IPEndPoint)null);
-            var config = new TestConfigurationBuilder().Build();
-            using var metadata = new Metadata(config);
-            var refresher = new TopologyRefresher(metadata, config);
 
-            Assert.AreEqual(new IPEndPoint(address, peersV2 ? 9142 : 9042),
-                refresher.GetRpcEndPoint(peersV2, row, translator.Object, 9042));
+        [Test]
+        public async Task Should_UsePeerAddressWhenSystemPeersRpcIsIPv6BindAll()
+        {
+            var ipv6Any = new IPAddress(new byte[16]);
+            var peerAddress = IPAddress.Parse("2001:db8::12");
+            var peerRows = TestHelper.CreateRows(new List<Dictionary<string, object>>
+            {
+                new Dictionary<string, object>
+                {
+                    { "rpc_address", ipv6Any },
+                    { "peer", peerAddress },
+                    { "data_center", "ut-dc" },
+                    { "rack", "ut-rack" },
+                    { "tokens", null },
+                    { "release_version", "2.2.1" }
+                }
+            });
+            var topologyRefresher = CreateTopologyRefresher(peersRows: peerRows);
+
+            await topologyRefresher.RefreshNodeListAsync(
+                new FakeConnectionEndPoint("127.0.0.1", 9042),
+                Mock.Of<IConnection>(),
+                _serializer).ConfigureAwait(false);
+
+            Assert.NotNull(_metadata.GetHost(new IPEndPoint(peerAddress, ProtocolOptions.DefaultPort)));
+            Assert.IsNull(_metadata.GetHost(new IPEndPoint(ipv6Any, ProtocolOptions.DefaultPort)));
         }
 
         [Test]
@@ -431,34 +460,6 @@ namespace Cassandra.Tests.Connections.Control
             Assert.AreEqual(portNumber, invokedEndPoints[0].Port);
             Assert.AreEqual(hostAddress3, invokedEndPoints[1].Address);
             Assert.AreEqual(portNumber, invokedEndPoints[1].Port);
-        }
-
-        [Test]
-        public async Task Should_UsePeerAddressWhenSystemPeersRpcIsIPv6BindAll()
-        {
-            var ipv6Any = new IPAddress(new byte[16]);
-            var peerAddress = IPAddress.Parse("2001:db8::12");
-            var peerRows = TestHelper.CreateRows(new List<Dictionary<string, object>>
-            {
-                new Dictionary<string, object>
-                {
-                    { "rpc_address", ipv6Any },
-                    { "peer", peerAddress },
-                    { "data_center", "ut-dc" },
-                    { "rack", "ut-rack" },
-                    { "tokens", null },
-                    { "release_version", "2.2.1" }
-                }
-            });
-            var topologyRefresher = CreateTopologyRefresher(peersRows: peerRows);
-
-            await topologyRefresher.RefreshNodeListAsync(
-                new FakeConnectionEndPoint("127.0.0.1", 9042),
-                Mock.Of<IConnection>(),
-                _serializer).ConfigureAwait(false);
-
-            Assert.NotNull(_metadata.GetHost(new IPEndPoint(peerAddress, ProtocolOptions.DefaultPort)));
-            Assert.IsNull(_metadata.GetHost(new IPEndPoint(ipv6Any, ProtocolOptions.DefaultPort)));
         }
     }
 }
