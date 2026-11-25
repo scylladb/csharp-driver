@@ -44,6 +44,8 @@ namespace Cassandra.Requests
         private readonly IInternalSession _session;
         private readonly IRequestResultHandler _requestResultHandler;
         private long _state;
+        private int _requestSucceeded;
+        private ConcurrentDictionary<IPEndPoint, ConnectionFailure> _connectionFailures;
         private volatile bool _cancelledByCaller;
         private readonly TaskCompletionSource _stoppedByCaller =
             new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -538,11 +540,34 @@ namespace Cassandra.Requests
         }
 
         /// <inheritdoc />
-        public Task<IConnection> GetConnectionToValidHostAsync(ValidHost validHost, IDictionary<IPEndPoint, Exception> triedHosts)
+        public async Task<IConnection> GetConnectionToValidHostAsync(ValidHost validHost, IDictionary<IPEndPoint, Exception> triedHosts)
         {
             // The shard the query plan chose, such as the shard that owns a tablet
             var shardID = validHost.Shard ?? -1;
-            return RequestHandler.GetConnectionFromHostAsync(validHost.Host, validHost.Distance, _session, triedHosts, Statement != null ? Statement.RoutingKey : null, shardID);
+            var connection = await RequestHandler.GetConnectionFromHostAsync(
+                validHost.Host,
+                validHost.Distance,
+                _session,
+                triedHosts,
+                Statement != null ? Statement.RoutingKey : null,
+                shardID).ConfigureAwait(false);
+            if (connection == null && triedHosts.TryGetValue(validHost.Host.Address, out var failure) && failure != null)
+            {
+                // Speculative executions share the request outcome, but have separate tried-host maps.
+                // Retain the first acquisition failure for each host until that outcome is known.
+                var recorded = LazyInitializer.EnsureInitialized(ref _connectionFailures)
+                    .GetOrAdd(validHost.Host.Address, new ConnectionFailure(failure));
+
+                // Cancelling an execution does not cancel a shared pool open. Its failure can arrive
+                // after a speculative winner returned. An asynchronous observer can complete the
+                // internal result after the caller has cancelled, so use the caller-facing outcome.
+                if (Volatile.Read(ref _requestSucceeded) != 0)
+                {
+                    RequestHandler.LogConnectionFailure(validHost.Host.Address, recorded);
+                }
+            }
+
+            return connection;
         }
 
         /// <summary>
@@ -586,7 +611,24 @@ namespace Cassandra.Requests
             RoutingKey routingKey,
             int shardID = -1)
         {
-            var hostPool = session.GetOrCreateConnectionPool(host, distance);
+            IHostConnectionPool hostPool;
+            try
+            {
+                hostPool = session.GetOrCreateConnectionPool(host, distance);
+            }
+            catch (HostConnectionPoolNotEligibleException ex)
+            {
+                // The selected host is removed, ignored, down, or absent from routed metadata.
+                triedHosts[host.Address] = ex;
+                return null;
+            }
+            catch (ObjectDisposedException ex) when (session.IsDisposed)
+            {
+                // Shutdown may race the caller's disposed check before pool lookup.
+                triedHosts[host.Address] = ex;
+                throw new NoHostAvailableException(new Dictionary<IPEndPoint, Exception>(triedHosts));
+            }
+
 
             try
             {
@@ -623,7 +665,9 @@ namespace Cassandra.Requests
                 // doesn't block the caller
                 var completedNow = TryStopForCaller();
                 _ = Task.Run(() => NotifyCanceledAsync(cancellationToken, completedNow), CancellationToken.None);
-                return await WaitForResultAsync(cancellationToken).ConfigureAwait(false);
+                var result = await WaitForResultAsync(cancellationToken).ConfigureAwait(false);
+                ReportConnectionFailures();
+                return result;
             }
 
             // The callback runs on the thread that cancels the token: complete the request on the thread pool, so
@@ -659,7 +703,42 @@ namespace Cassandra.Requests
                         TaskScheduler.Default);
                 }
 
-                return await WaitForResultAsync(cancellationToken).ConfigureAwait(false);
+                var result = await WaitForResultAsync(cancellationToken).ConfigureAwait(false);
+                ReportConnectionFailures();
+                return result;
+            }
+        }
+
+        private void ReportConnectionFailures()
+        {
+            Volatile.Write(ref _requestSucceeded, 1);
+            var failures = Volatile.Read(ref _connectionFailures);
+            if (failures != null)
+            {
+                foreach (var failure in failures)
+                {
+                    RequestHandler.LogConnectionFailure(failure.Key, failure.Value);
+                }
+            }
+        }
+
+        private static void LogConnectionFailure(IPEndPoint address, ConnectionFailure failure)
+        {
+            if (!failure.TryReport())
+            {
+                return;
+            }
+
+            try
+            {
+                RequestHandler.Logger.Info(
+                    "Request succeeded after a connection attempt to {0} failed: {1}",
+                    address,
+                    failure.Exception);
+            }
+            catch (Exception diagnosticFailure) when (!Utils.IsFatalException(diagnosticFailure))
+            {
+                // An ordinary diagnostic sink failure must not replace the successful result.
             }
         }
 
@@ -785,6 +864,23 @@ namespace Cassandra.Requests
             var observer = session.ObserverFactory.CreateRequestObserver();
             await observer.OnRequestStartAsync(requestTrackingInfo).ConfigureAwait(false);
             return new Tuple<SessionRequestInfo, IRequestObserver>(requestTrackingInfo, observer);
+        }
+
+        private sealed class ConnectionFailure
+        {
+            private int _reported;
+
+            public ConnectionFailure(Exception exception)
+            {
+                Exception = exception;
+            }
+
+            public Exception Exception { get; }
+
+            public bool TryReport()
+            {
+                return Interlocked.Exchange(ref _reported, 1) == 0;
+            }
         }
     }
 }

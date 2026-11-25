@@ -201,9 +201,11 @@ namespace Cassandra.Connections.Control
 
             // A routed connection can survive an advertised-address change. Its
             // captured metadata endpoint must not override the current local row.
-            if (endPoint is ClientRouteConnectionEndPoint routed)
+            if (endPoint is ClientRouteConnectionEndPoint || _config.ClientRoutesRuntime != null)
             {
-                advertisedPort = _metadata.GetHost(hostId)?.AdvertisedPort ?? routed.AdvertisedPort ?? _config.ProtocolOptions.Port;
+                advertisedPort = _metadata.GetHost(hostId)?.AdvertisedPort ??
+                    (endPoint as ClientRouteConnectionEndPoint)?.AdvertisedPort ??
+                    _config.ClientRoutesRuntime?.Options.NativeTransportPort ?? _config.ProtocolOptions.Port;
                 hostIpEndPoint = GetRpcEndPoint(false, row, _config.AddressTranslator, advertisedPort.Value) ?? hostIpEndPoint;
             }
 
@@ -235,7 +237,8 @@ namespace Cassandra.Connections.Control
             var peers = new Dictionary<Guid, (IRow Row, IPEndPoint Address)>();
             foreach (var row in peersRs)
             {
-                var address = GetRpcEndPoint(isPeersV2, row, _config.AddressTranslator, _config.ProtocolOptions.Port);
+                var address = GetRpcEndPoint(isPeersV2, row, _config.AddressTranslator,
+                    _config.ClientRoutesRuntime?.Options.NativeTransportPort ?? _config.ProtocolOptions.Port);
                 if (address == null)
                 {
                     ControlConnection.Logger.Error("No address found for host, ignoring it.");
