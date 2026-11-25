@@ -422,14 +422,13 @@ namespace Cassandra.Tests.Connections
             int connectTimeoutMillis = 10000,
             Action<TcpSocket> configureSocket = null)
         {
-            var (root, certificate) = CreateServerCertificate();
-            using var rootCertificate = root;
-            using var serverCertificate = certificate;
+            var (rootCertificate, serverCertificate) = CreateServerCertificate();
             var sslOptions = sslOptionsFor(rootCertificate);
             var listener = new TcpListener(IPAddress.Loopback, 0);
             listener.Start();
             Task<SslStream> server = null;
             SslStream serverStream = null;
+            Task connect = null;
             try
             {
                 server = AcceptTlsAsync(listener, serverCertificate, serverProtocol);
@@ -439,7 +438,7 @@ namespace Cassandra.Tests.Connections
                 configureSocket?.Invoke(socket);
 
                 // On the thread pool, so that the bound below applies even when Connect blocks before returning
-                var connect = Task.Run(() => socket.Connect());
+                connect = Task.Run(() => socket.Connect());
                 await connect.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
                 serverStream = await server.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
                 return serverStream.NegotiatedApplicationProtocol;
@@ -447,27 +446,52 @@ namespace Cassandra.Tests.Connections
             finally
             {
                 listener.Stop();
-                if (serverStream != null)
+
+                // Disposing a certificate while .NET builds a chain with it leaks native chain state, whose
+                // finalization can crash the test process. The client's handshake outlives a connect that timed out,
+                // or that the test stopped waiting for, and may still be building its chain with the root certificate:
+                // leave the certificates to the garbage collector then.
+                var disposeCertificates = connect == null
+                    || (connect.IsCompleted && connect.Exception?.InnerException is not TimeoutException);
+                if (serverStream == null && server != null)
                 {
-                    serverStream.Dispose();
+                    // The client's socket is closed by now, so the server's handshake fails promptly, or completes
+                    // after the test stopped waiting. Wait for it before disposing the certificates: it starts by
+                    // building the chain of its certificate.
+                    try
+                    {
+                        serverStream = await server.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+                    }
+                    catch (TimeoutException)
+                    {
+                        // Still running: leave the certificates to the garbage collector rather than dispose them in
+                        // use, and observe the handshake's failure, or dispose its stream.
+                        disposeCertificates = false;
+                        server.ContinueWith(
+                            t =>
+                            {
+                                if (t.IsCompletedSuccessfully)
+                                {
+                                    t.Result.Dispose();
+                                }
+                                else
+                                {
+                                    _ = t.Exception;
+                                }
+                            },
+                            TaskScheduler.Default).Forget();
+                    }
+                    catch (Exception)
+                    {
+                        // The expected failure of the server's handshake
+                    }
                 }
-                else
+
+                serverStream?.Dispose();
+                if (disposeCertificates)
                 {
-                    // The server's handshake fails too when the client fails, or completes after the test stopped
-                    // waiting: observe its failure, or dispose its stream.
-                    server?.ContinueWith(
-                        t =>
-                        {
-                            if (t.IsCompletedSuccessfully)
-                            {
-                                t.Result.Dispose();
-                            }
-                            else
-                            {
-                                _ = t.Exception;
-                            }
-                        },
-                        TaskScheduler.Default).Forget();
+                    serverCertificate.Dispose();
+                    rootCertificate.Dispose();
                 }
             }
         }
