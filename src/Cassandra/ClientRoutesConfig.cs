@@ -42,7 +42,8 @@ namespace Cassandra
         /// from 1 through 65535. See <see cref="NativeTransportPort"/>.
         /// </param>
         /// <param name="shardAwarenessEnabled">
-        /// Whether shard-aware source-port selection is enabled for routed connections.
+        /// Whether shard awareness is enabled for connections using client routes, unless disabled globally by
+        /// <see cref="PoolingOptions.DisableShardAwareness"/>.
         /// See <see cref="ShardAwarenessEnabled"/>.
         /// </param>
         /// <exception cref="ArgumentNullException"><paramref name="proxies"/> is null.</exception>
@@ -75,20 +76,26 @@ namespace Cassandra
         /// <remarks>
         /// When client routes are enabled, this port replaces <see cref="Builder.WithPort"/> for node addresses read
         /// from <c>system.local</c> and <c>system.peers</c>, and from <c>system.peers_v2</c> rows without a native port.
-        /// Those addresses are used for direct connections to hosts that have no client route; contact points are
-        /// dialed as configured. Routed connections always use the port from <c>system.client_routes</c>:
+        /// Those addresses are used for connections to hosts that have no client route; contact points are
+        /// dialed as configured. Connections using client routes always use the port from <c>system.client_routes</c>:
         /// <c>tls_port</c> when SSL is configured, otherwise <c>port</c>.
         /// </remarks>
         public int NativeTransportPort => _snapshot.NativeTransportPort;
 
         /// <summary>
-        /// Gets whether shard-aware source-port selection is enabled for client-routes connections.
+        /// Gets whether shard awareness is enabled for connections using client routes, unless disabled globally by
+        /// <see cref="PoolingOptions.DisableShardAwareness"/>.
         /// The default is <c>false</c>.
         /// </summary>
         /// <remarks>
-        /// Shard-aware routing through a proxy only works when the proxy preserves the client's source port,
-        /// so it is opt-in. This setting only affects routed connections; direct connections to hosts without
-        /// a client route remain shard-aware.
+        /// Enabling this setting allows shard-aware source-port selection, token-to-shard routing and pool sizing
+        /// in shard multiples for connections using client routes. Source-port targeting requires the proxy to
+        /// preserve the client's source port, so shard awareness for connections using client routes is opt-in.
+        /// When disabled, connections using client routes do not use shard metadata for routing, pool sizing or
+        /// choosing a shard when opening a connection.
+        /// <see cref="PoolingOptions.DisableShardAwareness"/> overrides this setting for connections using client routes too.
+        /// This setting only affects connections using client routes. Connections to hosts without a client route
+        /// remain shard-aware unless shard awareness is disabled globally.
         /// </remarks>
         public bool ShardAwarenessEnabled => _snapshot.ShardAwarenessEnabled;
 

@@ -130,20 +130,39 @@ namespace Cassandra.Requests
         private async Task SendToCurrentHostAsync()
         {
             var host = _host;
+            var acquiringConnection = true;
             try
             {
                 // host needs to be re-validated using the load balancing policy
                 _connection = await _parent.ValidateHostAndGetConnectionAsync(new RoutingTarget(host, _shard), _triedHosts).ConfigureAwait(false);
+                acquiringConnection = false;
                 if (_connection != null)
                 {
                     await SendAsync(_request, host, HandleResponseAsync).ConfigureAwait(false);
                     return;
                 }
 
+                RecordConnectionFailure(host);
                 RequestExecution.Logger.Warning("RequestHandler could not obtain a connection while attempting to retry with the current host.");
+            }
+            catch (Exception ex) when (Utils.IsFatalException(ex))
+            {
+                // A late diagnostic failure must still fault this execution after the caller has completed.
+                if (!await _parent.SetCompletedAsync(ex).ConfigureAwait(false))
+                {
+                    RecordLateFatalExecutionFailure(host, ex);
+                    throw;
+                }
+
+                return;
             }
             catch (Exception ex)
             {
+                if (acquiringConnection && !await RecordAcquisitionFailureAsync(host, ex).ConfigureAwait(false))
+                {
+                    return;
+                }
+
                 RequestExecution.Logger.Warning("RequestHandler received exception while attempting to retry with the current host: {0}", ex.ToString());
             }
 
@@ -159,12 +178,20 @@ namespace Cassandra.Requests
         /// <returns></returns>
         private async Task SendToNextHostAsync(ValidHost validHost)
         {
+            var acquiringConnection = false;
             try
             {
                 IConnection connection = null;
                 while (connection == null)
                 {
+                    acquiringConnection = true;
                     connection = await _parent.GetConnectionToValidHostAsync(validHost, _triedHosts).ConfigureAwait(false);
+                    acquiringConnection = false;
+                    if (connection == null)
+                    {
+                        RecordConnectionFailure(validHost.Host);
+                    }
+
                     if (Volatile.Read(ref _cancelled) != 0)
                     {
                         // Cancelled while waiting for a connection: don't try the next hosts
@@ -182,11 +209,64 @@ namespace Cassandra.Requests
                 _host = validHost.Host;
                 await SendAsync(_request, validHost.Host, HandleResponseAsync).ConfigureAwait(false);
             }
+            catch (Exception ex) when (Utils.IsFatalException(ex))
+            {
+                if (!await _parent.SetCompletedAsync(ex).ConfigureAwait(false))
+                {
+                    RecordLateFatalExecutionFailure(validHost.Host, ex);
+                    throw;
+                }
+            }
             catch (Exception ex)
             {
+                if (acquiringConnection && !await RecordAcquisitionFailureAsync(validHost.Host, ex).ConfigureAwait(false))
+                {
+                    return;
+                }
+
                 _shard = validHost.Shard;
                 _host = validHost.Host;
                 await HandleResponseAsync(RequestError.CreateClientError(ex, true), null, new NodeRequestInfo(validHost.Host, _sessionRequestInfo.PrepareRequest)).ConfigureAwait(false);
+            }
+        }
+
+        private async Task<bool> RecordAcquisitionFailureAsync(Host host, Exception failure)
+        {
+            try
+            {
+                _parent.RecordConnectionFailure(host.Address, failure);
+                return true;
+            }
+            catch (Exception diagnosticFailure) when (Utils.IsFatalException(diagnosticFailure))
+            {
+                if (!await _parent.SetCompletedAsync(diagnosticFailure).ConfigureAwait(false))
+                {
+                    RecordLateFatalExecutionFailure(host, diagnosticFailure);
+                    throw;
+                }
+
+                return false;
+            }
+        }
+
+        private void RecordConnectionFailure(Host host)
+        {
+            if (_triedHosts.TryGetValue(host.Address, out var failure) && failure != null)
+            {
+                _parent.RecordConnectionFailure(host.Address, failure);
+            }
+        }
+
+        private void RecordLateFatalExecutionFailure(Host host, Exception failure)
+        {
+            try
+            {
+                // The request owns returned-cause filtering and identity across speculative executions.
+                _parent.RecordConnectionFailure(host.Address, failure);
+            }
+            catch (Exception)
+            {
+                // Keep the already-selected fatal execution failure if diagnostics also fail.
             }
         }
 
@@ -304,7 +384,12 @@ namespace Cassandra.Requests
                     await _requestObserver.OnNodeRequestErrorAsync(
                         RequestError.CreateClientError(handlerException, false), _sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
                 }
-                await _parent.SetCompletedAsync(handlerException).ConfigureAwait(false);
+
+                if (!await _parent.SetCompletedAsync(handlerException).ConfigureAwait(false) && Utils.IsFatalException(handlerException))
+                {
+                    RecordLateFatalExecutionFailure(nodeRequestInfo.Host, handlerException);
+                    throw;
+                }
             }
         }
 
@@ -327,17 +412,25 @@ namespace Cassandra.Requests
                 _session.CheckHealth(nodeRequestInfo.Host, timedOutConnection);
             }
 
-            //Do nothing else (except calling request observer), another execution finished already set the response
-            if (_parent.SetNodeExecutionCompleted(nodeRequestInfo.ExecutionId))
+            try
             {
-                if (error?.Exception != null)
+                //Do nothing else (except calling request observer), another execution finished already set the response
+                if (_parent.SetNodeExecutionCompleted(nodeRequestInfo.ExecutionId))
                 {
-                    await _requestObserver.OnNodeRequestErrorAsync(error, _sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
+                    if (error?.Exception != null)
+                    {
+                        await _requestObserver.OnNodeRequestErrorAsync(error, _sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await _requestObserver.OnNodeSuccessAsync(_sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
+                    }
                 }
-                else
-                {
-                    await _requestObserver.OnNodeSuccessAsync(_sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
-                }
+            }
+            catch (Exception observerFailure) when (Utils.IsFatalException(observerFailure))
+            {
+                RecordLateFatalExecutionFailure(nodeRequestInfo.Host, observerFailure);
+                throw;
             }
 
             return true;
