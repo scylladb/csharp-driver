@@ -384,10 +384,6 @@ namespace Cassandra.Tests.ExecutionProfiles
 
             public long Count;
 
-            public void Initialize(ICluster cluster)
-            {
-            }
-
             public HostDistance Distance(Host host)
             {
                 return HostDistance.Local;

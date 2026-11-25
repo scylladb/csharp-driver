@@ -21,17 +21,11 @@ namespace Cassandra.IntegrationTests.Policies.Util
 {
     public class CustomLoadBalancingPolicy : ILoadBalancingPolicy
     {
-        private ICluster _cluster;
         private readonly string[] _hosts;
 
         public CustomLoadBalancingPolicy(string[] hosts)
         {
             _hosts = hosts;
-        }
-
-        public void Initialize(ICluster cluster)
-        {
-            _cluster = cluster;
         }
 
         public HostDistance Distance(Host host)
@@ -52,7 +46,7 @@ namespace Cassandra.IntegrationTests.Policies.Util
         public IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot cluster)
         {
             var queryPlan = new List<RoutingTarget>();
-            var allHosts = _cluster.AllHosts();
+            var allHosts = cluster.Hosts;
             foreach (var host in _hosts)
             {
                 queryPlan.Add(new RoutingTarget(allHosts.Single(h => h.Address.ToString() == host), null));

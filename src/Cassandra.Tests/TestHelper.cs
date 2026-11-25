@@ -790,7 +790,6 @@ namespace Cassandra.Tests
         /// </summary>
         internal class OrderedLoadBalancingPolicy : ILoadBalancingPolicy
         {
-            private ICollection<Host> _hosts;
             private readonly ILoadBalancingPolicy _childPolicy;
             private volatile bool _useRoundRobin;
 
@@ -811,12 +810,6 @@ namespace Cassandra.Tests
                 _childPolicy = new RoundRobinPolicy();
             }
 
-            public void Initialize(ICluster cluster)
-            {
-                _hosts = cluster.AllHosts();
-                _childPolicy.Initialize(cluster);
-            }
-
             public HostDistance Distance(Host host)
             {
                 return _childPolicy.Distance(host);
@@ -834,7 +827,9 @@ namespace Cassandra.Tests
 
             public IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot cluster)
             {
-                return !_useRoundRobin ? _hosts.Select(h => new RoutingTarget(h, null)) : _childPolicy.Fallback(routing, cluster);
+                return !_useRoundRobin
+                    ? cluster.Hosts.Select(h => new RoutingTarget(h, null))
+                    : _childPolicy.Fallback(routing, cluster);
             }
         }
 
@@ -844,26 +839,20 @@ namespace Cassandra.Tests
         /// </summary>
         internal class CustomLoadBalancingPolicy : ILoadBalancingPolicy
         {
-            private ICluster _cluster;
-            private readonly Func<ICluster, Host, HostDistance> _distanceHandler;
-            private readonly Func<ICluster, RoutingInfo, IEnumerable<Host>> _queryPlanHandler;
+            private readonly Func<Host, HostDistance> _distanceHandler;
+            private readonly Func<MetadataSnapshot, RoutingInfo, IEnumerable<Host>> _queryPlanHandler;
 
             public CustomLoadBalancingPolicy(
-                Func<ICluster, RoutingInfo, IEnumerable<Host>> queryPlanHandler = null,
-                Func<ICluster, Host, HostDistance> distanceHandler = null)
+                Func<MetadataSnapshot, RoutingInfo, IEnumerable<Host>> queryPlanHandler = null,
+                Func<Host, HostDistance> distanceHandler = null)
             {
-                _queryPlanHandler = queryPlanHandler ?? ((cluster, routing) => cluster.AllHosts());
-                _distanceHandler = distanceHandler ?? ((_, __) => HostDistance.Local);
-            }
-
-            public void Initialize(ICluster cluster)
-            {
-                _cluster = cluster;
+                _queryPlanHandler = queryPlanHandler ?? ((metadata, routing) => metadata.Hosts);
+                _distanceHandler = distanceHandler ?? (_ => HostDistance.Local);
             }
 
             public HostDistance Distance(Host host)
             {
-                return _distanceHandler(_cluster, host);
+                return _distanceHandler(host);
             }
 
             public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot cluster)
@@ -878,7 +867,7 @@ namespace Cassandra.Tests
 
             public IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot cluster)
             {
-                return _queryPlanHandler(_cluster, routing).Select(h => new RoutingTarget(h, null));
+                return _queryPlanHandler(cluster, routing).Select(h => new RoutingTarget(h, null));
             }
         }
     }

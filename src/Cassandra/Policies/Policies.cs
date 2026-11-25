@@ -24,27 +24,22 @@ namespace Cassandra
     public class Policies
     {
         /// <summary>
-        /// <para>
-        /// DEPRECATED: Use <see cref="NewDefaultLoadBalancingPolicy"/> instead. Providing the local datacenter will be mandatory
-        /// in the next major version of the driver.
-        /// </para>
-        /// <para>
-        /// The default load balancing policy.
-        /// </para>  
-        /// <para> 
-        /// The default load balancing policy is <see cref="DefaultLoadBalancingPolicy"/> as a wrapper around
-        /// <see cref="TokenAwarePolicy"/> with <see cref="DCAwareRoundRobinPolicy"/> as child policy.
-        /// </para>
+        /// The default load balancing policy, without a local datacenter: a
+        /// <see cref="Cassandra.DefaultLoadBalancingPolicy"/> wrapping a <see cref="TokenAwarePolicy"/> with a
+        /// <see cref="RoundRobinPolicy"/> as child policy, so every node is local and the query plans use the nodes of
+        /// every datacenter. To only use the nodes of one, use <see cref="NewDefaultLoadBalancingPolicy"/>, or
+        /// <see cref="Builder.WithLocalDatacenter"/>.
         /// </summary>
         public static ILoadBalancingPolicy DefaultLoadBalancingPolicy =>
-            new DefaultLoadBalancingPolicy(new TokenAwarePolicy(new DCAwareRoundRobinPolicy()));
+            new DefaultLoadBalancingPolicy((string)null);
 
         /// <summary>
-        /// Creates a new instance of the default load balancing policy with the provided local datacenter.
-        /// This is equivalent to:
-        /// <code>
-        /// new DefaultLoadBalancingPolicy(new TokenAwarePolicy(new DCAwareRoundRobinPolicy(localDc)))
-        /// </code>
+        /// Creates a new instance of the default load balancing policy with the provided local datacenter, whose query
+        /// plans only use the nodes of that datacenter and the nodes whose datacenter is unknown: a
+        /// <see cref="Cassandra.DefaultLoadBalancingPolicy"/> wrapping a <see cref="TokenAwarePolicy"/> with a
+        /// <see cref="DCAwareRoundRobinPolicy"/> as child policy. With a null
+        /// or empty local datacenter, it wraps a <see cref="RoundRobinPolicy"/> instead, as
+        /// <see cref="DefaultLoadBalancingPolicy"/> does.
         /// </summary>
         public static ILoadBalancingPolicy NewDefaultLoadBalancingPolicy(string localDc)
         {

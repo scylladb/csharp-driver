@@ -77,11 +77,6 @@ namespace Cassandra.Tests
                 _distance = distance;
             }
 
-            public void Initialize(ICluster cluster)
-            {
-
-            }
-
             public HostDistance Distance(Host host)
             {
                 return _distance;

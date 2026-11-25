@@ -378,11 +378,6 @@ namespace Cassandra.IntegrationTests.Core
                 _disallowed = disallowed;
             }
 
-            public void Initialize(ICluster cluster)
-            {
-                _parent.Initialize(cluster);
-            }
-
             public HostDistance Distance(Host host)
             {
                 return _parent.Distance(host);

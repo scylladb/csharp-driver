@@ -5,7 +5,6 @@
 The load balancing policy interface consists of these methods:
 
 - `Distance(Host)`: determines the distance to the specified host. The values are `HostDistance.Ignored`, `Local` and `Remote`.
-- `Initialize(Cluster)`: initializes the policy. The driver calls this method only once and before any other method calls are made.
 - `Pick(RoutingInfo, MetadataSnapshot)`: returns the node, and optionally its shard, to send a request to first. Each new request calls this method once.
 - `Fallback(RoutingInfo, MetadataSnapshot)`: returns the nodes, and optionally their shards, to try in order when the first target can't be used, for retries and speculative executions. The driver calls it at most once per request, only when the plan goes past the pick, and skips the node of `Pick`. It should return every node the request can use, including the one of `Pick`, because a wrapping policy such as `TokenAwarePolicy` can pick a replica instead and take the other nodes from the fallback only. A policy that rotates through nodes should use a separate rotation in each method, so that requests needing their fallback targets don't move the first target of the next requests.
 
@@ -20,16 +19,18 @@ The driver includes these implementations:
 
 ### Default load-balancing policy
 
-The default load-balancing policy is the `DefaultLoadBalancingPolicy`. For Cassandra workloads, its behavior is the same as an instance of `TokenAwarePolicy` with `DCAwareRoundRobinPolicy` as a child policy. It may seem complex but it actually isn't: The policy yields local replicas for a given key and, if not available, it yields nodes of the local datacenter in a round-robin manner.
+The default load-balancing policy is the `DefaultLoadBalancingPolicy`. With a local datacenter, its behavior is the same as an instance of `TokenAwarePolicy` with `DCAwareRoundRobinPolicy` as a child policy: it yields local replicas for a given key and, if not available, nodes of the local datacenter in a round-robin manner.
 
-To specify the **local datacenter** with the default load-balancing policy you can do this:
+The `DCAwareRoundRobinPolicy` only uses the nodes of its **local datacenter**, which it requires, and the nodes whose datacenter is unknown, which it treats as local. Without a local datacenter, the default load-balancing policy wraps a `RoundRobinPolicy` instead: it treats every node as local and uses the nodes of every datacenter, and the driver logs a warning when it connects to a cluster with more than one datacenter. The driver doesn't infer the local datacenter. To set it for the default load-balancing policy you can do this:
 
 ```csharp
 Cluster.Builder()
        .AddContactPoint("127.0.0.1")
-       .WithLoadBalancingPolicy(Policies.NewDefaultLoadBalancingPolicy("datacenter1"))
+       .WithLocalDatacenter("datacenter1")
        .Build();
 ```
+
+`WithLocalDatacenter()` only applies to the default policy, which the driver uses when no policy is configured. To configure the policy yourself, give it the local datacenter, for instance with `Policies.NewDefaultLoadBalancingPolicy("datacenter1")`.
 
 ## Reconnection policy
 

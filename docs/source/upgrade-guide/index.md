@@ -755,6 +755,73 @@ lookup returns. The lookup must describe the same metadata each time it is calle
 snapshot calls it again for the same request when its routing key changes. The
 collections the snapshot returns are read-only.
 
+### The local datacenter is no longer inferred
+
+`ILoadBalancingPolicy.Initialize(ICluster)` is removed. `DCAwareRoundRobinPolicy`, the
+child policy of the default load balancing policy, used it to infer the local datacenter
+from the node the driver first connected to when none was given, and to check that a
+given datacenter exists.
+
+`DCAwareRoundRobinPolicy` now requires its local datacenter: the parameterless
+constructor is removed, and a null or empty name throws an `ArgumentException`. To use
+the nodes of every datacenter, use `RoundRobinPolicy`.
+
+The default load balancing policy without a local datacenter now treats every node as
+local, as ScyllaDB's Rust driver does: it wraps a `TokenAwarePolicy` whose child policy
+is a `RoundRobinPolicy` instead of a `DCAwareRoundRobinPolicy`, so its query plans
+contain the nodes of every datacenter, and the driver opens a local connection pool to
+each of them. This applies to `Policies.DefaultLoadBalancingPolicy`, to the policy the
+driver uses when none is configured, and to `new DefaultLoadBalancingPolicy(localDc)`
+and `Policies.NewDefaultLoadBalancingPolicy(localDc)` with a null or empty `localDc`. An
+empty datacenter used to fail the connection, since it matched no node. In a
+single-datacenter cluster, requests go to the same nodes as before. In a cluster with
+more than one datacenter, an application that relied on the inferred datacenter now
+sends requests to the nodes of every datacenter, and the driver logs a warning when it
+connects. The same happens without a warning when a datacenter is added to the cluster
+after the driver connected: the driver also uses its nodes. Requests that reach
+coordinators in different datacenters break the guarantees of the `LOCAL_*` consistency
+levels, which are the defaults: a `LOCAL_QUORUM` read can miss a `LOCAL_QUORUM` write
+made through a coordinator in another datacenter, and `LOCAL_SERIAL` lightweight
+transactions don't serialize across datacenters. Set the local datacenter to keep
+requests in one datacenter:
+
+```csharp
+// With the default load balancing policy
+Cluster.Builder()
+       .AddContactPoint("127.0.0.1")
+       .WithLocalDatacenter("datacenter1")
+       .Build();
+
+// With a configured policy
+Cluster.Builder()
+       .AddContactPoint("127.0.0.1")
+       .WithLoadBalancingPolicy(Policies.NewDefaultLoadBalancingPolicy("datacenter1"))
+       .Build();
+```
+
+`Builder.WithLocalDatacenter()` only applies to the default load balancing policy, which
+the driver uses when no policy is configured with `WithLoadBalancingPolicy()` or in the
+default execution profile. When a policy is configured, the driver logs a warning and
+ignores the local datacenter.
+
+A local datacenter that matches no node no longer throws an `ArgumentException` when the
+cluster connects: the driver logs a warning, and requests using the policy fail with a
+`NoHostAvailableException`, unless some nodes have no known datacenter, which the policy
+treats as local. When it's the policy of the default execution profile, connecting with
+a keyspace, as in `cluster.Connect("ks")`, fails too, with the same exception: the
+session borrows a connection when it connects, to fail fast. The warnings only look into
+the driver's own wrapper policies, so a policy of your own that wraps another one gets
+none.
+
+The driver configuration report no longer reports an inferred datacenter: without a
+local datacenter, it reports no datacenter preference.
+
+Classes that implement `ILoadBalancingPolicy` must remove their `Initialize()` method,
+or keep it as a method of their own. A policy that read the nodes from the cluster it
+was initialized with reads them from the `MetadataSnapshot` that `Pick()` and
+`Fallback()` receive instead. A policy that wraps another one no longer passes the call
+on.
+
 ### `ExecuteAsync` returns `AsyncRowSet`
 
 `ISession.ExecuteAsync()` and the LINQ `CqlCommand.ExecuteAsync()` (used by `Insert`,

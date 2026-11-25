@@ -1555,7 +1555,7 @@ namespace Cassandra.Tests.Connections.Control
                 .Returns(TaskHelper.Completed);
             var cluster = new Mock<IInternalCluster>();
             var loadBalancingPolicy = new TestHelper.CustomLoadBalancingPolicy(
-                queryPlanHandler: (currentCluster, routing) => Enumerable.Empty<Host>());
+                queryPlanHandler: (metadata, routing) => Enumerable.Empty<Host>());
             var createResult = NewInstance(
                 cluster: cluster.Object,
                 eventDebouncer: debouncer.Object,
@@ -1576,7 +1576,6 @@ namespace Cassandra.Tests.Connections.Control
                 {
                     cluster.Setup(value => value.AllHosts()).Returns(() => createResult.Metadata.AllHosts());
                     cluster.Setup(value => value.AnyOpenConnections(It.IsAny<Host>())).Returns(true);
-                    loadBalancingPolicy.Initialize(cluster.Object);
                     await cc.InitAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
                     var initialConnection = connections.Single().Object;
                     await Assert.ThrowsAsync<NoHostAvailableException>(() =>
@@ -1680,7 +1679,6 @@ namespace Cassandra.Tests.Connections.Control
                 cluster.Setup(value => value.AllHosts()).Returns(() => createResult.Metadata.AllHosts());
                 cluster.Setup(value => value.AnyOpenConnections(It.IsAny<Host>())).Returns(true);
                 cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
-                loadBalancingPolicy.Initialize(cluster.Object);
                 await createResult.ControlConnection.InitAsync().ConfigureAwait(false);
                 await Assert.ThrowsAsync<NoHostAvailableException>(async () =>
                     await createResult.ControlConnection.Reconnect(null).WaitToCompleteAsync(5000).ConfigureAwait(false)).ConfigureAwait(false);
@@ -1773,7 +1771,6 @@ namespace Cassandra.Tests.Connections.Control
                 cluster.Setup(value => value.AllHosts()).Returns(() => createResult.Metadata.AllHosts());
                 cluster.Setup(value => value.AnyOpenConnections(It.IsAny<Host>())).Returns(true);
                 cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
-                loadBalancingPolicy.Initialize(cluster.Object);
                 await createResult.ControlConnection.InitAsync().ConfigureAwait(false);
                 CapturedReconnectTimer pendingRetry = null;
                 if (hasPendingRetry)
@@ -1873,7 +1870,6 @@ namespace Cassandra.Tests.Connections.Control
             {
                 cluster.Setup(value => value.AllHosts()).Returns(() => createResult.Metadata.AllHosts());
                 cluster.Setup(value => value.AnyOpenConnections(It.IsAny<Host>())).Returns(true);
-                loadBalancingPolicy.Initialize(cluster.Object);
                 await createResult.ControlConnection.InitAsync().ConfigureAwait(false);
                 await Assert.ThrowsAsync<NoHostAvailableException>(() =>
                     createResult.ControlConnection.Reconnect(null).WaitToCompleteAsync(5000)).ConfigureAwait(false);
@@ -1916,7 +1912,6 @@ namespace Cassandra.Tests.Connections.Control
             {
                 cluster.Setup(value => value.AllHosts()).Returns(() => createResult.Metadata.AllHosts());
                 cluster.Setup(value => value.AnyOpenConnections(It.IsAny<Host>())).Returns(true);
-                loadBalancingPolicy.Initialize(cluster.Object);
                 await createResult.ControlConnection.InitAsync().ConfigureAwait(false);
                 if (delayMs < -1)
                 {
@@ -1986,7 +1981,6 @@ namespace Cassandra.Tests.Connections.Control
                 cluster.Setup(value => value.AllHosts()).Returns(() => createResult.Metadata.AllHosts());
                 cluster.Setup(value => value.AnyOpenConnections(It.IsAny<Host>())).Returns(true);
                 cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
-                loadBalancingPolicy.Initialize(cluster.Object);
                 await createResult.ControlConnection.InitAsync().ConfigureAwait(false);
 
                 var failedGeneration = new List<Task<IConnection>>
@@ -2105,7 +2099,7 @@ namespace Cassandra.Tests.Connections.Control
                     .Setup(c => c.RetrieveAndSetDistance(It.IsAny<Host>()))
                     .Returns<Host>(h => config.Policies.LoadBalancingPolicy.Distance(h));
                 Mock.Get(cluster).Setup(c => c.AllHosts()).Returns(() => metadata.AllHosts());
-                config.Policies.LoadBalancingPolicy.Initialize(cluster);
+                Mock.Get(cluster).Setup(c => c.GetMetadataSnapshot()).Returns(() => metadata.GetSnapshot());
 
                 connectionOpenEnabled = false;
 
@@ -2162,7 +2156,6 @@ namespace Cassandra.Tests.Connections.Control
                             .Returns<Host>(h => config.Policies.LoadBalancingPolicy.Distance(h));
                         Mock.Get(cluster).Setup(c => c.AllHosts()).Returns(() => metadata.AllHosts());
                         Mock.Get(cluster).Setup(c => c.GetControlConnection()).Returns(cc);
-                        config.Policies.LoadBalancingPolicy.Initialize(cluster);
 
                         createResult.ConnectionFactory.CreatedConnections.Clear();
 
@@ -2389,7 +2382,6 @@ namespace Cassandra.Tests.Connections.Control
                     createResult.Metadata.ControlConnection = cc;
                     cluster.Setup(value => value.AllHosts()).Returns(() => createResult.Metadata.AllHosts());
                     cluster.Setup(value => value.AnyOpenConnections(It.IsAny<Host>())).Returns(true);
-                    loadBalancingPolicy.Initialize(cluster.Object);
                     await cc.InitAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
                     failQueries = true;
                     if (background)
@@ -2514,7 +2506,6 @@ namespace Cassandra.Tests.Connections.Control
                     createResult.Metadata.ControlConnection = createResult.ControlConnection;
                     cluster.Setup(value => value.AllHosts()).Returns(() => createResult.Metadata.AllHosts());
                     cluster.Setup(value => value.AnyOpenConnections(It.IsAny<Host>())).Returns(true);
-                    loadBalancingPolicy.Initialize(cluster.Object);
                     await createResult.ControlConnection.InitAsync().ConfigureAwait(false);
                     await createResult.ControlConnection.Reconnect(null).WaitToCompleteAsync(5000).ConfigureAwait(false);
                     Assert.IsTrue(createResult.Metadata.KeyspacesSnapshot.Any(kv => kv.Key == "ks1"));
@@ -2853,7 +2844,6 @@ namespace Cassandra.Tests.Connections.Control
                 cluster.Setup(value => value.AllHosts()).Returns(() => createResult.Metadata.AllHosts());
                 cluster.Setup(value => value.AnyOpenConnections(It.IsAny<Host>())).Returns(true);
                 cluster.Setup(value => value.RetrieveAndSetDistance(It.IsAny<Host>())).Returns(HostDistance.Local);
-                loadBalancingPolicy.Initialize(cluster.Object);
                 await createResult.ControlConnection.InitAsync().ConfigureAwait(false);
                 var initialConnection = connections.Single().Object;
 
@@ -3025,7 +3015,7 @@ namespace Cassandra.Tests.Connections.Control
                     });
                 var cluster = new Mock<IInternalCluster>();
                 var policy = new TestHelper.CustomLoadBalancingPolicy(
-                    queryPlanHandler: (currentCluster, routing) => Enumerable.Empty<Host>());
+                    queryPlanHandler: (metadata, routing) => Enumerable.Empty<Host>());
                 _created = fixture.NewInstance(
                     cluster: cluster.Object,
                     eventDebouncer: debouncer.Object,
@@ -3048,7 +3038,6 @@ namespace Cassandra.Tests.Connections.Control
                     });
                 cluster.Setup(value => value.AllHosts()).Returns(() => _created.Metadata.AllHosts());
                 cluster.Setup(value => value.AnyOpenConnections(It.IsAny<Host>())).Returns(true);
-                policy.Initialize(cluster.Object);
                 _initialization = Control.InitAsync();
             }
 

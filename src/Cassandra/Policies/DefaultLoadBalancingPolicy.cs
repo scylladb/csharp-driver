@@ -20,9 +20,12 @@ using System.Collections.Generic;
 namespace Cassandra
 {
     /// <summary>
-    /// A load balancing policy designed to run against Apache Cassandra clusters.
+    /// The default load balancing policy.
     /// <para>
-    ///  The query plan is determined in the same way as TokenAwarePolicy(DCAwareRoundRobinPolicy).
+    /// With a local datacenter, the query plan is determined in the same way as
+    /// <c>TokenAwarePolicy(DCAwareRoundRobinPolicy)</c>, and only uses the nodes of that datacenter, and the nodes
+    /// whose datacenter is unknown. Without one, it is determined as <c>TokenAwarePolicy(RoundRobinPolicy)</c>: every
+    /// node is local, and the plans use the nodes of every datacenter.
     /// </para>
     /// </summary>
     public class DefaultLoadBalancingPolicy : ILoadBalancingPolicy
@@ -36,15 +39,17 @@ namespace Cassandra
         }
 
         /// <summary>
-        ///  Creates a new datacenter aware round robin policy given the name of the local
-        ///  datacenter. <p> The name of the local datacenter provided must be the local
-        ///  datacenter name as known by the server. </p><p> The policy created will ignore all
-        ///  remote hosts.</p>
+        /// Creates the default load balancing policy with the provided local datacenter, whose plans only use the
+        /// nodes of that datacenter and the nodes whose datacenter is unknown, or without one, whose plans use the
+        /// nodes of every datacenter.
         /// </summary>
-        /// <param name="localDc"> the name of the local datacenter (as known by Cassandra).</param>
+        /// <param name="localDc">
+        /// The name of the local datacenter, as known by the cluster, or null or empty to use every datacenter.
+        /// </param>
         public DefaultLoadBalancingPolicy(string localDc)
         {
-            ChildPolicy = new TokenAwarePolicy(new DCAwareRoundRobinPolicy(localDc));
+            ChildPolicy = new TokenAwarePolicy(
+                string.IsNullOrEmpty(localDc) ? new RoundRobinPolicy() : new DCAwareRoundRobinPolicy(localDc));
         }
 
         internal ILoadBalancingPolicy ChildPolicy { get; }
@@ -59,14 +64,6 @@ namespace Cassandra
         public HostDistance Distance(Host host)
         {
             return ChildPolicy.Distance(host);
-        }
-
-        /// <summary>
-        /// Initializes the policy.
-        /// </summary>
-        public void Initialize(ICluster cluster)
-        {
-            ChildPolicy.Initialize(cluster);
         }
 
         /// <summary>

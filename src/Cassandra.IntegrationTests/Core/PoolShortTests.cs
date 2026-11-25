@@ -292,6 +292,7 @@ namespace Cassandra.IntegrationTests.Core
             using (var testCluster = SimulacronCluster.CreateNew(new SimulacronOptions { Nodes = $"{nodeLength},3" }))
             using (var cluster = ClusterBuilder()
                                         .AddContactPoint(testCluster.InitialContactPoint)
+                                        .WithLocalDatacenter("dc1")
                                         .WithPoolingOptions(poolingOptions).Build())
             {
                 var session = await cluster.ConnectAsync().ConfigureAwait(false);
@@ -602,10 +603,12 @@ namespace Cassandra.IntegrationTests.Core
         public async Task Should_Throw_NoHostAvailableException_When_Targeting_Single_Ignored_Host()
         {
             const string query = "SELECT * FROM system.local WHERE key='local'";
-            // Mark the last host as ignored
+            // The last host is marked as ignored once it's known: the driver gets the distance of the host of each
+            // request
+            Host ignored = null;
             var lbp = new TestHelper.CustomLoadBalancingPolicy(
-                (cluster, routing) => cluster.AllHosts(),
-                (cluster, host) => host.Equals(cluster.AllHosts().Last()) ? HostDistance.Ignored : HostDistance.Local);
+                (metadata, routing) => metadata.Hosts,
+                host => host.Equals(Volatile.Read(ref ignored)) ? HostDistance.Ignored : HostDistance.Local);
             var builder = ClusterBuilder().WithLoadBalancingPolicy(lbp);
 
             using (var testCluster = SimulacronCluster.CreateNew(new SimulacronOptions { Nodes = "3" }))
@@ -613,6 +616,7 @@ namespace Cassandra.IntegrationTests.Core
             {
                 var session = cluster.Connect();
                 var lastHost = cluster.AllHosts().Last();
+                Volatile.Write(ref ignored, lastHost);
 
                 // Use the last host
                 var statement = new SimpleStatement(query).SetHost(lastHost);
@@ -715,10 +719,10 @@ namespace Cassandra.IntegrationTests.Core
         public async Task Should_Not_Use_The_LoadBalancingPolicy_When_Targeting_Single_Host()
         {
             var queryPlanCounter = 0;
-            var lbp = new TestHelper.CustomLoadBalancingPolicy((cluster, routing) =>
+            var lbp = new TestHelper.CustomLoadBalancingPolicy((metadata, routing) =>
             {
                 Interlocked.Increment(ref queryPlanCounter);
-                return cluster.AllHosts();
+                return metadata.Hosts;
             });
 
             var builder = ClusterBuilder().WithLoadBalancingPolicy(lbp);

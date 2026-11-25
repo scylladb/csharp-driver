@@ -318,7 +318,6 @@ namespace Cassandra.Tests
             var clusterMock = Mock.Of<IInternalCluster>();
             Mock.Get(clusterMock).Setup(c => c.AllHosts())
                 .Returns(new List<Host>());
-            lbp.Initialize(clusterMock);
 
             var s1Mock = new Mock<Statement>(MockBehavior.Loose);
             s1Mock.Setup(s => s.RoutingKey).Returns(new RoutingKey(rawRoutingKey));

@@ -45,9 +45,7 @@ namespace Cassandra.Tests
                 .Returns(hostList)
                 .Verifiable();
 
-            //Initialize the balancing policy
             var policy = new RoundRobinPolicy();
-            policy.Initialize(clusterMock.Object);
             var balancedHosts = policy.Plan(clusterMock.Object, null, new SimpleStatement());
 
             //Take a list of hosts of 4, it should get 1 of every one in a cyclic order.
@@ -91,9 +89,7 @@ namespace Cassandra.Tests
                 .Returns(hostList)
                 .Verifiable();
 
-            //Initialize the balancing policy
             var policy = new RoundRobinPolicy();
-            policy.Initialize(clusterMock.Object);
 
             Action action = () =>
             {
@@ -140,10 +136,8 @@ namespace Cassandra.Tests
                 .Setup(c => c.AllHosts())
                 .Returns(hostList);
 
-            //Initialize the balancing policy
             //0 used nodes per remote dc
             var policy = new DCAwareRoundRobinPolicy("local");
-            policy.Initialize(clusterMock.Object);
             var balancedHosts = policy.Plan(clusterMock.Object, null, new SimpleStatement());
             var firstRound = balancedHosts.ToList();
 
@@ -165,38 +159,46 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public void DCAwareRoundRobinInitializeRetrievesLocalDc()
+        [TestCase(null)]
+        [TestCase("")]
+        public void DCAwareRoundRobinPolicyRequiresALocalDc(string localDc)
         {
-            var hostList = new List<Host>
-            {
-                TestHelper.CreateHost("0.0.0.1", null),
-                TestHelper.CreateHost("0.0.0.1", "dc1"),
-                TestHelper.CreateHost("0.0.0.2", "dc2")
-            };
-            var clusterMock = new Mock<ICluster>();
-            clusterMock
-                .Setup(c => c.AllHosts())
-                .Returns(hostList);
-            var policy = new DCAwareRoundRobinPolicy();
-            policy.Initialize(clusterMock.Object);
-            Assert.AreEqual(HostDistance.Local, policy.Distance(hostList[1]));
-            Assert.AreNotEqual(HostDistance.Local, policy.Distance(hostList[2]));
+            Assert.Throws<ArgumentException>(() => new DCAwareRoundRobinPolicy(localDc));
         }
 
         [Test]
-        public void DCAwareRoundRobinInitializeNotMatchingDcThrows()
+        [TestCase(null)]
+        [TestCase("")]
+        public void DefaultLoadBalancingPolicyWithoutLocalDcTreatsEveryNodeAsLocal(string localDc)
         {
-            var hostList = new List<Host>
+            var hosts = new List<Host>
             {
                 TestHelper.CreateHost("0.0.0.1", "dc1"),
                 TestHelper.CreateHost("0.0.0.2", "dc2")
             };
-            var clusterMock = new Mock<ICluster>();
-            clusterMock
-                .Setup(c => c.AllHosts())
-                .Returns(hostList);
-            var policy = new DCAwareRoundRobinPolicy("not_valid_dc");
-            Assert.Throws<ArgumentException>(() => policy.Initialize(clusterMock.Object));
+            ILoadBalancingPolicy policy = new DefaultLoadBalancingPolicy(localDc);
+            var metadata = new MetadataSnapshot(hosts, null);
+
+            Assert.IsNull(LoadBalancingPolicyChain.FindDatacenterAware(policy));
+            Assert.AreEqual(HostDistance.Local, policy.Distance(hosts[0]));
+            Assert.AreEqual(HostDistance.Local, policy.Distance(hosts[1]));
+            CollectionAssert.AreEquivalent(hosts, policy.Fallback(new RoutingInfo(), metadata).Select(t => t.Host));
+        }
+
+        [Test]
+        public void DefaultLoadBalancingPolicyWithLocalDcOnlyUsesItsNodes()
+        {
+            var hosts = new List<Host>
+            {
+                TestHelper.CreateHost("0.0.0.1", "dc1"),
+                TestHelper.CreateHost("0.0.0.2", "dc2")
+            };
+            ILoadBalancingPolicy policy = new DefaultLoadBalancingPolicy("dc2");
+
+            Assert.AreEqual("dc2", LoadBalancingPolicyChain.FindDatacenterAware(policy).LocalDc);
+            Assert.AreEqual(HostDistance.Remote, policy.Distance(hosts[0]));
+            CollectionAssert.AreEqual(
+                new[] { hosts[1] }, policy.Fallback(new RoutingInfo(), new MetadataSnapshot(hosts, null)).Select(t => t.Host));
         }
 
         [Test]
@@ -223,9 +225,7 @@ namespace Cassandra.Tests
                 .Setup(c => c.AllHosts())
                 .Returns(hostList);
 
-            //Initialize the balancing policy
             var policy = new DCAwareRoundRobinPolicy(localDc);
-            policy.Initialize(clusterMock.Object);
 
             var firstHosts = new ConcurrentBag<Host>();
 
@@ -281,14 +281,7 @@ namespace Cassandra.Tests
             };
             const string localDc = "dc1";
 
-            var clusterMock = new Mock<ICluster>();
-            clusterMock
-                .Setup(c => c.AllHosts())
-                .Returns(hostList);
-
-            //Initialize the balancing policy
             var policy = new DCAwareRoundRobinPolicy(localDc);
-            policy.Initialize(clusterMock.Object);
 
             var instances = new ConcurrentBag<object>();
             Action action = () => instances.Add(policy.GetHosts(hostList));
@@ -319,6 +312,48 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public void RoundRobinPolicyRebuildsItsHostsWhenHostsChange()
+        {
+            var metadata = new Metadata(new Configuration());
+            var h1 = AddHost(metadata, "127.0.0.1", "dc1");
+            var h2 = AddHost(metadata, "127.0.0.2", "dc2");
+            var policy = new RoundRobinPolicy();
+
+            var hosts = policy.GetHosts(metadata.GetSnapshot().Hosts);
+            CollectionAssert.AreEquivalent(new[] { h1, h2 }, hosts);
+
+            // Reused while the hosts don't change
+            Assert.AreSame(hosts, policy.GetHosts(metadata.GetSnapshot().Hosts));
+
+            var h3 = AddHost(metadata, "127.0.0.3", "dc1");
+            CollectionAssert.AreEquivalent(new[] { h1, h2, h3 }, policy.GetHosts(metadata.GetSnapshot().Hosts));
+            CollectionAssert.AreEquivalent(
+                new[] { h1, h2, h3 }, policy.Fallback(null, metadata.GetSnapshot()).Select(t => t.Host));
+
+            metadata.Hosts.RemoveIfExists(h2.Address);
+            CollectionAssert.AreEquivalent(new[] { h1, h3 }, policy.GetHosts(metadata.GetSnapshot().Hosts));
+            CollectionAssert.AreEquivalent(
+                new[] { h1, h3 }, policy.Fallback(null, metadata.GetSnapshot()).Select(t => t.Host));
+        }
+
+        [Test]
+        public void RoundRobinPolicyKeepsTheHostsOfEachClusterItIsSharedBy()
+        {
+            var metadata1 = new Metadata(new Configuration());
+            AddHost(metadata1, "127.0.0.1", "dc1");
+            var metadata2 = new Metadata(new Configuration());
+            AddHost(metadata2, "127.0.0.2", "dc1");
+            var policy = new RoundRobinPolicy();
+
+            var hosts1 = policy.GetHosts(metadata1.GetSnapshot().Hosts);
+            var hosts2 = policy.GetHosts(metadata2.GetSnapshot().Hosts);
+
+            // Alternating between the clusters reuses each one's list
+            Assert.AreSame(hosts1, policy.GetHosts(metadata1.GetSnapshot().Hosts));
+            Assert.AreSame(hosts2, policy.GetHosts(metadata2.GetSnapshot().Hosts));
+        }
+
+        [Test]
         public void DCAwareRoundRobinPolicyDropsAHostOnceItsDatacenterTurnsOutRemote()
         {
             var metadata = new Metadata(new Configuration());
@@ -341,24 +376,6 @@ namespace Cassandra.Tests
             Assert.AreSame(h2, metadata.AddOrUpdateHost(h2Id, h2Address, null, HostRow("dc2", h2Id)));
             Assert.AreSame(hosts, metadata.GetSnapshot().Hosts);
             CollectionAssert.AreEquivalent(new[] { h1 }, policy.GetHosts(hosts));
-        }
-
-        [Test]
-        public void DCAwareRoundRobinPolicyDoesNotReuseLocalHostsFromBeforeTheDatacenterIsInferred()
-        {
-            var metadata = new Metadata(new Configuration());
-            var h1 = AddHost(metadata, "127.0.0.1", "dc1");
-            var h2 = AddHost(metadata, "127.0.0.2", "dc1");
-            var policy = new DCAwareRoundRobinPolicy();
-            var hosts = metadata.GetSnapshot().Hosts;
-
-            // For instance a control connection reconnecting before the policy is initialized
-            CollectionAssert.IsEmpty(policy.GetHosts(hosts));
-
-            var cluster = new Mock<ICluster>();
-            cluster.Setup(c => c.AllHosts()).Returns(metadata.Hosts.ToCollection());
-            policy.Initialize(cluster.Object);
-            CollectionAssert.AreEquivalent(new[] { h1, h2 }, policy.GetHosts(hosts));
         }
 
         [Test]
@@ -413,7 +430,6 @@ namespace Cassandra.Tests
             };
 
             var policy = new TokenAwarePolicy(new DCAwareRoundRobinPolicy("dc1"));
-            policy.Initialize(clusterMock.Object);
 
             //key for host :::1 and :::3
             var k = new RoutingKey { RawRoutingKey = new byte[] { 1 } };
@@ -472,7 +488,6 @@ namespace Cassandra.Tests
             };
 
             var policy = new TokenAwarePolicy(new DCAwareRoundRobinPolicy("dc1"));
-            policy.Initialize(clusterMock.Object);
 
             var firstHosts = new ConcurrentBag<Host>();
             var k = new RoutingKey { RawRoutingKey = new byte[] { 1 } };
@@ -517,7 +532,6 @@ namespace Cassandra.Tests
                 new List<RoutingTarget> { new RoutingTarget(hostList[0], replicaShard), new RoutingTarget(hostList[1], replicaShard) };
 
             var policy = new TokenAwarePolicy(new DCAwareRoundRobinPolicy("dc1"));
-            policy.Initialize(clusterMock.Object);
 
             var k = new RoutingKey { RawRoutingKey = new byte[] { 1 } };
             var hosts = policy.Plan(clusterMock.Object, null, new SimpleStatement().SetRoutingKey(k), routeAsLwt, replicas).ToList();
@@ -545,7 +559,6 @@ namespace Cassandra.Tests
             var cluster = new Mock<IInternalCluster>();
             cluster.Setup(c => c.AllHosts()).Returns(hosts);
             var policy = createPolicy();
-            policy.Initialize(cluster.Object);
 
             var plan = policy.Plan(null, TestHelper.Snapshot(cluster.Object)).ToList();
 
@@ -563,7 +576,6 @@ namespace Cassandra.Tests
                 .Returns(new List<Host>());
             var lookups = new List<RoutingInfo>();
             var policy = new TokenAwarePolicy(new RoundRobinPolicy());
-            policy.Initialize(clusterMock.Object);
 
             var _ = policy.Plan(
                 clusterMock.Object,
@@ -613,7 +625,6 @@ namespace Cassandra.Tests
                 .Setup(c => c.Metadata)
                 .Returns(metadata);
             var policy = new TokenAwarePolicy(new RoundRobinPolicy());
-            policy.Initialize(clusterMock.Object);
 
             var firstHost = policy.Plan(clusterMock.Object, "ks2", CreateStatement("ks1", "tbl1", rawRoutingKey)).First();
 
@@ -647,7 +658,6 @@ namespace Cassandra.Tests
                 .Verifiable();
 
             var policy = new TokenAwarePolicy(new DCAwareRoundRobinPolicy("dc1"));
-            policy.Initialize(clusterMock.Object);
             //No routing key
             var hosts = policy.Plan(clusterMock.Object, null, new SimpleStatement()).ToList();
 

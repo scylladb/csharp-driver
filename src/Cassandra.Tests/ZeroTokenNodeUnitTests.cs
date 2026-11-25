@@ -59,7 +59,6 @@ namespace Cassandra.Tests
             clusterMock.Setup(c => c.AllHosts()).Returns(hosts);
 
             var policy = new RoundRobinPolicy();
-            policy.Initialize(clusterMock.Object);
 
             // The zero-token host is still a valid coordinator...
             Assert.AreEqual(HostDistance.Local, policy.Distance(zeroToken));
@@ -80,7 +79,6 @@ namespace Cassandra.Tests
             clusterMock.Setup(c => c.AllHosts()).Returns(hosts);
 
             var policy = new DCAwareRoundRobinPolicy("dc1");
-            policy.Initialize(clusterMock.Object);
 
             Assert.AreEqual(HostDistance.Local, policy.Distance(zeroToken));
 

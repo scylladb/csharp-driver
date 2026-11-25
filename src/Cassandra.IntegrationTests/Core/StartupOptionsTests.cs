@@ -118,7 +118,7 @@ namespace Cassandra.IntegrationTests.Core
         }
 
         [Test]
-        public async Task Should_ReportAnInferredDatacenter_When_NoneIsConfigured()
+        public async Task Should_ReportNoDatacenterPreference_When_NoneIsConfigured()
         {
             _simulacronCluster = await SimulacronCluster.CreateNewAsync(1).ConfigureAwait(false);
             _cluster = BuildClusterBuilder().Build();
@@ -127,11 +127,8 @@ namespace Cassandra.IntegrationTests.Core
 
             var report = await GetDriverConfigReportAsync().ConfigureAwait(false);
 
-            // The default policy chain infers the datacenter from the node the control connection uses, which is
-            // not known while the report is being built, so only the preference itself is reported.
-            var preference = report["query"]["load-balancing"]["node-preference"];
-            Assert.AreEqual("dc-auto", preference["type"].Value<string>());
-            Assert.IsNull(preference["local-dc"]);
+            // Without a local datacenter, the default policy uses the nodes of every datacenter
+            Assert.IsNull(report["query"]["load-balancing"]["node-preference"]);
         }
 
         /// <summary>
