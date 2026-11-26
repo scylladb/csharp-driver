@@ -19,6 +19,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Net;
+using Cassandra.ExecutionProfiles;
 using Cassandra.Tests.Connections.TestHelpers;
 using Moq;
 using NUnit.Framework;
@@ -131,7 +132,7 @@ namespace Cassandra.Tests.Policies
         }
 
         [Test]
-        public void Connect_Should_Log_The_Warnings()
+        public void Connect_Should_Log_The_Warnings_For_Every_Execution_Profile()
         {
             var config = new TestConfigurationBuilder
             {
@@ -143,7 +144,17 @@ namespace Cassandra.Tests.Policies
                     new DefaultRetryPolicy(),
                     NoSpeculativeExecutionPolicy.Instance,
                     new AtomicMonotonicTimestampGenerator(),
-                    null)
+                    null),
+                ExecutionProfiles = new Dictionary<string, IExecutionProfile>
+                {
+                    {
+                        "analytics",
+                        new ExecutionProfileBuilder()
+                            .WithLoadBalancingPolicy(new DCAwareRoundRobinPolicy("dc4"))
+                            .CastToClass()
+                            .Build()
+                    }
+                }
             }.Build();
             var initializer = Mock.Of<IInitializer>();
             Mock.Get(initializer)
@@ -157,10 +168,14 @@ namespace Cassandra.Tests.Policies
                 cluster.Connect();
             });
 
-            // The fake control connection's node is in dc1
-            Assert.AreEqual(
-                1, warnings.Count(w => w.Contains("The local datacenter dc3") && w.Contains("doesn't match any node")),
-                string.Join("\n", warnings));
+            // The fake control connection's node is in dc1: the policies of the default profile and of the other one
+            // both have a local datacenter that matches no node
+            foreach (var localDc in new[] { "dc3", "dc4" })
+            {
+                var count = warnings.Count(
+                    w => w.Contains($"The local datacenter {localDc}") && w.Contains("doesn't match any node"));
+                Assert.AreEqual(1, count, string.Join("\n", warnings));
+            }
         }
 
         [Test]
