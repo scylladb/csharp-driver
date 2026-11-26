@@ -156,10 +156,16 @@ namespace Cassandra.MetadataHelpers
 
         /// <summary>
         /// This method doesn't guarantee that the host will be added to the skipped hosts collection.
-        /// It will depend on whether the collection already has enough hosts to satisfy the replication factor for the host's datacenter.
+        /// It will depend on whether the collection already has enough hosts to satisfy the replication factor for the host's datacenter,
+        /// and on whether the host is already a replica or skipped, which a host with several tokens can be.
         /// </summary>
         private static void TryAddToSkippedHostsCollection(NetworkTopologyTokenMapContext context, Host h, int dcRf, int dcAddedReplicas)
         {
+            if (context.TokenReplicas.Contains(h) || context.SkippedHosts.Contains(h))
+            {
+                return;
+            }
+
             // We already added a replica for this rack, skip until replicas in other racks are added
             var remainingReplicasNeededToSatisfyRf = dcRf - dcAddedReplicas;
             if (context.SkippedHosts.Count < remainingReplicasNeededToSatisfyRf)
@@ -226,8 +232,7 @@ namespace Cassandra.MetadataHelpers
             var length = dcRf - dcReplicas;
             foreach (var h in context.SkippedHosts.Where(h => h.Datacenter == dc))
             {
-                context.TokenReplicas.Add(h);
-                if (++counter == length)
+                if (context.TokenReplicas.Add(h) && ++counter == length)
                 {
                     break;
                 }
