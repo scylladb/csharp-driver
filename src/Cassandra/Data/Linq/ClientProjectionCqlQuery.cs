@@ -53,7 +53,7 @@ namespace Cassandra.Data.Linq
             IEnumerable<TResult> result;
             if (!_canCompile)
             {
-                var mapper = MapperFactory.GetMapperWithProjection<TResult>(cql, rs, _projectionExpression);
+                var mapper = MapperFactory.GetMapperWithProjection<TResult>(cql, rs.Columns, _projectionExpression);
                 result = rs.Select(mapper);
             }
             else

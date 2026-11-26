@@ -125,7 +125,7 @@ namespace Cassandra.Data.Linq
         /// </summary>
         internal virtual IEnumerable<TEntity> AdaptResult(string cql, RowSet rs)
         {
-            var mapper = MapperFactory.GetMapper<TEntity>(cql, rs);
+            var mapper = MapperFactory.GetMapper<TEntity>(cql, rs.Columns);
             return rs.Select(mapper);
         }
 

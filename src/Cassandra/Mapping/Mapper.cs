@@ -102,7 +102,7 @@ namespace Cassandra.Mapping
             _cqlGenerator.AddSelect<T>(cql);
             return ExecuteAsyncAndAdapt(cql, cancellationToken, (s, rs) =>
             {
-                var mapper = _mapperFactory.GetMapper<T>(cql.Statement, rs);
+                var mapper = _mapperFactory.GetMapper<T>(cql.Statement, rs.Columns);
                 return rs.Select(mapper);
             });
         }
@@ -115,7 +115,7 @@ namespace Cassandra.Mapping
             _cqlGenerator.AddSelect<T>(cql);
             return ExecuteAsyncAndAdapt<IPage<T>>(cql, cancellationToken, (stmt, rs) =>
             {
-                var mapper = _mapperFactory.GetMapper<T>(cql.Statement, rs);
+                var mapper = _mapperFactory.GetMapper<T>(cql.Statement, rs.Columns);
                 return new Page<T>(rs.Select(mapper), stmt.PagingState, rs.PagingState);
             });
         }
@@ -153,7 +153,7 @@ namespace Cassandra.Mapping
             _cqlGenerator.AddSelect<T>(cql);
             return ExecuteAsyncAndAdapt(cql, cancellationToken, (s, rs) =>
             {
-                var mapper = _mapperFactory.GetMapper<T>(cql.Statement, rs);
+                var mapper = _mapperFactory.GetMapper<T>(cql.Statement, rs.Columns);
                 return mapper(rs.Single());
             });
         }
@@ -176,7 +176,7 @@ namespace Cassandra.Mapping
                 {
                     return default(T);
                 }
-                var mapper = _mapperFactory.GetMapper<T>(cql.Statement, rs);
+                var mapper = _mapperFactory.GetMapper<T>(cql.Statement, rs.Columns);
                 return mapper(row);
             });
         }
@@ -195,7 +195,7 @@ namespace Cassandra.Mapping
             {
                 var row = rs.First();
                 // Map to return type
-                var mapper = _mapperFactory.GetMapper<T>(cql.Statement, rs);
+                var mapper = _mapperFactory.GetMapper<T>(cql.Statement, rs.Columns);
                 return mapper(row);
             });
         }
@@ -218,7 +218,7 @@ namespace Cassandra.Mapping
                 {
                     return default(T);
                 }
-                var mapper = _mapperFactory.GetMapper<T>(cql.Statement, rs);
+                var mapper = _mapperFactory.GetMapper<T>(cql.Statement, rs.Columns);
                 return mapper(row);
             });
         }

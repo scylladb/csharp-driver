@@ -69,7 +69,7 @@ namespace Cassandra.Mapping
                 return new AppliedInfo<T>(false);
             }
             //It was not applied, map the information returned
-            var mapper = mapperFactory.GetMapper<T>(cql, rs);
+            var mapper = mapperFactory.GetMapper<T>(cql, rs.Columns);
             return new AppliedInfo<T>(mapper(row));
         }
     }

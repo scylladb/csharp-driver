@@ -146,7 +146,7 @@ namespace Cassandra.Data.Linq
             var cql = visitor.GetSelect(Expression, out object[] values);
             var rs = await InternalExecuteWithProfileAsync(executionProfile, cql, values, cancellationToken)
                 .ConfigureAwait(false);
-            var mapper = MapperFactory.GetMapper<TEntity>(cql, rs);
+            var mapper = MapperFactory.GetMapper<TEntity>(cql, rs.Columns);
             return new Page<TEntity>(rs.Select(mapper), PagingState, rs.PagingState);
         }
 

@@ -422,7 +422,7 @@ namespace Cassandra.Tests
                 .Column(r => r.Amounts, cm => cm.WithName("amounts")));
 
             var mapper = config.MapperFactory.GetMapper<BigDecimalRow>(
-                "SELECT amount, amounts FROM tbl1", new RowSet { Columns = metadata.Columns });
+                "SELECT amount, amounts FROM tbl1", metadata.Columns);
             var poco = mapper(row);
 
             AssertBigDecimal(2, 1234, poco.Amount);

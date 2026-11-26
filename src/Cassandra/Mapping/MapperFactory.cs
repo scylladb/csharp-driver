@@ -86,20 +86,20 @@ namespace Cassandra.Mapping
         /// <summary>
         /// Gets a mapper Func that can map from a C* row to the POCO type T for the given statement.
         /// </summary>
-        public Func<Row, T> GetMapper<T>(string cql, RowSet rows)
+        public Func<Row, T> GetMapper<T>(string cql, CqlColumn[] columns)
         {
             var key = GetMapperCacheKey<T>(cql);
-            var mapperFunc = _mapperFuncCache.GetOrAdd(key, _ => CreateMapper<T>(rows));
+            var mapperFunc = _mapperFuncCache.GetOrAdd(key, _ => CreateMapper<T>(columns));
             return (Func<Row, T>)mapperFunc;
         }
 
-        public Func<Row, T> GetMapperWithProjection<T>(string cql, RowSet rows, Expression projectionExpression)
+        public Func<Row, T> GetMapperWithProjection<T>(string cql, CqlColumn[] columns, Expression projectionExpression)
         {
             // Use ExpressionStringBuilder to build the string representation, which should not be drag for
             // small projections
             var key = GetMapperCacheKey<T>(cql, projectionExpression.ToString());
             var mapperFunc = _mapperFuncCache
-                .GetOrAdd(key, _ => CreateMapperWithProjection<T>(rows, projectionExpression));
+                .GetOrAdd(key, _ => CreateMapperWithProjection<T>(columns, projectionExpression));
             return (Func<Row, T>)mapperFunc;
         }
 
@@ -122,32 +122,32 @@ namespace Cassandra.Mapping
         /// <summary>
         /// Creates a mapper Func for going from a C* Row to a POCO, T.
         /// </summary>
-        private Func<Row, T> CreateMapper<T>(RowSet rows)
+        private Func<Row, T> CreateMapper<T>(CqlColumn[] columns)
         {
             var pocoData = GetPocoData<T>();
 
             // See if we retrieved only one column and if that column does not exist in the PocoData
-            if (rows.Columns.Length == 1 &&
+            if (columns.Length == 1 &&
                 !Cassandra.Utils.IsAnonymousType(pocoData.PocoType) &&
-                !pocoData.Columns.Contains(rows.Columns[0].Name))
+                !pocoData.Columns.Contains(columns[0].Name))
             {
                 // Map the single column value directly to the POCO
-                return CreateMapperForSingleColumnToPoco<T>(rows, pocoData);
+                return CreateMapperForSingleColumnToPoco<T>(columns, pocoData);
             }
 
             // Create a default POCO mapper
-            return CreateMapperForPoco<T>(rows, pocoData);
+            return CreateMapperForPoco<T>(columns, pocoData);
         }
 
-        private Func<Row, T> CreateMapperWithProjection<T>(RowSet rows, Expression projectionExpression)
+        private Func<Row, T> CreateMapperWithProjection<T>(CqlColumn[] columns, Expression projectionExpression)
         {
             var pocoData = GetPocoData<T>();
 
             // See if we retrieved only one column and if that column does not exist in the PocoData
-            if (rows.Columns.Length == 1 && typeof(T).GetTypeInfo().IsAssignableFrom(rows.Columns[0].Type))
+            if (columns.Length == 1 && typeof(T).GetTypeInfo().IsAssignableFrom(columns[0].Type))
             {
                 // Map the single column value directly to the POCO
-                return CreateMapperForSingleColumnToPoco<T>(rows, pocoData);
+                return CreateMapperForSingleColumnToPoco<T>(columns, pocoData);
             }
             var expressionVisitor = new ProjectionExpressionVisitor();
             expressionVisitor.Visit(projectionExpression);
@@ -158,7 +158,7 @@ namespace Cassandra.Mapping
                 throw new NotSupportedException("Projection expression not supported: " + projectionExpression);
             }
             // Create a mapper for the given projection
-            return CreateMapperForProjection<T>(rows, projection);
+            return CreateMapperForProjection<T>(columns, projection);
         }
 
         public PocoData GetPocoData<T>()
@@ -227,11 +227,11 @@ namespace Cassandra.Mapping
         /// <summary>
         /// Creates a mapper that flattens a single column's value directly to the "POCO"'s value.  (POCO here most likely being a value type/string/etc.)
         /// </summary>
-        private Func<Row, T> CreateMapperForSingleColumnToPoco<T>(RowSet rows, PocoData pocoData)
+        private Func<Row, T> CreateMapperForSingleColumnToPoco<T>(CqlColumn[] columns, PocoData pocoData)
         {
             ParameterExpression row = Expression.Parameter(CassandraRowType, "row");
 
-            CqlColumn dbColumn = rows.Columns[0];
+            CqlColumn dbColumn = columns[0];
 
             // Get an expression for getting the value of the single column as TPoco (and returning it)
             Expression getColumnOrDefault = GetExpressionToGetColumnValueFromRow(row, dbColumn, pocoData.PocoType);
@@ -242,7 +242,7 @@ namespace Cassandra.Mapping
         /// <summary>
         /// Creates a mapper Func for a POCO.
         /// </summary>
-        private Func<Row, T> CreateMapperForPoco<T>(RowSet rows, PocoData pocoData)
+        private Func<Row, T> CreateMapperForPoco<T>(CqlColumn[] columns, PocoData pocoData)
         {
             // We're going to store the method body expressions in a list since we need to use some looping to generate it
             ICollection<Expression> methodBodyExpressions = new LinkedList<Expression>();
@@ -259,19 +259,19 @@ namespace Cassandra.Mapping
             }
             else
             {
-                var constructor = pocoData.PocoType.GetTypeInfo().GetConstructors().FirstOrDefault(c => c.GetParameters().Length == rows.Columns.Length);
+                var constructor = pocoData.PocoType.GetTypeInfo().GetConstructors().FirstOrDefault(c => c.GetParameters().Length == columns.Length);
                 if (constructor == null)
                 {
                     throw new ArgumentException(
                         string.Format("RowSet columns length is {0} but type {1} does not contain a constructor with the same amount of parameters",
-                        rows.Columns.Length,
+                        columns.Length,
                         pocoData.PocoType));
                 }
                 var parameterInfos = constructor.GetParameters();
                 var parameterExpressions = new List<Expression>();
-                for (var i = 0; i < rows.Columns.Length; i++)
+                for (var i = 0; i < columns.Length; i++)
                 {
-                    var c = rows.Columns[i];
+                    var c = columns[i];
                     var param = parameterInfos[i];
                     var getValueT = GetExpressionToGetColumnValueFromRow(row, c, param.ParameterType);
                     parameterExpressions.Add(getValueT);
@@ -282,7 +282,7 @@ namespace Cassandra.Mapping
             // Keep track of any variables we need in the method body, starting with the poco variable
             var methodBodyVariables = new List<ParameterExpression> { poco };
 
-            foreach (var dbColumn in rows.Columns)
+            foreach (var dbColumn in columns)
             {
                 // Try to find a corresponding column on the POCO and if not found, don't map that column from the RowSet
                 if (pocoData.Columns.TryGetItem(dbColumn.Name, out PocoColumn pocoColumn) == false)
@@ -327,7 +327,7 @@ namespace Cassandra.Mapping
         /// <summary>
         /// Creates a mapper Func for a projection.
         /// </summary>
-        private Func<Row, T> CreateMapperForProjection<T>(RowSet rows, NewTypeProjection projection)
+        private Func<Row, T> CreateMapperForProjection<T>(CqlColumn[] columns, NewTypeProjection projection)
         {
             ICollection<Expression> methodBodyExpressions = new LinkedList<Expression>();
             // The input parameter for our Func<Row, T>, a C* Row
@@ -345,14 +345,14 @@ namespace Cassandra.Mapping
             else
             {
                 var parameterExpressions = new List<Expression>();
-                if (constructorParameters.Length > rows.Columns.Length)
+                if (constructorParameters.Length > columns.Length)
                 {
                     throw new IndexOutOfRangeException(string.Format("Expected at least {0} column(s), obtained {1}",
-                        constructorParameters.Length, rows.Columns.Length));
+                        constructorParameters.Length, columns.Length));
                 }
                 for (columnIndex = 0; columnIndex < constructorParameters.Length; columnIndex++)
                 {
-                    var c = rows.Columns[columnIndex];
+                    var c = columns[columnIndex];
                     var param = constructorParameters[columnIndex];
                     var getValueT = GetExpressionToGetColumnValueFromRow(row, c, param.ParameterType);
                     parameterExpressions.Add(getValueT);
@@ -364,10 +364,10 @@ namespace Cassandra.Mapping
             // Fill the rest of members with the rest of the column values
             // ReSharper disable once GenericEnumeratorNotDisposed
             var membersEnumerator = projection.Members.GetEnumerator();
-            while (membersEnumerator.MoveNext() && columnIndex < rows.Columns.Length)
+            while (membersEnumerator.MoveNext() && columnIndex < columns.Length)
             {
                 var member = membersEnumerator.Current;
-                var c = rows.Columns[columnIndex];
+                var c = columns[columnIndex];
                 var memberType = GetUnderlyingType(member);
                 var getColumnValue = GetExpressionToGetColumnValueFromRow(row, c, memberType);
                 // poco.SomeFieldOrProp = ... getColumnValue call ...
