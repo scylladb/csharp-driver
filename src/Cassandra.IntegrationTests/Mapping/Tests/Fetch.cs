@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using Cassandra.Data.Linq;
 using Cassandra.IntegrationTests.Mapping.Structures;
 using Cassandra.IntegrationTests.TestBase;
@@ -90,11 +91,8 @@ namespace Cassandra.IntegrationTests.Mapping.Tests
             mapper.Insert(new Author { AuthorId = ids[0] });
             mapper.Insert(new Author { AuthorId = ids[1] });
 
-            List<Author> authors = null;
-            mapper.FetchAsync<Author>(Cql.New("SELECT * from " + table.Name).WithOptions(o => o.SetPageSize(int.MaxValue))).ContinueWith(t =>
-            {
-                authors = t.Result.ToList();
-            }).Wait();
+            var authors = mapper.FetchAsync<Author>(Cql.New("SELECT * from " + table.Name).WithOptions(o => o.SetPageSize(int.MaxValue)))
+                                .Result.ToBlockingEnumerable().ToList();
             Assert.AreEqual(2, authors.Count); ;
             CollectionAssert.AreEquivalent(ids, authors.Select(a => a.AuthorId));
         }

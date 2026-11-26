@@ -856,9 +856,10 @@ rows by column, it also overrides `Columns`. LINQ also reads the query trace fro
 `Info`, so a mock used with LINQ returns an `ExecutionInfo` there, for example
 `new ExecutionInfo()`.
 
-The Mapper and LINQ methods that return entities, such as `IMapper.FetchAsync()`
-or `CqlQuery<T>.ExecuteAsync()`, keep their signatures and still return an
-`IEnumerable<T>`, whose following pages are retrieved synchronously.
+The Mapper's `FetchAsync()` returns an `IAsyncEnumerable<T>` too, described in the next
+section. The LINQ methods that return entities, such as `CqlQuery<T>.ExecuteAsync()`,
+keep their signatures and still return an `IEnumerable<T>`, whose following pages are
+retrieved synchronously.
 
 The query abort timeout (`Builder.WithQueryTimeout()`) applies only to synchronous
 operations. In 3.x, iterating the `RowSet` returned by `ExecuteAsync()` waited for
@@ -867,6 +868,31 @@ first page, iterating an `AsyncRowSet` does not apply it. The socket read timeou
 still applies to each attempt of a page request, but not to the total wait: after a
 timeout, the retry policy can try another host. To bound the wait, pass a
 cancellation token, for example with `WithCancellation()`.
+
+### Mapper `FetchAsync` returns `IAsyncEnumerable<T>`
+
+`IMapper.FetchAsync()`, and its overloads in `ICqlQueryAsyncClient`, return
+`Task<IAsyncEnumerable<T>>` instead of `Task<IEnumerable<T>>`. The task completes once
+the first page is read, as before, and the following pages are read asynchronously while
+the rows are enumerated, instead of blocking the calling thread. Iterating the result
+synchronously no longer compiles. `Fetch()` still returns an `IEnumerable<T>`, iterated
+synchronously.
+
+| 3.x | 4.0 |
+|---|---|
+| `foreach (var user in await mapper.FetchAsync<User>())` | `await foreach (var user in await mapper.FetchAsync<User>())` |
+| `(await mapper.FetchAsync<User>()).ToList()` | `await (await mapper.FetchAsync<User>()).ToListAsync()` |
+
+The cancellation token passed to `FetchAsync()` applies to reading the first page. To
+stop the enumeration, and the reading of the following pages, pass a token to it, for
+example with `WithCancellation()` or `ToListAsync(cancellationToken)`.
+
+`SingleAsync()`, `SingleOrDefaultAsync()`, `FirstAsync()` and `FirstOrDefaultAsync()`
+keep their signatures, but read the following pages asynchronously too, when the first
+page doesn't settle the result, and their cancellation token applies to those pages.
+
+Mocks of `FetchAsync()` must return a `Task<IAsyncEnumerable<T>>`, for example
+`Task.FromResult(users.ToAsyncEnumerable())`.
 
 ### Paging after the session is disposed
 
@@ -988,11 +1014,10 @@ custom `ISession`, or a mock, receives the default token there. Cancelling the t
 also cancels the request as described for `ISession.ExecuteAsync()` above: a request
 already written can't be recalled, so the node still runs it, and a write may still be
 applied. `FetchAsync()` returns the rows of the first page, and reads the following
-pages while the result is enumerated: the token doesn't apply to them. Nor does it apply
-to the following pages that `SingleAsync()`, `SingleOrDefaultAsync()`, `FirstAsync()`
-and `FirstOrDefaultAsync()` read when the first page doesn't settle the result, for
-instance when it's empty but has a paging state: cancelling then doesn't cancel the
-task.
+pages while the result is enumerated: the token doesn't apply to them, as described in
+"Mapper `FetchAsync` returns `IAsyncEnumerable<T>`" above. It does apply to the
+following pages that `SingleAsync()`, `SingleOrDefaultAsync()`, `FirstAsync()` and
+`FirstOrDefaultAsync()` read when the first page doesn't settle the result.
 
 As for `ISession`, calls that don't pass a token compile unchanged, except some calls
 that pass `null`, described below. Code compiled against 3.x must be recompiled,

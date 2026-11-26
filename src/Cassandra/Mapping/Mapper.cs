@@ -81,8 +81,20 @@ namespace Cassandra.Mapping
             return adaptation(stmt, rs);
         }
 
+        /// <summary>
+        /// Prepares the query of <paramref name="cql"/> if needed, executes it and returns its rows, which are read
+        /// asynchronously.
+        /// </summary>
+        private async Task<AsyncRowSet> ExecuteRowsAsync(Cql cql, CancellationToken cancellationToken)
+        {
+            var stmt = await _statementFactory.GetStatementAsync(_session, cql, cancellationToken: cancellationToken)
+                                              .ConfigureAwait(false);
+            return await ExecuteStatementRowsAsync(stmt, cql.ExecutionProfile, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         /// <inheritdoc />
-        public Task<IEnumerable<T>> FetchAsync<T>(
+        public Task<IAsyncEnumerable<T>> FetchAsync<T>(
             CqlQueryOptions options = null, CancellationToken cancellationToken = default)
         {
             return FetchAsync<T>(
@@ -90,17 +102,28 @@ namespace Cassandra.Mapping
         }
 
         /// <inheritdoc />
-        public Task<IEnumerable<T>> FetchAsync<T>(string cql, params object[] args)
+        public Task<IAsyncEnumerable<T>> FetchAsync<T>(string cql, params object[] args)
         {
             return FetchAsync<T>(Cql.New(cql, args, CqlQueryOptions.None));
         }
 
         /// <inheritdoc />
-        public Task<IEnumerable<T>> FetchAsync<T>(Cql cql, CancellationToken cancellationToken = default)
+        public async Task<IAsyncEnumerable<T>> FetchAsync<T>(Cql cql, CancellationToken cancellationToken = default)
         {
-            //Use ExecuteAsyncAndAdapt with a delegate to handle the adaptation from RowSet to IEnumerable<T>
             _cqlGenerator.AddSelect<T>(cql);
-            return ExecuteAsyncAndAdapt(cql, cancellationToken, (s, rs) =>
+            var rs = await ExecuteRowsAsync(cql, cancellationToken).ConfigureAwait(false);
+            var mapper = _mapperFactory.GetMapper<T>(cql.Statement, rs.Columns);
+            return rs.Select(mapper);
+        }
+
+        /// <summary>
+        /// Same as <see cref="FetchAsync{T}(Cql, CancellationToken)"/>, with rows whose following pages are read
+        /// synchronously while they're enumerated, for <see cref="Fetch{T}(Cql)"/>.
+        /// </summary>
+        private Task<IEnumerable<T>> FetchRowsAsync<T>(Cql cql)
+        {
+            _cqlGenerator.AddSelect<T>(cql);
+            return ExecuteAsyncAndAdapt(cql, CancellationToken.None, (s, rs) =>
             {
                 var mapper = _mapperFactory.GetMapper<T>(cql.Statement, rs.Columns);
                 return rs.Select(mapper);
@@ -148,14 +171,12 @@ namespace Cassandra.Mapping
         }
 
         /// <inheritdoc />
-        public Task<T> SingleAsync<T>(Cql cql, CancellationToken cancellationToken = default)
+        public async Task<T> SingleAsync<T>(Cql cql, CancellationToken cancellationToken = default)
         {
             _cqlGenerator.AddSelect<T>(cql);
-            return ExecuteAsyncAndAdapt(cql, cancellationToken, (s, rs) =>
-            {
-                var mapper = _mapperFactory.GetMapper<T>(cql.Statement, rs.Columns);
-                return mapper(rs.Single());
-            });
+            var rs = await ExecuteRowsAsync(cql, cancellationToken).ConfigureAwait(false);
+            var row = await rs.SingleAsync(cancellationToken).ConfigureAwait(false);
+            return _mapperFactory.GetMapper<T>(cql.Statement, rs.Columns)(row);
         }
 
         /// <inheritdoc />
@@ -165,20 +186,12 @@ namespace Cassandra.Mapping
         }
 
         /// <inheritdoc />
-        public Task<T> SingleOrDefaultAsync<T>(Cql cql, CancellationToken cancellationToken = default)
+        public async Task<T> SingleOrDefaultAsync<T>(Cql cql, CancellationToken cancellationToken = default)
         {
             _cqlGenerator.AddSelect<T>(cql);
-            return ExecuteAsyncAndAdapt(cql, cancellationToken, (s, rs) =>
-            {
-                var row = rs.SingleOrDefault();
-                // Map to return type
-                if (row == null)
-                {
-                    return default(T);
-                }
-                var mapper = _mapperFactory.GetMapper<T>(cql.Statement, rs.Columns);
-                return mapper(row);
-            });
+            var rs = await ExecuteRowsAsync(cql, cancellationToken).ConfigureAwait(false);
+            var row = await rs.SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+            return row == null ? default : _mapperFactory.GetMapper<T>(cql.Statement, rs.Columns)(row);
         }
 
         /// <inheritdoc />
@@ -188,16 +201,12 @@ namespace Cassandra.Mapping
         }
 
         /// <inheritdoc />
-        public Task<T> FirstAsync<T>(Cql cql, CancellationToken cancellationToken = default)
+        public async Task<T> FirstAsync<T>(Cql cql, CancellationToken cancellationToken = default)
         {
             _cqlGenerator.AddSelect<T>(cql);
-            return ExecuteAsyncAndAdapt(cql, cancellationToken, (s, rs) =>
-            {
-                var row = rs.First();
-                // Map to return type
-                var mapper = _mapperFactory.GetMapper<T>(cql.Statement, rs.Columns);
-                return mapper(row);
-            });
+            var rs = await ExecuteRowsAsync(cql, cancellationToken).ConfigureAwait(false);
+            var row = await rs.FirstAsync(cancellationToken).ConfigureAwait(false);
+            return _mapperFactory.GetMapper<T>(cql.Statement, rs.Columns)(row);
         }
 
         /// <inheritdoc />
@@ -207,20 +216,12 @@ namespace Cassandra.Mapping
         }
 
         /// <inheritdoc />
-        public Task<T> FirstOrDefaultAsync<T>(Cql cql, CancellationToken cancellationToken = default)
+        public async Task<T> FirstOrDefaultAsync<T>(Cql cql, CancellationToken cancellationToken = default)
         {
             _cqlGenerator.AddSelect<T>(cql);
-            return ExecuteAsyncAndAdapt(cql, cancellationToken, (s, rs) =>
-            {
-                var row = rs.FirstOrDefault();
-                // Map to return type
-                if (row == null)
-                {
-                    return default(T);
-                }
-                var mapper = _mapperFactory.GetMapper<T>(cql.Statement, rs.Columns);
-                return mapper(row);
-            });
+            var rs = await ExecuteRowsAsync(cql, cancellationToken).ConfigureAwait(false);
+            var row = await rs.FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+            return row == null ? default : _mapperFactory.GetMapper<T>(cql.Statement, rs.Columns)(row);
         }
 
         /// <inheritdoc />
@@ -572,8 +573,7 @@ namespace Cassandra.Mapping
         /// <inheritdoc />
         public IEnumerable<T> Fetch<T>(Cql cql)
         {
-            //Use the async method
-            var t = FetchAsync<T>(cql);
+            var t = FetchRowsAsync<T>(cql);
             //Wait for it to be completed or throw
             TaskHelper.WaitToCompleteWithMetrics(_metricsManager, t, _queryAbortTimeout);
             return t.Result;
@@ -861,9 +861,18 @@ namespace Cassandra.Mapping
         private Task<RowSet> ExecuteStatementAsync(
             IStatement statement, string executionProfile, CancellationToken cancellationToken)
         {
-            return AsyncRowSet.ToRowSetAsync(executionProfile != null
+            return AsyncRowSet.ToRowSetAsync(ExecuteStatementRowsAsync(statement, executionProfile, cancellationToken));
+        }
+
+        /// <summary>
+        /// Executes the statement with the execution profile, or the default one when it's null.
+        /// </summary>
+        private Task<AsyncRowSet> ExecuteStatementRowsAsync(
+            IStatement statement, string executionProfile, CancellationToken cancellationToken)
+        {
+            return executionProfile != null
                 ? _session.ExecuteAsync(statement, executionProfile, cancellationToken)
-                : _session.ExecuteAsync(statement, cancellationToken));
+                : _session.ExecuteAsync(statement, cancellationToken);
         }
     }
 }

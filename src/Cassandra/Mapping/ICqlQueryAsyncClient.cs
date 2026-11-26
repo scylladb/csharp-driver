@@ -34,9 +34,15 @@ namespace Cassandra.Mapping
         /// query, if it's prepared, which continues, and stops the request as
         /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
         /// recalled, so the node still runs it, and a write may still be applied. The token only applies to the first
-        /// page: the following pages are read while the result is enumerated.
+        /// page: to stop the enumeration, and the reading of the following pages, pass a token to it, for instance with
+        /// <see cref="TaskAsyncEnumerableExtensions.WithCancellation{T}(IAsyncEnumerable{T}, CancellationToken)"/>.
         /// </param>
-        Task<IEnumerable<T>> FetchAsync<T>(
+        /// <returns>
+        /// The rows, mapped to <typeparamref name="T"/>, once the first page is read. The following pages are read
+        /// asynchronously while the rows are enumerated, with the asynchronous <c>foreach</c> statement or the
+        /// operators of <c>System.Linq.AsyncEnumerable</c>.
+        /// </returns>
+        Task<IAsyncEnumerable<T>> FetchAsync<T>(
             CqlQueryOptions queryOptions = null, CancellationToken cancellationToken = default);
 
         /// <summary>
@@ -46,7 +52,12 @@ namespace Cassandra.Mapping
         /// One of <paramref name="args"/> is a <see cref="CancellationToken"/>, which can't be a parameter value. To
         /// cancel the query, pass <c>Cql.New(cql, args)</c> and the token to the overload that takes a <see cref="Cql"/>.
         /// </exception>
-        Task<IEnumerable<T>> FetchAsync<T>(string cql, params object[] args);
+        /// <returns>
+        /// The rows, mapped to <typeparamref name="T"/>, once the first page is read. The following pages are read
+        /// asynchronously while the rows are enumerated, with the asynchronous <c>foreach</c> statement or the
+        /// operators of <c>System.Linq.AsyncEnumerable</c>.
+        /// </returns>
+        Task<IAsyncEnumerable<T>> FetchAsync<T>(string cql, params object[] args);
 
         /// <summary>
         /// Gets a list of T from Cassandra using the CQL statement specified.
@@ -57,9 +68,15 @@ namespace Cassandra.Mapping
         /// query, if it's prepared, which continues, and stops the request as
         /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
         /// recalled, so the node still runs it, and a write may still be applied. The token only applies to the first
-        /// page: the following pages are read while the result is enumerated.
+        /// page: to stop the enumeration, and the reading of the following pages, pass a token to it, for instance with
+        /// <see cref="TaskAsyncEnumerableExtensions.WithCancellation{T}(IAsyncEnumerable{T}, CancellationToken)"/>.
         /// </param>
-        Task<IEnumerable<T>> FetchAsync<T>(Cql cql, CancellationToken cancellationToken = default);
+        /// <returns>
+        /// The rows, mapped to <typeparamref name="T"/>, once the first page is read. The following pages are read
+        /// asynchronously while the rows are enumerated, with the asynchronous <c>foreach</c> statement or the
+        /// operators of <c>System.Linq.AsyncEnumerable</c>.
+        /// </returns>
+        Task<IAsyncEnumerable<T>> FetchAsync<T>(Cql cql, CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Gets a paged list of T results from Cassandra.
@@ -130,8 +147,8 @@ namespace Cassandra.Mapping
         /// query, if it's prepared, which continues, and stops the request as
         /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
         /// recalled, so the node still runs it, and a write may still be applied.
-        /// The token doesn't apply to the following pages, which are read when the first page doesn't settle the
-        /// result, for instance when it's empty but has a paging state.
+        /// The token also applies to the following pages, which are read asynchronously when the first page doesn't
+        /// settle the result, for instance when it's empty but has a paging state.
         /// </param>
         Task<T> SingleAsync<T>(Cql cql, CancellationToken cancellationToken = default);
 
@@ -155,8 +172,8 @@ namespace Cassandra.Mapping
         /// query, if it's prepared, which continues, and stops the request as
         /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
         /// recalled, so the node still runs it, and a write may still be applied.
-        /// The token doesn't apply to the following pages, which are read when the first page doesn't settle the
-        /// result, for instance when it's empty but has a paging state.
+        /// The token also applies to the following pages, which are read asynchronously when the first page doesn't
+        /// settle the result, for instance when it's empty but has a paging state.
         /// </param>
         Task<T> SingleOrDefaultAsync<T>(Cql cql, CancellationToken cancellationToken = default);
 
@@ -179,8 +196,8 @@ namespace Cassandra.Mapping
         /// query, if it's prepared, which continues, and stops the request as
         /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
         /// recalled, so the node still runs it, and a write may still be applied.
-        /// The token doesn't apply to the following pages, which are read when the first page doesn't settle the
-        /// result, for instance when it's empty but has a paging state.
+        /// The token also applies to the following pages, which are read asynchronously when the first page doesn't
+        /// settle the result, for instance when it's empty but has a paging state.
         /// </param>
         Task<T> FirstAsync<T>(Cql cql, CancellationToken cancellationToken = default);
 
@@ -204,8 +221,8 @@ namespace Cassandra.Mapping
         /// query, if it's prepared, which continues, and stops the request as
         /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
         /// recalled, so the node still runs it, and a write may still be applied.
-        /// The token doesn't apply to the following pages, which are read when the first page doesn't settle the
-        /// result, for instance when it's empty but has a paging state.
+        /// The token also applies to the following pages, which are read asynchronously when the first page doesn't
+        /// settle the result, for instance when it's empty but has a paging state.
         /// </param>
         Task<T> FirstOrDefaultAsync<T>(Cql cql, CancellationToken cancellationToken = default);
     }

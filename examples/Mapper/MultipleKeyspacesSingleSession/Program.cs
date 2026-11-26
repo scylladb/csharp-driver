@@ -82,7 +82,7 @@ namespace MultipleKeyspacesSingleSession
         {
             var users = await mapperManager.GetMapperForKeyspace(keyspace).FetchAsync<User>().ConfigureAwait(false);
             Console.WriteLine($"###### KEYSPACE {keyspace}");
-            foreach (var user in users)
+            await foreach (var user in users.ConfigureAwait(false))
             {
                 Console.WriteLine($"NAME='{user.Name}' ID={user.Id}");
             }

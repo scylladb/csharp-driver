@@ -125,7 +125,7 @@ namespace Cassandra.IntegrationTests.ExecutionProfiles
             PrimeSelect(_movieList, ConsistencyLevel.Two, "SELECT MainActor");
 
             var movies = async
-                ? _mapper.FetchAsync<Movie>(Cql.New($"SELECT MainActor FROM {_keyspace}.Movie").WithExecutionProfile("testProfile")).Result.ToList()
+                ? _mapper.FetchAsync<Movie>(Cql.New($"SELECT MainActor FROM {_keyspace}.Movie").WithExecutionProfile("testProfile")).Result.ToBlockingEnumerable().ToList()
                 : _mapper.Fetch<Movie>(Cql.New($"SELECT MainActor FROM {_keyspace}.Movie").WithExecutionProfile("testProfile")).ToList();
 
             CollectionAssert.AreEqual(_movieList, movies, new MovieComparer());

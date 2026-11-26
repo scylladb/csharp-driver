@@ -149,7 +149,7 @@ var vectorSearchData = await mapper.FetchAsync<TestTable1>(
     "ORDER BY j ANN OF ? LIMIT ?",
     new CqlVector<float>(10.9f, 10.9f, 10.9f),
     1);
-var entity = vectorSearchData.SingleOrDefault();
+var entity = await vectorSearchData.SingleOrDefaultAsync();
 ```
 
 
