@@ -50,6 +50,7 @@ namespace Cassandra
 
         private ILoadBalancingPolicy _loadBalancingPolicy;
         private string _localDatacenter;
+        private string _localRack;
         private ITimestampGenerator _timestampGenerator;
         private IColumnEncryptionPolicy _columnEncryptionPolicy;
         private int _port = ProtocolOptions.DefaultPort;
@@ -226,8 +227,8 @@ namespace Cassandra
             {
                 Builder.Logger.Warning(
                     "A local datacenter was provided through the Builder.WithLocalDatacenter method, but a load balancing " +
-                    "policy was configured, which takes precedence: the local datacenter only applies to the default " +
-                    "load balancing policy. Give the configured policy the local datacenter instead.");
+                    "policy was configured, which takes precedence: the local datacenter and rack only apply to the " +
+                    "default load balancing policy. Give the configured policy the local datacenter instead.");
             }
 
             var lbp = _loadBalancingPolicy ?? DefaultLoadBalancingPolicy();
@@ -569,17 +570,49 @@ namespace Cassandra
             }
 
             _localDatacenter = localDatacenter;
+            _localRack = null;
             return this;
         }
 
         /// <summary>
-        /// Returns the default load balancing policy with the local datacenter of
-        /// <see cref="WithLocalDatacenter"/>, or null when none was set, for <see cref="Policies"/> to use its
-        /// default.
+        /// Sets the local datacenter and rack of the default load balancing policy, which the driver uses when no load
+        /// balancing policy is configured, through <see cref="WithLoadBalancingPolicy"/> or the default execution
+        /// profile. Its requests then go to the nodes of that rack first, then to the other nodes of that datacenter,
+        /// and to the nodes whose datacenter is unknown, which it treats as local.
+        /// <para>
+        /// A configured load balancing policy isn't affected: set the local datacenter and rack in its options
+        /// instead, with <see cref="DefaultLoadBalancingPolicyOptions"/>.
+        /// </para>
+        /// </summary>
+        /// <param name="localDatacenter">The name of the local datacenter, as known by the cluster.</param>
+        /// <param name="localRack">The name of the local rack, within the local datacenter.</param>
+        /// <returns>this Builder</returns>
+        public Builder WithLocalDatacenter(string localDatacenter, string localRack)
+        {
+            if (string.IsNullOrEmpty(localRack))
+            {
+                throw new ArgumentException("The local rack can't be null or empty.", nameof(localRack));
+            }
+
+            WithLocalDatacenter(localDatacenter);
+            _localRack = localRack;
+            return this;
+        }
+
+        /// <summary>
+        /// Returns the default load balancing policy with the local datacenter and rack of
+        /// <see cref="WithLocalDatacenter(string)"/>, or null when none was set, for <see cref="Policies"/> to use
+        /// its default.
         /// </summary>
         private ILoadBalancingPolicy DefaultLoadBalancingPolicy()
         {
-            return _localDatacenter == null ? null : Policies.NewDefaultLoadBalancingPolicy(_localDatacenter);
+            return _localDatacenter == null
+                ? null
+                : new DefaultLoadBalancingPolicy(new DefaultLoadBalancingPolicyOptions
+                {
+                    LocalDatacenter = _localDatacenter,
+                    LocalRack = _localRack
+                });
         }
 
         /// <summary>
@@ -589,7 +622,7 @@ namespace Cassandra
         /// <para>
         /// If no load balancing policy is set through this method or in the default execution profile, the driver uses
         /// <see cref="Policies.DefaultLoadBalancingPolicy"/>, with the local datacenter of
-        /// <see cref="WithLocalDatacenter"/> if one is set.
+        /// <see cref="WithLocalDatacenter(string)"/> if one is set.
         /// </para>
         /// <para>
         /// To specify the local datacenter with the default load balancing policy, use the following method to create a

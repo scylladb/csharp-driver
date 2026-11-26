@@ -25,9 +25,8 @@ namespace Cassandra
     internal static class LoadBalancingPolicyChain
     {
         /// <summary>
-        /// Upper bound on the number of policies visited. The chains the driver builds are three policies deep at
-        /// most, but an application can nest wrapper policies, such as <see cref="TokenAwarePolicy"/>, deeper: the
-        /// policies past this bound aren't looked into.
+        /// Upper bound on the number of policies visited. An application can nest wrapper policies, such as
+        /// <see cref="TokenAwarePolicy"/>, deeply: the policies past this bound aren't looked into.
         /// </summary>
         internal const int MaxLength = 16;
 
@@ -52,28 +51,35 @@ namespace Cassandra
         }
 
         /// <summary>
-        /// Finds the datacenter aware policy in <paramref name="policy"/> or the policies it wraps, if any.
+        /// Finds the local datacenter, and rack, of <paramref name="policy"/> or the policies it wraps, if any.
         /// </summary>
-        internal static DCAwareRoundRobinPolicy FindDatacenterAware(ILoadBalancingPolicy policy)
+        internal static PolicyLocation FindLocation(ILoadBalancingPolicy policy)
         {
-            return LoadBalancingPolicyChain.FindDatacenterAware(LoadBalancingPolicyChain.Of(policy, out _));
+            return LoadBalancingPolicyChain.FindLocation(LoadBalancingPolicyChain.Of(policy, out _));
         }
 
         /// <summary>
-        /// Finds the innermost datacenter aware policy of <paramref name="chain"/>, if any.
+        /// Finds the local datacenter, and rack, of the innermost policy of <paramref name="chain"/> that has one: a
+        /// <see cref="DefaultLoadBalancingPolicy"/> with a local datacenter, or a
+        /// <see cref="DCAwareRoundRobinPolicy"/>. Returns null when no policy has one.
         /// </summary>
-        internal static DCAwareRoundRobinPolicy FindDatacenterAware(IEnumerable<ILoadBalancingPolicy> chain)
+        internal static PolicyLocation FindLocation(IEnumerable<ILoadBalancingPolicy> chain)
         {
-            DCAwareRoundRobinPolicy dcAware = null;
+            PolicyLocation location = null;
             foreach (var policy in chain)
             {
-                if (policy is DCAwareRoundRobinPolicy dcAwarePolicy)
+                if (policy is DefaultLoadBalancingPolicy defaultPolicy && defaultPolicy.Options.LocalDatacenter != null)
                 {
-                    dcAware = dcAwarePolicy;
+                    var options = defaultPolicy.Options;
+                    location = new PolicyLocation(options.LocalDatacenter, options.LocalRack);
+                }
+                else if (policy is DCAwareRoundRobinPolicy dcAware)
+                {
+                    location = new PolicyLocation(dcAware.LocalDc, null);
                 }
             }
 
-            return dcAware;
+            return location;
         }
 
         /// <summary>
@@ -82,11 +88,6 @@ namespace Cassandra
         /// </summary>
         private static ILoadBalancingPolicy ChildPolicy(ILoadBalancingPolicy policy)
         {
-            if (policy is DefaultLoadBalancingPolicy defaultPolicy)
-            {
-                return defaultPolicy.ChildPolicy;
-            }
-
             if (policy is TokenAwarePolicy tokenAware)
             {
                 return tokenAware.ChildPolicy;
@@ -95,4 +96,9 @@ namespace Cassandra
             return null;
         }
     }
+
+    /// <summary>
+    /// The local datacenter of a load balancing policy, and its local rack, if any.
+    /// </summary>
+    internal sealed record PolicyLocation(string Datacenter, string Rack);
 }

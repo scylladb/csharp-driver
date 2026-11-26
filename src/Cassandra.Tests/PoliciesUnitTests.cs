@@ -179,7 +179,7 @@ namespace Cassandra.Tests
             ILoadBalancingPolicy policy = new DefaultLoadBalancingPolicy(localDc);
             var metadata = new MetadataSnapshot(hosts, null);
 
-            Assert.IsNull(LoadBalancingPolicyChain.FindDatacenterAware(policy));
+            Assert.IsNull(LoadBalancingPolicyChain.FindLocation(policy));
             Assert.AreEqual(HostDistance.Local, policy.Distance(hosts[0]));
             Assert.AreEqual(HostDistance.Local, policy.Distance(hosts[1]));
             CollectionAssert.AreEquivalent(hosts, policy.Fallback(new RoutingInfo(), metadata).Select(t => t.Host));
@@ -195,7 +195,7 @@ namespace Cassandra.Tests
             };
             ILoadBalancingPolicy policy = new DefaultLoadBalancingPolicy("dc2");
 
-            Assert.AreEqual("dc2", LoadBalancingPolicyChain.FindDatacenterAware(policy).LocalDc);
+            Assert.AreEqual("dc2", LoadBalancingPolicyChain.FindLocation(policy).Datacenter);
             Assert.AreEqual(HostDistance.Remote, policy.Distance(hosts[0]));
             CollectionAssert.AreEqual(
                 new[] { hosts[1] }, policy.Fallback(new RoutingInfo(), new MetadataSnapshot(hosts, null)).Select(t => t.Host));

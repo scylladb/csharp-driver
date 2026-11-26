@@ -344,9 +344,9 @@ namespace Cassandra
 
         /// <summary>
         /// Returns the warnings for <paramref name="policies"/>: a default policy without a local datacenter while
-        /// the hosts are in more than one, which then uses the hosts of every datacenter, or a datacenter aware policy
-        /// whose local datacenter matches no host. Only the driver's own wrapper policies are looked into, up to
-        /// <see cref="LoadBalancingPolicyChain.MaxLength"/> policies deep.
+        /// the hosts are in more than one, which then uses the hosts of every datacenter, a policy whose local
+        /// datacenter matches no host, or whose local rack matches no host of its local datacenter. Only the driver's
+        /// own wrapper policies are looked into, up to <see cref="LoadBalancingPolicyChain.MaxLength"/> policies deep.
         /// </summary>
         internal static IEnumerable<string> LocalDatacenterWarnings(
             IEnumerable<Host> hosts, IEnumerable<ILoadBalancingPolicy> policies)
@@ -357,13 +357,18 @@ namespace Cassandra
             var available = datacenters.Count == 0 ? "none" : string.Join(", ", datacenters);
             var withoutLocalDc = false;
             var localDcs = new HashSet<string>();
+            var localRacks = new HashSet<PolicyLocation>();
             foreach (var policy in policies)
             {
                 var chain = LoadBalancingPolicyChain.Of(policy, out _);
-                var dcAware = LoadBalancingPolicyChain.FindDatacenterAware(chain);
-                if (dcAware != null)
+                var location = LoadBalancingPolicyChain.FindLocation(chain);
+                if (location != null)
                 {
-                    localDcs.Add(dcAware.LocalDc);
+                    localDcs.Add(location.Datacenter);
+                    if (location.Rack != null)
+                    {
+                        localRacks.Add(location);
+                    }
                 }
                 else if (chain.Any(p => p is DefaultLoadBalancingPolicy))
                 {
@@ -386,6 +391,21 @@ namespace Cassandra
                     : "so requests using it fail with a NoHostAvailableException";
                 yield return $"The local datacenter {localDc} of a load balancing policy doesn't match any node, " +
                              $"{consequence}. Available datacenters: {available}.";
+            }
+
+            foreach (var location in localRacks.Where(l => datacenters.Contains(l.Datacenter)))
+            {
+                var racks = hostList.Where(h => h.Datacenter == location.Datacenter && h.Rack != null)
+                                    .Select(h => h.Rack)
+                                    .Distinct()
+                                    .ToList();
+                if (!racks.Contains(location.Rack))
+                {
+                    var availableRacks = racks.Count == 0 ? "none" : string.Join(", ", racks);
+                    yield return $"The local rack {location.Rack} of a load balancing policy doesn't match any node " +
+                                 $"of its local datacenter {location.Datacenter}, so it uses the nodes of the " +
+                                 $"datacenter without a rack preference. Available racks: {availableRacks}.";
+                }
             }
         }
 

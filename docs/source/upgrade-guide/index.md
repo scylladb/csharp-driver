@@ -823,6 +823,40 @@ was initialized with reads them from the `MetadataSnapshot` that `Pick()` and
 `Fallback()` receive instead. A policy that wraps another one no longer passes the call
 on.
 
+### `DefaultLoadBalancingPolicy` options
+
+`DefaultLoadBalancingPolicy` takes a `DefaultLoadBalancingPolicyOptions`. It used to
+wrap a `TokenAwarePolicy` with a `DCAwareRoundRobinPolicy` or a `RoundRobinPolicy`, and
+now builds its query plans itself. With the default options, its plans are the same as
+before.
+
+```csharp
+var policy = new DefaultLoadBalancingPolicy(new DefaultLoadBalancingPolicyOptions
+{
+    LocalDatacenter = "dc1",
+    LocalRack = "rack1",
+    DatacenterFailover = true
+});
+```
+
+- `LocalDatacenter`: as the constructor that takes a local datacenter, which stays.
+- `LocalRack`, new: the plans use the replicas and nodes of the local rack before the
+  other ones of the local datacenter. It requires a local datacenter.
+  `Builder.WithLocalDatacenter(datacenter, rack)` sets it for the default policy.
+- `DatacenterFailover`, new and off by default: the plans contain the nodes of the other
+  datacenters, their replicas after the local replicas and their other nodes after the
+  local ones. Never for a request whose consistency level is local, such as
+  `LocalQuorum`, or for a lightweight transaction whose serial consistency level is
+  `LocalSerial`, since another datacenter would break what they guarantee.
+- `TokenAware` and `ShuffleReplicas`, on by default, as the policy always behaved: they
+  can now be turned off. Without shuffling, the replicas are tried in the order of the
+  cluster's replica set.
+
+When it connects, the driver also warns when the local rack of a policy matches no node
+of its local datacenter. The driver configuration report reports a local rack as a rack
+preference, the replicas' order without shuffling as `replica-set`, datacenter failover
+as a fallback to the other nodes, and a policy without token awareness as custom.
+
 ### `ExecuteAsync` returns `AsyncRowSet`
 
 `ISession.ExecuteAsync()` and the LINQ `CqlCommand.ExecuteAsync()` (used by `Insert`,
