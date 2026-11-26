@@ -104,7 +104,7 @@ namespace Cassandra.Data.Linq
 
         protected abstract string GetCql(out object[] values);
 
-        protected async Task<RowSet> InternalExecuteWithProfileAsync(
+        protected async Task<AsyncRowSet> InternalExecuteWithProfileAsync(
             string executionProfile, string cqlQuery, object[] values, CancellationToken cancellationToken)
         {
             var session = GetTable().GetSession();
@@ -114,8 +114,7 @@ namespace Cassandra.Data.Linq
                 cancellationToken: cancellationToken).ConfigureAwait(false);
 
             this.CopyQueryPropertiesTo(statement);
-            var rs = (await session.ExecuteAsync(statement, executionProfile, cancellationToken).ConfigureAwait(false))
-                .ToRowSet();
+            var rs = await session.ExecuteAsync(statement, executionProfile, cancellationToken).ConfigureAwait(false);
             QueryTrace = rs.Info.QueryTrace;
             return rs;
         }
@@ -130,6 +129,15 @@ namespace Cassandra.Data.Linq
         }
 
         /// <summary>
+        /// Projects an AsyncRowSet that is the result of a given cql query into an IAsyncEnumerable{TEntity}.
+        /// </summary>
+        internal virtual IAsyncEnumerable<TEntity> AdaptResultAsync(string cql, AsyncRowSet rs)
+        {
+            var mapper = MapperFactory.GetMapper<TEntity>(cql, rs.Columns);
+            return rs.Select(mapper);
+        }
+
+        /// <summary>
         /// Evaluates the Linq query, executes asynchronously the cql statement and adapts the results.
         /// </summary>
         /// <param name="cancellationToken">
@@ -137,9 +145,14 @@ namespace Cassandra.Data.Linq
         /// query, which continues, and stops the request as
         /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
         /// recalled, so the node still runs it, and a write may still be applied. The token only applies to the first
-        /// page: the following pages are read while the result is enumerated.
+        /// page: to stop the enumeration, and the reading of the following pages, pass a token to it, for instance with
+        /// <see cref="TaskAsyncEnumerableExtensions.WithCancellation{T}(IAsyncEnumerable{T}, CancellationToken)"/>.
         /// </param>
-        public Task<IEnumerable<TEntity>> ExecuteAsync(CancellationToken cancellationToken = default)
+        /// <returns>
+        /// The results, whose following pages are read asynchronously while they're enumerated, with the asynchronous
+        /// <c>foreach</c> statement or the operators of <c>System.Linq.AsyncEnumerable</c>.
+        /// </returns>
+        public Task<IAsyncEnumerable<TEntity>> ExecuteAsync(CancellationToken cancellationToken = default)
         {
             return ExecuteCqlQueryAsync(Configuration.DefaultExecutionProfileName, cancellationToken);
         }
@@ -162,9 +175,14 @@ namespace Cassandra.Data.Linq
         /// query, which continues, and stops the request as
         /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
         /// recalled, so the node still runs it, and a write may still be applied. The token only applies to the first
-        /// page: the following pages are read while the result is enumerated.
+        /// page: to stop the enumeration, and the reading of the following pages, pass a token to it, for instance with
+        /// <see cref="TaskAsyncEnumerableExtensions.WithCancellation{T}(IAsyncEnumerable{T}, CancellationToken)"/>.
         /// </param>
-        public Task<IEnumerable<TEntity>> ExecuteAsync(
+        /// <returns>
+        /// The results, whose following pages are read asynchronously while they're enumerated, with the asynchronous
+        /// <c>foreach</c> statement or the operators of <c>System.Linq.AsyncEnumerable</c>.
+        /// </returns>
+        public Task<IAsyncEnumerable<TEntity>> ExecuteAsync(
             string executionProfile, CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(executionProfile);
@@ -184,18 +202,31 @@ namespace Cassandra.Data.Linq
 
         private IEnumerable<TEntity> ExecuteCqlQuery(string executionProfile)
         {
-            return WaitToCompleteWithMetrics(ExecuteCqlQueryAsync(executionProfile, CancellationToken.None),
-                QueryAbortTimeout);
+            return WaitToCompleteWithMetrics(ExecuteCqlQueryRowSetAsync(executionProfile), QueryAbortTimeout);
         }
 
-        private async Task<IEnumerable<TEntity>> ExecuteCqlQueryAsync(
+        private async Task<IEnumerable<TEntity>> ExecuteCqlQueryRowSetAsync(string executionProfile)
+        {
+            var cql = GetSelectCql(out object[] values);
+            var rs = await InternalExecuteWithProfileAsync(executionProfile, cql, values, CancellationToken.None)
+                .ConfigureAwait(false);
+            // Adapted within the wait of Execute(), which then also bounds the first row that a client projection reads
+            return AdaptResult(cql, rs.ToRowSet());
+        }
+
+        private async Task<IAsyncEnumerable<TEntity>> ExecuteCqlQueryAsync(
             string executionProfile, CancellationToken cancellationToken)
         {
-            var visitor = new CqlExpressionVisitor(PocoData, Table.Name, Table.KeyspaceName);
-            var cql = visitor.GetSelect(Expression, out object[] values);
+            var cql = GetSelectCql(out object[] values);
             var rs = await InternalExecuteWithProfileAsync(executionProfile, cql, values, cancellationToken)
                 .ConfigureAwait(false);
-            return AdaptResult(cql, rs);
+            return AdaptResultAsync(cql, rs);
+        }
+
+        private string GetSelectCql(out object[] values)
+        {
+            var visitor = new CqlExpressionVisitor(PocoData, Table.Name, Table.KeyspaceName);
+            return visitor.GetSelect(Expression, out values);
         }
 
         internal T WaitToCompleteWithMetrics<T>(Task<T> task, int timeout = Timeout.Infinite)

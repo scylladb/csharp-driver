@@ -16,6 +16,7 @@
 
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 
 using Cassandra.Data.Linq;
 using Cassandra.IntegrationTests.Linq.Structures;
@@ -47,7 +48,7 @@ namespace Cassandra.IntegrationTests.Linq.LinqMethods
                           $"FROM \"{Movie.TableName}\" ALLOW FILTERING")
                       .ThenRowsSuccess(Movie.CreateRowsResult(_movieList)));
             var table = Session.GetTable<Movie>();
-            var movies = async ? table.ExecuteAsync().GetAwaiter().GetResult().ToArray() : table.Execute().ToArray();
+            var movies = async ? table.ExecuteAsync().GetAwaiter().GetResult().ToBlockingEnumerable().ToArray() : table.Execute().ToArray();
             Assert.AreEqual(_movieList.Count, movies.Length);
         }
     }

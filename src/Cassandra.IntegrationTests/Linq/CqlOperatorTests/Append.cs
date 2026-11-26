@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 
 using Cassandra.Data.Linq;
 using Cassandra.IntegrationTests.Linq.Structures;
@@ -280,7 +281,7 @@ namespace Cassandra.IntegrationTests.Linq.CqlOperatorTests
                               singleEntity.Id,
                               singleEntity.ListType.Concat(toAppend))));
 
-            var entityList = table.Where(m => m.Id == singleEntity.Id).ExecuteAsync().Result.ToList();
+            var entityList = table.Where(m => m.Id == singleEntity.Id).ExecuteAsync().Result.ToBlockingEnumerable().ToList();
             Assert.AreEqual(1, entityList.Count);
             CollectionAssert.AreEqual(singleEntity.ListType.Concat(toAppend), entityList.First().ListType);
         }
@@ -316,7 +317,7 @@ namespace Cassandra.IntegrationTests.Linq.CqlOperatorTests
                               singleEntity.Id,
                               singleEntity.ListType)));
 
-            var entityList = table.Where(m => m.Id == singleEntity.Id).ExecuteAsync().Result.ToList();
+            var entityList = table.Where(m => m.Id == singleEntity.Id).ExecuteAsync().Result.ToBlockingEnumerable().ToList();
             Assert.AreEqual(1, entityList.Count);
             CollectionAssert.AreEqual(singleEntity.ArrayType.Concat(toAppend), entityList.First().ArrayType);
         }
@@ -353,7 +354,7 @@ namespace Cassandra.IntegrationTests.Linq.CqlOperatorTests
                               expectedEntity.Id,
                               expectedEntity.ListType)));
 
-            var entityList = table.Where(m => m.Id == singleEntity.Id).ExecuteAsync().Result.ToList();
+            var entityList = table.Where(m => m.Id == singleEntity.Id).ExecuteAsync().Result.ToBlockingEnumerable().ToList();
             Assert.AreEqual(1, entityList.Count);
             CollectionAssert.AreEqual(expectedEntity.ArrayType, singleEntity.ArrayType);
             entityList.First().AssertEquals(expectedEntity);

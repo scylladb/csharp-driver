@@ -131,14 +131,14 @@ await table
 // Using AllowFiltering is not recommended due to unpredictable performance.
 // Here we use AllowFiltering because the example schema is meant to showcase vector search
 // but the ANN operator is not supported in LINQ yet.
-var entity = (await table.Where(t => t.I == 3 && t.J == CqlVector<float>.New(new [] {10.1f, 10.2f, 10.3f})).AllowFiltering().ExecuteAsync()).SingleOrDefault();
+var entity = await (await table.Where(t => t.I == 3 && t.J == CqlVector<float>.New(new [] {10.1f, 10.2f, 10.3f})).AllowFiltering().ExecuteAsync()).SingleOrDefaultAsync();
 
 // Alternative select using Query syntax instead of Method syntax
-var entity = (await (
+var entity = await (await (
     from t in table
     where t.J == CqlVector<float>.New(new [] {10.1f, 10.2f, 10.3f})
     select t
-    ).AllowFiltering().ExecuteAsync()).SingleOrDefault();
+    ).AllowFiltering().ExecuteAsync()).SingleOrDefaultAsync();
 
 // Mapper
 

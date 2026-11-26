@@ -16,6 +16,7 @@
 
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 
 using Cassandra.Data.Linq;
 using Cassandra.IntegrationTests.Linq.Structures;
@@ -57,7 +58,7 @@ namespace Cassandra.IntegrationTests.Linq.LinqMethods
 
             // Without where clause
             List<Movie> actualMovieList = async
-                ? _movieTable.Take(0).ExecuteAsync().GetAwaiter().GetResult().ToList()
+                ? _movieTable.Take(0).ExecuteAsync().GetAwaiter().GetResult().ToBlockingEnumerable().ToList()
                 : _movieTable.Take(0).Execute().ToList();
             Assert.AreEqual(5, actualMovieList.Count());
         }
@@ -76,7 +77,7 @@ namespace Cassandra.IntegrationTests.Linq.LinqMethods
 
             //without where clause
             List<Movie> actualMovieList = async
-                ? _movieTable.Take(1).ExecuteAsync().GetAwaiter().GetResult().ToList()
+                ? _movieTable.Take(1).ExecuteAsync().GetAwaiter().GetResult().ToBlockingEnumerable().ToList()
                 : _movieTable.Take(1).Execute().ToList();
             Assert.AreEqual(1, actualMovieList.Count());
             Movie.AssertListContains(_movieList, actualMovieList.First());
@@ -96,7 +97,7 @@ namespace Cassandra.IntegrationTests.Linq.LinqMethods
 
             //without where clause
             List<Movie> actualMovieList = async
-                ? _movieTable.Take(2).ExecuteAsync().GetAwaiter().GetResult().ToList()
+                ? _movieTable.Take(2).ExecuteAsync().GetAwaiter().GetResult().ToBlockingEnumerable().ToList()
                 : _movieTable.Take(2).Execute().ToList();
             Assert.AreEqual(2, actualMovieList.Count());
             Movie.AssertListContains(_movieList, actualMovieList[0]);
@@ -122,7 +123,7 @@ namespace Cassandra.IntegrationTests.Linq.LinqMethods
                 .Where(m => m.Director == expectedMovie.Director && m.Title == expectedMovie.Title && m.MovieMaker == expectedMovie.MovieMaker)
                 .Take(1);
 
-            var actualMovie = async ? actualMovieQuery.ExecuteAsync().GetAwaiter().GetResult().ToList().First() : actualMovieQuery.Execute().ToList().First();
+            var actualMovie = async ? actualMovieQuery.ExecuteAsync().GetAwaiter().GetResult().ToBlockingEnumerable().ToList().First() : actualMovieQuery.Execute().ToList().First();
             Movie.AssertEquals(expectedMovie, actualMovie);
         }
 
@@ -142,7 +143,7 @@ namespace Cassandra.IntegrationTests.Linq.LinqMethods
 
             // Test
             List<Movie> actualMovieList = async
-                ? _movieTable.Take(largeNumber).ExecuteAsync().GetAwaiter().GetResult().ToList()
+                ? _movieTable.Take(largeNumber).ExecuteAsync().GetAwaiter().GetResult().ToBlockingEnumerable().ToList()
                 : _movieTable.Take(largeNumber).Execute().ToList();
             Assert.AreEqual(_movieList.Count, _movieList.Count());
             foreach (Movie actualMovie in actualMovieList)

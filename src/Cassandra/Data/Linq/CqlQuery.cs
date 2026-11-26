@@ -147,7 +147,8 @@ namespace Cassandra.Data.Linq
             var rs = await InternalExecuteWithProfileAsync(executionProfile, cql, values, cancellationToken)
                 .ConfigureAwait(false);
             var mapper = MapperFactory.GetMapper<TEntity>(cql, rs.Columns);
-            return new Page<TEntity>(rs.Select(mapper), PagingState, rs.PagingState);
+            // Without automatic paging, the rows are those of a single page, already read
+            return new Page<TEntity>(rs.ToRowSet().Select(mapper), PagingState, rs.PagingState);
         }
 
         /// <summary>

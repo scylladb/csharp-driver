@@ -106,6 +106,11 @@ Both LINQ and Mapper queries support automatic paging: as you iterate through th
 following pages. If you want to manually page, you can use Linq's `ExecutePaged()` method, Mapper's `FetchPage()`, or
 their async counterparts.
 
+LINQ's `ExecuteAsync()` and Mapper's `FetchAsync()` return a `Task<IAsyncEnumerable<T>>`: once it completes, iterate
+its result with `await foreach` or the operators of `System.Linq.AsyncEnumerable`, which fetch the following pages
+without blocking the calling thread.
+The results of `Execute()` and `Fetch()` fetch them synchronously.
+
 A LINQ paging example:
 
 ```csharp
