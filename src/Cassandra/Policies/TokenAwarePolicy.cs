@@ -39,9 +39,7 @@ namespace Cassandra
     /// </summary>
     public class TokenAwarePolicy : ILoadBalancingPolicy
     {
-        private readonly ThreadLocal<Random> _prng = new ThreadLocal<Random>(() => new Random(
-            // Predictable random numbers are OK
-            Environment.TickCount * Environment.CurrentManagedThreadId));
+        private readonly ThreadLocal<Random> _prng;
 
         /// <summary>
         ///  Creates a new <c>TokenAware</c> policy that wraps the provided child
@@ -50,8 +48,20 @@ namespace Cassandra
         /// <param name="childPolicy"> the load balancing policy to wrap with token
         ///  awareness.</param>
         public TokenAwarePolicy(ILoadBalancingPolicy childPolicy)
+            : this(childPolicy, () => new Random(
+                // Predictable random numbers are OK
+                Environment.TickCount * Environment.CurrentManagedThreadId))
+        {
+        }
+
+        /// <summary>
+        /// Creates a policy whose random choices among the replicas come from the generators that
+        /// <paramref name="randomFactory"/> creates, one for each thread.
+        /// </summary>
+        internal TokenAwarePolicy(ILoadBalancingPolicy childPolicy, Func<Random> randomFactory)
         {
             ChildPolicy = childPolicy;
+            _prng = new ThreadLocal<Random>(randomFactory);
         }
 
         public ILoadBalancingPolicy ChildPolicy { get; }
@@ -141,7 +151,7 @@ namespace Cassandra
                 // Use a pseudo random start index if query should not be routed as LWT
                 if (!routing.ShouldRouteAsLwt)
                 {
-                    startIndex = _prng.Value.Next();
+                    startIndex = _prng.Value.Next(localReplicaList.Count);
                 }
                 for (var i = 0; i < localReplicaList.Count; i++)
                 {
