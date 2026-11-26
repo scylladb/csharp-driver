@@ -375,6 +375,32 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public void TokenMap_Build_NetworkTopology_Should_Keep_The_Skipped_Hosts_Of_Each_Datacenter()
+        {
+            const string strategy = ReplicationStrategies.NetworkTopologyStrategy;
+            var hosts = new[]
+            {
+                // Two hosts of dc2 are skipped before the one of dc1, which must still be kept for dc1
+                TestHelper.CreateHost("192.168.0.0", "dc1", "dc1_rack1", new HashSet<string> { "0" }),
+                TestHelper.CreateHost("192.168.0.1", "dc2", "dc2_rack1", new HashSet<string> { "1" }),
+                TestHelper.CreateHost("192.168.0.2", "dc2", "dc2_rack1", new HashSet<string> { "2" }),
+                TestHelper.CreateHost("192.168.0.3", "dc2", "dc2_rack1", new HashSet<string> { "3" }),
+                TestHelper.CreateHost("192.168.0.4", "dc1", "dc1_rack1", new HashSet<string> { "4" }),
+                TestHelper.CreateHost("192.168.0.5", "dc2", "dc2_rack2", new HashSet<string> { "5" }),
+                TestHelper.CreateHost("192.168.0.6", "dc1", "dc1_rack2", new HashSet<string> { "6" })
+            };
+            var ks = CreateKeyspaceMetadata(null, "ks1", true, strategy, new Dictionary<string, string>
+            {
+                { "dc1", "3" },
+                { "dc2", "3" }
+            });
+            var map = TokenMap.Build("Murmur3Partitioner", hosts, new[] { ks });
+            var replicas = map.GetReplicas("ks1", new M3PToken(0));
+            CollectionAssert.AreEquivalent(
+                new byte[] { 0, 1, 2, 4, 5, 6 }, replicas.Select(h => TestHelper.GetLastAddressByte(h.Host)));
+        }
+
+        [Test]
         public void TokenMap_Build_NetworkTopology_Multiple_Racks_Skipping_Hosts_Test()
         {
             const string strategy = ReplicationStrategies.NetworkTopologyStrategy;
