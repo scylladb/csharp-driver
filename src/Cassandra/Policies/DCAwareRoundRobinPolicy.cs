@@ -49,7 +49,7 @@ namespace Cassandra
         ///  Creates a new datacenter aware round robin policy given the name of the local
         ///  datacenter. <p> The name of the local datacenter provided must be the local
         ///  datacenter name as known by Cassandra. </p><p> The query plans of the policy
-        ///  contain only hosts of the local datacenter.</p>
+        ///  contain only hosts of the local datacenter, and hosts whose datacenter is unknown.</p>
         /// </summary>
         /// <param name="localDc">The name of the local datacenter, as known by the cluster.</param>
         /// <exception cref="ArgumentException"><paramref name="localDc"/> is null or empty.</exception>
@@ -72,8 +72,8 @@ namespace Cassandra
 
         /// <summary>
         ///  Return the HostDistance for the provided host. <p> This policy considers nodes
-        ///  in the local datacenter as <c>Local</c>, and nodes in other datacenters as
-        ///  <c>Remote</c>.</p>
+        ///  in the local datacenter, and nodes whose datacenter is unknown, as <c>Local</c>, and nodes in other
+        ///  datacenters as <c>Remote</c>.</p>
         /// </summary>
         /// <param name="host"> the host of which to return the distance of. </param>
         /// <returns>the HostDistance to <c>host</c>.</returns>
@@ -88,8 +88,8 @@ namespace Cassandra
         }
 
         /// <summary>
-        ///  Returns the next host of the local datacenter in a round-robin fashion, or the first one when the request
-        ///  should be routed as a lightweight transaction.
+        ///  Returns the next host of the local datacenter, or whose datacenter is unknown, in a round-robin fashion, or
+        ///  the first one when the request should be routed as a lightweight transaction.
         /// </summary>
         /// <param name="routing">The routing information of the request.</param>
         /// <param name="metadata">The snapshot of the cluster metadata, which gives the hosts.</param>
@@ -105,8 +105,8 @@ namespace Cassandra
         }
 
         /// <summary>
-        ///  Returns each known host in the local datacenter, in an order that follows a round-robin algorithm,
-        ///  separately from <see cref="Pick"/>.
+        ///  Returns each known host in the local datacenter, and each host whose datacenter is unknown, in an order
+        ///  that follows a round-robin algorithm, separately from <see cref="Pick"/>.
         /// </summary>
         /// <param name="routing">The routing information of the request.</param>
         /// <param name="metadata">The snapshot of the cluster metadata, which gives the hosts.</param>
@@ -148,8 +148,8 @@ namespace Cassandra
         }
 
         /// <summary>
-        /// Gets the nodes of the local datacenter among <paramref name="hosts"/>, reusing the previous result while
-        /// the snapshots share the same host collection.
+        /// Gets the nodes of the local datacenter, and the nodes whose datacenter is unknown, among
+        /// <paramref name="hosts"/>, reusing the previous result while the snapshots share the same host collection.
         /// </summary>
         internal IReadOnlyList<Host> GetHosts(IReadOnlyCollection<Host> hosts)
         {

@@ -357,8 +357,9 @@ application that still needs to retry at a lower consistency level can implement
 
 The `DCAwareRoundRobinPolicy(string localDc, int usedHostsPerRemoteDc)` constructor and
 the `UsedHostsPerRemoteDc` property are removed, as announced when they were deprecated
-in 3.9 (see the 3.9 section below). Query plans of `DCAwareRoundRobinPolicy` contain only
-nodes of the local datacenter; use `new DCAwareRoundRobinPolicy(localDc)`. Datacenter
+in 3.9 (see the 3.9 section below). Query plans of `DCAwareRoundRobinPolicy` never
+contain nodes of the other datacenters, only those of the local datacenter and the nodes
+whose datacenter is unknown; use `new DCAwareRoundRobinPolicy(localDc)`. Datacenter
 failover is a decision for the application or its operations, not for the driver.
 
 #### `RowSet.Dispose` and the legacy `Row` members

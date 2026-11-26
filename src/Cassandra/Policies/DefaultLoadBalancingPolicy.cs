@@ -55,9 +55,9 @@ namespace Cassandra
         internal ILoadBalancingPolicy ChildPolicy { get; }
 
         /// <summary>
-        ///  Return the HostDistance for the provided host. This policy consider nodes
-        ///  in the local datacenter as <c>Local</c> and the rest
-        ///  is <c>Ignored</c>.
+        ///  Return the HostDistance for the provided host. With a local datacenter, this policy considers nodes in the
+        ///  local datacenter, and nodes whose datacenter is unknown, as <c>Local</c>, and nodes in other datacenters as
+        ///  <c>Remote</c>. Without one, it considers every node as <c>Local</c>.
         /// </summary>
         /// <param name="host"> the host of which to return the distance of. </param>
         /// <returns>the HostDistance to <c>host</c>.</returns>
