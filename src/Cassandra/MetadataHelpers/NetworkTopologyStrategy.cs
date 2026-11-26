@@ -232,9 +232,14 @@ namespace Cassandra.MetadataHelpers
             var length = dcRf - dcReplicas;
             foreach (var h in context.SkippedHosts.Where(h => h.Datacenter == dc))
             {
-                if (context.TokenReplicas.Add(h) && ++counter == length)
+                if (counter == length)
                 {
                     break;
+                }
+
+                if (context.TokenReplicas.Add(h))
+                {
+                    counter++;
                 }
             }
             return counter;

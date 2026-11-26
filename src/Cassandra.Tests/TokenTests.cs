@@ -354,6 +354,27 @@ namespace Cassandra.Tests
         }
 
         [Test]
+        public void TokenMap_Build_NetworkTopology_Should_Not_Add_Skipped_Hosts_Beyond_The_Replication_Factor()
+        {
+            const string strategy = ReplicationStrategies.NetworkTopologyStrategy;
+            var hosts = new[]
+            {
+                // .1 is skipped, then .2 places the last rack and satisfies the replication factor
+                TestHelper.CreateHost("192.168.0.0", "dc1", "rack1", new HashSet<string> { "0" }),
+                TestHelper.CreateHost("192.168.0.1", "dc1", "rack1", new HashSet<string> { "1" }),
+                TestHelper.CreateHost("192.168.0.2", "dc1", "rack2", new HashSet<string> { "2" })
+            };
+            var ks = CreateKeyspaceMetadata(null, "ks1", true, strategy, new Dictionary<string, string>
+            {
+                { "dc1", "2" }
+            });
+            var map = TokenMap.Build("Murmur3Partitioner", hosts, new[] { ks });
+            var replicas = map.GetReplicas("ks1", new M3PToken(0));
+            CollectionAssert.AreEqual(
+                new byte[] { 0, 2 }, replicas.Select(h => TestHelper.GetLastAddressByte(h.Host)));
+        }
+
+        [Test]
         public void TokenMap_Build_NetworkTopology_Multiple_Racks_Skipping_Hosts_Test()
         {
             const string strategy = ReplicationStrategies.NetworkTopologyStrategy;
