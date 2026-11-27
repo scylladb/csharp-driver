@@ -474,13 +474,32 @@ namespace Cassandra
             try
             {
                 await session.Init().ConfigureAwait(false);
+                _connectedSessions.Add(session);
+                if (session.IsDisposed)
+                {
+                    _connectedSessions.Remove(session);
+                    throw new ObjectDisposedException(nameof(Session));
+                }
             }
-            catch
+            catch (Exception initializationFailure)
             {
-                await session.ShutdownAsync().ConfigureAwait(false);
+                try
+                {
+                    await session.ShutdownAsync().ConfigureAwait(false);
+                }
+                catch (Exception cleanupFailure)
+                    when (Utils.CanSuppressException(cleanupFailure, initializationFailure))
+                {
+                    Utils.LogSecondaryException(
+                        cleanupFailure,
+                        initializationFailure,
+                        Logger,
+                        $"while shutting down session {newSessionName} after initialization failed");
+                }
+
                 throw;
             }
-            _connectedSessions.Add(session);
+
             Cluster.Logger.Info("Session connected ({0})", session.GetHashCode());
             return session;
         }
