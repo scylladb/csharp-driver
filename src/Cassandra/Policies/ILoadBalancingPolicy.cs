@@ -21,25 +21,11 @@ namespace Cassandra
     /// <summary>
     ///  The policy that decides which Cassandra hosts to contact for each new query.
     ///  For efficiency purposes, the policy is expected to exclude down hosts from query plans.
+    ///  <p>The policy doesn't decide which nodes the driver connects to: the local datacenters of the policies do,
+    ///  and the evaluator set with <see cref="Builder.WithHostDistance"/>.</p>
     /// </summary>
     public interface ILoadBalancingPolicy
     {
-        /// <summary>
-        ///  Returns the distance assigned by this policy to the provided host. <p> The
-        ///  distance of an host influence how much connections are kept to the node (see
-        ///  <link>HostDistance</link>). A policy should assign a <c>* LOCAL</c>
-        ///  distance to nodes that are susceptible to be returned first by
-        ///  <see cref="Pick"/> or <see cref="Fallback"/>, and it is useless for them to
-        ///  return hosts to which it assigns an <c>IGNORED</c> distance. </p><p> The
-        ///  host distance is primarily used to prevent keeping too many connections to
-        ///  host in remote datacenters when the policy itself always picks host in the
-        ///  local datacenter first.</p>
-        /// </summary>
-        /// <param name="host"> the host of which to return the distance of. </param>
-        /// 
-        /// <returns>the HostDistance to <c>host</c>.</returns>
-        HostDistance Distance(Host host);
-
         /// <summary>
         ///  Returns the node, and optionally its shard, to send a new request to first, or null when the policy has
         ///  none. Each new request calls this method once. It should choose the target without building the rest of

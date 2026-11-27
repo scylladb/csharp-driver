@@ -52,19 +52,6 @@ namespace Cassandra
             new ConditionalWeakTable<IReadOnlyCollection<Host>, Host[]>();
 
         /// <summary>
-        ///  Return the HostDistance for the provided host. <p> This policy consider all
-        ///  nodes as local. This is generally the right thing to do in a single
-        ///  datacenter deployment. If you use multiple datacenter, see
-        ///  <link>DCAwareRoundRobinPolicy</link> instead.</p>
-        /// </summary>
-        /// <param name="host"> the host of which to return the distance of. </param>
-        /// <returns>the HostDistance to <c>host</c>.</returns>
-        public HostDistance Distance(Host host)
-        {
-            return HostDistance.Local;
-        }
-
-        /// <summary>
         ///  Returns the next host of the cluster in a round-robin fashion, or the first one when the request should
         ///  be routed as a lightweight transaction.
         /// </summary>

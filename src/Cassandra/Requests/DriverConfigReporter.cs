@@ -242,16 +242,21 @@ namespace Cassandra.Requests
         /// <summary>
         /// The locality the connection pools are held to, or <c>null</c> when that is not one answer.
         /// <para>
-        /// Pool membership and local/remote sizing are cluster-wide rather than per request:
-        /// <c>Cluster.RetrieveAndSetDistance</c> assigns a host the closest distance that <em>any</em> execution
-        /// profile's load balancing policy gives it, so a host any profile treats as local is pooled as local. A
-        /// single preference therefore describes the connections only when every profile asks for the same one,
-        /// and this reports nothing when they disagree or when a policy expresses no locality at all — the
-        /// per-profile answer stays under query.load-balancing, where it describes routing rather than pooling.
+        /// Pool membership and local/remote sizing are cluster-wide rather than per request: a host in the local
+        /// datacenter of <em>any</em> execution profile's load balancing policy is pooled as local. A single
+        /// preference therefore describes the connections only when every profile asks for the same one, and this
+        /// reports nothing when they disagree, when a policy expresses no locality at all, or when a host distance
+        /// evaluator, which can override any distance, is set — the per-profile answer stays under
+        /// query.load-balancing, where it describes routing rather than pooling.
         /// </para>
         /// </summary>
         private JObject ConnectionNodePreference()
         {
+            if (_configuration.HostDistanceEvaluator != null)
+            {
+                return null;
+            }
+
             JObject shared = null;
             foreach (var requestOptions in _configuration.RequestOptions.Values)
             {

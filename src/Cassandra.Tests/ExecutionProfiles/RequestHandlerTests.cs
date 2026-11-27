@@ -384,11 +384,6 @@ namespace Cassandra.Tests.ExecutionProfiles
 
             public long Count;
 
-            public HostDistance Distance(Host host)
-            {
-                return HostDistance.Local;
-            }
-
             public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot cluster)
             {
                 foreach (var target in Fallback(routing, cluster))

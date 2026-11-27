@@ -182,8 +182,8 @@ namespace Cassandra.Tests
             var metadata = new MetadataSnapshot(hosts, null);
 
             Assert.IsNull(LoadBalancingPolicyChain.FindLocation(policy));
-            Assert.AreEqual(HostDistance.Local, policy.Distance(hosts[0]));
-            Assert.AreEqual(HostDistance.Local, policy.Distance(hosts[1]));
+            Assert.AreEqual(HostDistance.Local, TestHelper.Distance(policy, hosts[0]));
+            Assert.AreEqual(HostDistance.Local, TestHelper.Distance(policy, hosts[1]));
             CollectionAssert.AreEquivalent(hosts, policy.Fallback(new RoutingInfo(), metadata).Select(t => t.Host));
         }
 
@@ -198,7 +198,7 @@ namespace Cassandra.Tests
             ILoadBalancingPolicy policy = new DefaultLoadBalancingPolicy("dc2");
 
             Assert.AreEqual("dc2", LoadBalancingPolicyChain.FindLocation(policy).Datacenter);
-            Assert.AreEqual(HostDistance.Remote, policy.Distance(hosts[0]));
+            Assert.AreEqual(HostDistance.Remote, TestHelper.Distance(policy, hosts[0]));
             CollectionAssert.AreEqual(
                 new[] { hosts[1] }, policy.Fallback(new RoutingInfo(), new MetadataSnapshot(hosts, null)).Select(t => t.Host));
         }
@@ -583,6 +583,35 @@ namespace Cassandra.Tests
             public override int Next(int minValue, int maxValue) => maxValue - 1;
         }
 
+        [Test]
+        public void TokenAwarePolicyPicksTheReplicasOfTheLocalDatacenterOfItsChildPolicy()
+        {
+            var hosts = new[] { TestHelper.CreateHost("0.0.0.1", "dc1"), TestHelper.CreateHost("0.0.0.2", "dc2") };
+            var snapshot = new MetadataSnapshot(
+                hosts, _ => new[] { new RoutingTarget(hosts[1], null), new RoutingTarget(hosts[0], null) });
+            var routing = new RoutingInfo
+            {
+                RoutingKey = new RoutingKey { RawRoutingKey = new byte[] { 1 } },
+                IsConfirmedLwt = true
+            };
+
+            // The local replica, through a default policy or a nested token aware policy
+            foreach (var child in new ILoadBalancingPolicy[]
+                     {
+                         new DefaultLoadBalancingPolicy("dc1"),
+                         new TokenAwarePolicy(new DCAwareRoundRobinPolicy("dc1"))
+                     })
+            {
+                var policy = new TokenAwarePolicy(child);
+                Assert.AreEqual(hosts[0], policy.Pick(routing, snapshot).Value.Host, child.GetType().Name);
+                Assert.AreEqual(hosts[0], policy.Fallback(routing, snapshot).First().Host, child.GetType().Name);
+            }
+
+            // Every replica is local with an application's own policy: the first one, as a lightweight transaction
+            var custom = new TokenAwarePolicy(new TestHelper.CustomLoadBalancingPolicy());
+            Assert.AreEqual(hosts[1], custom.Pick(routing, snapshot).Value.Host);
+        }
+
         private static IEnumerable<TestCaseData> BuiltInPolicies()
         {
             yield return new TestCaseData((Func<ILoadBalancingPolicy>)(() => new RoundRobinPolicy())).SetName("RoundRobinPolicy");
@@ -701,7 +730,7 @@ namespace Cassandra.Tests
             var hosts = policy.Plan(clusterMock.Object, null, new SimpleStatement()).ToList();
 
             //2 localhosts
-            Assert.AreEqual(2, hosts.Count(h => policy.Distance(h.Host) == HostDistance.Local));
+            Assert.AreEqual(2, hosts.Count(h => TestHelper.Distance(policy, h.Host) == HostDistance.Local));
             Assert.AreEqual("dc1", hosts[0].Host.Datacenter);
             Assert.AreEqual("dc1", hosts[1].Host.Datacenter);
             clusterMock.Verify();
@@ -709,7 +738,7 @@ namespace Cassandra.Tests
             hosts = policy.Plan(clusterMock.Object, null, null).ToList();
 
             //2 localhosts
-            Assert.AreEqual(2, hosts.Count(h => policy.Distance(h.Host) == HostDistance.Local));
+            Assert.AreEqual(2, hosts.Count(h => TestHelper.Distance(policy, h.Host) == HostDistance.Local));
             Assert.AreEqual("dc1", hosts[0].Host.Datacenter);
             Assert.AreEqual("dc1", hosts[1].Host.Datacenter);
             clusterMock.Verify();

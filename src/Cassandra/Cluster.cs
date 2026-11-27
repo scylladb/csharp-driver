@@ -70,7 +70,7 @@ namespace Cassandra
 
         private readonly Metadata _metadata;
         private readonly IProtocolEventDebouncer _protocolEventDebouncer;
-        private IReadOnlyList<ILoadBalancingPolicy> _loadBalancingPolicies;
+        private readonly HostDistances _hostDistances;
 
         /// <inheritdoc />
         public event Action<Host> HostAdded;
@@ -199,6 +199,9 @@ namespace Cassandra
         private Cluster(IEnumerable<object> contactPoints, Configuration configuration)
         {
             Configuration = configuration;
+            _hostDistances = new HostDistances(
+                configuration.RequestOptions.Values.Select(options => options.LoadBalancingPolicy),
+                configuration.HostDistanceEvaluator);
             _metadata = new Metadata(configuration);
             var protocolVersion = _maxProtocolVersion;
             if (Configuration.ProtocolOptions.MaxProtocolVersionValue != null &&
@@ -260,8 +263,6 @@ namespace Cassandra
                         loadBalancingPolicies.Add(options.LoadBalancingPolicy);
                         speculativeExecutionPolicies.Add(options.SpeculativeExecutionPolicy);
                     }
-
-                    _loadBalancingPolicies = loadBalancingPolicies.ToList();
 
                     // Only abort the async operations when at least twice the time for ConnectTimeout per host passed
                     var initialAbortTimeout = Configuration.SocketOptions.ConnectTimeoutMillis * 2 * _metadata.Hosts.Count;
@@ -744,18 +745,7 @@ namespace Cassandra
         /// <inheritdoc />
         HostDistance IInternalCluster.RetrieveAndSetDistance(Host host)
         {
-            var distance = _loadBalancingPolicies[0].Distance(host);
-
-            for (var i = 1; i < _loadBalancingPolicies.Count; i++)
-            {
-                var lbp = _loadBalancingPolicies[i];
-                var lbpDistance = lbp.Distance(host);
-                if (lbpDistance < distance)
-                {
-                    distance = lbpDistance;
-                }
-            }
-
+            var distance = _hostDistances.Get(host);
             host.SetDistance(distance);
             return distance;
         }

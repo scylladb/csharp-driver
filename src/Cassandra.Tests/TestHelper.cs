@@ -147,6 +147,15 @@ namespace Cassandra.Tests
         }
 
         /// <summary>
+        /// The distance the driver gives <paramref name="host"/> when <paramref name="policy"/> is its only load
+        /// balancing policy.
+        /// </summary>
+        internal static HostDistance Distance(ILoadBalancingPolicy policy, Host host)
+        {
+            return new HostDistances(new[] { policy }, null).Get(host);
+        }
+
+        /// <summary>
         /// A policy that uses every node in a round-robin fashion, as the obsolete RoundRobinPolicy does.
         /// </summary>
         public static ILoadBalancingPolicy RoundRobinPolicy()
@@ -818,11 +827,6 @@ namespace Cassandra.Tests
                 _childPolicy = TestHelper.RoundRobinPolicy();
             }
 
-            public HostDistance Distance(Host host)
-            {
-                return _childPolicy.Distance(host);
-            }
-
             public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot cluster)
             {
                 foreach (var target in Fallback(routing, cluster))
@@ -842,25 +846,16 @@ namespace Cassandra.Tests
         }
 
         /// <summary>
-        /// A policy only suitable for testing that lets you specify the handlers for the query plan and distance
-        /// methods.
+        /// A policy only suitable for testing that lets you specify the handler for the query plan.
         /// </summary>
         internal class CustomLoadBalancingPolicy : ILoadBalancingPolicy
         {
-            private readonly Func<Host, HostDistance> _distanceHandler;
             private readonly Func<MetadataSnapshot, RoutingInfo, IEnumerable<Host>> _queryPlanHandler;
 
             public CustomLoadBalancingPolicy(
-                Func<MetadataSnapshot, RoutingInfo, IEnumerable<Host>> queryPlanHandler = null,
-                Func<Host, HostDistance> distanceHandler = null)
+                Func<MetadataSnapshot, RoutingInfo, IEnumerable<Host>> queryPlanHandler = null)
             {
                 _queryPlanHandler = queryPlanHandler ?? ((metadata, routing) => metadata.Hosts);
-                _distanceHandler = distanceHandler ?? (_ => HostDistance.Local);
-            }
-
-            public HostDistance Distance(Host host)
-            {
-                return _distanceHandler(host);
             }
 
             public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot cluster)

@@ -51,6 +51,7 @@ namespace Cassandra
         private ILoadBalancingPolicy _loadBalancingPolicy;
         private string _localDatacenter;
         private string _localRack;
+        private Func<Host, HostDistance?> _hostDistance;
         private ITimestampGenerator _timestampGenerator;
         private IColumnEncryptionPolicy _columnEncryptionPolicy;
         private int _port = ProtocolOptions.DefaultPort;
@@ -187,6 +188,7 @@ namespace Cassandra
                 _allowBetaProtocolVersions,
                 requestTracker: _requestTracker,
                 driverConfigReportingEnabled: _driverConfigReportingEnabled);
+            config.HostDistanceEvaluator = _hostDistance;
 
             return config;
         }
@@ -596,6 +598,33 @@ namespace Cassandra
 
             WithLocalDatacenter(localDatacenter);
             _localRack = localRack;
+            return this;
+        }
+
+        /// <summary>
+        /// Sets an evaluator of the distance of each node, which decides whether the driver connects to it and the
+        /// size of its connection pool, as configured with <see cref="PoolingOptions"/>:
+        /// <list type="bullet">
+        /// <item><see cref="HostDistance.Local"/>: the driver opens the node's pool when a session connects, with
+        /// <see cref="PoolingOptions.SetWarmup"/>, which is on by default.</item>
+        /// <item><see cref="HostDistance.Remote"/>: the driver opens it when a request is first routed to the node.
+        /// </item>
+        /// <item><see cref="HostDistance.Ignored"/>: the driver never connects to the node, and skips it in query
+        /// plans.</item>
+        /// </list>
+        /// <para>
+        /// By default, a node is local when it's in the local datacenter of a load balancing policy, or its datacenter
+        /// is unknown, or when a policy has no local datacenter, which an application's own policy doesn't. The other
+        /// nodes are remote. The evaluator overrides that distance for the nodes it returns one for, and keeps it for
+        /// the nodes it returns null for. The driver calls it for every node of every query plan, so it should be
+        /// fast; it can return a different distance over time.
+        /// </para>
+        /// </summary>
+        /// <param name="evaluator">The evaluator, or null to remove it.</param>
+        /// <returns>this Builder</returns>
+        public Builder WithHostDistance(Func<Host, HostDistance?> evaluator)
+        {
+            _hostDistance = evaluator;
             return this;
         }
 

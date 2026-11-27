@@ -827,6 +827,11 @@ namespace Cassandra.Tests.Requests
                 Policies = new Cassandra.Policies(TestHelper.RoundRobinPolicy(), new ConstantReconnectionPolicy(100), new DefaultRetryPolicy())
             };
             configBuilderAct(configBuilder);
+            if (configBuilder.Policies.LoadBalancingPolicy is FakeLoadBalancingPolicy fakePolicy)
+            {
+                configBuilder.HostDistanceEvaluator = fakePolicy.CountDistance;
+            }
+
             var config = configBuilder.Build();
             var initializerMock = Mock.Of<IInitializer>();
             Mock.Get(initializerMock).Setup(i => i.ContactPoints).Returns(new List<IPEndPoint>
@@ -900,10 +905,14 @@ namespace Cassandra.Tests.Requests
             public long DistanceCount;
             public long NewQueryPlanCount;
 
-            public HostDistance Distance(Host host)
+            /// <summary>
+            /// Counts the distance lookups of the cluster, as the host distance evaluator, and keeps the derived
+            /// distance.
+            /// </summary>
+            public HostDistance? CountDistance(Host host)
             {
                 Interlocked.Increment(ref DistanceCount);
-                return HostDistance.Local;
+                return null;
             }
 
             public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot cluster)

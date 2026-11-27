@@ -113,17 +113,6 @@ namespace Cassandra
         public DefaultLoadBalancingPolicyOptions Options { get; }
 
         /// <summary>
-        /// Returns <see cref="HostDistance.Local"/> for the nodes of the local datacenter, and the nodes whose
-        /// datacenter is unknown, or for every node without a local datacenter, and <see cref="HostDistance.Remote"/>
-        /// for the nodes of the other datacenters.
-        /// </summary>
-        /// <param name="host">The node.</param>
-        public HostDistance Distance(Host host)
-        {
-            return IsLocal(host) ? HostDistance.Local : HostDistance.Remote;
-        }
-
-        /// <summary>
         /// Returns the first target of the query plan described in the class documentation, without building the
         /// rest of the plan.
         /// </summary>

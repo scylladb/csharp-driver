@@ -192,9 +192,9 @@ explicit `SslProtocols` value continue to use that configured value.
 
 ### Host distance changes
 
-Connection pools now recover when a load balancing policy temporarily ignores a
-host and later treats it as local or remote again, including when the pool was
-empty or still draining its old connections.
+Connection pools now recover when a host's distance is temporarily ignored, and
+later local or remote again, including when the pool was empty or still draining
+its old connections.
 
 ### Table-aware replica resolution
 
@@ -871,6 +871,42 @@ The default policy has their behaviors as options:
 A `TokenAwarePolicy` that wraps an application's own policy has no replacement among the
 driver's policies: the application's policy can choose the replicas of a request from
 the `MetadataSnapshot` it receives.
+
+### `ILoadBalancingPolicy.Distance` is removed
+
+`Distance(Host)` is removed from `ILoadBalancingPolicy`, and from the driver's policies.
+A load balancing policy only routes requests: it no longer decides which nodes the
+driver connects to, and the size of their pools.
+
+The driver derives the distance of each node from the load balancing policies of the
+execution profiles. A node is `Local` when it's in the local datacenter of a policy, or
+its datacenter is unknown, or when a policy has no local datacenter, which an
+application's own policy doesn't. The other nodes are `Remote`. With the driver's
+policies, the distances are the same as before.
+
+To decide the distance of some nodes yourself, set an evaluator with
+`Builder.WithHostDistance()`. It returns the distance of a node, or null to keep the one
+the driver derives:
+
+```csharp
+Cluster.Builder()
+       .AddContactPoint("127.0.0.1")
+       .WithLoadBalancingPolicy(new MyPolicy())
+       // The distances MyPolicy.Distance returned in 3.x
+       .WithHostDistance(host => host.Datacenter == "dc1" ? HostDistance.Local : HostDistance.Remote)
+       .Build();
+```
+
+- **Custom policies** delete their `Distance` method, or keep it as a method of their
+  own. An explicit interface implementation of it no longer compiles.
+- **With an application's own policy, every node is now `Local`** unless an evaluator
+  says otherwise, so with pool warmup, which is on by default, a session opens a pool
+  to every node when it connects. An application whose policy returned `Remote` or
+  `Ignored` for some nodes returns those distances from the evaluator instead, as
+  above.
+- **A `TokenAwarePolicy` that wraps an application's own policy** treats every replica
+  as local: it used the distances of the policy it wraps.
+- **A mock of `ILoadBalancingPolicy`** no longer sets up `Distance`.
 
 ### `ExecuteAsync` returns `AsyncRowSet`
 

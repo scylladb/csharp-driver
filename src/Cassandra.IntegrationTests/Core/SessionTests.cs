@@ -257,6 +257,7 @@ namespace Cassandra.IntegrationTests.Core
             var builder = ClusterBuilder()
                 .AddContactPoint(TestCluster.InitialContactPoint)
                 .WithLoadBalancingPolicy(lbp)
+                .WithHostDistance(host => lbp.GetDistance(host))
                 .WithPoolingOptions(new PoolingOptions().SetCoreConnectionsPerHost(HostDistance.Local, 3).DisableShardAwareness())
                 .WithReconnectionPolicy(new ConstantReconnectionPolicy(1000));
             var counter = 0;
@@ -331,7 +332,7 @@ namespace Cassandra.IntegrationTests.Core
                 _ignoredHost = h;
             }
 
-            public HostDistance Distance(Host host)
+            public HostDistance GetDistance(Host host)
             {
                 if (host == _ignoredHost)
                 {

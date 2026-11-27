@@ -74,20 +74,11 @@ namespace Cassandra
         public string LocalDc => _localDc;
 
         /// <summary>
-        ///  Return the HostDistance for the provided host. <p> This policy considers nodes
-        ///  in the local datacenter, and nodes whose datacenter is unknown, as <c>Local</c>, and nodes in other
-        ///  datacenters as <c>Remote</c>.</p>
+        /// Whether a node is local: in the local datacenter, or with an unknown datacenter.
         /// </summary>
-        /// <param name="host"> the host of which to return the distance of. </param>
-        /// <returns>the HostDistance to <c>host</c>.</returns>
-        public HostDistance Distance(Host host)
+        internal bool IsLocal(Host host)
         {
-            if (GetDatacenter(host) == _localDc)
-            {
-                return HostDistance.Local;
-            }
-
-            return HostDistance.Remote;
+            return GetDatacenter(host) == _localDc;
         }
 
         /// <summary>

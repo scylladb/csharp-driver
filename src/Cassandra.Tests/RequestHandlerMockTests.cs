@@ -166,7 +166,6 @@ namespace Cassandra.Tests
             Mock.Get(lbpMock)
                 .Setup(m => m.Fallback(It.IsAny<RoutingInfo>(), It.IsAny<MetadataSnapshot>()))
                 .Returns(enumerable);
-            Mock.Get(lbpMock).Setup(m => m.Distance(hostShard.Host)).Returns(HostDistance.Local);
             var triedHosts = new Dictionary<IPEndPoint, Exception>();
 
             var requestTrackingInfoAndObserver = RequestHandler.CreateRequestObserver(sessionMock, null).GetAwaiter().GetResult();

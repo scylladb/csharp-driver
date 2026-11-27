@@ -210,8 +210,6 @@ namespace Cassandra.Tests.Policies
 
             public int FallbackCalls { get; private set; }
 
-            public HostDistance Distance(Host host) => HostDistance.Local;
-
             public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot metadata) => _pick;
 
             public IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot metadata)

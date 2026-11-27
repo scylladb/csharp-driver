@@ -263,7 +263,7 @@ namespace Cassandra.Tests.Policies
 
             foreach (var host in Hosts)
             {
-                Assert.AreEqual(chain.Distance(host), policy.Distance(host));
+                Assert.AreEqual(TestHelper.Distance(chain, host), TestHelper.Distance(policy, host));
             }
         }
 
@@ -276,7 +276,7 @@ namespace Cassandra.Tests.Policies
             var policy = Policy(new DefaultLoadBalancingPolicyOptions { LocalDatacenter = "dc1", LocalRack = "rack1" });
             var routing = new RoutingInfo { IsConfirmedLwt = true };
 
-            Assert.AreEqual(HostDistance.Local, policy.Distance(host));
+            Assert.IsTrue(policy.IsLocal(host));
             CollectionAssert.AreEqual(new[] { 1, 5 }, policy.Fallback(routing, snapshot).Select(Address));
 
             // Reading the peer's row again gives it a datacenter, without creating a new host collection
@@ -288,7 +288,7 @@ namespace Cassandra.Tests.Policies
                 { "release_version", null }
             }));
 
-            Assert.AreEqual(HostDistance.Remote, policy.Distance(host));
+            Assert.IsFalse(policy.IsLocal(host));
             CollectionAssert.AreEqual(new[] { 1 }, policy.Fallback(routing, snapshot).Select(Address));
         }
 
@@ -319,7 +319,7 @@ namespace Cassandra.Tests.Policies
         {
             var policy = Policy(new DefaultLoadBalancingPolicyOptions { DatacenterFailover = true });
 
-            Assert.That(Hosts.Select(policy.Distance), Is.All.EqualTo(HostDistance.Local));
+            Assert.That(Hosts.Select(policy.IsLocal), Is.All.True);
             CollectionAssert.AreEquivalent(
                 new[] { 1, 2, 3, 4 }, policy.Fallback(new RoutingInfo(), Snapshot()).Select(Address));
         }

@@ -1344,11 +1344,6 @@ namespace Cassandra.Tests.Requests
 
         private class FakeLoadBalancingPolicy : ILoadBalancingPolicy
         {
-            public HostDistance Distance(Host host)
-            {
-                return HostDistance.Local;
-            }
-
             public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot cluster)
             {
                 foreach (var target in Fallback(routing, cluster))
