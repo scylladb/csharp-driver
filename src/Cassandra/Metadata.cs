@@ -221,6 +221,12 @@ namespace Cassandra
             }
 
             var tokenMap = TokenMap.Build(Partitioner, Hosts.ToCollection(), keyspaces.Values);
+            foreach (var entry in _keyspaces.Where(entry =>
+                !keyspaces.TryGetValue(entry.Key, out var next) ||
+                entry.Value.IsStronglyConsistent != next.IsStronglyConsistent))
+            {
+                TabletMap.RemoveTableMappings(entry.Key);
+            }
             _keyspaces = keyspaces;
             _tokenMap = tokenMap;
         }
@@ -297,6 +303,10 @@ namespace Cassandra
                 _keyspaces.AddOrUpdate(keyspaceMetadata.Name, keyspaceMetadata, (k, v) =>
                 {
                     updated = true;
+                    if (v.IsStronglyConsistent != keyspaceMetadata.IsStronglyConsistent)
+                    {
+                        TabletMap.RemoveTableMappings(k);
+                    }
                     return keyspaceMetadata;
                 });
                 Metadata.Logger.Info("Rebuilding token map for keyspace {0}", keyspaceMetadata.Name);
@@ -398,11 +408,15 @@ namespace Cassandra
             return GetReplicas(null, null, partitionKey);
         }
 
+        internal Tablet GetTablet(string keyspace, string table, byte[] partitionKey)
+        {
+            return partitionKey == null ? null : TabletMap.GetTablet(keyspace, table, GetTokenFactory()?.Hash(partitionKey));
+        }
+
         /// <summary>
         /// Gets the replicas used for token-aware routing. Unlike <see cref="GetReplicas(string, string, byte[])"/>,
-        /// it falls back to the token map when no tablet of the table is cached: the server answers a query routed
-        /// to a non-replica with the tablet owning the partition key, which makes the following queries routed
-        /// correctly.
+        /// it falls back to the token map when the table has no cached tablet mapping. Tablet feedback
+        /// received in a response updates the cache used by later routing lookups.
         /// </summary>
         internal IReadOnlyList<RoutingTarget> GetRoutingReplicas(string keyspaceName, string tableName, byte[] partitionKey)
         {

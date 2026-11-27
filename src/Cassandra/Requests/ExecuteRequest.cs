@@ -31,6 +31,19 @@ namespace Cassandra.Requests
         private readonly byte[] _id;
         private readonly QueryProtocolOptions _queryOptions;
 
+        // Resolve at serialization time: a retry can use fresher feedback from another execution.
+        internal Func<ulong?> TabletVersionProvider { get; set; }
+
+        internal static byte ChooseTabletVersionBlock(ulong? version)
+        {
+            if (!version.HasValue)
+            {
+                return (byte)Random.Shared.Next(256);
+            }
+            var index = Random.Shared.Next(16);
+            return (byte)((index << 4) | (int)((version.Value >> (index * 4)) & 15));
+        }
+
         public ConsistencyLevel Consistency
         {
             get => _queryOptions.Consistency;
@@ -167,19 +180,17 @@ namespace Cassandra.Requests
                 // earns one METADATA_CHANGED with the real columns and id, after which executions can skip.
                 // See scylladb/scylla-rust-driver#1575 and its fix in #1581.
                 //
-                // A statement that returns no rows at all - a prepared INSERT, UPDATE or DELETE - sends
-                // empty for its whole life instead, because RESULT/Void can never carry the
-                // METADATA_CHANGED that would settle it. That is not a case worth separating out: such a
-                // statement is indistinguishable from the one above in the prepared response, both
-                // arriving with no columns and the same hash of empty metadata, so there is no way to tell
-                // which branch applies. Echoing the id would be idle for the write and would reintroduce
-                // the bug above for the other, and the empty field is the cheaper of the two anyway - two
-                // bytes against eighteen. The server ignores it: it neither faults the request nor logs
-                // anything for it.
+                // The same branch handles statements without cached result columns, including writes.
+                // It selects the field from cached metadata rather than classifying the CQL statement.
+                // An empty field uses two bytes; a 16-byte id with its length uses eighteen.
                 wb.WriteShortBytes(canSkip ? ResultMetadata.ResultMetadataId : Array.Empty<byte>());
             }
 
             _queryOptions.Write(wb, true, canSkip);
+            if (wb.UseTabletsRoutingV2)
+            {
+                wb.WriteByte(ChooseTabletVersionBlock(TabletVersionProvider?.Invoke()));
+            }
         }
 
         public void WriteToBatch(FrameWriter wb)

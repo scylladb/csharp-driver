@@ -17,6 +17,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 
+using Cassandra.IntegrationTests.SimulacronAPI.PrimeBuilder.Then;
 using Cassandra.IntegrationTests.TestClusterManagement.Simulacron;
 
 namespace Cassandra.IntegrationTests.SimulacronAPI.SystemTables
@@ -25,6 +26,10 @@ namespace Cassandra.IntegrationTests.SimulacronAPI.SystemTables
     {
         public static void PrimeSystemSchemaKeyspaceV2(this SimulacronBase simulacronCluster, string keyspace)
         {
+            simulacronCluster.PrimeFluent(
+                b => b.WhenQuery($"SELECT keyspace_name, consistency FROM system_schema.scylla_keyspaces WHERE keyspace_name = '{keyspace}'")
+                      .ThenServerError(ServerError.Invalid, "unconfigured table scylla_keyspaces"));
+
             simulacronCluster.PrimeFluent(
                 b => b.WhenQuery($"SELECT * FROM system_schema.keyspaces WHERE keyspace_name = '{keyspace}'")
                       .ThenRowsSuccess(

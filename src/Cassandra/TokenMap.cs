@@ -39,6 +39,7 @@ namespace Cassandra
         private readonly IReadOnlyDictionary<IToken, Host> _primaryReplicas;
         private readonly IReadOnlyDictionary<string, DatacenterInfo> _datacenters;
         private readonly int _numberOfHostsWithTokens;
+        private readonly ImmutableHashSet<string> _stronglyConsistentKeyspaces;
         private readonly ImmutableDictionary<string, IReadOnlyDictionary<IToken, ISet<Host>>> _tokenToHostsByKeyspace;
 
         // A cache of computed replicas, shared by the instances derived from the same ring. Its values never change.
@@ -52,7 +53,8 @@ namespace Cassandra
             IReadOnlyDictionary<IToken, Host> primaryReplicas,
             IReadOnlyDictionary<IReplicationStrategy, IReadOnlyDictionary<IToken, ISet<Host>>> keyspaceTokensCache,
             IReadOnlyDictionary<string, DatacenterInfo> datacenters,
-            int numberOfHostsWithTokens)
+            int numberOfHostsWithTokens,
+            ImmutableHashSet<string> stronglyConsistentKeyspaces = null)
         {
             Factory = factory;
             _tokenToHostsByKeyspace = tokenToHostsByKeyspace.ToImmutableDictionary();
@@ -61,9 +63,13 @@ namespace Cassandra
             _keyspaceTokensCache = new ConcurrentDictionary<IReplicationStrategy, IReadOnlyDictionary<IToken, ISet<Host>>>(keyspaceTokensCache);
             _datacenters = datacenters;
             _numberOfHostsWithTokens = numberOfHostsWithTokens;
+            _stronglyConsistentKeyspaces = stronglyConsistentKeyspaces ?? ImmutableHashSet<string>.Empty;
         }
 
-        private TokenMap(TokenMap source, ImmutableDictionary<string, IReadOnlyDictionary<IToken, ISet<Host>>> tokenToHostsByKeyspace)
+        private TokenMap(
+            TokenMap source,
+            ImmutableDictionary<string, IReadOnlyDictionary<IToken, ISet<Host>>> tokenToHostsByKeyspace,
+            ImmutableHashSet<string> stronglyConsistentKeyspaces)
         {
             Factory = source.Factory;
             _tokenToHostsByKeyspace = tokenToHostsByKeyspace;
@@ -72,7 +78,10 @@ namespace Cassandra
             _keyspaceTokensCache = source._keyspaceTokensCache;
             _datacenters = source._datacenters;
             _numberOfHostsWithTokens = source._numberOfHostsWithTokens;
+            _stronglyConsistentKeyspaces = stronglyConsistentKeyspaces;
         }
+
+        internal bool IsStronglyConsistent(string keyspace) => _stronglyConsistentKeyspaces.Contains(keyspace);
 
         public IReadOnlyDictionary<IToken, ISet<Host>> GetByKeyspace(string keyspaceName)
         {
@@ -90,7 +99,8 @@ namespace Cassandra
 
             var replicas = TokenMap.ComputeReplicas(
                 ks, _ring, _primaryReplicas, _keyspaceTokensCache, _datacenters, _numberOfHostsWithTokens);
-            var updated = new TokenMap(this, _tokenToHostsByKeyspace.SetItem(ks.Name, replicas));
+            var updated = new TokenMap(this, _tokenToHostsByKeyspace.SetItem(ks.Name, replicas),
+                ks.IsStronglyConsistent ? _stronglyConsistentKeyspaces.Add(ks.Name) : _stronglyConsistentKeyspaces.Remove(ks.Name));
 
             sw.Stop();
             TokenMap.Logger.Info(
@@ -106,7 +116,7 @@ namespace Cassandra
         public TokenMap WithoutKeyspace(string name)
         {
             return _tokenToHostsByKeyspace.ContainsKey(name)
-                ? new TokenMap(this, _tokenToHostsByKeyspace.Remove(name))
+                ? new TokenMap(this, _tokenToHostsByKeyspace.Remove(name), _stronglyConsistentKeyspaces.Remove(name))
                 : this;
         }
 
@@ -200,7 +210,8 @@ namespace Cassandra
                 keyspaces.Count,
                 hosts.Count,
                 sw.Elapsed.TotalMilliseconds);
-            return new TokenMap(factory, tokenToHosts, ring, primaryReplicas, ksTokensCache, datacenters, numberOfHostsWithTokens);
+            return new TokenMap(factory, tokenToHosts, ring, primaryReplicas, ksTokensCache, datacenters, numberOfHostsWithTokens,
+                keyspaces.Where(ks => ks.IsStronglyConsistent).Select(ks => ks.Name).ToImmutableHashSet(StringComparer.Ordinal));
         }
 
         /// <summary>
