@@ -29,6 +29,8 @@ using Cassandra.Tests;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 
+#pragma warning disable CS0618 // Uses the obsolete load balancing policies until they're removed
+
 namespace Cassandra.IntegrationTests.Core
 {
     [Category(TestCategory.Short), Category(TestCategory.RealCluster)]

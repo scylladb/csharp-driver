@@ -146,6 +146,14 @@ namespace Cassandra.Tests
             return new KeyValuePair<TKey, TValue>(key, value);
         }
 
+        /// <summary>
+        /// A policy that uses every node in a round-robin fashion, as the obsolete RoundRobinPolicy does.
+        /// </summary>
+        public static ILoadBalancingPolicy RoundRobinPolicy()
+        {
+            return new DefaultLoadBalancingPolicy(new DefaultLoadBalancingPolicyOptions { TokenAware = false });
+        }
+
         public static Host CreateHost(string address, string dc = "dc1", string rack = "rack1",
                                       IEnumerable<string> tokens = null, string cassandraVersion = null)
         {
@@ -807,7 +815,7 @@ namespace Cassandra.Tests
 
             public OrderedLoadBalancingPolicy()
             {
-                _childPolicy = new RoundRobinPolicy();
+                _childPolicy = TestHelper.RoundRobinPolicy();
             }
 
             public HostDistance Distance(Host host)

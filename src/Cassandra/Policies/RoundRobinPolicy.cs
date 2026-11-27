@@ -14,6 +14,7 @@
 //   limitations under the License.
 //
 
+using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -34,6 +35,9 @@ namespace Cassandra
     ///  <see cref="DCAwareRoundRobinPolicy"/> load balancing policy instead.
     /// </para>
     /// </summary>
+    [Obsolete("Use DefaultLoadBalancingPolicy without a local datacenter, and with DefaultLoadBalancingPolicyOptions." +
+              "TokenAware set to false to leave out token awareness. RoundRobinPolicy will be removed in the next " +
+              "major version.")]
     public class RoundRobinPolicy : ILoadBalancingPolicy
     {
         // Separate rotations: requests that need their fallback targets don't move the first target of the next

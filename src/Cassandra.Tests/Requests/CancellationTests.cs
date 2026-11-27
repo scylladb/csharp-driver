@@ -730,7 +730,7 @@ namespace Cassandra.Tests.Requests
                 ConnectionFactory = new FakeConnectionFactory(() => connection),
                 RequestExecutionFactory = requestExecutionFactory ?? new RequestExecutionFactory(),
                 Policies = new Cassandra.Policies(
-                    new RoundRobinPolicy(),
+                    TestHelper.RoundRobinPolicy(),
                     new ConstantReconnectionPolicy(100),
                     new DefaultRetryPolicy(),
                     speculativeExecutionPolicy,

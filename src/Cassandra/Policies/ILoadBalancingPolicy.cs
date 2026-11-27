@@ -59,7 +59,7 @@ namespace Cassandra
         ///  executions, or when <see cref="Pick"/> returns null. If no target can be used, the request fails with a
         ///  <see cref="NoHostAvailableException"/>.
         ///  <p>It should return every target the request can use, including the target of <see cref="Pick"/>: the
-        ///  driver skips that node, and a policy wrapping this one, such as <see cref="TokenAwarePolicy"/>, can pick
+        ///  driver skips that node, and a policy wrapping this one, for instance a token aware policy, can pick
         ///  another node instead and then take the other nodes from this method only. The driver calls it at
         ///  most once per request, only when the plan goes past the target of <see cref="Pick"/>, and enumerates it
         ///  lazily. A policy that rotates through nodes should use a separate rotation for each method: if it

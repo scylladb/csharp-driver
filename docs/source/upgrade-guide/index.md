@@ -857,6 +857,21 @@ of its local datacenter. The driver configuration report reports a local rack as
 preference, the replicas' order without shuffling as `replica-set`, datacenter failover
 as a fallback to the other nodes, and a policy without token awareness as custom.
 
+`TokenAwarePolicy`, `DCAwareRoundRobinPolicy` and `RoundRobinPolicy` are obsolete, and
+will be removed in the next major version: code that uses them compiles with a warning.
+The default policy has their behaviors as options:
+
+| Obsolete | Replacement |
+|---|---|
+| `new TokenAwarePolicy(new DCAwareRoundRobinPolicy("dc1"))` | `new DefaultLoadBalancingPolicy("dc1")` |
+| `new TokenAwarePolicy(new RoundRobinPolicy())` | `Policies.DefaultLoadBalancingPolicy` |
+| `new DCAwareRoundRobinPolicy("dc1")` | `new DefaultLoadBalancingPolicy(new DefaultLoadBalancingPolicyOptions { LocalDatacenter = "dc1", TokenAware = false })` |
+| `new RoundRobinPolicy()` | `new DefaultLoadBalancingPolicy(new DefaultLoadBalancingPolicyOptions { TokenAware = false })` |
+
+A `TokenAwarePolicy` that wraps an application's own policy has no replacement among the
+driver's policies: the application's policy can choose the replicas of a request from
+the `MetadataSnapshot` it receives.
+
 ### `ExecuteAsync` returns `AsyncRowSet`
 
 `ISession.ExecuteAsync()` and the LINQ `CqlCommand.ExecuteAsync()` (used by `Insert`,

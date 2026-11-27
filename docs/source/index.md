@@ -220,7 +220,7 @@ var cluster = Cluster
   .Builder()
   .AddContactPoints(hosts)
   .WithCompression(CompressionType.LZ4)
-  .WithLoadBalancingPolicy(new DCAwareRoundRobinPolicy("west"));
+  .WithLocalDatacenter("west");
 
 // Example at statement (simple, bound, batch) level
 var statement = new SimpleStatement(query)

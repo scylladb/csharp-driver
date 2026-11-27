@@ -37,6 +37,8 @@ namespace Cassandra
     /// </item>
     /// </list>
     /// </summary>
+    [Obsolete("Use DefaultLoadBalancingPolicy, which is token aware unless DefaultLoadBalancingPolicyOptions." +
+              "TokenAware is false. TokenAwarePolicy will be removed in the next major version.")]
     public class TokenAwarePolicy : ILoadBalancingPolicy
     {
         private readonly ThreadLocal<Random> _prng;

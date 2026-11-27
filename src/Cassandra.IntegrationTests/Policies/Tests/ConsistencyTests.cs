@@ -24,6 +24,8 @@ using Cassandra.Tests;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 
+#pragma warning disable CS0618 // Uses the obsolete load balancing policies until they're removed
+
 namespace Cassandra.IntegrationTests.Policies.Tests
 {
     [TestFixture, Category(TestCategory.Long), Ignore("tests that are not marked with 'short' need to be refactored/deleted")]

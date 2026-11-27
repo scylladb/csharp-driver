@@ -19,11 +19,13 @@ using System.Collections.Generic;
 using System.Net;
 using BenchmarkDotNet.Attributes;
 
+#pragma warning disable CS0618 // Measures the obsolete RoundRobinPolicy until it's removed
+
 namespace Cassandra.Benchmarks
 {
     /// <summary>
-    /// The first target of a query plan of <see cref="RoundRobinPolicy"/>, which the default load balancing policy
-    /// uses without a local datacenter, from <see cref="RoundRobinPolicy.Pick"/> and from
+    /// The first target of a query plan of the obsolete <see cref="RoundRobinPolicy"/>, from
+    /// <see cref="RoundRobinPolicy.Pick"/> and from
     /// <see cref="RoundRobinPolicy.Fallback"/>, with the hosts of a metadata snapshot, and from a policy shared by two
     /// clusters.
     /// </summary>

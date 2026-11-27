@@ -824,7 +824,7 @@ namespace Cassandra.Tests.Requests
             {
                 ControlConnectionFactory = new FakeControlConnectionFactory(),
                 ConnectionFactory = factory,
-                Policies = new Cassandra.Policies(new RoundRobinPolicy(), new ConstantReconnectionPolicy(100), new DefaultRetryPolicy())
+                Policies = new Cassandra.Policies(TestHelper.RoundRobinPolicy(), new ConstantReconnectionPolicy(100), new DefaultRetryPolicy())
             };
             configBuilderAct(configBuilder);
             var config = configBuilder.Build();

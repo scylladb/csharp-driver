@@ -73,10 +73,12 @@ namespace Cassandra
                     var options = defaultPolicy.Options;
                     location = new PolicyLocation(options.LocalDatacenter, options.LocalRack);
                 }
+#pragma warning disable CS0618 // The obsolete policies are recognized until they're removed
                 else if (policy is DCAwareRoundRobinPolicy dcAware)
                 {
                     location = new PolicyLocation(dcAware.LocalDc, null);
                 }
+#pragma warning restore CS0618
             }
 
             return location;
@@ -88,10 +90,12 @@ namespace Cassandra
         /// </summary>
         private static ILoadBalancingPolicy ChildPolicy(ILoadBalancingPolicy policy)
         {
+#pragma warning disable CS0618 // The obsolete policies are recognized until they're removed
             if (policy is TokenAwarePolicy tokenAware)
             {
                 return tokenAware.ChildPolicy;
             }
+#pragma warning restore CS0618
 
             return null;
         }

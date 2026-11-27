@@ -1092,7 +1092,7 @@ namespace Cassandra
         /// </para>
         /// <para>
         /// In case you disable Metadata synchronization, please ensure you invoke <see cref="ICluster.RefreshSchemaAsync"/> in order to keep the token metadata up to date
-        /// otherwise you will not be getting everything you can out of token aware routing, i.e. <see cref="TokenAwarePolicy"/>, which is enabled by the default.
+        /// otherwise you will not be getting everything you can out of token aware routing, i.e. of the <see cref="DefaultLoadBalancingPolicy"/>, which is token aware by default.
         /// </para>
         /// <para>
         /// Disabling this feature has the following impact:
@@ -1101,7 +1101,7 @@ namespace Cassandra
         ///
         /// <item><description>
         /// Token metadata will not be computed and stored.
-        /// This means that token aware routing (<see cref="TokenAwarePolicy"/>, enabled by default) will only work correctly
+        /// This means that token aware routing (<see cref="DefaultLoadBalancingPolicy"/>, token aware by default) will only work correctly
         /// if you keep the token metadata up to date using the <see cref="ICluster.RefreshSchemaAsync"/> method.
         /// If you wish to go this route of manually refreshing the metadata then
         /// it's recommended to refresh only the keyspaces that this application will use, by passing the <code>keyspace</code> parameter.

@@ -29,6 +29,9 @@ namespace Cassandra
     /// treated as local until the driver learns its datacenter.
     /// </para>
     /// </summary>
+    [Obsolete("Use DefaultLoadBalancingPolicy with DefaultLoadBalancingPolicyOptions.LocalDatacenter, and TokenAware " +
+              "set to false to leave out token awareness. DCAwareRoundRobinPolicy will be removed in the next major " +
+              "version.")]
     public class DCAwareRoundRobinPolicy : ILoadBalancingPolicy
     {
         private readonly string _localDc;

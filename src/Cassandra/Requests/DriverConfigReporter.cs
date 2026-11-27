@@ -670,6 +670,7 @@ namespace Cassandra.Requests
 
             foreach (var policy in chain)
             {
+#pragma warning disable CS0618 // The obsolete policies are reported until they're removed
                 if (policy is TokenAwarePolicy)
                 {
                     tokenAware = true;
@@ -681,6 +682,7 @@ namespace Cassandra.Requests
                     // node-preference, round robin has no node preference, and a wrapped default policy's token
                     // awareness is the wrapper's.
                 }
+#pragma warning restore CS0618
                 else
                 {
                     allRecognized = false;
