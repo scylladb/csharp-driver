@@ -199,15 +199,20 @@ namespace Cassandra.Connections.Control
             var hostIpEndPoint = endPoint.GetHostIpEndPoint();
             int? advertisedPort = null;
 
-            // A routed connection can survive an advertised-address change. Its
-            // captured metadata endpoint must not override the current local row.
             if (endPoint is ClientRouteConnectionEndPoint routed)
             {
-                advertisedPort = _metadata.GetHost(hostId)?.AdvertisedPort ?? routed.AdvertisedPort ?? _config.ProtocolOptions.Port;
-                hostIpEndPoint = GetRpcEndPoint(false, row, _config.AddressTranslator, advertisedPort.Value) ?? hostIpEndPoint;
+                // A routed connection can survive an advertised-address change. Its
+                // captured metadata endpoint must not override the current local row.
+                advertisedPort = _metadata.GetHost(hostId)?.AdvertisedPort ?? routed.AdvertisedPort ?? GetAdvertisedNativeTransportPort();
+                hostIpEndPoint = GetRpcEndPoint(false, row, _config.AddressTranslator, advertisedPort.Value,
+                    hasFallbackEndPoint: hostIpEndPoint != null) ?? hostIpEndPoint;
+            }
+            else if (_config.ClientRoutesRuntime != null)
+            {
+                hostIpEndPoint = GetRpcEndPoint(false, row, _config.AddressTranslator, GetAdvertisedNativeTransportPort());
             }
 
-            hostIpEndPoint ??= GetRpcEndPoint(false, row, _config.AddressTranslator, _config.ProtocolOptions.Port);
+            hostIpEndPoint ??= GetRpcEndPoint(false, row, _config.AddressTranslator, GetAdvertisedNativeTransportPort());
 
             if (hostIpEndPoint == null)
             {
@@ -235,7 +240,7 @@ namespace Cassandra.Connections.Control
             var peers = new Dictionary<Guid, (IRow Row, IPEndPoint Address)>();
             foreach (var row in peersRs)
             {
-                var address = GetRpcEndPoint(isPeersV2, row, _config.AddressTranslator, _config.ProtocolOptions.Port);
+                var address = GetRpcEndPoint(isPeersV2, row, _config.AddressTranslator, GetAdvertisedNativeTransportPort());
                 if (address == null)
                 {
                     ControlConnection.Logger.Error("No address found for host, ignoring it.");
@@ -283,10 +288,16 @@ namespace Cassandra.Connections.Control
             }
         }
 
+        private int GetAdvertisedNativeTransportPort()
+        {
+            return _config.ClientRoutesRuntime?.Options.NativeTransportPort ?? _config.ProtocolOptions.Port;
+        }
+
         /// <summary>
         /// Parses address from system table query response and translates it using the provided <paramref name="translator"/>.
         /// </summary>
-        internal IPEndPoint GetRpcEndPoint(bool isPeersV2, IRow row, IAddressTranslator translator, int defaultPort)
+        internal IPEndPoint GetRpcEndPoint(
+            bool isPeersV2, IRow row, IAddressTranslator translator, int defaultPort, bool hasFallbackEndPoint = false)
         {
             IPAddress address;
             address = isPeersV2 ? GetRpcAddressFromPeersV2(row) : GetRpcAddressFromLocalPeersV1(row);
@@ -316,10 +327,19 @@ namespace Cassandra.Connections.Control
                 }
                 else
                 {
-                    ControlConnection.Logger.Error(
-                        "Found host with bind-all address {0} as rpc_address and no fallback address. " +
-                        "Because of this, the driver can not connect to this node.",
-                        bindAllAddress);
+                    if (hasFallbackEndPoint)
+                    {
+                        ControlConnection.Logger.Warning(
+                            "Found host with bind-all address {0} as rpc_address and no advertised fallback address, " +
+                            "using the captured connection endpoint instead.", bindAllAddress);
+                    }
+                    else
+                    {
+                        ControlConnection.Logger.Error(
+                            "Found host with bind-all address {0} as rpc_address and no fallback address. " +
+                            "Because of this, the driver can not connect to this node.",
+                            bindAllAddress);
+                    }
                     return null;
                 }
 

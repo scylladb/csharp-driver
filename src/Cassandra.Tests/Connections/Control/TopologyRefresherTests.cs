@@ -24,10 +24,12 @@ using Cassandra.Connections;
 using Cassandra.Connections.Control;
 using Cassandra.Requests;
 using Cassandra.Serialization;
+using Cassandra.Tasks;
 using Cassandra.Tests.Connections.TestHelpers;
 using Moq;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
+using StringAssert = NUnit.Framework.StringAssert;
 
 namespace Cassandra.Tests.Connections.Control
 {
@@ -50,6 +52,7 @@ namespace Cassandra.Tests.Connections.Control
             var row = localRow ?? TestHelper.CreateRow(new Dictionary<string, object>
             {
                 { "cluster_name", "ut-cluster" },
+                { "rpc_address", IPAddress.Parse("127.0.0.1") },
                 { "data_center", "ut-dc" },
                 { "rack", "ut-rack" },
                 {"tokens", null},
@@ -107,6 +110,159 @@ namespace Cassandra.Tests.Connections.Control
             var metadata = new Metadata(config);
             _metadata = metadata;
             return new TopologyRefresher(metadata, config);
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        [TestCase(true, true)]
+        [TestCase(true, true, false)]
+        [TestCase(true, false, true, true)]
+        public async Task Should_RefreshReplacementConnectionWhileOldMetadataQueryIsPending(
+            bool clientRoutesEnabled, bool differentAddress = false, bool retainOldHost = true, bool sameHostId = false)
+        {
+            var oldRequestStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseOldRequest = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var oldConnection = Mock.Of<IConnection>();
+            var newConnection = Mock.Of<IConnection>();
+            var oldHostId = Guid.NewGuid();
+            var newHostId = sameHostId ? oldHostId : Guid.NewGuid();
+            var oldAddress = IPAddress.Parse("127.0.0.1");
+            var newAddressText = differentAddress ? "127.0.0.3" : "127.0.0.1";
+            var newAddress = IPAddress.Parse(newAddressText);
+            IRow LocalRow(Guid hostId, IPAddress address) => TestHelper.CreateRow(new Dictionary<string, object>
+            {
+                { "cluster_name", "ut-cluster" }, { "rpc_address", address },
+                { "data_center", "ut-dc" }, { "rack", "ut-rack" }, { "tokens", null },
+                { "release_version", "2026.1" }, { "partitioner", "Murmur3Partitioner" },
+                { "host_id", hostId }
+            });
+            var oldHandler = CreateFakeMetadataRequestHandler(LocalRow(oldHostId, oldAddress));
+            var fakeHandler = CreateFakeMetadataRequestHandler(
+                LocalRow(newHostId, newAddress),
+                differentAddress && retainOldHost ? new[] { LocalRow(oldHostId, oldAddress) } : null);
+            var responses = new System.Collections.Concurrent.ConcurrentDictionary<Cassandra.Responses.Response, IEnumerable<IRow>>();
+            var handler = new Mock<IMetadataRequestHandler>();
+            handler.Setup(value => value.SendMetadataRequestAsync(
+                       It.IsAny<IConnection>(), It.IsAny<ISerializer>(), It.IsAny<string>(), It.IsAny<QueryProtocolOptions>()))
+                   .Returns(async (IConnection connection, ISerializer serializer, string query, QueryProtocolOptions options) =>
+                   {
+                       if (ReferenceEquals(connection, oldConnection) && query == LocalQuery)
+                       {
+                           oldRequestStarted.TrySetResult(true);
+                           await releaseOldRequest.Task.ConfigureAwait(false);
+                       }
+                       var source = ReferenceEquals(connection, oldConnection) ? oldHandler : fakeHandler;
+                       var response = await source.SendMetadataRequestAsync(connection, serializer, query, options).ConfigureAwait(false);
+                       responses[response] = source.GetRowSet(response);
+                       return response;
+                   });
+            handler.Setup(value => value.GetRowSet(It.IsAny<Cassandra.Responses.Response>()))
+                   .Returns<Cassandra.Responses.Response>(response => responses[response]);
+            var config = new TestConfigurationBuilder
+            {
+                MetadataRequestHandler = handler.Object,
+                ClientRoutesOptions = clientRoutesEnabled
+                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    : null
+            }.Build();
+            _metadata = new Metadata(config);
+            var refresher = new TopologyRefresher(_metadata, config);
+            var endpoint = new FakeConnectionEndPoint("127.0.0.1", 9042);
+            var oldRefresh = refresher.RefreshNodeListAsync(endpoint, oldConnection, _serializer);
+            Task<Host> replacementRefresh = null;
+            DriverInternalError oldRefreshFailure = null;
+            try
+            {
+                await oldRequestStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                replacementRefresh = refresher.RefreshNodeListAsync(
+                    new FakeConnectionEndPoint(newAddressText, 9042), newConnection, _serializer);
+                await replacementRefresh.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.IsFalse(oldRefresh.IsCompleted);
+            }
+            finally
+            {
+                releaseOldRequest.TrySetResult(true);
+                try
+                {
+                    await oldRefresh.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+                catch (DriverInternalError ex)
+                {
+                    oldRefreshFailure = ex;
+                }
+                await (replacementRefresh ?? Task.FromResult<Host>(null))
+                          .WaitToCompleteAsync(5000).ConfigureAwait(false);
+            }
+            var shouldRejectStaleHost = (!differentAddress && !sameHostId) || (differentAddress && !retainOldHost);
+            Assert.AreEqual(shouldRejectStaleHost, oldRefreshFailure != null);
+            if (!shouldRejectStaleHost)
+            {
+                Assert.AreEqual(oldHostId, oldRefresh.Result.HostId);
+            }
+            Assert.AreEqual(newAddress, replacementRefresh.Result.Address.Address);
+            Assert.AreEqual(newHostId, replacementRefresh.Result.HostId);
+            if (differentAddress)
+            {
+                if (retainOldHost)
+                {
+                    Assert.AreSame(_metadata.GetHost(new IPEndPoint(oldAddress, 9042)), oldRefresh.Result);
+                    Assert.AreEqual(oldHostId, oldRefresh.Result.HostId);
+                }
+                else
+                {
+                    Assert.IsNull(_metadata.GetHost(new IPEndPoint(oldAddress, 9042)));
+                }
+            }
+            else
+            {
+                Assert.AreEqual(newHostId,
+                    _metadata.GetHost(new IPEndPoint(IPAddress.Loopback, 9042)).HostId);
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_KeepDistinctIdentitiesAtSharedAdvertisedAddresses(bool duplicatesLocalAddress)
+        {
+            var localAddress = IPAddress.Parse("127.0.0.1");
+            var peerAddress = IPAddress.Parse("127.0.0.2");
+            var localId = Guid.NewGuid();
+            var firstPeerId = Guid.NewGuid();
+            IRow Row(IPAddress address, Guid id) => TestHelper.CreateRow(new Dictionary<string, object>
+            {
+                { "cluster_name", "ut-cluster" }, { "rpc_address", address },
+                { "data_center", "ut-dc" }, { "rack", "ut-rack" }, { "tokens", null },
+                { "release_version", "2026.1" }, { "partitioner", "Murmur3Partitioner" },
+                { "host_id", id }
+            });
+            var peers = new[]
+            {
+                Row(peerAddress, firstPeerId),
+                Row(duplicatesLocalAddress ? localAddress : peerAddress, Guid.NewGuid())
+            };
+            var config = new TestConfigurationBuilder
+            {
+                ClientRoutesOptions = new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false),
+                MetadataRequestHandler = CreateFakeMetadataRequestHandler(Row(localAddress, localId), peers)
+            }.Build();
+            _metadata = new Metadata(config);
+            var removed = new List<Host>();
+            _metadata.Hosts.Removed += removed.Add;
+            var refresher = new TopologyRefresher(_metadata, config);
+            var endpoint = new FakeConnectionEndPoint("127.0.0.100", 29042);
+            var firstLocal = await refresher.RefreshNodeListAsync(endpoint, Mock.Of<IConnection>(), _serializer)
+                                            .ConfigureAwait(false);
+            var firstPeer = _metadata.GetHost(firstPeerId);
+            var secondLocal = await refresher.RefreshNodeListAsync(endpoint, Mock.Of<IConnection>(), _serializer)
+                                             .ConfigureAwait(false);
+
+            Assert.AreSame(firstLocal, secondLocal);
+            Assert.AreSame(firstLocal, _metadata.GetHost(localId));
+            Assert.AreSame(firstPeer, _metadata.GetHost(firstPeerId));
+            Assert.AreEqual(localId, firstLocal.HostId);
+            Assert.AreEqual(firstPeerId, firstPeer.HostId);
+            Assert.IsEmpty(removed);
+            Assert.AreEqual(3, _metadata.AllHosts().Count);
         }
 
         [Test]
@@ -392,6 +548,47 @@ namespace Cassandra.Tests.Connections.Control
                 refresher.GetRpcEndPoint(peersV2, row, translator.Object, 9042));
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_UseBroadcastAddressWhenSystemLocalRpcIsIPv6BindAll(bool clientRoutesEnabled)
+        {
+            var ipv6Any = new IPAddress(new byte[16]);
+            var broadcastAddress = IPAddress.Parse("2001:db8::9");
+            var localRow = TestHelper.CreateRow(new Dictionary<string, object>
+            {
+                { "cluster_name", "ut-cluster" },
+                { "data_center", "ut-dc" },
+                { "rack", "ut-rack" },
+                { "tokens", null },
+                { "release_version", "2.2.1-SNAPSHOT" },
+                { "partitioner", "Murmur3Partitioner" },
+                { "rpc_address", ipv6Any },
+                { "broadcast_address", broadcastAddress },
+                { "listen_address", IPAddress.Parse("2001:db8::10") }
+            });
+            var requestHandler = CreateFakeMetadataRequestHandler(localRow);
+            var config = new TestConfigurationBuilder
+            {
+                ClientRoutesOptions = clientRoutesEnabled ? new ClientRoutesOptions(
+                    new[] { new ClientRouteProxy("connection-a") },
+                    ProtocolOptions.DefaultPort,
+                    false) : null,
+                MetadataRequestHandler = requestHandler
+            }.Build();
+            var metadata = new Metadata(config);
+            var topologyRefresher = new TopologyRefresher(metadata, config);
+
+            await topologyRefresher.RefreshNodeListAsync(
+                new FakeConnectionEndPoint("127.0.0.100", 29042, false),
+                Mock.Of<IConnection>(),
+                _serializer).ConfigureAwait(false);
+
+            Assert.NotNull(metadata.GetHost(new IPEndPoint(broadcastAddress, ProtocolOptions.DefaultPort)));
+            Assert.IsNull(metadata.GetHost(new IPEndPoint(ipv6Any, ProtocolOptions.DefaultPort)));
+            Assert.IsNull(metadata.GetHost(new IPEndPoint(IPAddress.Parse("2001:db8::10"), ProtocolOptions.DefaultPort)));
+            Assert.IsNull(metadata.GetHost(new IPEndPoint(IPAddress.Parse("127.0.0.100"), 29042)));
+        }
+
         [Test]
         public async Task UpdatePeersInfoUsesAddressTranslator()
         {
@@ -459,6 +656,278 @@ namespace Cassandra.Tests.Connections.Control
 
             Assert.NotNull(_metadata.GetHost(new IPEndPoint(peerAddress, ProtocolOptions.DefaultPort)));
             Assert.IsNull(_metadata.GetHost(new IPEndPoint(ipv6Any, ProtocolOptions.DefaultPort)));
+        }
+
+        [TestCase(false, false, "0.0.0.0")]
+        [TestCase(false, false, "::")]
+        [TestCase(false, true, "0.0.0.0")]
+        [TestCase(false, true, "::")]
+        [TestCase(true, false, "0.0.0.0")]
+        [TestCase(true, false, "::")]
+        [TestCase(true, true, "0.0.0.0")]
+        [TestCase(true, true, "::")]
+        [NonParallelizable]
+        public async Task Should_LogBindAllFailureOnlyWithoutCapturedRoute(
+            bool clientRoutesEnabled, bool hasCapturedRoute, string rpcAddress)
+        {
+            var localRow = TestHelper.CreateRow(new Dictionary<string, object>
+            {
+                { "host_id", Guid.NewGuid() }, { "cluster_name", "ut-cluster" },
+                { "data_center", "ut-dc" }, { "rack", "ut-rack" },
+                { "tokens", null }, { "partitioner", "Murmur3Partitioner" },
+                { "rpc_address", IPAddress.Parse(rpcAddress) }
+            });
+            var config = new TestConfigurationBuilder
+            {
+                ClientRoutesOptions = clientRoutesEnabled
+                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    : null,
+                MetadataRequestHandler = CreateFakeMetadataRequestHandler(localRow, Array.Empty<IRow>())
+            }.Build();
+            using var timer = config.Timer;
+            using var metadata = new Metadata(config);
+            var capturedAddress = new IPEndPoint(IPAddress.Parse("127.0.0.10"), 9042);
+            IConnectionEndPoint endPoint = hasCapturedRoute
+                ? new ClientRouteConnectionEndPoint(
+                    new IPEndPoint(IPAddress.Loopback, 29042), capturedAddress, "node.example", "route-1")
+                : new FakeConnectionEndPoint("127.0.0.10", 9042, hasHostEndpoint: false);
+            var refresher = new TopologyRefresher(metadata, config);
+            var oldLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new TestTraceListener();
+            Trace.Listeners.Add(listener);
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Verbose;
+            try
+            {
+                if (hasCapturedRoute)
+                {
+                    var refreshed = await refresher.RefreshNodeListAsync(
+                        endPoint, Mock.Of<IConnection>(), _serializer).ConfigureAwait(false);
+                    Assert.AreEqual(capturedAddress, refreshed.Address);
+                    Assert.AreSame(refreshed, metadata.GetHost(capturedAddress));
+                }
+                else
+                {
+                    await Assert.ThrowsAsync<DriverInternalError>(async () => await refresher.RefreshNodeListAsync(
+                        endPoint, Mock.Of<IConnection>(), _serializer).ConfigureAwait(false));
+                    Assert.IsEmpty(metadata.AllHosts());
+                }
+
+                var failures = listener.Queue.Where(message =>
+                    message.Contains("#ERROR") && message.Contains("bind-all address")).ToArray();
+                var warnings = listener.Queue.Where(message =>
+                    message.Contains("#WARNING") && message.Contains("bind-all address")).ToArray();
+                if (hasCapturedRoute)
+                {
+                    Assert.IsEmpty(failures, string.Join(Environment.NewLine, failures));
+                    Assert.AreEqual(1, warnings.Length, "Captured-route recovery must have a Warning diagnostic.");
+                    StringAssert.Contains("using the captured connection endpoint instead", warnings.Single());
+                }
+                else
+                {
+                    Assert.IsNotEmpty(failures, "An unusable node still needs an Error diagnostic.");
+                    Assert.IsEmpty(warnings, "Without a fallback the bind-all diagnostic must remain an Error.");
+                }
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = oldLevel;
+            }
+        }
+
+        [TestCase(9142, "127.0.0.11")]
+        [TestCase(null, "127.0.0.11")]
+        [TestCase(9142, null)]
+        [TestCase(9142, "0.0.0.0")]
+        [TestCase(9142, "::")]
+        public async Task Should_PreserveRoutedLocalAdvertisedPortAndCapturedAddress(int? nativePort, string rpcAddress)
+        {
+            const int defaultPort = 19042;
+            var hostId = Guid.NewGuid();
+            var capturedAddress = new IPEndPoint(IPAddress.Parse("127.0.0.10"), nativePort ?? defaultPort);
+            var localRow = TestHelper.CreateRow(new Dictionary<string, object>
+            {
+                { "host_id", hostId },
+                { "cluster_name", "ut-cluster" },
+                { "data_center", "ut-dc" },
+                { "rack", "ut-rack" },
+                { "tokens", null },
+                { "partitioner", "Murmur3Partitioner" },
+                { "native_port", nativePort },
+                { "rpc_address", rpcAddress == null ? null : IPAddress.Parse(rpcAddress) }
+            });
+            var config = new TestConfigurationBuilder
+            {
+                ClientRoutesOptions = new ClientRoutesOptions(
+                    new[] { new ClientRouteProxy("connection-a") }, defaultPort, false),
+                MetadataRequestHandler = CreateFakeMetadataRequestHandler(localRow, Array.Empty<IRow>())
+            }.Build();
+            using var timer = config.Timer;
+            using var metadata = new Metadata(config);
+            var original = metadata.AddOrUpdateHost(hostId, capturedAddress, null, localRow);
+            var endPoint = new ClientRouteConnectionEndPoint(
+                new IPEndPoint(IPAddress.Loopback, 29042), capturedAddress, "node.example", "route-1");
+            var topologyRefresher = new TopologyRefresher(metadata, config);
+
+            var refreshed = await topologyRefresher.RefreshNodeListAsync(
+                endPoint, Mock.Of<IConnection>(), _serializer).ConfigureAwait(false);
+
+            var expectedAddress = rpcAddress == "127.0.0.11"
+                ? new IPEndPoint(IPAddress.Parse(rpcAddress), capturedAddress.Port)
+                : capturedAddress;
+            Assert.AreSame(original, refreshed);
+            Assert.AreEqual(expectedAddress, refreshed.Address);
+            Assert.AreSame(refreshed, metadata.GetHost(expectedAddress));
+            Assert.AreEqual(capturedAddress, endPoint.GetHostIpEndPoint());
+        }
+
+        [Test]
+        public async Task Should_UseClientRoutesNativeTransportPortForAdvertisedAddressesWithoutAPort()
+        {
+            const int configuredNativeTransportPort = 19042;
+            var localAddress = IPAddress.Parse("127.0.0.11");
+            var peerAddress = IPAddress.Parse("127.0.0.12");
+            var localRow = TestHelper.CreateRow(new Dictionary<string, object>
+            {
+                { "cluster_name", "ut-cluster" },
+                { "data_center", "ut-dc" },
+                { "rack", "ut-rack" },
+                { "tokens", null },
+                { "release_version", "2.2.1-SNAPSHOT" },
+                { "partitioner", "Murmur3Partitioner" },
+                { "rpc_address", localAddress }
+            });
+            var peerRows = TestHelper.CreateRows(new List<Dictionary<string, object>>
+            {
+                new Dictionary<string, object>
+                {
+                    { "rpc_address", peerAddress },
+                    { "peer", null },
+                    { "data_center", "ut-dc" },
+                    { "rack", "ut-rack" },
+                    { "tokens", null },
+                    { "release_version", "2.2.1" }
+                }
+            });
+            var requestHandler = CreateFakeMetadataRequestHandler(localRow, peerRows);
+            var config = new TestConfigurationBuilder
+            {
+                ProtocolOptions = new ProtocolOptions(9042),
+                ClientRoutesOptions = new ClientRoutesOptions(
+                    new[] { new ClientRouteProxy("connection-a") },
+                    configuredNativeTransportPort,
+                    false),
+                MetadataRequestHandler = requestHandler
+            }.Build();
+            var metadata = new Metadata(config);
+            var topologyRefresher = new TopologyRefresher(metadata, config);
+
+            await topologyRefresher.RefreshNodeListAsync(
+                new FakeConnectionEndPoint("127.0.0.100", 29042),
+                Mock.Of<IConnection>(),
+                _serializer).ConfigureAwait(false);
+
+            Assert.NotNull(metadata.GetHost(new IPEndPoint(localAddress, configuredNativeTransportPort)));
+            Assert.NotNull(metadata.GetHost(new IPEndPoint(peerAddress, configuredNativeTransportPort)));
+            Assert.IsNull(metadata.GetHost(new IPEndPoint(localAddress, config.ProtocolOptions.Port)));
+            Assert.IsNull(metadata.GetHost(new IPEndPoint(IPAddress.Parse("127.0.0.100"), 29042)));
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_ReplaceHostInBothModesWhenAdvertisedAddressReturnsDifferentNonemptyHostId(
+            bool clientRoutesEnabled)
+        {
+            var address = new IPEndPoint(IPAddress.Parse("127.0.0.2"), ProtocolOptions.DefaultPort);
+            var previousHostId = Guid.NewGuid();
+            var replacementHostId = Guid.NewGuid();
+            var peerRows = TestHelper.CreateRows(new List<Dictionary<string, object>>
+            {
+                new Dictionary<string, object>
+                {
+                    { "rpc_address", address.Address },
+                    { "peer", null },
+                    { "host_id", replacementHostId },
+                    { "data_center", "replacement-dc" },
+                    { "rack", "replacement-rack" },
+                    { "tokens", null },
+                    { "release_version", "2.2.1" }
+                }
+            });
+            var requestHandler = CreateFakeMetadataRequestHandler(peersRows: peerRows);
+            var config = new TestConfigurationBuilder
+            {
+                MetadataRequestHandler = requestHandler,
+                ClientRoutesOptions = clientRoutesEnabled
+                    ? new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+                    : null
+            }.Build();
+            var metadata = new Metadata(config);
+            var previousHost = metadata.AddOrUpdateHost(previousHostId, address, null,
+                TestHelper.CreateRow(new Dictionary<string, object>
+            {
+                { "host_id", previousHostId },
+                { "data_center", "previous-dc" },
+                { "rack", "previous-rack" },
+                { "tokens", null },
+                { "release_version", "2.2.1" }
+            }));
+            var removedHosts = new List<Host>();
+            var addedHosts = new List<Host>();
+            metadata.Hosts.Removed += removedHosts.Add;
+            metadata.Hosts.Added += addedHosts.Add;
+            var topologyRefresher = new TopologyRefresher(metadata, config);
+
+            await topologyRefresher.RefreshNodeListAsync(
+                new FakeConnectionEndPoint("127.0.0.1", 9042),
+                Mock.Of<IConnection>(),
+                _serializer).ConfigureAwait(false);
+
+            var replacementHost = metadata.GetHost(address);
+            Assert.NotNull(replacementHost);
+            Assert.AreNotSame(previousHost, replacementHost);
+            Assert.AreEqual(replacementHostId, replacementHost.HostId);
+            Assert.AreEqual("replacement-dc", replacementHost.Datacenter);
+            Assert.AreEqual("replacement-rack", replacementHost.Rack);
+            Assert.IsTrue(removedHosts.Contains(previousHost));
+            Assert.IsTrue(addedHosts.Contains(replacementHost));
+        }
+
+        [Test]
+        public async Task Should_ReplaceUnidentifiedProvisionalHostOnDiscovery()
+        {
+            var address = new IPEndPoint(IPAddress.Parse("127.0.0.2"), ProtocolOptions.DefaultPort);
+            var replacementHostId = Guid.NewGuid();
+            var peerRows = TestHelper.CreateRows(new List<Dictionary<string, object>>
+            {
+                new Dictionary<string, object>
+                {
+                    { "rpc_address", address.Address },
+                    { "peer", null },
+                    { "host_id", replacementHostId },
+                    { "data_center", "ut-dc" },
+                    { "rack", "ut-rack" },
+                    { "tokens", null },
+                    { "release_version", "2.2.1" }
+                }
+            });
+            var requestHandler = CreateFakeMetadataRequestHandler(peersRows: peerRows);
+            var config = new TestConfigurationBuilder
+            {
+                MetadataRequestHandler = requestHandler,
+                ClientRoutesOptions = new ClientRoutesOptions(new[] { new ClientRouteProxy("connection-a") }, 9042, false)
+            }.Build();
+            var metadata = new Metadata(config);
+            var existingHost = metadata.AddHost(address);
+            var topologyRefresher = new TopologyRefresher(metadata, config);
+
+            await topologyRefresher.RefreshNodeListAsync(
+                new FakeConnectionEndPoint("127.0.0.1", 9042),
+                Mock.Of<IConnection>(),
+                _serializer).ConfigureAwait(false);
+
+            Assert.AreNotSame(existingHost, metadata.GetHost(address));
+            Assert.AreEqual(replacementHostId, metadata.GetHost(address).HostId);
         }
     }
 }
