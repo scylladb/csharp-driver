@@ -1210,7 +1210,7 @@ namespace Cassandra.Tests
                 QueryOptions = new QueryOptions().SetPrepareOnAllHosts(false),
                 RequestTracker = requestTracker.Object,
                 Policies = new Cassandra.Policies(
-                    new RoundRobinPolicy(),
+                    TestHelper.RoundRobinPolicy(),
                     new ConstantReconnectionPolicy(100),
                     new DefaultRetryPolicy())
             }.Build();

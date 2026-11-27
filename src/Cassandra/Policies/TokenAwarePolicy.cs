@@ -27,8 +27,7 @@ namespace Cassandra
     /// <para> This policy encapsulates another policy. The resulting policy works in the following way:
     /// </para>
     /// <list type="number">
-    /// <item>The <see cref="Distance(Host)"/> method is inherited  from the child policy.</item>
-    /// <item><see cref="Pick"/> returns a <see cref="HostDistance.Local"/> replica of the request, based on its
+    /// <item><see cref="Pick"/> returns a local replica of the request, based on its
     /// <see cref="RoutingInfo.RoutingKey"/>: the first one for a lightweight transaction, or else one chosen at random.
     /// Without a routing key or a local replica, it returns the pick of the child policy.
     /// </item>
@@ -36,7 +35,14 @@ namespace Cassandra
     /// for a lightweight transaction, then the fallback targets of the child policy that aren't among them.
     /// </item>
     /// </list>
+    /// <para>
+    /// The local replicas are those in the local datacenter of a <see cref="DCAwareRoundRobinPolicy"/> or
+    /// <see cref="DefaultLoadBalancingPolicy"/> child policy, or whose datacenter is unknown, or every replica with
+    /// another child policy.
+    /// </para>
     /// </summary>
+    [Obsolete("Use DefaultLoadBalancingPolicy, which is token aware unless DefaultLoadBalancingPolicyOptions." +
+              "TokenAware is false. TokenAwarePolicy will be removed in the next major version.")]
     public class TokenAwarePolicy : ILoadBalancingPolicy
     {
         private readonly ThreadLocal<Random> _prng;
@@ -67,19 +73,32 @@ namespace Cassandra
         public ILoadBalancingPolicy ChildPolicy { get; }
 
         /// <summary>
-        ///  Return the HostDistance for the provided host.
+        /// Whether a node is local for the child policy: in the local datacenter of a datacenter aware child policy,
+        /// or of the policy a token aware child policy wraps, or with an unknown datacenter, or any node for another
+        /// child policy.
         /// </summary>
-        /// <param name="host"> the host of which to return the distance of. </param>
-        ///
-        /// <returns>the HostDistance to <c>host</c> as returned by the wrapped
-        ///  policy.</returns>
-        public HostDistance Distance(Host host)
+        private bool IsLocal(Host host)
         {
-            return ChildPolicy.Distance(host);
+            return TokenAwarePolicy.IsLocal(ChildPolicy, host);
+        }
+
+        private static bool IsLocal(ILoadBalancingPolicy policy, Host host)
+        {
+            switch (policy)
+            {
+                case DCAwareRoundRobinPolicy dcAware:
+                    return dcAware.IsLocal(host);
+                case DefaultLoadBalancingPolicy defaultPolicy:
+                    return defaultPolicy.IsLocal(host);
+                case TokenAwarePolicy tokenAware:
+                    return TokenAwarePolicy.IsLocal(tokenAware.ChildPolicy, host);
+                default:
+                    return true;
+            }
         }
 
         /// <summary>
-        ///  Returns a replica of the request whose <c>HostDistance</c> for the child policy is <c>Local</c>,
+        ///  Returns a local replica of the request,
         ///  chosen at random, or the first one when the request should be routed as a lightweight transaction.
         ///  Without a routing key or such a replica, returns the first target of the child policy.
         /// </summary>
@@ -93,7 +112,7 @@ namespace Cassandra
                 var localReplicaCount = 0;
                 foreach (var replica in replicas)
                 {
-                    if (ChildPolicy.Distance(replica.Host) == HostDistance.Local)
+                    if (IsLocal(replica.Host))
                     {
                         localReplicaCount++;
                     }
@@ -104,7 +123,7 @@ namespace Cassandra
                     var chosen = routing.ShouldRouteAsLwt ? 0 : _prng.Value.Next(localReplicaCount);
                     foreach (var replica in replicas)
                     {
-                        if (ChildPolicy.Distance(replica.Host) == HostDistance.Local && chosen-- == 0)
+                        if (IsLocal(replica.Host) && chosen-- == 0)
                         {
                             return replica;
                         }
@@ -116,7 +135,7 @@ namespace Cassandra
         }
 
         /// <summary>
-        ///  Returns the replicas of the request whose <c>HostDistance</c> for the child policy is <c>Local</c>, if
+        ///  Returns the local replicas of the request, if
         ///  it can determine them (i.e. mainly if <see cref="RoutingInfo.RoutingKey"/> is not <c>null</c>), then the
         ///  fallback targets of the child policy.
         /// </summary>
@@ -139,7 +158,7 @@ namespace Cassandra
             var localReplicaSet = new HashSet<Host>();
             var localReplicaList = new List<RoutingTarget>(replicas.Count);
             // We can't do it lazily as we need to balance the load between local replicas
-            foreach (var localReplica in replicas.Where(hs => ChildPolicy.Distance(hs.Host) == HostDistance.Local))
+            foreach (var localReplica in replicas.Where(hs => IsLocal(hs.Host)))
             {
                 localReplicaSet.Add(localReplica.Host);
                 localReplicaList.Add(localReplica);

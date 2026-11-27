@@ -68,7 +68,8 @@ namespace Cassandra.SessionManagement
         MetadataSnapshot GetMetadataSnapshot();
 
         /// <summary>
-        /// Helper method to retrieve the aggregate distance from all configured LoadBalancingPolicies and set it at Host level.
+        /// Gets the distance of the host, from the load balancing policies and the host distance evaluator, and sets
+        /// it at Host level.
         /// </summary>
         HostDistance RetrieveAndSetDistance(Host host);
 

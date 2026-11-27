@@ -242,16 +242,21 @@ namespace Cassandra.Requests
         /// <summary>
         /// The locality the connection pools are held to, or <c>null</c> when that is not one answer.
         /// <para>
-        /// Pool membership and local/remote sizing are cluster-wide rather than per request:
-        /// <c>Cluster.RetrieveAndSetDistance</c> assigns a host the closest distance that <em>any</em> execution
-        /// profile's load balancing policy gives it, so a host any profile treats as local is pooled as local. A
-        /// single preference therefore describes the connections only when every profile asks for the same one,
-        /// and this reports nothing when they disagree or when a policy expresses no locality at all — the
-        /// per-profile answer stays under query.load-balancing, where it describes routing rather than pooling.
+        /// Pool membership and local/remote sizing are cluster-wide rather than per request: a host in the local
+        /// datacenter of <em>any</em> execution profile's load balancing policy is pooled as local. A single
+        /// preference therefore describes the connections only when every profile asks for the same one, and this
+        /// reports nothing when they disagree, when a policy expresses no locality at all, or when a host distance
+        /// evaluator, which can override any distance, is set — the per-profile answer stays under
+        /// query.load-balancing, where it describes routing rather than pooling.
         /// </para>
         /// </summary>
         private JObject ConnectionNodePreference()
         {
+            if (_configuration.HostDistanceEvaluator != null)
+            {
+                return null;
+            }
+
             JObject shared = null;
             foreach (var requestOptions in _configuration.RequestOptions.Values)
             {
@@ -660,21 +665,29 @@ namespace Cassandra.Requests
         /// </summary>
         private static JObject LoadBalancingPolicy(IList<ILoadBalancingPolicy> chain)
         {
+            if (chain[0] is DefaultLoadBalancingPolicy defaultPolicy)
+            {
+                return DriverConfigReporter.DefaultLoadBalancingPolicy(defaultPolicy);
+            }
+
             var tokenAware = false;
             var allRecognized = true;
 
             foreach (var policy in chain)
             {
+#pragma warning disable CS0618 // The obsolete policies are reported until they're removed
                 if (policy is TokenAwarePolicy)
                 {
                     tokenAware = true;
                 }
-                else if (policy is DCAwareRoundRobinPolicy || policy is RoundRobinPolicy || policy is DefaultLoadBalancingPolicy)
+                else if (policy is DCAwareRoundRobinPolicy || policy is RoundRobinPolicy
+                         || policy is DefaultLoadBalancingPolicy)
                 {
                     // Known, and contributing no flag of its own: the datacenter preference is reported under
-                    // node-preference, round robin has no node preference, and DefaultLoadBalancingPolicy only
-                    // delegates.
+                    // node-preference, round robin has no node preference, and a wrapped default policy's token
+                    // awareness is the wrapper's.
                 }
+#pragma warning restore CS0618
                 else
                 {
                     allRecognized = false;
@@ -712,19 +725,55 @@ namespace Cassandra.Requests
             };
         }
 
+        /// <summary>
+        /// The <see cref="Cassandra.DefaultLoadBalancingPolicy"/>, reported from its options: the built-in token-aware
+        /// shape when it is token aware, or else as custom, since the schema has no built-in shape without token
+        /// awareness.
+        /// </summary>
+        private static JObject DefaultLoadBalancingPolicy(DefaultLoadBalancingPolicy policy)
+        {
+            var options = policy.Options;
+            if (!options.TokenAware)
+            {
+                return DriverConfigReporter.CustomPolicy(policy);
+            }
+
+            return new JObject
+            {
+                ["type"] = "token-aware",
+
+                // The replicas are tried from a random one, or in the replica set's order without shuffling
+                ["load-distribution"] = options.ShuffleReplicas ? "shuffle" : "replica-set",
+
+                // The plans go on to the other racks of the local datacenter after the local rack, and to the other
+                // datacenters with failover. Without a local datacenter there is no preference to fall outside of.
+                ["fallback-to-non-preferred-nodes"] =
+                    options.LocalRack != null || (options.DatacenterFailover && options.LocalDatacenter != null)
+            };
+        }
+
         private static JObject NodeLocationPreference(IEnumerable<ILoadBalancingPolicy> chain)
         {
-            var dcAware = LoadBalancingPolicyChain.FindDatacenterAware(chain);
-            if (dcAware == null)
+            var location = LoadBalancingPolicyChain.FindLocation(chain);
+            if (location == null)
             {
                 return null;
             }
 
-            // The driver has no rack-aware policy, so "rack"/"rack-auto" are never reported.
+            if (location.Rack != null)
+            {
+                return new JObject
+                {
+                    ["type"] = "rack",
+                    ["local-dc"] = location.Datacenter,
+                    ["local-rack"] = location.Rack
+                };
+            }
+
             return new JObject
             {
                 ["type"] = "dc",
-                ["local-dc"] = dcAware.LocalDc
+                ["local-dc"] = location.Datacenter
             };
         }
 

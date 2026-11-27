@@ -192,9 +192,9 @@ explicit `SslProtocols` value continue to use that configured value.
 
 ### Host distance changes
 
-Connection pools now recover when a load balancing policy temporarily ignores a
-host and later treats it as local or remote again, including when the pool was
-empty or still draining its old connections.
+Connection pools now recover when a host's distance is temporarily ignored, and
+later local or remote again, including when the pool was empty or still draining
+its old connections.
 
 ### Table-aware replica resolution
 
@@ -822,6 +822,91 @@ or keep it as a method of their own. A policy that read the nodes from the clust
 was initialized with reads them from the `MetadataSnapshot` that `Pick()` and
 `Fallback()` receive instead. A policy that wraps another one no longer passes the call
 on.
+
+### `DefaultLoadBalancingPolicy` options
+
+`DefaultLoadBalancingPolicy` takes a `DefaultLoadBalancingPolicyOptions`. It used to
+wrap a `TokenAwarePolicy` with a `DCAwareRoundRobinPolicy` or a `RoundRobinPolicy`, and
+now builds its query plans itself. With the default options, its plans are the same as
+before.
+
+```csharp
+var policy = new DefaultLoadBalancingPolicy(new DefaultLoadBalancingPolicyOptions
+{
+    LocalDatacenter = "dc1",
+    LocalRack = "rack1",
+    DatacenterFailover = true
+});
+```
+
+- `LocalDatacenter`: as the constructor that takes a local datacenter, which stays.
+- `LocalRack`, new: the plans use the replicas and nodes of the local rack before the
+  other ones of the local datacenter. It requires a local datacenter.
+  `Builder.WithLocalDatacenter(datacenter, rack)` sets it for the default policy.
+- `DatacenterFailover`, new and off by default: the plans contain the nodes of the other
+  datacenters, their replicas after the local replicas and their other nodes after the
+  local ones. Never for a request whose consistency level is local, such as
+  `LocalQuorum`, or for a lightweight transaction whose serial consistency level is
+  `LocalSerial`, since another datacenter would break what they guarantee.
+- `TokenAware` and `ShuffleReplicas`, on by default, as the policy always behaved: they
+  can now be turned off. Without shuffling, the replicas are tried in the order of the
+  cluster's replica set.
+
+When it connects, the driver also warns when the local rack of a policy matches no node
+of its local datacenter. The driver configuration report reports a local rack as a rack
+preference, the replicas' order without shuffling as `replica-set`, datacenter failover
+as a fallback to the other nodes, and a policy without token awareness as custom.
+
+`TokenAwarePolicy`, `DCAwareRoundRobinPolicy` and `RoundRobinPolicy` are obsolete, and
+will be removed in the next major version: code that uses them compiles with a warning.
+The default policy has their behaviors as options:
+
+| Obsolete | Replacement |
+|---|---|
+| `new TokenAwarePolicy(new DCAwareRoundRobinPolicy("dc1"))` | `new DefaultLoadBalancingPolicy("dc1")` |
+| `new TokenAwarePolicy(new RoundRobinPolicy())` | `Policies.DefaultLoadBalancingPolicy` |
+| `new DCAwareRoundRobinPolicy("dc1")` | `new DefaultLoadBalancingPolicy(new DefaultLoadBalancingPolicyOptions { LocalDatacenter = "dc1", TokenAware = false })` |
+| `new RoundRobinPolicy()` | `new DefaultLoadBalancingPolicy(new DefaultLoadBalancingPolicyOptions { TokenAware = false })` |
+
+A `TokenAwarePolicy` that wraps an application's own policy has no replacement among the
+driver's policies: the application's policy can choose the replicas of a request from
+the `MetadataSnapshot` it receives.
+
+### `ILoadBalancingPolicy.Distance` is removed
+
+`Distance(Host)` is removed from `ILoadBalancingPolicy`, and from the driver's policies.
+A load balancing policy only routes requests: it no longer decides which nodes the
+driver connects to, and the size of their pools.
+
+The driver derives the distance of each node from the load balancing policies of the
+execution profiles. A node is `Local` when it's in the local datacenter of a policy, or
+its datacenter is unknown, or when a policy has no local datacenter, which an
+application's own policy doesn't. The other nodes are `Remote`. With the driver's
+policies, the distances are the same as before.
+
+To decide the distance of some nodes yourself, set an evaluator with
+`Builder.WithHostDistance()`. It returns the distance of a node, or null to keep the one
+the driver derives:
+
+```csharp
+Cluster.Builder()
+       .AddContactPoint("127.0.0.1")
+       .WithLoadBalancingPolicy(new MyPolicy())
+       // The distances MyPolicy.Distance returned in 3.x
+       .WithHostDistance(host => host.Datacenter == "dc1" ? HostDistance.Local : HostDistance.Remote)
+       .Build();
+```
+
+- **Custom policies** delete their `Distance` method, or keep it as a method of their
+  own. An explicit interface implementation of it no longer compiles.
+- **With an application's own policy, every node is now `Local`** unless an evaluator
+  says otherwise, so with pool warmup, which is on by default, a session opens a pool
+  to every node when it connects. An application whose policy returned `Remote` or
+  `Ignored` for some nodes returns those distances from the evaluator instead, as
+  above.
+- **A `TokenAwarePolicy` that wraps an application's own policy** treats every replica
+  as local: it used the distances of the policy it wraps.
+- **A mock of `ILoadBalancingPolicy`** no longer sets up `Distance`.
 
 ### `ExecuteAsync` returns `AsyncRowSet`
 

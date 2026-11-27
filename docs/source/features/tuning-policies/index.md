@@ -4,33 +4,64 @@
 
 The load balancing policy interface consists of these methods:
 
-- `Distance(Host)`: determines the distance to the specified host. The values are `HostDistance.Ignored`, `Local` and `Remote`.
 - `Pick(RoutingInfo, MetadataSnapshot)`: returns the node, and optionally its shard, to send a request to first. Each new request calls this method once.
-- `Fallback(RoutingInfo, MetadataSnapshot)`: returns the nodes, and optionally their shards, to try in order when the first target can't be used, for retries and speculative executions. The driver calls it at most once per request, only when the plan goes past the pick, and skips the node of `Pick`. It should return every node the request can use, including the one of `Pick`, because a wrapping policy such as `TokenAwarePolicy` can pick a replica instead and take the other nodes from the fallback only. A policy that rotates through nodes should use a separate rotation in each method, so that requests needing their fallback targets don't move the first target of the next requests.
+- `Fallback(RoutingInfo, MetadataSnapshot)`: returns the nodes, and optionally their shards, to try in order when the first target can't be used, for retries and speculative executions. The driver calls it at most once per request, only when the plan goes past the pick, and skips the node of `Pick`. It should return every node the request can use, including the one of `Pick`, because a wrapping policy, for instance a token aware one, can pick a replica instead and take the other nodes from the fallback only. A policy that rotates through nodes should use a separate rotation in each method, so that requests needing their fallback targets don't move the first target of the next requests.
+
+The policy doesn't decide which nodes the driver connects to: see [host distance](../connection-pooling/index.md#host-distance).
 
 For both methods, `RoutingInfo` describes the request: its keyspace, table, routing key, effective consistency levels and whether it should be routed as a lightweight transaction. `MetadataSnapshot` is an immutable view of the cluster metadata taken for the plan: the nodes of the cluster and the replicas of the request.
 
 The driver includes these implementations:
 
-- `DefaultLoadBalancingPolicy`
-- `DCAwareRoundRobinPolicy`
-- `RoundRobinPolicy`
-- `TokenAwarePolicy`
+- `DefaultLoadBalancingPolicy`, described below.
+- `TokenAwarePolicy`, `DCAwareRoundRobinPolicy` and `RoundRobinPolicy`, which are obsolete and will be removed in the next major version. The default policy has their behaviors as options: token awareness, a local datacenter, and no token awareness without a local datacenter.
 
 ### Default load-balancing policy
 
-The default load-balancing policy is the `DefaultLoadBalancingPolicy`. With a local datacenter, its behavior is the same as an instance of `TokenAwarePolicy` with `DCAwareRoundRobinPolicy` as a child policy: it yields local replicas for a given key and, if not available, nodes of the local datacenter in a round-robin manner.
+The default load-balancing policy is the `DefaultLoadBalancingPolicy`. Its options, `DefaultLoadBalancingPolicyOptions`, are:
 
-The `DCAwareRoundRobinPolicy` only uses the nodes of its **local datacenter**, which it requires, and the nodes whose datacenter is unknown, which it treats as local. Without a local datacenter, the default load-balancing policy wraps a `RoundRobinPolicy` instead: it treats every node as local and uses the nodes of every datacenter, and the driver logs a warning when it connects to a cluster with more than one datacenter. The driver doesn't infer the local datacenter. To set it for the default load-balancing policy you can do this:
+| Option | Default | Description |
+|---|---|---|
+| `LocalDatacenter` | none | The datacenter whose nodes are used first. Without one, every node is local. |
+| `LocalRack` | none | The rack, within the local datacenter, whose nodes are used first. It requires a local datacenter. |
+| `TokenAware` | `true` | Whether the plans start with the replicas of the request, when its routing key is known. |
+| `DatacenterFailover` | `false` | Whether the plans contain the nodes of the other datacenters: their replicas after the local replicas, and their other nodes after the local ones. Never for a request with a local consistency level, such as `LocalQuorum`, or for a lightweight transaction with the `LocalSerial` serial consistency level: another datacenter would break what they guarantee. |
+| `ShuffleReplicas` | `true` | Whether the replicas are tried from a random one, to spread the requests across them, or in the order of the cluster's replica set. |
+
+The query plan of a request contains, in this order:
+
+1. with token awareness and a known routing key, the replicas of the request: those of the local rack, then those of the local datacenter, then, with datacenter failover, those of the other datacenters;
+2. the other nodes in the same order, in a round-robin manner.
+
+A request routed as a lightweight transaction tries the nodes in the same order every time. Tablet replicas keep their shard. A node whose datacenter is unknown, because its peer row has none, is treated as local until the driver learns its datacenter.
+
+The driver doesn't infer the local datacenter. Without one, the policy uses the nodes of every datacenter, and the driver logs a warning when it connects to a cluster with more than one datacenter. It also warns when the local datacenter matches no node, or the local rack no node of the local datacenter. To set them for the default load-balancing policy you can do this:
 
 ```csharp
 Cluster.Builder()
        .AddContactPoint("127.0.0.1")
        .WithLocalDatacenter("datacenter1")
+       // or, with a local rack: .WithLocalDatacenter("datacenter1", "rack1")
        .Build();
 ```
 
-`WithLocalDatacenter()` only applies to the default policy, which the driver uses when no policy is configured. To configure the policy yourself, give it the local datacenter, for instance with `Policies.NewDefaultLoadBalancingPolicy("datacenter1")`.
+`WithLocalDatacenter()` only applies to the default policy, which the driver uses when no policy is configured. To configure the policy yourself, give it its options:
+
+```csharp
+var policy = new DefaultLoadBalancingPolicy(new DefaultLoadBalancingPolicyOptions
+{
+    LocalDatacenter = "datacenter1",
+    LocalRack = "rack1",
+    DatacenterFailover = true
+});
+
+Cluster.Builder()
+       .AddContactPoint("127.0.0.1")
+       .WithLoadBalancingPolicy(policy)
+       .Build();
+```
+
+`Policies.NewDefaultLoadBalancingPolicy("datacenter1")` creates the policy with a local datacenter and the default values of the other options.
 
 ## Reconnection policy
 

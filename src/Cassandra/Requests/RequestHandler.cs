@@ -489,7 +489,7 @@ namespace Cassandra.Requests
 
         /// <summary>
         /// Checks if the host is a valid candidate for the purpose of obtaining a connection.
-        /// This method obtains the <see cref="HostDistance"/> from the load balancing policy.
+        /// This method obtains the <see cref="HostDistance"/> from the cluster.
         /// </summary>
         /// <param name="target">Host to check, with the shard the query plan chose for it.</param>
         /// <param name="validHost">Output parameter that will contain the <see cref="ValidHost"/> instance.</param>

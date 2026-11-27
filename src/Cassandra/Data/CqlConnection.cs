@@ -144,7 +144,7 @@ namespace Cassandra.Data
         /// To be overridden in child classes to change the default <see cref="Builder"/> settings
         /// for building a <see cref="Cluster"/>.
         /// 
-        /// For example, some clients might want to specify the <see cref="DCAwareRoundRobinPolicy"/>
+        /// For example, some clients might want to specify the <see cref="DefaultLoadBalancingPolicy"/>
         /// when building the <see cref="Cluster"/> so that the clients could talk to only the hosts
         /// in specified datacenter for better performance.
         /// </summary>

@@ -262,7 +262,7 @@ namespace Cassandra.Tests.ExecutionProfiles
             {
                 ControlConnectionFactory = new FakeControlConnectionFactory(),
                 ConnectionFactory = new FakeConnectionFactory(() => connection),
-                Policies = new Cassandra.Policies(new RoundRobinPolicy(), new ConstantReconnectionPolicy(100), new DefaultRetryPolicy())
+                Policies = new Cassandra.Policies(TestHelper.RoundRobinPolicy(), new ConstantReconnectionPolicy(100), new DefaultRetryPolicy())
             };
             configBuilderAct(configBuilder);
             var config = configBuilder.Build();
@@ -383,11 +383,6 @@ namespace Cassandra.Tests.ExecutionProfiles
             };
 
             public long Count;
-
-            public HostDistance Distance(Host host)
-            {
-                return HostDistance.Local;
-            }
 
             public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot cluster)
             {

@@ -24,6 +24,8 @@ using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 using CollectionAssert = NUnit.Framework.CollectionAssert;
 
+#pragma warning disable CS0618 // Tests the obsolete load balancing policies until they're removed
+
 namespace Cassandra.Tests
 {
     /// <summary>
@@ -61,7 +63,7 @@ namespace Cassandra.Tests
             var policy = new RoundRobinPolicy();
 
             // The zero-token host is still a valid coordinator...
-            Assert.AreEqual(HostDistance.Local, policy.Distance(zeroToken));
+            Assert.AreEqual(HostDistance.Local, TestHelper.Distance(policy, zeroToken));
 
             // ...and still appears in the query plan alongside the normal host.
             var plan = policy.Plan(clusterMock.Object, null, new SimpleStatement()).Select(h => h.Host).ToList();
@@ -80,7 +82,7 @@ namespace Cassandra.Tests
 
             var policy = new DCAwareRoundRobinPolicy("dc1");
 
-            Assert.AreEqual(HostDistance.Local, policy.Distance(zeroToken));
+            Assert.AreEqual(HostDistance.Local, TestHelper.Distance(policy, zeroToken));
 
             var plan = policy.Plan(clusterMock.Object, null, new SimpleStatement()).Select(h => h.Host).ToList();
             CollectionAssert.Contains(plan, zeroToken);

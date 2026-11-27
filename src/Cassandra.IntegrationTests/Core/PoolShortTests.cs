@@ -31,6 +31,8 @@ using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 using Cassandra.Tests;
 
+#pragma warning disable CS0618 // Uses the obsolete load balancing policies until they're removed
+
 namespace Cassandra.IntegrationTests.Core
 {
     [TestFixture, Category(TestCategory.Short)]
@@ -606,10 +608,11 @@ namespace Cassandra.IntegrationTests.Core
             // The last host is marked as ignored once it's known: the driver gets the distance of the host of each
             // request
             Host ignored = null;
-            var lbp = new TestHelper.CustomLoadBalancingPolicy(
-                (metadata, routing) => metadata.Hosts,
-                host => host.Equals(Volatile.Read(ref ignored)) ? HostDistance.Ignored : HostDistance.Local);
-            var builder = ClusterBuilder().WithLoadBalancingPolicy(lbp);
+            var lbp = new TestHelper.CustomLoadBalancingPolicy((metadata, routing) => metadata.Hosts);
+            var builder = ClusterBuilder()
+                          .WithLoadBalancingPolicy(lbp)
+                          .WithHostDistance(
+                              host => host.Equals(Volatile.Read(ref ignored)) ? HostDistance.Ignored : null);
 
             using (var testCluster = SimulacronCluster.CreateNew(new SimulacronOptions { Nodes = "3" }))
             using (var cluster = builder.AddContactPoint(testCluster.InitialContactPoint).Build())

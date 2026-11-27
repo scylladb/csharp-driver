@@ -70,7 +70,7 @@ namespace Cassandra
 
         private readonly Metadata _metadata;
         private readonly IProtocolEventDebouncer _protocolEventDebouncer;
-        private IReadOnlyList<ILoadBalancingPolicy> _loadBalancingPolicies;
+        private readonly HostDistances _hostDistances;
 
         /// <inheritdoc />
         public event Action<Host> HostAdded;
@@ -199,6 +199,9 @@ namespace Cassandra
         private Cluster(IEnumerable<object> contactPoints, Configuration configuration)
         {
             Configuration = configuration;
+            _hostDistances = new HostDistances(
+                configuration.RequestOptions.Values.Select(options => options.LoadBalancingPolicy),
+                configuration.HostDistanceEvaluator);
             _metadata = new Metadata(configuration);
             var protocolVersion = _maxProtocolVersion;
             if (Configuration.ProtocolOptions.MaxProtocolVersionValue != null &&
@@ -260,8 +263,6 @@ namespace Cassandra
                         loadBalancingPolicies.Add(options.LoadBalancingPolicy);
                         speculativeExecutionPolicies.Add(options.SpeculativeExecutionPolicy);
                     }
-
-                    _loadBalancingPolicies = loadBalancingPolicies.ToList();
 
                     // Only abort the async operations when at least twice the time for ConnectTimeout per host passed
                     var initialAbortTimeout = Configuration.SocketOptions.ConnectTimeoutMillis * 2 * _metadata.Hosts.Count;
@@ -344,9 +345,9 @@ namespace Cassandra
 
         /// <summary>
         /// Returns the warnings for <paramref name="policies"/>: a default policy without a local datacenter while
-        /// the hosts are in more than one, which then uses the hosts of every datacenter, or a datacenter aware policy
-        /// whose local datacenter matches no host. Only the driver's own wrapper policies are looked into, up to
-        /// <see cref="LoadBalancingPolicyChain.MaxLength"/> policies deep.
+        /// the hosts are in more than one, which then uses the hosts of every datacenter, a policy whose local
+        /// datacenter matches no host, or whose local rack matches no host of its local datacenter. Only the driver's
+        /// own wrapper policies are looked into, up to <see cref="LoadBalancingPolicyChain.MaxLength"/> policies deep.
         /// </summary>
         internal static IEnumerable<string> LocalDatacenterWarnings(
             IEnumerable<Host> hosts, IEnumerable<ILoadBalancingPolicy> policies)
@@ -357,13 +358,18 @@ namespace Cassandra
             var available = datacenters.Count == 0 ? "none" : string.Join(", ", datacenters);
             var withoutLocalDc = false;
             var localDcs = new HashSet<string>();
+            var localRacks = new HashSet<PolicyLocation>();
             foreach (var policy in policies)
             {
                 var chain = LoadBalancingPolicyChain.Of(policy, out _);
-                var dcAware = LoadBalancingPolicyChain.FindDatacenterAware(chain);
-                if (dcAware != null)
+                var location = LoadBalancingPolicyChain.FindLocation(chain);
+                if (location != null)
                 {
-                    localDcs.Add(dcAware.LocalDc);
+                    localDcs.Add(location.Datacenter);
+                    if (location.Rack != null)
+                    {
+                        localRacks.Add(location);
+                    }
                 }
                 else if (chain.Any(p => p is DefaultLoadBalancingPolicy))
                 {
@@ -386,6 +392,21 @@ namespace Cassandra
                     : "so requests using it fail with a NoHostAvailableException";
                 yield return $"The local datacenter {localDc} of a load balancing policy doesn't match any node, " +
                              $"{consequence}. Available datacenters: {available}.";
+            }
+
+            foreach (var location in localRacks.Where(l => datacenters.Contains(l.Datacenter)))
+            {
+                var racks = hostList.Where(h => h.Datacenter == location.Datacenter && h.Rack != null)
+                                    .Select(h => h.Rack)
+                                    .Distinct()
+                                    .ToList();
+                if (!racks.Contains(location.Rack))
+                {
+                    var availableRacks = racks.Count == 0 ? "none" : string.Join(", ", racks);
+                    yield return $"The local rack {location.Rack} of a load balancing policy doesn't match any node " +
+                                 $"of its local datacenter {location.Datacenter}, so it uses the nodes of the " +
+                                 $"datacenter without a rack preference. Available racks: {availableRacks}.";
+                }
             }
         }
 
@@ -724,18 +745,7 @@ namespace Cassandra
         /// <inheritdoc />
         HostDistance IInternalCluster.RetrieveAndSetDistance(Host host)
         {
-            var distance = _loadBalancingPolicies[0].Distance(host);
-
-            for (var i = 1; i < _loadBalancingPolicies.Count; i++)
-            {
-                var lbp = _loadBalancingPolicies[i];
-                var lbpDistance = lbp.Distance(host);
-                if (lbpDistance < distance)
-                {
-                    distance = lbpDistance;
-                }
-            }
-
+            var distance = _hostDistances.Get(host);
             host.SetDistance(distance);
             return distance;
         }

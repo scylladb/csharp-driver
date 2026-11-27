@@ -2036,16 +2036,18 @@ namespace Cassandra.Tests.Connections.Control
             Action<TestConfigurationBuilder> configAct = builder =>
             {
                 builder.SocketOptions = new SocketOptions().SetConnectTimeoutMillis(100).SetReadTimeoutMillis(100);
+                var distances = new Dictionary<string, HostDistance>
+                {
+                    { "127.0.0.1", HostDistance.Local },
+                    { "127.0.0.2", HostDistance.Local },
+                    { "127.0.0.3", HostDistance.Ignored },
+                    { "127.0.0.4", HostDistance.Local }
+                };
                 builder.Policies = new Cassandra.Policies(
-                    new ClusterUnitTests.FakeHostDistanceLbp(new Dictionary<string, HostDistance>
-                    {
-                        { "127.0.0.1", HostDistance.Local },
-                        { "127.0.0.2", HostDistance.Local },
-                        { "127.0.0.3", HostDistance.Ignored },
-                        { "127.0.0.4", HostDistance.Local }
-                    }),
+                    new ClusterUnitTests.RandomOrderLbp(),
                     new ConstantReconnectionPolicy(1000),
                     new DefaultRetryPolicy());
+                builder.HostDistanceEvaluator = host => distances[host.Address.Address.ToString()];
                 var connFactory = new FakeConnectionFactory(endpoint =>
                 {
                     var connection = Mock.Of<IConnection>();
@@ -2097,7 +2099,8 @@ namespace Cassandra.Tests.Connections.Control
 
                 Mock.Get(cluster)
                     .Setup(c => c.RetrieveAndSetDistance(It.IsAny<Host>()))
-                    .Returns<Host>(h => config.Policies.LoadBalancingPolicy.Distance(h));
+                    .Returns<Host>(h => new HostDistances(
+                        new[] { config.Policies.LoadBalancingPolicy }, config.HostDistanceEvaluator).Get(h));
                 Mock.Get(cluster).Setup(c => c.AllHosts()).Returns(() => metadata.AllHosts());
                 Mock.Get(cluster).Setup(c => c.GetMetadataSnapshot()).Returns(() => metadata.GetSnapshot());
 
@@ -2153,7 +2156,8 @@ namespace Cassandra.Tests.Connections.Control
 
                         Mock.Get(cluster)
                             .Setup(c => c.RetrieveAndSetDistance(It.IsAny<Host>()))
-                            .Returns<Host>(h => config.Policies.LoadBalancingPolicy.Distance(h));
+                            .Returns<Host>(h => new HostDistances(
+                        new[] { config.Policies.LoadBalancingPolicy }, config.HostDistanceEvaluator).Get(h));
                         Mock.Get(cluster).Setup(c => c.AllHosts()).Returns(() => metadata.AllHosts());
                         Mock.Get(cluster).Setup(c => c.GetControlConnection()).Returns(cc);
 

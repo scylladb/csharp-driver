@@ -88,7 +88,7 @@ namespace Cassandra
         ///  query. <p> The routing key is optional in the sense that implementers are
         ///  free to return <c>null</c>. The routing key is an hint used for token
         ///  aware routing (see
-        ///  <link>TokenAwarePolicy</link>), and if
+        ///  <see cref="DefaultLoadBalancingPolicy"/>), and if
         ///  provided should correspond to the binary value for the query partition key.
         ///  However, not providing a routing key never causes a query to fail and if the
         ///  load balancing policy used is not token aware, then the routing key can be

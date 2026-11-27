@@ -222,6 +222,11 @@ namespace Cassandra
         /// </summary>
         internal IReadOnlyDictionary<string, IRequestOptions> RequestOptions { get; }
 
+        /// <summary>
+        /// The host distance evaluator set with <see cref="Builder.WithHostDistance"/>, if any.
+        /// </summary>
+        internal Func<Host, HostDistance?> HostDistanceEvaluator { get; set; }
+
         internal IRequestOptions DefaultRequestOptions => RequestOptions[Configuration.DefaultExecutionProfileName];
 
 

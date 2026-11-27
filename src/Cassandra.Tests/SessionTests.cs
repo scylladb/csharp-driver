@@ -161,7 +161,7 @@ namespace Cassandra.Tests
                         .SetCoreConnectionsPerHost(HostDistance.Local, 1)
                         .SetMaxConnectionsPerHost(HostDistance.Local, 1),
                     Policies = new Cassandra.Policies(
-                        new RoundRobinPolicy(), new ConstantReconnectionPolicy(60000), new DefaultRetryPolicy())
+                        TestHelper.RoundRobinPolicy(), new ConstantReconnectionPolicy(60000), new DefaultRetryPolicy())
                 }.Build();
                 using var timer = config.Timer;
                 using var connectionLifetime = connection.Object;
@@ -469,7 +469,7 @@ namespace Cassandra.Tests
             var config = new TestConfigurationBuilder
             {
                 Policies = new Cassandra.Policies(
-                    new RoundRobinPolicy(),
+                    TestHelper.RoundRobinPolicy(),
                     new ConstantReconnectionPolicy(100),
                     new DefaultRetryPolicy()),
                 SessionFactory = sessionFactoryMock,

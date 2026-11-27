@@ -116,9 +116,11 @@ namespace Cassandra.Tests
 
         public TypeSerializerDefinitions TypeSerializerDefinitions { get; set; } = new TypeSerializerDefinitions();
 
+        public Func<Host, HostDistance?> HostDistanceEvaluator { get; set; }
+
         public Configuration Build()
         {
-            return new Configuration(
+            var config = new Configuration(
                 Policies,
                 ProtocolOptions,
                 PoolingOptions,
@@ -160,6 +162,8 @@ namespace Cassandra.Tests
                 ServerEventsSubscriber,
                 RequestTracker,
                 driverConfigReportingEnabled: DriverConfigReportingEnabled);
+            config.HostDistanceEvaluator = HostDistanceEvaluator;
+            return config;
         }
     }
 }

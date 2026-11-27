@@ -24,11 +24,10 @@ namespace Cassandra
     public class Policies
     {
         /// <summary>
-        /// The default load balancing policy, without a local datacenter: a
-        /// <see cref="Cassandra.DefaultLoadBalancingPolicy"/> wrapping a <see cref="TokenAwarePolicy"/> with a
-        /// <see cref="RoundRobinPolicy"/> as child policy, so every node is local and the query plans use the nodes of
-        /// every datacenter. To only use the nodes of one, use <see cref="NewDefaultLoadBalancingPolicy"/>, or
-        /// <see cref="Builder.WithLocalDatacenter"/>.
+        /// The default load balancing policy: a token aware <see cref="Cassandra.DefaultLoadBalancingPolicy"/> without
+        /// a local datacenter, so every node is local and the query plans use the nodes of every datacenter. To only
+        /// use the nodes of one, use <see cref="NewDefaultLoadBalancingPolicy"/>, or
+        /// <see cref="Builder.WithLocalDatacenter(string)"/>.
         /// </summary>
         public static ILoadBalancingPolicy DefaultLoadBalancingPolicy =>
             new DefaultLoadBalancingPolicy((string)null);
@@ -36,10 +35,8 @@ namespace Cassandra
         /// <summary>
         /// Creates a new instance of the default load balancing policy with the provided local datacenter, whose query
         /// plans only use the nodes of that datacenter and the nodes whose datacenter is unknown: a
-        /// <see cref="Cassandra.DefaultLoadBalancingPolicy"/> wrapping a <see cref="TokenAwarePolicy"/> with a
-        /// <see cref="DCAwareRoundRobinPolicy"/> as child policy. With a null
-        /// or empty local datacenter, it wraps a <see cref="RoundRobinPolicy"/> instead, as
-        /// <see cref="DefaultLoadBalancingPolicy"/> does.
+        /// token aware <see cref="Cassandra.DefaultLoadBalancingPolicy"/> with that local datacenter. With a null
+        /// or empty local datacenter, it has none, as <see cref="DefaultLoadBalancingPolicy"/>.
         /// </summary>
         public static ILoadBalancingPolicy NewDefaultLoadBalancingPolicy(string localDc)
         {

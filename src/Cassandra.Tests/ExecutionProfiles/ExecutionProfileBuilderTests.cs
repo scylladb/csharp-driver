@@ -18,6 +18,8 @@ using Cassandra.ExecutionProfiles;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 
+#pragma warning disable CS0618 // Tests the obsolete load balancing policies until they're removed
+
 namespace Cassandra.Tests.ExecutionProfiles
 {
     [TestFixture]

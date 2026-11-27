@@ -17,8 +17,8 @@
 namespace Cassandra
 {
     /// <summary>
-    /// The distance to a Cassandra node as assigned by a <see cref="ILoadBalancingPolicy"/> relative to the
-    /// <see cref="ICluster"/> instance.
+    /// The distance to a Cassandra node, which the driver derives from the local datacenters of the load balancing
+    /// policies, or which the evaluator set with <see cref="Builder.WithHostDistance"/> returns.
     /// <para>
     /// The distance assigned to a host influences how many connections the driver maintains towards this host.
     /// </para>

@@ -35,6 +35,8 @@ using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 
+#pragma warning disable CS0618 // Tests the obsolete load balancing policies until they're removed
+
 namespace Cassandra.Tests.Requests
 {
     [TestFixture]
@@ -771,6 +773,67 @@ namespace Cassandra.Tests.Requests
         }
 
         [Test]
+        public void Should_ReportTheOptionsOfADefaultLoadBalancingPolicy()
+        {
+            var report = DriverConfigReporterTests.BuildReport(DriverConfigReporterTests.WithPolicies(
+                loadBalancingPolicy: new DefaultLoadBalancingPolicy(new DefaultLoadBalancingPolicyOptions
+                {
+                    LocalDatacenter = "dc3",
+                    LocalRack = "rack2",
+                    DatacenterFailover = true,
+                    ShuffleReplicas = false
+                })));
+
+            var loadBalancing = report["query"]["load-balancing"];
+            Assert.AreEqual("token-aware", loadBalancing["policy"]["type"].Value<string>());
+            Assert.AreEqual("replica-set", loadBalancing["policy"]["load-distribution"].Value<string>());
+            Assert.IsTrue(loadBalancing["policy"]["fallback-to-non-preferred-nodes"].Value<bool>());
+            Assert.AreEqual("rack", loadBalancing["node-preference"]["type"].Value<string>());
+            Assert.AreEqual("dc3", loadBalancing["node-preference"]["local-dc"].Value<string>());
+            Assert.AreEqual("rack2", loadBalancing["node-preference"]["local-rack"].Value<string>());
+            DriverConfigReporterTests.AssertConformsToSchema(report);
+        }
+
+        [Test]
+        public void Should_ReportAFallback_When_ADefaultLoadBalancingPolicyPrefersARack()
+        {
+            // The plans go on to the other racks of the local datacenter
+            var report = DriverConfigReporterTests.BuildReport(DriverConfigReporterTests.WithPolicies(
+                loadBalancingPolicy: new DefaultLoadBalancingPolicy(
+                    new DefaultLoadBalancingPolicyOptions { LocalDatacenter = "dc1", LocalRack = "rack1" })));
+
+            var policy = report["query"]["load-balancing"]["policy"];
+            Assert.IsTrue(policy["fallback-to-non-preferred-nodes"].Value<bool>());
+            DriverConfigReporterTests.AssertConformsToSchema(report);
+        }
+
+        [Test]
+        public void Should_ReportTokenAware_When_ATokenAwarePolicyWrapsADefaultLoadBalancingPolicy()
+        {
+            var report = DriverConfigReporterTests.BuildReport(DriverConfigReporterTests.WithPolicies(
+                loadBalancingPolicy: new TokenAwarePolicy(new DefaultLoadBalancingPolicy("dc1"))));
+
+            var loadBalancing = report["query"]["load-balancing"];
+            Assert.AreEqual("token-aware", loadBalancing["policy"]["type"].Value<string>());
+            Assert.AreEqual("dc1", loadBalancing["node-preference"]["local-dc"].Value<string>());
+            DriverConfigReporterTests.AssertConformsToSchema(report);
+        }
+
+        [Test]
+        public void Should_ReportNoFallback_When_ADefaultLoadBalancingPolicyWithoutLocalDcFailsOver()
+        {
+            // Without a local datacenter every node is preferred, so there is no node to fall back to
+            var report = DriverConfigReporterTests.BuildReport(DriverConfigReporterTests.WithPolicies(
+                loadBalancingPolicy: new DefaultLoadBalancingPolicy(
+                    new DefaultLoadBalancingPolicyOptions { DatacenterFailover = true })));
+
+            var policy = report["query"]["load-balancing"]["policy"];
+            Assert.AreEqual("shuffle", policy["load-distribution"].Value<string>());
+            Assert.IsFalse(policy["fallback-to-non-preferred-nodes"].Value<bool>());
+            DriverConfigReporterTests.AssertConformsToSchema(report);
+        }
+
+        [Test]
         [TestCase(null)]
         [TestCase("")]
         public void Should_ReportNoDatacenterPreference_When_NoDatacenterIsConfigured(string localDc)
@@ -803,6 +866,11 @@ namespace Cassandra.Tests.Requests
         {
             yield return new object[] { new RoundRobinPolicy(), "RoundRobinPolicy" };
             yield return new object[] { new DCAwareRoundRobinPolicy("dc1"), "DCAwareRoundRobinPolicy" };
+            yield return new object[]
+            {
+                new DefaultLoadBalancingPolicy(new DefaultLoadBalancingPolicyOptions { TokenAware = false }),
+                "DefaultLoadBalancingPolicy"
+            };
         }
 
         [Test]
@@ -1276,11 +1344,6 @@ namespace Cassandra.Tests.Requests
 
         private class FakeLoadBalancingPolicy : ILoadBalancingPolicy
         {
-            public HostDistance Distance(Host host)
-            {
-                return HostDistance.Local;
-            }
-
             public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot cluster)
             {
                 foreach (var target in Fallback(routing, cluster))

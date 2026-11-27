@@ -13,6 +13,29 @@ The default amount of connections per host is:
 - Local datacenter: one core connection per host, with two connections as maximum if the simultaneous requests threshold is reached.
 - Remote datacenter: one core connection per host (being one also max).
 
+## Host distance
+
+The distance of a node decides whether the driver connects to it, and the size of its pool:
+
+- `Local`: the driver opens the node's pool when a session connects, with pool warmup (`PoolingOptions.SetWarmup()`), which is on by default, or else when a request is first routed to the node.
+- `Remote`: the driver opens it when a request is first routed to the node, for instance with datacenter failover.
+- `Ignored`: the driver never connects to the node, and skips it in query plans.
+
+A node is `Local` when it's in the local datacenter of a load balancing policy, or its datacenter is unknown, or when a policy has no local datacenter, which an application's own policy doesn't. The policies of every execution profile count. The other nodes are `Remote`.
+
+To decide the distance of some nodes yourself, set an evaluator with `Builder.WithHostDistance()`. It returns the distance of a node, or null to keep the one the driver derives:
+
+```csharp
+Cluster.Builder()
+       .AddContactPoint("127.0.0.1")
+       .WithLocalDatacenter("dc1")
+       // Never connect to the nodes of dc3
+       .WithHostDistance(host => host.Datacenter == "dc3" ? HostDistance.Ignored : null)
+       .Build();
+```
+
+The driver calls the evaluator for every node of every query plan, so it should be fast. It can return a different distance over time: the driver then opens or closes the node's pool.
+
 ## Simultaneous requests per connection
 
 The driver limits the amount of concurrent requests per connection to `2048`.

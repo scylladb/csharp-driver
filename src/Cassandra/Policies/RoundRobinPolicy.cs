@@ -14,6 +14,7 @@
 //   limitations under the License.
 //
 
+using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -34,6 +35,9 @@ namespace Cassandra
     ///  <see cref="DCAwareRoundRobinPolicy"/> load balancing policy instead.
     /// </para>
     /// </summary>
+    [Obsolete("Use DefaultLoadBalancingPolicy without a local datacenter, and with DefaultLoadBalancingPolicyOptions." +
+              "TokenAware set to false to leave out token awareness. RoundRobinPolicy will be removed in the next " +
+              "major version.")]
     public class RoundRobinPolicy : ILoadBalancingPolicy
     {
         // Separate rotations: requests that need their fallback targets don't move the first target of the next
@@ -46,19 +50,6 @@ namespace Cassandra
         // and its entry goes away with it, so a policy shared by several clusters keeps a list for each
         private readonly ConditionalWeakTable<IReadOnlyCollection<Host>, Host[]> _hosts =
             new ConditionalWeakTable<IReadOnlyCollection<Host>, Host[]>();
-
-        /// <summary>
-        ///  Return the HostDistance for the provided host. <p> This policy consider all
-        ///  nodes as local. This is generally the right thing to do in a single
-        ///  datacenter deployment. If you use multiple datacenter, see
-        ///  <link>DCAwareRoundRobinPolicy</link> instead.</p>
-        /// </summary>
-        /// <param name="host"> the host of which to return the distance of. </param>
-        /// <returns>the HostDistance to <c>host</c>.</returns>
-        public HostDistance Distance(Host host)
-        {
-            return HostDistance.Local;
-        }
 
         /// <summary>
         ///  Returns the next host of the cluster in a round-robin fashion, or the first one when the request should

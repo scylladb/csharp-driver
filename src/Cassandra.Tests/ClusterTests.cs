@@ -120,118 +120,54 @@ namespace Cassandra.Tests
             }
         }
 
-        static object[] _hostDistanceTestData = new object[]
+        [Test]
+        public void Connect_Should_Give_The_Hosts_The_Distances_Of_The_Host_Distance_Evaluator()
         {
-            // Test Case 1
-            new object[]
+            // The fake control connection's nodes are in dc1
+            var distances = new Dictionary<string, HostDistance?>
             {
-                // LBP data
-                new []
-                {
-                    new Dictionary<string, HostDistance>
-                    {
-                        { "127.0.0.1", HostDistance.Ignored },
-                        { "127.0.0.2", HostDistance.Local },
-                        { "127.0.0.3", HostDistance.Ignored }
-                    },
-
-                    new Dictionary<string, HostDistance>
-                    {
-                        { "127.0.0.1", HostDistance.Local },
-                        { "127.0.0.2", HostDistance.Local },
-                        { "127.0.0.3", HostDistance.Remote }
-                    },
-
-                    new Dictionary<string, HostDistance>
-                    {
-                        { "127.0.0.1", HostDistance.Remote },
-                        { "127.0.0.2", HostDistance.Ignored },
-                        { "127.0.0.3", HostDistance.Local }
-                    }
-                },
-
-                // Expected result
-                new Dictionary<string, HostDistance>
-                {
-                    { "127.0.0.1", HostDistance.Local },
-                    { "127.0.0.2", HostDistance.Local },
-                    { "127.0.0.3", HostDistance.Local }
-                }
-            },
-
-            // Test Case 2
-            new object[]
-            {
-                // LBP data
-                new []
-                {
-                    new Dictionary<string, HostDistance>
-                    {
-                        { "127.0.0.1", HostDistance.Ignored },
-                        { "127.0.0.2", HostDistance.Remote },
-                        { "127.0.0.3", HostDistance.Remote }
-                    },
-
-                    new Dictionary<string, HostDistance>
-                    {
-                        { "127.0.0.1", HostDistance.Ignored },
-                        { "127.0.0.2", HostDistance.Ignored },
-                        { "127.0.0.3", HostDistance.Remote }
-                    },
-
-                    new Dictionary<string, HostDistance>
-                    {
-                        { "127.0.0.1", HostDistance.Ignored },
-                        { "127.0.0.2", HostDistance.Ignored },
-                        { "127.0.0.3", HostDistance.Local }
-                    }
-                },
-                // Expected result
-                new Dictionary<string, HostDistance>
-                {
-                    { "127.0.0.1", HostDistance.Ignored },
-                    { "127.0.0.2", HostDistance.Remote },
-                    { "127.0.0.3", HostDistance.Local }
-                }
-            }
-        };
-
-        [Test, TestCaseSource(nameof(ClusterUnitTests._hostDistanceTestData))]
-        public void Should_OnlyDisposePoliciesOnce_When_NoProfileIsProvided(
-            Dictionary<string, HostDistance>[] lbpData, Dictionary<string, HostDistance> expected)
-        {
-            var lbps = lbpData.Select(lbp => new FakeHostDistanceLbp(lbp)).ToList();
-            var testConfig = new TestConfigurationBuilder()
+                { "127.0.0.1", null },
+                { "127.0.0.2", HostDistance.Ignored },
+                { "127.0.0.3", HostDistance.Remote }
+            };
+            var testConfig = new TestConfigurationBuilder
             {
                 ControlConnectionFactory = new FakeControlConnectionFactory(),
                 ConnectionFactory = new FakeConnectionFactory(),
                 Policies = new Cassandra.Policies(
-                    lbps[0],
+                    new DefaultLoadBalancingPolicy("dc2"),
                     new ConstantReconnectionPolicy(50),
                     new DefaultRetryPolicy(),
                     NoSpeculativeExecutionPolicy.Instance,
                     new AtomicMonotonicTimestampGenerator(),
                     null),
-                ExecutionProfiles = lbps.Skip(1).Select(
-                    (lbp, idx) => new
+                ExecutionProfiles = new Dictionary<string, IExecutionProfile>
+                {
                     {
-                        idx,
-                        a = new ExecutionProfile(null, null, null, lbp, null, null)
-                            as IExecutionProfile
-                    }).ToDictionary(obj => obj.idx.ToString(), obj => obj.a)
+                        "profile",
+                        new ExecutionProfile(null, null, null, new DefaultLoadBalancingPolicy("dc1"), null, null)
+                    }
+                },
+                HostDistanceEvaluator = host => distances[host.Address.Address.ToString()]
             }.Build();
             var initializerMock = Mock.Of<IInitializer>();
             Mock.Get(initializerMock)
                 .Setup(i => i.ContactPoints)
-                .Returns(lbpData.SelectMany(dict => dict.Keys).Distinct().Select(addr => new IPEndPoint(IPAddress.Parse(addr), 9042)).ToList);
+                .Returns(distances.Keys.Select(address => new IPEndPoint(IPAddress.Parse(address), 9042)).ToList);
             Mock.Get(initializerMock)
                 .Setup(i => i.GetConfiguration())
                 .Returns(testConfig);
 
-            var cluster = Cluster.BuildFrom(initializerMock, new List<string>(), testConfig);
+            using var cluster = Cluster.BuildFrom(initializerMock, new List<string>(), testConfig);
             cluster.Connect();
-            cluster.Dispose();
 
+            // The profile's local datacenter makes the node the evaluator keeps the distance of local
+            var expected = new Dictionary<string, HostDistance>
+            {
+                { "127.0.0.1", HostDistance.Local },
+                { "127.0.0.2", HostDistance.Ignored },
+                { "127.0.0.3", HostDistance.Remote }
+            };
             foreach (var h in cluster.AllHosts())
             {
                 Assert.AreEqual(expected[h.Address.Address.ToString()], h.GetDistanceUnsafe());
@@ -272,20 +208,11 @@ namespace Cassandra.Tests
             Assert.AreEqual(0, cluster.InternalRef.GetConnectedSessions().Count());
         }
 
-        internal class FakeHostDistanceLbp : ILoadBalancingPolicy
+        /// <summary>
+        /// A policy that tries every host in a random order.
+        /// </summary>
+        internal class RandomOrderLbp : ILoadBalancingPolicy
         {
-            private readonly IDictionary<string, HostDistance> _distances;
-
-            public FakeHostDistanceLbp(IDictionary<string, HostDistance> distances)
-            {
-                _distances = distances;
-            }
-
-            public HostDistance Distance(Host host)
-            {
-                return _distances[host.Address.Address.ToString()];
-            }
-
             public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot cluster)
             {
                 foreach (var target in Fallback(routing, cluster))
@@ -300,7 +227,6 @@ namespace Cassandra.Tests
             {
                 return cluster.Hosts
                     .OrderBy(h => Guid.NewGuid().GetHashCode())
-                    .Take(_distances.Count)
                     .Select(h => new RoutingTarget(h, null));
             }
         }

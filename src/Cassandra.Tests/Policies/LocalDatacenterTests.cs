@@ -25,6 +25,8 @@ using Moq;
 using NUnit.Framework;
 using Assert = NUnit.Framework.Legacy.ClassicAssert;
 
+#pragma warning disable CS0618 // Tests the obsolete load balancing policies until they're removed
+
 namespace Cassandra.Tests.Policies
 {
     [TestFixture]
@@ -79,6 +81,39 @@ namespace Cassandra.Tests.Policies
             Assert.IsTrue(warnings[0].Contains("dc3"), warnings[0]);
             Assert.IsTrue(warnings[0].Contains("doesn't match any node"), warnings[0]);
             Assert.IsTrue(warnings[0].Contains("NoHostAvailableException"), warnings[0]);
+        }
+
+        [Test]
+        public void Should_Warn_When_The_Local_Rack_Matches_No_Node_Of_The_Local_Datacenter()
+        {
+            // rack2 exists, but only in dc2
+            var hosts = new[]
+            {
+                TestHelper.CreateHost("127.0.0.1", "dc1", "rack1"),
+                TestHelper.CreateHost("127.0.0.2", "dc2", "rack2")
+            };
+            var policy = new DefaultLoadBalancingPolicy(
+                new DefaultLoadBalancingPolicyOptions { LocalDatacenter = "dc1", LocalRack = "rack2" });
+
+            var warnings = Cluster.LocalDatacenterWarnings(hosts, new ILoadBalancingPolicy[] { policy }).ToList();
+
+            Assert.AreEqual(1, warnings.Count, string.Join("\n", warnings));
+            Assert.IsTrue(warnings[0].Contains("The local rack rack2"), warnings[0]);
+            Assert.IsTrue(warnings[0].Contains("Available racks: rack1."), warnings[0]);
+        }
+
+        [Test]
+        public void Should_Not_Warn_When_The_Local_Rack_Matches_A_Node()
+        {
+            var hosts = new[]
+            {
+                TestHelper.CreateHost("127.0.0.1", "dc1", "rack1"),
+                TestHelper.CreateHost("127.0.0.2", "dc1", "rack2")
+            };
+            var policy = new DefaultLoadBalancingPolicy(
+                new DefaultLoadBalancingPolicyOptions { LocalDatacenter = "dc1", LocalRack = "rack2" });
+
+            CollectionAssert.IsEmpty(Cluster.LocalDatacenterWarnings(hosts, new ILoadBalancingPolicy[] { policy }));
         }
 
         [Test]
@@ -185,7 +220,7 @@ namespace Cassandra.Tests.Policies
                                 .GetConfiguration().Policies.LoadBalancingPolicy;
 
             Assert.IsInstanceOf<DefaultLoadBalancingPolicy>(policy);
-            Assert.AreEqual("dc1", LoadBalancingPolicyChain.FindDatacenterAware(policy).LocalDc);
+            Assert.AreEqual("dc1", LoadBalancingPolicyChain.FindLocation(policy).Datacenter);
         }
 
         [Test]
@@ -194,7 +229,7 @@ namespace Cassandra.Tests.Policies
             var policy = Cluster.Builder().AddContactPoint("127.0.0.1").GetConfiguration().Policies.LoadBalancingPolicy;
 
             Assert.IsInstanceOf<DefaultLoadBalancingPolicy>(policy);
-            Assert.IsNull(LoadBalancingPolicyChain.FindDatacenterAware(policy));
+            Assert.IsNull(LoadBalancingPolicyChain.FindLocation(policy));
         }
 
         [Test]
@@ -235,6 +270,38 @@ namespace Cassandra.Tests.Policies
                 Cluster.Builder().AddContactPoint("127.0.0.1").WithLocalDatacenter("dc1").GetConfiguration());
 
             Assert.IsFalse(warnings.Any(w => w.Contains("Builder.WithLocalDatacenter")), string.Join("\n", warnings));
+        }
+
+        [Test]
+        public void WithLocalDatacenter_Should_Set_The_Local_Rack_Of_The_Default_Policy()
+        {
+            var policy = Cluster.Builder().AddContactPoint("127.0.0.1").WithLocalDatacenter("dc1", "rack1")
+                                .GetConfiguration().Policies.LoadBalancingPolicy;
+
+            Assert.AreEqual(new PolicyLocation("dc1", "rack1"), LoadBalancingPolicyChain.FindLocation(policy));
+        }
+
+        [Test]
+        public void WithLocalDatacenter_Should_Clear_The_Local_Rack_Without_One()
+        {
+            var policy = Cluster.Builder().AddContactPoint("127.0.0.1").WithLocalDatacenter("dc1", "rack1")
+                                .WithLocalDatacenter("dc2")
+                                .GetConfiguration().Policies.LoadBalancingPolicy;
+
+            Assert.AreEqual(new PolicyLocation("dc2", null), LoadBalancingPolicyChain.FindLocation(policy));
+        }
+
+        [TestCase(null)]
+        [TestCase("")]
+        public void WithLocalDatacenter_Should_Reject_A_Missing_Rack(string localRack)
+        {
+            var builder = Cluster.Builder().AddContactPoint("127.0.0.1");
+
+            var ex = Assert.Throws<ArgumentException>(() => builder.WithLocalDatacenter("dc1", localRack));
+
+            Assert.AreEqual("localRack", ex.ParamName);
+            var policy = builder.GetConfiguration().Policies.LoadBalancingPolicy;
+            Assert.IsNull(LoadBalancingPolicyChain.FindLocation(policy));
         }
 
         [Test]

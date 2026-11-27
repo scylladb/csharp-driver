@@ -378,11 +378,6 @@ namespace Cassandra.IntegrationTests.Core
                 _disallowed = disallowed;
             }
 
-            public HostDistance Distance(Host host)
-            {
-                return _parent.Distance(host);
-            }
-
             public RoutingTarget? Pick(RoutingInfo routing, MetadataSnapshot cluster)
             {
                 foreach (var target in Fallback(routing, cluster))
