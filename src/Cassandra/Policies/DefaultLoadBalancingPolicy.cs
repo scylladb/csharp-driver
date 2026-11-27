@@ -81,5 +81,21 @@ namespace Cassandra
         {
             return ChildPolicy.Fallback(routing, metadata);
         }
+
+        /// <summary>
+        /// Passes the outcome of the attempt on to the child policy.
+        /// </summary>
+        public void OnNodeSuccess(RoutingInfo routing, Host host, TimeSpan latency)
+        {
+            ChildPolicy.OnNodeSuccess(routing, host, latency);
+        }
+
+        /// <summary>
+        /// Passes the outcome of the attempt on to the child policy.
+        /// </summary>
+        public void OnNodeError(RoutingInfo routing, Host host, TimeSpan latency, Exception error)
+        {
+            ChildPolicy.OnNodeError(routing, host, latency, error);
+        }
     }
 }

@@ -2,13 +2,27 @@
 
 ## Load-balancing policy
 
-The load balancing policy interface consists of these methods:
+The load balancing policy interface consists of these required methods:
 
 - `Distance(Host)`: determines the distance to the specified host. The values are `HostDistance.Ignored`, `Local` and `Remote`.
 - `Pick(RoutingInfo, MetadataSnapshot)`: returns the node, and optionally its shard, to send a request to first. Each new request calls this method once.
 - `Fallback(RoutingInfo, MetadataSnapshot)`: returns the nodes, and optionally their shards, to try in order when the first target can't be used, for retries and speculative executions. The driver calls it at most once per request, only when the plan goes past the pick, and skips the node of `Pick`. It should return every node the request can use, including the one of `Pick`, because a wrapping policy such as `TokenAwarePolicy` can pick a replica instead and take the other nodes from the fallback only. A policy that rotates through nodes should use a separate rotation in each method, so that requests needing their fallback targets don't move the first target of the next requests.
 
 For both methods, `RoutingInfo` describes the request: its keyspace, table, routing key, effective consistency levels and whether it should be routed as a lightweight transaction. `MetadataSnapshot` is an immutable view of the cluster metadata taken for the plan: the nodes of the cluster and the replicas of the request.
+
+Two more methods have empty default implementations, so a policy implements them only to use the outcome of each attempt, for instance to prefer the nodes that answer faster or to avoid the nodes that keep failing:
+
+- `OnNodeSuccess(RoutingInfo, Host, TimeSpan)`: a node answered an attempt, after the given latency.
+- `OnNodeError(RoutingInfo, Host, TimeSpan, Exception)`: an attempt to a node failed: the node returned an error or a response the driver can't read as a result, the attempt timed out, or its connection failed.
+
+The driver calls them once per attempt, including retries and speculative executions, with these exceptions:
+
+- an attempt still running when the request completes or is cancelled isn't reported;
+- an attempt that failed before it was written is only reported when its connection failed: a failure to serialize the request or to switch the keyspace of the connection, even when the switch timed out, or a timeout that expired while the request waited to be written behind others on the connection, says nothing about the node;
+- a node that the driver can't get a connection to isn't reported, since no attempt is sent to it;
+- the preparations that `ISession.PrepareAsync()` sends aren't reported.
+
+They can be called concurrently, so they must be thread-safe and return quickly. An exception they throw is logged and doesn't affect the request. `TokenAwarePolicy` and `DefaultLoadBalancingPolicy` pass them on to their child policy, and a policy that wraps another one should do the same, since the default implementations drop them.
 
 The driver includes these implementations:
 

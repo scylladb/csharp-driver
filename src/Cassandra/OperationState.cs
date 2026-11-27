@@ -203,13 +203,22 @@ namespace Cassandra
             {
                 return false;
             }
+
+            // The read timeout starts when the request is queued, so it can expire before the connection's writer claims
+            // the operation. Withdrawing it, atomically with the writer's claim, tells whether the writer claimed it:
+            // once claimed, the frame is serialized and sent without waiting.
+            // A caller cancelling with TryCancelUnwritten may have withdrawn it already: only a claim counts
+            var written = Interlocked.CompareExchange(ref _writeState, WriteStateWithdrawn, WriteStateQueued)
+                          == WriteStateWriting;
+
             //When the data is received, invoke on receive callback
             var callback = Interlocked.Exchange(ref _callback, (_, __, ___) => onReceive());
 
             Thread.MemoryBarrier();
 
             _timeoutCallbackSet = true;
-            Task.Run(() => callback(RequestError.CreateClientError(ex, false), null, timestamp), CancellationToken.None);
+            Task.Run(
+                () => callback(RequestError.CreateTimeoutError(ex, written), null, timestamp), CancellationToken.None);
             return true;
         }
 

@@ -39,6 +39,12 @@ namespace Cassandra.Requests
         IStatement Statement { get; }
 
         /// <summary>
+        /// Gets the routing information the query plan of the request is built with. The load balancing policy
+        /// receives the same instance with the outcome of each attempt.
+        /// </summary>
+        RoutingInfo Routing { get; }
+
+        /// <summary>
         /// Marks this instance as completed (if not already) and sets the exception or result
         /// </summary>
         Task<bool> SetCompletedAsync(Exception ex, RowSet result = null);
@@ -105,5 +111,10 @@ namespace Cassandra.Requests
         bool OnNewNodeExecution(NodeRequestInfo nodeRequestInfo);
 
         bool SetNodeExecutionCompleted(Guid executionId);
+
+        /// <summary>
+        /// Returns whether the node execution is registered and hasn't completed yet.
+        /// </summary>
+        bool IsNodeExecutionRunning(Guid executionId);
     }
 }

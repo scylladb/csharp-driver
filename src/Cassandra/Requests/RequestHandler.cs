@@ -20,6 +20,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -59,9 +60,21 @@ namespace Cassandra.Requests
         public IStatement Statement { get; }
         public IRequestOptions RequestOptions { get; }
 
+        /// <inheritdoc />
+        /// <remarks>
+        /// Built on first use, by the query plan or by the first outcome reported to the load balancing policy, so the
+        /// statement is not read when the request handler is created. It uses the session keyspace the request was
+        /// created with, which the request is sent with, rather than the current one.
+        /// </remarks>
+        public RoutingInfo Routing =>
+            LazyInitializer.EnsureInitialized(
+                ref _routing,
+                () => RoutingInfo.ForStatement(Statement, _sessionRequestInfo.SessionKeyspace, RequestOptions));
+
         private readonly Dictionary<Guid, NodeRequestInfo> _nodeExecutions = new Dictionary<Guid, NodeRequestInfo>(1);
         private readonly Lock _nodeExecutionLock = new Lock();
         private bool _nodeExecutionsCleared = false;
+        private RoutingInfo _routing;
 
         /// <summary>
         /// Creates a new instance using a request, the statement and the execution profile.
@@ -85,7 +98,7 @@ namespace Cassandra.Requests
                 RetryPolicy = sessionRequestInfo.Statement.RetryPolicy.Wrap(RetryPolicy);
             }
 
-            _queryPlan = RequestHandler.GetQueryPlan(session, sessionRequestInfo.Statement, RequestOptions.LoadBalancingPolicy, RequestOptions).GetEnumerator();
+            _queryPlan = GetQueryPlan().GetEnumerator();
         }
 
         /// <summary>
@@ -110,17 +123,17 @@ namespace Cassandra.Requests
         /// In the special case when a Host is provided at Statement level, it will return a query plan with a single
         /// host.
         /// </summary>
-        private static IEnumerable<RoutingTarget> GetQueryPlan(ISession session, IStatement statement, ILoadBalancingPolicy lbp, IRequestOptions requestOptions)
+        private IEnumerable<RoutingTarget> GetQueryPlan()
         {
             // Single host iteration
-            var host = (statement as Statement)?.Host;
+            var host = (Statement as Statement)?.Host;
 
             if (host != null)
             {
                 return Enumerable.Repeat(new RoutingTarget(host, null), 1);
             }
 
-            return GetPolicyQueryPlan(session, statement, lbp, requestOptions);
+            return GetPolicyQueryPlan();
         }
 
         /// <summary>
@@ -128,10 +141,10 @@ namespace Cassandra.Requests
         /// routing key, is only read when the first host is requested, under the error handling of the request
         /// execution.
         /// </summary>
-        private static IEnumerable<RoutingTarget> GetPolicyQueryPlan(ISession session, IStatement statement, ILoadBalancingPolicy lbp, IRequestOptions requestOptions)
+        private IEnumerable<RoutingTarget> GetPolicyQueryPlan()
         {
-            var routing = RoutingInfo.ForStatement(statement, session.Keyspace, requestOptions);
-            foreach (var target in QueryPlan.Create(lbp, routing, MetadataSnapshot.Of(session.Cluster)))
+            foreach (var target in QueryPlan.Create(
+                         RequestOptions.LoadBalancingPolicy, Routing, MetadataSnapshot.Of(_session.Cluster)))
             {
                 yield return target;
             }
@@ -175,6 +188,15 @@ namespace Cassandra.Requests
             }
 
             return false;
+        }
+
+        /// <inheritdoc />
+        public bool IsNodeExecutionRunning(Guid executionId)
+        {
+            lock (_nodeExecutionLock)
+            {
+                return _nodeExecutions.ContainsKey(executionId);
+            }
         }
 
         /// <summary>
@@ -258,7 +280,7 @@ namespace Cassandra.Requests
 
             if (ex != null)
             {
-                await _requestResultHandler.TrySetExceptionAsync(ex, _sessionRequestInfo).ConfigureAwait(false);
+                await ClearNodeExecutionsAndCompleteAsync(ex, null).ConfigureAwait(false);
                 return true;
             }
             if (action != null)
@@ -430,10 +452,22 @@ namespace Cassandra.Requests
                     return;
                 }
             }
+            // An observer that throws doesn't keep the other executions from being reported; the first exception is
+            // rethrown after all of them
+            ExceptionDispatchInfo firstError = null;
             foreach (var kvp in executions)
             {
-                await _requestObserver.OnNodeRequestAbortedAsync(_sessionRequestInfo, kvp.Value).ConfigureAwait(false);
+                try
+                {
+                    await _requestObserver.OnNodeRequestAbortedAsync(_sessionRequestInfo, kvp.Value).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    firstError ??= ExceptionDispatchInfo.Capture(ex);
+                }
             }
+
+            firstError?.Throw();
         }
 
         public Task SetNoMoreHostsAsync(NoHostAvailableException ex, IRequestExecution execution)

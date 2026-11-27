@@ -15,6 +15,7 @@
 //
 
 using System;
+using System.Diagnostics;
 
 namespace Cassandra
 {
@@ -40,8 +41,15 @@ namespace Cassandra
         /// </summary>
         public PrepareRequest PrepareRequest { get; }
 
+        /// <summary>
+        /// The <see cref="Stopwatch.GetTimestamp"/> at which the node request was sent, after the request observers
+        /// were notified of its start, which the driver uses to measure its latency.
+        /// </summary>
+        internal long StartTimestamp { get; set; }
+
         internal NodeRequestInfo(Host host, PrepareRequest prepareRequest)
         {
+            StartTimestamp = Stopwatch.GetTimestamp();
             Host = host;
             ExecutionId = Guid.NewGuid();
             PrepareRequest = prepareRequest;

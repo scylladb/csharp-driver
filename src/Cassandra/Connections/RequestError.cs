@@ -21,11 +21,12 @@ namespace Cassandra.Connections
 {
     internal class RequestError : IRequestError
     {
-        private RequestError(Exception ex, bool isServerError, bool unsent)
+        private RequestError(Exception ex, bool isServerError, bool unsent, bool written)
         {
             Exception = ex;
             IsServerError = isServerError;
             Unsent = unsent;
+            Written = written;
         }
 
         /// <summary>
@@ -33,7 +34,7 @@ namespace Cassandra.Connections
         /// </summary>
         public static IRequestError CreateServerError(ErrorResponse response)
         {
-            return new RequestError(response.Output.CreateException(), true, false);
+            return new RequestError(response.Output.CreateException(), true, false, true);
         }
 
         /// <summary>
@@ -41,7 +42,7 @@ namespace Cassandra.Connections
         /// </summary>
         public static IRequestError CreateServerError(Exception ex)
         {
-            return new RequestError(ex, true, false);
+            return new RequestError(ex, true, false, true);
         }
 
         /// <summary>
@@ -49,7 +50,15 @@ namespace Cassandra.Connections
         /// </summary>
         public static IRequestError CreateClientError(Exception ex, bool unsent)
         {
-            return new RequestError(ex, false, unsent);
+            return new RequestError(ex, false, unsent, !unsent);
+        }
+
+        /// <summary>
+        /// Creates the error of a request that timed out, whether or not it was written to the connection.
+        /// </summary>
+        public static IRequestError CreateTimeoutError(OperationTimedOutException ex, bool written)
+        {
+            return new RequestError(ex, false, false, written);
         }
 
         public Exception Exception { get; }
@@ -57,5 +66,7 @@ namespace Cassandra.Connections
         public bool IsServerError { get; }
 
         public bool Unsent { get; }
+
+        public bool Written { get; }
     }
 }

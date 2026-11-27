@@ -18,6 +18,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
@@ -250,6 +251,8 @@ namespace Cassandra.Requests
                 return;
             }
 
+            // The latency doesn't include the time the request observers took
+            nodeRequestInfo.StartTimestamp = Stopwatch.GetTimestamp();
             try
             {
                 var isKeyspaceSwitch = request is QueryRequest queryRequest
@@ -276,6 +279,13 @@ namespace Cassandra.Requests
             {
                 if (_parent.SetNodeExecutionCompleted(nodeRequestInfo.ExecutionId))
                 {
+                    // The request wasn't written: as in ObserveNodeRequestErrorAsync, the load balancing policy is only
+                    // told when the connection failed, not, for instance, when switching the keyspace failed
+                    if (ex is SocketException)
+                    {
+                        ReportOutcome(nodeRequestInfo, ex);
+                    }
+
                     await _requestObserver.OnNodeRequestErrorAsync(RequestError.CreateClientError(ex, true), _sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
                 }
                 throw;
@@ -299,7 +309,7 @@ namespace Cassandra.Requests
             }
             catch (Exception handlerException)
             {
-                if (_parent.SetNodeExecutionCompleted(nodeRequestInfo.ExecutionId))
+                if (CompleteNodeExecution(nodeRequestInfo, handlerException))
                 {
                     await _requestObserver.OnNodeRequestErrorAsync(
                         RequestError.CreateClientError(handlerException, false), _sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
@@ -327,7 +337,8 @@ namespace Cassandra.Requests
                 _session.CheckHealth(nodeRequestInfo.Host, timedOutConnection);
             }
 
-            //Do nothing else (except calling request observer), another execution finished already set the response
+            // Do nothing else (except calling request observer), another execution finished already set the response.
+            // The load balancing policy isn't told about an attempt still running when the request completed.
             if (_parent.SetNodeExecutionCompleted(nodeRequestInfo.ExecutionId))
             {
                 if (error?.Exception != null)
@@ -357,12 +368,13 @@ namespace Cassandra.Requests
 
         private async Task HandleRowSetResultAsync(Response response, NodeRequestInfo nodeRequestInfo)
         {
-            if (_parent.SetNodeExecutionCompleted(nodeRequestInfo.ExecutionId))
+            // An invalid response fails the attempt, in the caller
+            RequestExecution.ValidateResult(response);
+            if (CompleteNodeExecution(nodeRequestInfo, null))
             {
                 await _requestObserver.OnNodeSuccessAsync(_sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
             }
 
-            RequestExecution.ValidateResult(response);
             var resultResponse = (ResultResponse)response;
             if (resultResponse.Output is OutputSchemaChange schemaChange)
             {
@@ -514,7 +526,7 @@ namespace Cassandra.Requests
                     "Query {0} is not prepared on {1}, preparing before retrying the request.",
                     BitConverter.ToString(unknownId),
                     _connection.EndPoint.EndpointFriendlyName);
-                if (_parent.SetNodeExecutionCompleted(nodeRequestInfo.ExecutionId))
+                if (CompleteNodeExecution(nodeRequestInfo, ex))
                 {
                     await _requestObserver.OnNodeRequestErrorAsync(error, _sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
                 }
@@ -530,7 +542,7 @@ namespace Cassandra.Requests
                 //A NoHostAvailableException when trying to retrieve
                 if (!error.Unsent)
                 {
-                    if (_parent.SetNodeExecutionCompleted(nodeRequestInfo.ExecutionId))
+                    if (CompleteNodeExecution(nodeRequestInfo, ex))
                     {
                         await _requestObserver.OnNodeRequestErrorAsync(error, _sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
                     }
@@ -583,7 +595,24 @@ namespace Cassandra.Requests
         private Task ObserveNodeRequestErrorAsync(
             IRequestError error, RequestErrorType errorType, RetryDecision.RetryDecisionType decision, SessionRequestInfo r, NodeRequestInfo nodeRequestInfo, Exception ex)
         {
-            if (!error.Unsent && _parent.SetNodeExecutionCompleted(nodeRequestInfo.ExecutionId))
+            if (error.Unsent)
+            {
+                // The request observers see an attempt that wasn't written as aborted, when the request completes, but
+                // a connection failure says something about the node. The attempt may not be registered, when its send
+                // failure was reported already.
+                if (ex is SocketException && _parent.IsNodeExecutionRunning(nodeRequestInfo.ExecutionId))
+                {
+                    ReportOutcome(nodeRequestInfo, ex);
+                }
+
+                return TaskHelper.Completed;
+            }
+
+            // A timeout that expired while the request waited to be written says nothing about the node either
+            var completed = error.Written
+                ? CompleteNodeExecution(nodeRequestInfo, ex)
+                : _parent.SetNodeExecutionCompleted(nodeRequestInfo.ExecutionId);
+            if (completed)
             {
                 return _requestObserver.OnNodeRequestErrorAsync(errorType, decision, r, nodeRequestInfo, ex);
             }
@@ -780,7 +809,7 @@ namespace Cassandra.Requests
                     if (!(output is OutputPrepared outputPrepared))
                     {
                         var ex = new DriverInternalError("Expected prepared response, obtained " + output.GetType().FullName);
-                        if (_parent.SetNodeExecutionCompleted(nodeRequestInfo.ExecutionId))
+                        if (CompleteNodeExecution(nodeRequestInfo, ex))
                         {
                             await _requestObserver.OnNodeRequestErrorAsync(
                                 RequestError.CreateClientError(ex, false), _sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
@@ -795,7 +824,7 @@ namespace Cassandra.Requests
                         _session.InternalCluster.InvalidatePreparedStatement(
                             originalId, preparedStatement.Cql, preparedStatement.Keyspace);
                         var ex = new PreparedStatementIdMismatchException(originalId, outputPrepared.QueryId);
-                        if (_parent.SetNodeExecutionCompleted(nodeRequestInfo.ExecutionId))
+                        if (CompleteNodeExecution(nodeRequestInfo, ex))
                         {
                             await _requestObserver.OnNodeRequestErrorAsync(
                                 RequestError.CreateClientError(ex, false), _sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
@@ -822,7 +851,7 @@ namespace Cassandra.Requests
                         preparedStatement.UpdatePreparedMetadata(outputPrepared);
                     }
 
-                    if (_parent.SetNodeExecutionCompleted(nodeRequestInfo.ExecutionId))
+                    if (CompleteNodeExecution(nodeRequestInfo, null))
                     {
                         await _requestObserver.OnNodeSuccessAsync(_sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
                     }
@@ -832,7 +861,7 @@ namespace Cassandra.Requests
                 catch (Exception exception)
                 {
                     //There was an issue while sending
-                    if (_parent.SetNodeExecutionCompleted(nodeRequestInfo.ExecutionId))
+                    if (CompleteNodeExecution(nodeRequestInfo, exception))
                     {
                         await _requestObserver.OnNodeRequestErrorAsync(
                             RequestError.CreateClientError(exception, false), _sessionRequestInfo, nodeRequestInfo).ConfigureAwait(false);
@@ -843,6 +872,50 @@ namespace Cassandra.Requests
             }
 
             return ResponseHandler;
+        }
+
+        /// <summary>
+        /// Marks an attempt as completed and, the first time only, reports its outcome to the load balancing policy.
+        /// Returns whether this call completed it, in which case the caller notifies the request observers.
+        /// </summary>
+        /// <param name="nodeRequestInfo">The attempt.</param>
+        /// <param name="error">The error of the attempt, or <c>null</c> when it succeeded.</param>
+        private bool CompleteNodeExecution(NodeRequestInfo nodeRequestInfo, Exception error)
+        {
+            if (!_parent.SetNodeExecutionCompleted(nodeRequestInfo.ExecutionId))
+            {
+                return false;
+            }
+
+            ReportOutcome(nodeRequestInfo, error);
+            return true;
+        }
+
+        /// <summary>
+        /// Reports the outcome of an attempt to the load balancing policy. An exception from the policy is logged.
+        /// </summary>
+        /// <param name="nodeRequestInfo">The attempt.</param>
+        /// <param name="error">The error of the attempt, or <c>null</c> when it succeeded.</param>
+        private void ReportOutcome(NodeRequestInfo nodeRequestInfo, Exception error)
+        {
+            var policy = _parent.RequestOptions.LoadBalancingPolicy;
+            var latency = Stopwatch.GetElapsedTime(nodeRequestInfo.StartTimestamp);
+            try
+            {
+                if (error == null)
+                {
+                    policy.OnNodeSuccess(_parent.Routing, nodeRequestInfo.Host, latency);
+                }
+                else
+                {
+                    policy.OnNodeError(_parent.Routing, nodeRequestInfo.Host, latency, error);
+                }
+            }
+            catch (Exception ex)
+            {
+                RequestExecution.Logger.Warning(
+                    "The load balancing policy threw an exception when notified of the outcome of a request: {0}", ex);
+            }
         }
 
         private static void ValidateResult(Response response)

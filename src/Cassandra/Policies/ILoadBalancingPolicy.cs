@@ -14,6 +14,7 @@
 //   limitations under the License.
 //
 
+using System;
 using System.Collections.Generic;
 
 namespace Cassandra
@@ -72,5 +73,64 @@ namespace Cassandra
         /// <param name="metadata">The same metadata snapshot as for <see cref="Pick"/>.</param>
         /// <returns>The targets to try, in order.</returns>
         IEnumerable<RoutingTarget> Fallback(RoutingInfo routing, MetadataSnapshot metadata);
+
+        /// <summary>
+        /// Called when a node answered an attempt of a request successfully. The default implementation does
+        /// nothing; a policy can use it, for instance, to prefer the nodes that answer faster.
+        /// <para>
+        /// The driver calls it once for each attempt the node answered, including retries and speculative executions.
+        /// It isn't called for an attempt still running when the request completes or is cancelled, nor for the
+        /// preparations that <see cref="ISession.PrepareAsync(string, System.Threading.CancellationToken)"/> sends.
+        /// It can be called concurrently, on a thread-pool thread or on the thread that sent the attempt, so it must
+        /// be thread-safe and return quickly, without blocking. An exception it throws is logged and doesn't affect the
+        /// request.
+        /// </para>
+        /// <para>
+        /// A policy that wraps another one should pass the call on to it, as <see cref="TokenAwarePolicy"/> does:
+        /// otherwise this empty implementation drops it.
+        /// </para>
+        /// </summary>
+        /// <param name="routing">The routing information of the request, which its query plan is built with.</param>
+        /// <param name="host">The node that answered.</param>
+        /// <param name="latency">
+        /// The time from just before the attempt is sent, which includes switching the keyspace of the connection when
+        /// needed, to the handling of its response.
+        /// </param>
+        void OnNodeSuccess(RoutingInfo routing, Host host, TimeSpan latency)
+        {
+        }
+
+        /// <summary>
+        /// Called when an attempt of a request to a node failed: the node returned an error or a response the driver
+        /// can't read as a result, the attempt timed out with an <see cref="OperationTimedOutException"/>, or its
+        /// connection failed. The default implementation does nothing; a policy can use it, for instance, to avoid
+        /// nodes that keep failing.
+        /// <para>
+        /// The driver calls it once for each failed attempt, whether or not the request is then retried. An attempt
+        /// that failed before it was written is only reported when its connection failed, for instance because it was
+        /// closed: a failure to serialize the request or to switch the keyspace of the connection, even when the switch
+        /// timed out, or a timeout that expired while the request waited to be written behind others on the connection,
+        /// says nothing about the node. A node that the driver can't get a connection to isn't reported, since no
+        /// attempt is sent to it. It isn't called for an attempt still running when the request completes or is
+        /// cancelled, nor for the preparations that
+        /// <see cref="ISession.PrepareAsync(string, System.Threading.CancellationToken)"/> sends. It can be called
+        /// concurrently, on a thread-pool thread or on the thread that sent the attempt, so it must be thread-safe and
+        /// return quickly, without blocking. An exception it throws is logged and doesn't affect the request.
+        /// </para>
+        /// <para>
+        /// A policy that wraps another one should pass the call on to it, as <see cref="TokenAwarePolicy"/> does:
+        /// otherwise this empty implementation drops it.
+        /// </para>
+        /// </summary>
+        /// <param name="routing">The routing information of the request, which its query plan is built with.</param>
+        /// <param name="host">The node the attempt was sent to.</param>
+        /// <param name="latency">
+        /// The time from just before the attempt is sent, which includes switching the keyspace of the connection when
+        /// needed, to the handling of its failure.
+        /// </param>
+        /// <param name="error">The error of the attempt.</param>
+        void OnNodeError(RoutingInfo routing, Host host, TimeSpan latency, Exception error)
+        {
+        }
     }
 }

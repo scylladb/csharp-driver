@@ -24,6 +24,8 @@ using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Compression;
+using Cassandra.Connections;
+using Cassandra.Observers.Null;
 using Cassandra.Responses;
 using Cassandra.Serialization;
 using Cassandra.Tasks;
@@ -217,6 +219,63 @@ namespace Cassandra.Tests
             state.CompleteWithoutWire();
             state.CompleteWithoutWire();
             Assert.AreEqual(1, completionCount);
+        }
+
+        [Test]
+        [TestCase(false)]
+        [TestCase(true)]
+        public void OperationState_Timeout_Should_Tell_Whether_The_Request_Was_Written(bool claimedByWriter)
+        {
+            IRequestError timeoutError = null;
+            var state = new OperationState(
+                (error, _) =>
+                {
+                    Volatile.Write(ref timeoutError, error);
+                    return TaskHelper.Completed;
+                },
+                null,
+                200,
+                NullOperationObserver.Instance);
+            if (claimedByWriter)
+            {
+                Assert.IsTrue(state.TryStartWriting());
+            }
+
+            Assert.IsTrue(state.MarkAsTimedOut(
+                new OperationTimedOutException(new IPEndPoint(0, 1), 200), () => TaskHelper.Completed, 0));
+            TestHelper.WaitUntil(() => Volatile.Read(ref timeoutError) != null);
+
+            Assert.IsInstanceOf<OperationTimedOutException>(timeoutError.Exception);
+            Assert.IsFalse(timeoutError.Unsent);
+            Assert.AreEqual(claimedByWriter, timeoutError.Written);
+
+            // A request that timed out while queued is never written
+            Assert.IsFalse(state.TryStartWriting());
+        }
+
+        [Test]
+        public void OperationState_Timeout_Should_Not_Count_A_Withdrawn_Request_As_Written()
+        {
+            IRequestError timeoutError = null;
+            var state = new OperationState(
+                (error, _) =>
+                {
+                    Volatile.Write(ref timeoutError, error);
+                    return TaskHelper.Completed;
+                },
+                null,
+                200,
+                NullOperationObserver.Instance);
+            // TryCancelUnwritten withdraws the operation before cancelling it: the timeout can fire in between
+            typeof(OperationState)
+                .GetField("_writeState", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                .SetValue(state, 2);
+
+            Assert.IsTrue(state.MarkAsTimedOut(
+                new OperationTimedOutException(new IPEndPoint(0, 1), 200), () => TaskHelper.Completed, 0));
+            TestHelper.WaitUntil(() => Volatile.Read(ref timeoutError) != null);
+
+            Assert.IsFalse(timeoutError.Written);
         }
 
         [Test]
