@@ -101,7 +101,7 @@ namespace Cassandra.Mapping
             }
             if (ClusteringKeys.Count != clusteringKeys.Length)
             {
-                MissingPrimaryKeyColumns.AddRange(partitionkeys.Where(k => !columns.Contains(k)));
+                MissingPrimaryKeyColumns.AddRange(clusteringKeys.Select(c => c.Item1).Where(k => !columns.Contains(k)));
             }
         }
 

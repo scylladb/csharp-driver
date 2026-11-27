@@ -304,5 +304,18 @@ namespace Cassandra.Tests.Mapping
             var cql = cqlGenerator.GenerateInsert<ExplicitColumnsUser>(true, new object[0], out object[] queryParameters);
             Assert.AreEqual(@"INSERT INTO ""USERS"" (""Name"", ""UserAge"", ""UserId"") VALUES (?, ?, ?)", cql);
         }
+
+        [Test]
+        public void GenerateDelete_Should_Throw_When_Clustering_Key_Is_Not_Mapped_Test()
+        {
+            var types = new LookupKeyedCollection<Type, ITypeDefinition>(td => td.PocoType);
+            types.Add(new Map<ExplicitColumnsUser>()
+                .TableName("USERS")
+                .PartitionKey(u => u.UserId)
+                .ClusteringKey("missing_ck"));
+            var cqlGenerator = new CqlGenerator(new PocoDataFactory(types));
+            var ex = Assert.Throws<InvalidOperationException>(() => cqlGenerator.GenerateDelete<ExplicitColumnsUser>());
+            NUnit.Framework.Assert.That(ex.Message, NUnit.Framework.Does.Contain("missing_ck"));
+        }
     }
 }
