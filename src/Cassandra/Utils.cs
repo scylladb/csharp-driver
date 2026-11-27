@@ -32,7 +32,7 @@ namespace Cassandra
     internal static class Utils
     {
         /// <summary>
-        /// Determines whether an exception indicates a process-level failure that must not be swallowed.
+        /// Determines whether an exception, including an aggregate, contains a process-level failure that must not be swallowed.
         /// </summary>
         public static bool IsFatalException(Exception ex)
         {
@@ -41,7 +41,32 @@ namespace Cassandra
                    ex is ThreadAbortException ||
                    ex is AccessViolationException ||
                    ex is AppDomainUnloadedException ||
-                   ex is BadImageFormatException;
+                   ex is BadImageFormatException ||
+                   (ex is AggregateException aggregateException &&
+                    aggregateException.Flatten().InnerExceptions.Any(IsFatalException));
+        }
+
+        /// <summary>
+        /// Determines whether a secondary failure can be suppressed in favor of the selected failure.
+        /// </summary>
+        public static bool CanSuppressException(Exception exception, Exception selectedFailure)
+        {
+            return !IsFatalException(exception) || IsFatalException(selectedFailure);
+        }
+
+        /// <summary>
+        /// Reports a secondary failure while preserving the selected failure unless only diagnostics are fatal.
+        /// </summary>
+        public static void LogSecondaryException(Exception exception, Exception selectedFailure, Logger logger, string context)
+        {
+            try
+            {
+                logger.Warning("Additional lifecycle failure {0}: {1}", context, exception);
+            }
+            catch (Exception ex) when (CanSuppressException(ex, selectedFailure))
+            {
+                // A diagnostic failure must not replace an earlier fatal failure.
+            }
         }
 
         /// <summary>

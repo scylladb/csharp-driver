@@ -233,8 +233,10 @@ namespace Cassandra.Tests
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             cluster.SetupGet(value => value.Configuration).Returns(config);
             using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "s1");
-            var first = new Host(Guid.NewGuid(), Address, null);
-            var replacement = new Host(Guid.NewGuid(), Address, null);
+            var firstId = Guid.NewGuid();
+            var replacementId = Guid.NewGuid();
+            var first = metadata.AddOrUpdateHost(firstId, Address, null, Row(firstId));
+            var replacement = metadata.AddOrUpdateHost(replacementId, Address, null, Row(replacementId));
             var pool = session.InternalRef.GetOrCreateConnectionPool(first, HostDistance.Local);
             var replacementPool = session.InternalRef.GetOrCreateConnectionPool(replacement, HostDistance.Local);
             Assert.AreNotSame(pool, replacementPool);
@@ -407,7 +409,7 @@ namespace Cassandra.Tests
             using var metadata = new Metadata(config);
             cluster.SetupGet(value => value.Metadata).Returns(metadata);
             using var session = new Session(cluster.Object, config, null, SerializerManager.Default, "s1");
-            var host = new Host(id, Address, null);
+            var host = metadata.AddOrUpdateHost(id, Address, null, Row(id));
             Assert.AreSame(pool.Object, session.InternalRef.GetOrCreateConnectionPool(host, HostDistance.Local));
 
             using var listener = new LoggingTests.TestTraceListener();

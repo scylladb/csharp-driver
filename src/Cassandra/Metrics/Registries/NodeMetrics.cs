@@ -24,6 +24,7 @@ namespace Cassandra.Metrics.Registries
     /// <inheritdoc />
     internal class NodeMetrics : INodeMetrics
     {
+        private static readonly Logger Logger = new Logger(typeof(NodeMetrics));
         private readonly IDriverMetricsProvider _driverMetricsProvider;
         private readonly string _bucketName;
 
@@ -83,9 +84,17 @@ namespace Cassandra.Metrics.Registries
 
                 MetricsRegistry.OnMetricsAdded();
             }
-            catch (Exception)
+            catch (Exception initializationFailure)
             {
-                Dispose();
+                try
+                {
+                    Dispose();
+                }
+                catch (Exception cleanupFailure) when (Utils.CanSuppressException(cleanupFailure, initializationFailure))
+                {
+                    Utils.LogSecondaryException(cleanupFailure, initializationFailure, Logger,
+                        "while disposing node metrics after initialization failed");
+                }
                 throw;
             }
         }
