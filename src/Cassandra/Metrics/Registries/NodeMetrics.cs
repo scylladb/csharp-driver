@@ -16,6 +16,7 @@
 
 using System;
 using System.Linq;
+using System.Threading;
 using Cassandra.Connections;
 using Cassandra.Metrics.Abstractions;
 
@@ -24,21 +25,30 @@ namespace Cassandra.Metrics.Registries
     /// <inheritdoc />
     internal class NodeMetrics : INodeMetrics
     {
+        private static readonly Logger Logger = new Logger(typeof(NodeMetrics));
         private readonly IDriverMetricsProvider _driverMetricsProvider;
         private readonly string _bucketName;
 
         private IHostConnectionPool _hostConnectionPool = null;
+        private int _retired;
+        private int _disposed;
 
         public NodeMetrics(
-            IDriverMetricsProvider driverMetricsProvider, DriverMetricsOptions metricOptions, bool metricsEnabled, string bucketName)
+            IDriverMetricsProvider driverMetricsProvider, DriverMetricsOptions metricOptions, bool metricsEnabled, string bucketName,
+            Action<INodeMetrics> initializationFailed = null, Host owner = null)
         {
+            Owner = owner;
             _driverMetricsProvider = driverMetricsProvider;
             _bucketName = bucketName;
             MetricsRegistry = new InternalMetricsRegistry<NodeMetric>(
                 driverMetricsProvider, NodeMetric.AllNodeMetrics.Except(metricOptions.EnabledNodeMetrics), metricsEnabled);
 
-            InitializeMetrics();
+            InitializeMetrics(initializationFailed);
         }
+
+        public bool IsRetired => Volatile.Read(ref _retired) != 0;
+
+        public Host Owner { get; }
 
         public IDriverCounter SpeculativeExecutions { get; private set; }
 
@@ -61,7 +71,7 @@ namespace Cassandra.Metrics.Registries
         /// <inheritdoc />
         public IInternalMetricsRegistry<NodeMetric> MetricsRegistry { get; }
 
-        private void InitializeMetrics()
+        private void InitializeMetrics(Action<INodeMetrics> initializationFailed)
         {
             try
             {
@@ -83,9 +93,25 @@ namespace Cassandra.Metrics.Registries
 
                 MetricsRegistry.OnMetricsAdded();
             }
-            catch (Exception)
+            catch (Exception initializationFailure)
             {
-                Dispose();
+                if (initializationFailed != null)
+                {
+                    // Pool creation owns cleanup after its lifecycle locks unwind.
+                    initializationFailed(this);
+                }
+                else
+                {
+                    try
+                    {
+                        Dispose();
+                    }
+                    catch (Exception cleanupFailure) when (Utils.CanSuppressException(cleanupFailure, initializationFailure))
+                    {
+                        Utils.LogSecondaryException(cleanupFailure, initializationFailure, Logger,
+                            $"while retiring node metrics {_bucketName} after initialization failed");
+                    }
+                }
                 throw;
             }
         }
@@ -96,8 +122,18 @@ namespace Cassandra.Metrics.Registries
             _hostConnectionPool = pool;
         }
 
+        public void MarkRetired()
+        {
+            Interlocked.Exchange(ref _retired, 1);
+        }
+
         public void Dispose()
         {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+            MarkRetired();
             _driverMetricsProvider.ShutdownMetricsBucket(_bucketName);
         }
     }

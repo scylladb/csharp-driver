@@ -45,13 +45,13 @@ namespace Cassandra.Observers.Metrics
 
         public void OnSpeculativeExecution(Host host, long delay)
         {
-            _manager.GetOrCreateNodeMetrics(host).SpeculativeExecutions.Increment(1);
+            _manager.GetNodeMetrics(host).SpeculativeExecutions.Increment(1);
         }
 
         public Task OnNodeRequestErrorAsync(
             RequestErrorType errorType, RetryDecision.RetryDecisionType decision, SessionRequestInfo r, NodeRequestInfo nodeRequestInfo, Exception ex)
         {
-            var nodeMetrics = _manager.GetOrCreateNodeMetrics(nodeRequestInfo.Host);
+            var nodeMetrics = _manager.GetNodeMetrics(nodeRequestInfo.Host);
             OnRequestError(nodeMetrics.Errors, errorType);
             switch (decision)
             {
@@ -69,7 +69,7 @@ namespace Cassandra.Observers.Metrics
 
         public Task OnNodeRequestErrorAsync(IRequestError error, SessionRequestInfo r, NodeRequestInfo nodeRequestInfo)
         {
-            var nodeMetrics = _manager.GetOrCreateNodeMetrics(nodeRequestInfo.Host);
+            var nodeMetrics = _manager.GetNodeMetrics(nodeRequestInfo.Host);
             var errorType = RequestExecution.GetErrorType(error);
             OnRequestError(nodeMetrics.Errors, errorType);
             return TaskHelper.Completed;
@@ -143,7 +143,7 @@ namespace Cassandra.Observers.Metrics
 
         public Task OnNodeRequestAbortedAsync(SessionRequestInfo sessionRequestInfo, NodeRequestInfo nodeRequestInfo)
         {
-            var nodeMetrics = _manager.GetOrCreateNodeMetrics(nodeRequestInfo.Host);
+            var nodeMetrics = _manager.GetNodeMetrics(nodeRequestInfo.Host);
             OnRequestError(nodeMetrics.Errors, RequestErrorType.Aborted);
             return TaskHelper.Completed;
         }

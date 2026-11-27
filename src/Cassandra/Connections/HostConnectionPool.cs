@@ -23,6 +23,8 @@ using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Collections;
+using Cassandra.Metrics.Registries;
+using Cassandra.Observers;
 using Cassandra.Observers.Abstractions;
 using Cassandra.Serialization;
 using Cassandra.Tasks;
@@ -158,6 +160,8 @@ namespace Cassandra.Connections
             _expectedConnectionLength = 1;
             _tokenFactory = tokenFactory;
         }
+
+        public INodeMetrics NodeMetrics { get; set; }
 
         /// <inheritdoc />
         public async Task<IConnection> BorrowConnectionAsync(RoutingKey routingKey = null, int shardID = -1)
@@ -332,6 +336,7 @@ namespace Cassandra.Connections
                 connections = _connections.ClearAndGet();
                 UpdateStatus();
             }
+            (_observerFactory as PoolObserverFactory)?.CancelInitialization();
             HostConnectionPool.Logger.Info("Disposing connection pool #{0} to {1}", GetHashCode(), _host.Address);
             foreach (var c in connections)
             {
@@ -361,6 +366,18 @@ namespace Cassandra.Connections
             int shardCount,
             Func<ConnectionCandidateHandoff, bool> tryAddToPool)
         {
+            if (_observerFactory is PoolObserverFactory poolObservers)
+            {
+                try
+                {
+                    await poolObservers.WaitForInitializationAsync().ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    Dispose();
+                    throw;
+                }
+            }
             var resolutionPlan = await _config.EndPointResolutionPlanProvider
                 .GetConnectionEndPointResolutionPlanAsync(
                     _host,
@@ -1426,6 +1443,10 @@ namespace Cassandra.Connections
                     OnConnectionClosing();
                     break;
                 }
+            }
+            if (!IsClosing && _connections.Count > 0)
+            {
+                _host.BringUpIfDown();
             }
         }
 
