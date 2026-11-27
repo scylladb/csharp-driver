@@ -17,6 +17,7 @@
 using System;
 using System.Threading.Tasks;
 using Cassandra.Connections;
+using Cassandra.Metrics.Registries;
 using Cassandra.Observers.Abstractions;
 using Cassandra.Requests;
 using Cassandra.Tasks;
@@ -29,6 +30,15 @@ namespace Cassandra.Observers.Null
 
         private NullRequestObserver()
         {
+        }
+
+        public void OnNodePoolSelected(Host host, INodeMetrics metrics)
+        {
+        }
+
+        public Action CreateSpeculativeExecutionCallback(Host host, long delay)
+        {
+            return static () => { };
         }
 
         public Task OnNodeRequestErrorAsync(RequestErrorType errorType, RetryDecision.RetryDecisionType decision, SessionRequestInfo r, NodeRequestInfo h, Exception ex)

@@ -15,6 +15,7 @@
 //
 
 using System;
+using Cassandra.Metrics.Registries;
 using Cassandra.Observers.Abstractions;
 
 namespace Cassandra.Observers.Null
@@ -26,6 +27,8 @@ namespace Cassandra.Observers.Null
         private NullConnectionObserver()
         {
         }
+
+        public INodeMetrics NodeMetrics => null;
 
         public void OnBytesSent(long size)
         {
