@@ -52,7 +52,12 @@ namespace Cassandra.Mapping.Statements
         /// <param name="session">The current session.</param>
         /// <param name="cql">The cql query, parameter and options.</param>
         /// <param name="forceNoPrepare">When defined, it's used to override the CQL options behavior.</param>
-        public async Task<Statement> GetStatementAsync(ISession session, Cql cql, bool? forceNoPrepare = null)
+        /// <param name="cancellationToken">
+        /// Stops waiting for the preparation of the query, which continues. The token isn't passed to
+        /// <see cref="ISession.PrepareAsync(string, CancellationToken)"/>: the factory waits on the preparation itself.
+        /// </param>
+        public async Task<Statement> GetStatementAsync(
+            ISession session, Cql cql, bool? forceNoPrepare = null, CancellationToken cancellationToken = default)
         {
             var noPrepare = forceNoPrepare ?? cql.QueryOptions.NoPrepare;
             if (noPrepare)
@@ -64,12 +69,65 @@ namespace Cassandra.Mapping.Statements
             }
 
             var psCacheKey = new CacheKey(cql.Statement, session);
+            if (cancellationToken.IsCancellationRequested)
+            {
+                // Don't start a preparation the caller no longer waits for
+                return await Task.FromCanceled<Statement>(cancellationToken).ConfigureAwait(false);
+            }
+
             // Prepared-statement lifetime, coalescing and failure eviction are owned by the cluster cache.
             // Retaining a PreparedStatement here would prevent cluster invalidation from replacing it.
-            var ps = await session.PrepareAsync(cql.Statement).ConfigureAwait(false);
+            // The token only stops the wait, as it would in ISession.PrepareAsync: the preparation itself continues,
+            // and is cached when it succeeds, so it's started without the token and observed until it ends.
+            var preparation = session.PrepareAsync(cql.Statement);
+            PreparedStatement ps;
+            try
+            {
+                ps = await preparation.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                CountPreparedQueryWhenPrepared(preparation, psCacheKey);
+                throw;
+            }
 
-            // Keep only the historical Mapper/LINQ query accounting used by
-            // MappingConfiguration.MaxPreparedStatementsThreshold.
+            CountPreparedQuery(psCacheKey);
+            var boundStatement = ps.Bind(cql.Arguments);
+            SetStatementProperties(boundStatement, cql);
+            return boundStatement;
+        }
+
+        /// <summary>
+        /// Counts <paramref name="psCacheKey"/> once <paramref name="preparation"/>, which a caller stopped waiting
+        /// for, succeeds, without delaying that caller. A preparation that fails isn't counted.
+        /// </summary>
+        private void CountPreparedQueryWhenPrepared(Task<PreparedStatement> preparation, CacheKey psCacheKey)
+        {
+            preparation.ContinueWith(
+                (task, state) =>
+                {
+                    if (task.IsCompletedSuccessfully)
+                    {
+                        CountPreparedQuery((CacheKey)state);
+                    }
+                    else
+                    {
+                        // Observe the failure, which the caller that stopped waiting doesn't
+                        _ = task.Exception;
+                    }
+                },
+                psCacheKey,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
+        /// <summary>
+        /// Keeps the historical Mapper/LINQ query accounting used by
+        /// <see cref="MappingConfiguration.MaxPreparedStatementsThreshold"/>.
+        /// </summary>
+        private void CountPreparedQuery(CacheKey psCacheKey)
+        {
             if (_preparedStatementKeys.TryAdd(psCacheKey, 0))
             {
                 var count = Interlocked.Increment(ref _statementCacheCount);
@@ -81,10 +139,6 @@ namespace Cassandra.Mapping.Statements
                                     "MappingConfiguration.SetMaxStatementPreparedThreshold() method.", count);
                 }
             }
-
-            var boundStatement = ps.Bind(cql.Arguments);
-            SetStatementProperties(boundStatement, cql);
-            return boundStatement;
         }
 
         private void SetStatementProperties(IStatement stmt, Cql cql)
@@ -99,12 +153,14 @@ namespace Cassandra.Mapping.Statements
             return GetStatementAsync(session, cql).Result;
         }
 
-        public async Task<BatchStatement> GetBatchStatementAsync(ISession session, ICqlBatch cqlBatch)
+        public async Task<BatchStatement> GetBatchStatementAsync(
+            ISession session, ICqlBatch cqlBatch, CancellationToken cancellationToken = default)
         {
             // Get all the statements async in parallel, then add to batch
             // execution profile is not used here because no statement is prepared or executed in this method
             var childStatements = await Task
-                .WhenAll(cqlBatch.Statements.Select(cql => GetStatementAsync(session, cql, cqlBatch.Options.NoPrepare)))
+                .WhenAll(cqlBatch.Statements.Select(
+                    cql => GetStatementAsync(session, cql, cqlBatch.Options.NoPrepare, cancellationToken)))
                 .ConfigureAwait(false);
             var statement = new BatchStatement().SetBatchType(cqlBatch.BatchType);
             cqlBatch.Options.CopyOptionsToStatement(statement);

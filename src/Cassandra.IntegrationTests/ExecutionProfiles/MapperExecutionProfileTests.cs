@@ -125,7 +125,7 @@ namespace Cassandra.IntegrationTests.ExecutionProfiles
             PrimeSelect(_movieList, ConsistencyLevel.Two, "SELECT MainActor");
 
             var movies = async
-                ? _mapper.FetchAsync<Movie>(Cql.New($"SELECT MainActor FROM {_keyspace}.Movie").WithExecutionProfile("testProfile")).Result.ToList()
+                ? _mapper.FetchAsync<Movie>(Cql.New($"SELECT MainActor FROM {_keyspace}.Movie").WithExecutionProfile("testProfile")).Result.ToBlockingEnumerable().ToList()
                 : _mapper.Fetch<Movie>(Cql.New($"SELECT MainActor FROM {_keyspace}.Movie").WithExecutionProfile("testProfile")).ToList();
 
             CollectionAssert.AreEqual(_movieList, movies, new MovieComparer());
@@ -223,7 +223,7 @@ namespace Cassandra.IntegrationTests.ExecutionProfiles
 
             if (async)
             {
-                await _mapper.InsertAsync(song, "testProfile", true, null).ConfigureAwait(false);
+                await _mapper.InsertAsync(song, "testProfile", true).ConfigureAwait(false);
                 await _mapper.InsertAsync(song, "testProfile").ConfigureAwait(false);
                 await _mapper.InsertAsync(song, "testProfile", true).ConfigureAwait(false);
             }
@@ -255,7 +255,7 @@ namespace Cassandra.IntegrationTests.ExecutionProfiles
 
             if (async)
             {
-                await _mapper.InsertIfNotExistsAsync(song, "testProfile", true, null).ConfigureAwait(false);
+                await _mapper.InsertIfNotExistsAsync(song, "testProfile", true).ConfigureAwait(false);
                 await _mapper.InsertIfNotExistsAsync(song, "testProfile").ConfigureAwait(false);
                 await _mapper.InsertIfNotExistsAsync(song, "testProfile", true).ConfigureAwait(false);
             }

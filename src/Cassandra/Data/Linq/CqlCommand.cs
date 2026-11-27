@@ -166,15 +166,33 @@ namespace Cassandra.Data.Linq
         /// <summary>
         /// Evaluates the Linq command and executes asynchronously the cql statement.
         /// </summary>
-        public Task<AsyncRowSet> ExecuteAsync()
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops waiting for the preparation of the
+        /// query, which continues, and stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied. The token doesn't apply to the
+        /// following pages: cancelling the token passed to the enumeration or to
+        /// <see cref="AsyncRowSet.FetchMoreResultsAsync"/> stops waiting for a page, but not the page request.
+        /// </param>
+        public Task<AsyncRowSet> ExecuteAsync(CancellationToken cancellationToken = default)
         {
-            return ExecuteAsync(Configuration.DefaultExecutionProfileName);
+            return ExecuteAsync(Configuration.DefaultExecutionProfileName, cancellationToken);
         }
 
         /// <summary>
         /// Evaluates the Linq command and executes asynchronously the cql statement with the provided execution profile.
         /// </summary>
-        public async Task<AsyncRowSet> ExecuteAsync(string executionProfile)
+        /// <param name="executionProfile">The execution profile to use when executing the request.</param>
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops waiting for the preparation of the
+        /// query, which continues, and stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied. The token doesn't apply to the
+        /// following pages: cancelling the token passed to the enumeration or to
+        /// <see cref="AsyncRowSet.FetchMoreResultsAsync"/> stops waiting for a page, but not the page request.
+        /// </param>
+        public async Task<AsyncRowSet> ExecuteAsync(
+            string executionProfile, CancellationToken cancellationToken = default)
         {
             if (executionProfile == null)
             {
@@ -185,9 +203,10 @@ namespace Cassandra.Data.Linq
             var session = GetTable().GetSession();
             var stmt = await _statementFactory.GetStatementAsync(
                 session,
-                Cql.New(cqlQuery, values).WithExecutionProfile(executionProfile)).ConfigureAwait(false);
+                Cql.New(cqlQuery, values).WithExecutionProfile(executionProfile),
+                cancellationToken: cancellationToken).ConfigureAwait(false);
             this.CopyQueryPropertiesTo(stmt);
-            var rs = await session.ExecuteAsync(stmt, executionProfile).ConfigureAwait(false);
+            var rs = await session.ExecuteAsync(stmt, executionProfile, cancellationToken).ConfigureAwait(false);
             QueryTrace = rs.Info.QueryTrace;
             return rs;
         }

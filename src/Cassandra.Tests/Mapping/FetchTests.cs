@@ -39,7 +39,7 @@ namespace Cassandra.Tests.Mapping
             var rowset = new RowSet();
             var mappingClient = GetMappingClient(rowset);
             var userTask = mappingClient.FetchAsync<PlainUser>("SELECT * FROM users");
-            var users = userTask.Result;
+            var users = userTask.Result.ToBlockingEnumerable().ToList();
             Assert.NotNull(users);
             Assert.AreEqual(0, users.Count());
         }
@@ -52,7 +52,7 @@ namespace Cassandra.Tests.Mapping
             var rowset = TestDataHelper.GetUsersRowSet(usersExpected);
             var mappingClient = GetMappingClient(rowset);
             var userTask = mappingClient.FetchAsync<PlainUser>("SELECT * FROM users");
-            var users = userTask.Result;
+            var users = userTask.Result.ToBlockingEnumerable().ToList();
             Assert.NotNull(users);
             CollectionAssert.AreEqual(usersExpected, users, new TestHelper.PropertyComparer());
         }
@@ -73,7 +73,7 @@ namespace Cassandra.Tests.Mapping
                 .Returns(Task.FromResult(GetPrepared()))
                 .Verifiable();
             var mappingClient = GetMappingClient(sessionMock);
-            var taskList = new List<Task<IEnumerable<PlainUser>>>();
+            var taskList = new List<Task<IAsyncEnumerable<PlainUser>>>();
             for (var i = 0; i < times; i++)
             {
                 var t = mappingClient.FetchAsync<PlainUser>("SELECT * FROM users");
@@ -81,7 +81,7 @@ namespace Cassandra.Tests.Mapping
             }
 
             Task.WaitAll(taskList.Select(t => (Task)t).ToArray(), 5000);
-            Assert.True(taskList.All(t => t.Result.Count() == 10));
+            Assert.True(taskList.All(t => t.Result.ToBlockingEnumerable().Count() == 10));
             sessionMock.Verify();
             // Prepared-statement caching is owned by the session/cluster, not the mapping layer.
             sessionMock
@@ -132,7 +132,7 @@ namespace Cassandra.Tests.Mapping
             var usersExpected = TestDataHelper.GetUserList();
             var rowset = TestDataHelper.GetUsersRowSet(usersExpected);
             var mappingClient = GetMappingClient(rowset);
-            var users = mappingClient.FetchAsync<PlainUser>(Cql.New("SELECT * FROM users").WithOptions(opt => opt.SetConsistencyLevel(ConsistencyLevel.Quorum))).Result;
+            var users = mappingClient.FetchAsync<PlainUser>(Cql.New("SELECT * FROM users").WithOptions(opt => opt.SetConsistencyLevel(ConsistencyLevel.Quorum))).Result.ToBlockingEnumerable();
             CollectionAssert.AreEqual(users, usersExpected, new TestHelper.PropertyComparer());
         }
 

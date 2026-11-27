@@ -18,6 +18,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Data.Linq;
 using Cassandra.Mapping;
@@ -176,10 +177,12 @@ namespace Cassandra.Tests.Mapping.Linq
             {
                 var val = Func(table);
                 var output = val.GetType().InvokeMember(method, BindingFlags.Public | BindingFlags.InvokeMethod | BindingFlags.Instance, null, val, parameters);
-                var executeMethod = output.GetType().GetMethod("ExecuteAsync", new Type[] { });
+
+                // Reflection doesn't fill in optional parameters, so the token is passed
+                var executeMethod = output.GetType().GetMethod("ExecuteAsync", new[] { typeof(CancellationToken) });
                 if (executeMethod != null)
                 {
-                    return (Task)executeMethod.Invoke(output, new object[] { });
+                    return (Task)executeMethod.Invoke(output, new object[] { CancellationToken.None });
                 }
 
                 // this means the method that was executed is from the Statement class and returns an IStatement so call ExecuteAsync on the previous output from the call chain
@@ -190,7 +193,12 @@ namespace Cassandra.Tests.Mapping.Linq
                 // instead of
                 //      var result = table.Update().SetIdempotence(true).Execute();
                 // since SetIdempotence() is not defined at CqlUpdate or CqlCommand level, only at Statement level (as of August 2023)
-                return (Task)val.GetType().InvokeMember("ExecuteAsync", BindingFlags.Public | BindingFlags.InvokeMethod | BindingFlags.Instance, null, val, new object[] { });
+                return (Task)val.GetType().InvokeMember(
+                    "ExecuteAsync",
+                    BindingFlags.Public | BindingFlags.InvokeMethod | BindingFlags.Instance,
+                    null,
+                    val,
+                    new object[] { CancellationToken.None });
             }
         }
     }

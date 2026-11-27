@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 
 using Cassandra.Data.Linq;
 using Cassandra.IntegrationTests.Linq.Structures;
@@ -70,7 +71,7 @@ namespace Cassandra.IntegrationTests.Linq.LinqMethods
 
             // test
             var query = _movieTable.Where(m => m.Title == expectedMovie.Title && m.MovieMaker == expectedMovie.MovieMaker);
-            var movies = async ? query.ExecuteAsync().GetAwaiter().GetResult().ToList() : query.Execute().ToList();
+            var movies = async ? query.ExecuteAsync().GetAwaiter().GetResult().ToBlockingEnumerable().ToList() : query.Execute().ToList();
             Assert.AreEqual(1, movies.Count);
 
             var actualMovie = movies.First();

@@ -117,6 +117,72 @@ namespace Cassandra.Tests.Mapping
             Assert.AreEqual(4, Interlocked.Read(ref loggerHandler.WarningCount));
         }
 
+        [Test]
+        [TestCase(true)]
+        [TestCase(false)]
+        public async Task GetStatementAsync_Should_Count_A_Query_Whose_Preparation_Continues_After_Cancellation_Once_It_Succeeds(
+            bool succeeds)
+        {
+            var preparation = new TaskCompletionSource<PreparedStatement>();
+            var sessionMock = new Mock<ISession>(MockBehavior.Strict);
+            sessionMock.Setup(s => s.Keyspace).Returns<string>(null);
+            sessionMock
+                .Setup(s => s.PrepareAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .Returns(preparation.Task);
+            var loggerHandler = new TestHelper.TestLoggerHandler();
+            var sf = new StatementFactory(new Logger(loggerHandler))
+            {
+                MaxPreparedStatementsThreshold = 0
+            };
+            using var cts = new CancellationTokenSource();
+
+            var task = sf.GetStatementAsync(sessionMock.Object, Cql.New("Q"), cancellationToken: cts.Token);
+            cts.Cancel();
+
+            // The preparation hasn't completed: without the token, the call would never complete either
+            await Assert.ThrowsAsync<TaskCanceledException>(() => task.WaitAsync(TimeSpan.FromSeconds(10)))
+                        .ConfigureAwait(false);
+            Assert.AreEqual(0, Interlocked.Read(ref loggerHandler.WarningCount));
+
+            // The preparation the caller stopped waiting for completes afterwards
+            if (succeeds)
+            {
+                preparation.SetResult(GetPrepared("Q"));
+            }
+            else
+            {
+                preparation.SetException(new InvalidQueryException("Invalid query"));
+            }
+
+            TestHelper.WaitUntil(() => preparation.Task.IsCompleted);
+            Assert.AreEqual(succeeds ? 1 : 0, Interlocked.Read(ref loggerHandler.WarningCount));
+        }
+
+        [Test]
+        public async Task GetStatementAsync_Should_Not_Count_A_Query_When_Cancelled_Before_Preparing()
+        {
+            var sessionMock = new Mock<ISession>(MockBehavior.Strict);
+            sessionMock.Setup(s => s.Keyspace).Returns<string>(null);
+            sessionMock
+                .Setup(s => s.PrepareAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .Returns(new TaskCompletionSource<PreparedStatement>().Task);
+            var loggerHandler = new TestHelper.TestLoggerHandler();
+            var sf = new StatementFactory(new Logger(loggerHandler))
+            {
+                MaxPreparedStatementsThreshold = 0
+            };
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+
+            await Assert.ThrowsAsync<TaskCanceledException>(
+                () => sf.GetStatementAsync(sessionMock.Object, Cql.New("Q"), cancellationToken: cts.Token))
+                        .ConfigureAwait(false);
+            Assert.AreEqual(0, Interlocked.Read(ref loggerHandler.WarningCount));
+
+            // No preparation is started
+            sessionMock.Verify(s => s.PrepareAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        }
+
         private static PreparedStatement GetPreparedStatement(Statement statement)
         {
             Assert.IsInstanceOf<BoundStatement>(statement);

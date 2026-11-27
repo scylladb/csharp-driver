@@ -17,6 +17,7 @@
 using System;
 using System.Linq;
 using System.Linq.Expressions;
+using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Tasks;
 
@@ -54,16 +55,41 @@ namespace Cassandra.Data.Linq
             return this;
         }
 
-        public new async Task<TEntity> ExecuteAsync()
+        /// <summary>
+        /// Evaluates the Linq query, executes asynchronously the cql statement and returns the first result.
+        /// </summary>
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops waiting for the preparation of the
+        /// query, which continues, and stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied.
+        /// The token also applies to the following pages, which are read asynchronously when the first page doesn't
+        /// settle the result, for instance when it's empty but has a paging state.
+        /// </param>
+        public new async Task<TEntity> ExecuteAsync(CancellationToken cancellationToken = default)
         {
-            var rs = await base.ExecuteAsync().ConfigureAwait(false);
-            return rs.FirstOrDefault();
+            var rs = await base.ExecuteAsync(cancellationToken).ConfigureAwait(false);
+            return await rs.FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        public new async Task<TEntity> ExecuteAsync(string executionProfile)
+        /// <summary>
+        /// Evaluates the Linq query, executes asynchronously the cql statement with the provided execution profile and
+        /// returns the first result.
+        /// </summary>
+        /// <param name="executionProfile">The execution profile to use when executing the request.</param>
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops waiting for the preparation of the
+        /// query, which continues, and stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied.
+        /// The token also applies to the following pages, which are read asynchronously when the first page doesn't
+        /// settle the result, for instance when it's empty but has a paging state.
+        /// </param>
+        public new async Task<TEntity> ExecuteAsync(
+            string executionProfile, CancellationToken cancellationToken = default)
         {
-            var rs = await base.ExecuteAsync(executionProfile).ConfigureAwait(false);
-            return rs.FirstOrDefault();
+            var rs = await base.ExecuteAsync(executionProfile, cancellationToken).ConfigureAwait(false);
+            return await rs.FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
         }
 
         /// <summary>

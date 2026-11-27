@@ -53,7 +53,7 @@ namespace Cassandra.Data.Linq
             IEnumerable<TResult> result;
             if (!_canCompile)
             {
-                var mapper = MapperFactory.GetMapperWithProjection<TResult>(cql, rs, _projectionExpression);
+                var mapper = MapperFactory.GetMapperWithProjection<TResult>(cql, rs.Columns, _projectionExpression);
                 result = rs.Select(mapper);
             }
             else
@@ -66,6 +66,19 @@ namespace Cassandra.Data.Linq
             // Eagerly evaluate the first one in order to fail fast
             var hasFirstItem = enumerator.MoveNext();
             return YieldFromFirst(enumerator, hasFirstItem);
+        }
+
+        internal override IAsyncEnumerable<TResult> AdaptResultAsync(string cql, AsyncRowSet rs)
+        {
+            if (!_canCompile)
+            {
+                var mapper = MapperFactory.GetMapperWithProjection<TResult>(cql, rs.Columns, _projectionExpression);
+                return rs.Select(mapper);
+            }
+
+            // Unlike AdaptResult, the first item isn't evaluated eagerly: its enumerator would keep the token of the
+            // execution, so the token of the enumeration couldn't stop the wait for the following pages
+            return _source.AdaptResultAsync(cql, rs).Select(_projectionExpression.Compile());
         }
 
         private static IEnumerable<TResult> YieldFromFirst(IEnumerator<TResult> enumerator, bool hasFirstItem)

@@ -15,6 +15,7 @@
 //
 
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Mapping;
 
@@ -45,9 +46,15 @@ namespace Cassandra.Data.Linq
         /// <summary>
         /// Asynchronously executes a conditional query and returns information whether it was applied.
         /// </summary>
-        public new Task<AppliedInfo<TEntity>> ExecuteAsync()
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops waiting for the preparation of the
+        /// query, which continues, and stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied.
+        /// </param>
+        public new Task<AppliedInfo<TEntity>> ExecuteAsync(CancellationToken cancellationToken = default)
         {
-            return ExecuteAsync(Configuration.DefaultExecutionProfileName);
+            return ExecuteAsync(Configuration.DefaultExecutionProfileName, cancellationToken);
         }
 
         /// <summary>
@@ -62,7 +69,15 @@ namespace Cassandra.Data.Linq
         /// <summary>
         /// Asynchronously executes a conditional query with the provided execution profile and returns information whether it was applied.
         /// </summary>
-        public new async Task<AppliedInfo<TEntity>> ExecuteAsync(string executionProfile)
+        /// <param name="executionProfile">The execution profile to use when executing the request.</param>
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops waiting for the preparation of the
+        /// query, which continues, and stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied.
+        /// </param>
+        public new async Task<AppliedInfo<TEntity>> ExecuteAsync(
+            string executionProfile, CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(executionProfile);
 
@@ -70,9 +85,11 @@ namespace Cassandra.Data.Linq
             var session = GetTable().GetSession();
             var stmt = await InternalRef.StatementFactory.GetStatementAsync(
                 session,
-                Cql.New(cql, values).WithExecutionProfile(executionProfile)).ConfigureAwait(false);
+                Cql.New(cql, values).WithExecutionProfile(executionProfile),
+                cancellationToken: cancellationToken).ConfigureAwait(false);
             this.CopyQueryPropertiesTo(stmt);
-            var rs = (await session.ExecuteAsync(stmt, executionProfile).ConfigureAwait(false)).ToRowSet();
+            var rs = (await session.ExecuteAsync(stmt, executionProfile, cancellationToken).ConfigureAwait(false))
+                .ToRowSet();
             return AppliedInfo<TEntity>.FromRowSet(_mapperFactory, cql, rs);
         }
 

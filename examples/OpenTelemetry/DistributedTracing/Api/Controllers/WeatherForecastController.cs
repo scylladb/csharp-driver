@@ -20,7 +20,7 @@ namespace Api.Controllers
         public async Task<IEnumerable<WeatherForecast>> GetAsync()
         {
             var results = await _mapper.FetchAsync<WeatherForecast>().ConfigureAwait(false);
-            return results.ToArray();
+            return await results.ToArrayAsync().ConfigureAwait(false);
         }
     }
 }

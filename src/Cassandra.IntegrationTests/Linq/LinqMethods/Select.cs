@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 
 using Cassandra.Data.Linq;
 using Cassandra.IntegrationTests.Linq.Structures;
@@ -55,7 +56,7 @@ namespace Cassandra.IntegrationTests.Linq.LinqMethods
 
             List<AllDataTypesEntity> allEntities =
                 async
-                    ? table.Select(m => m).ExecuteAsync().GetAwaiter().GetResult().ToList()
+                    ? table.Select(m => m).ExecuteAsync().GetAwaiter().GetResult().ToBlockingEnumerable().ToList()
                     : table.Select(m => m).Execute().ToList();
             Assert.AreEqual(_entityList.Count, allEntities.Count);
             foreach (var entity in allEntities)

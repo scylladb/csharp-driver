@@ -43,7 +43,9 @@ namespace Cassandra.Tests.Mapping
             var cql = Cql.New("SELECT * FROM users")
                          .WithOptions(opt => opt.SetConsistencyLevel(ConsistencyLevel.Quorum))
                          .WithExecutionProfile("testProfile");
-            var users = async ? mapperAndSession.Mapper.FetchAsync<PlainUser>(cql).Result : mapperAndSession.Mapper.Fetch<PlainUser>(cql);
+            var users = async
+                ? mapperAndSession.Mapper.FetchAsync<PlainUser>(cql).Result.ToBlockingEnumerable()
+                : mapperAndSession.Mapper.Fetch<PlainUser>(cql);
 
             CollectionAssert.AreEqual(users, usersExpected, new TestHelper.PropertyComparer());
             Mock.Get(mapperAndSession.Session).Verify(s => s.ExecuteAsync(It.IsAny<IStatement>(), "testProfile"), Times.Once);

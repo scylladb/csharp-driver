@@ -238,7 +238,7 @@ namespace Cassandra.IntegrationTests.ExecutionProfiles
                               .Select(m => new AllDataTypesEntity { IntType = m.IntType });
 
             var result = async
-                ? (await selectQuery.ExecuteAsync("testProfile").ConfigureAwait(false)).ToList()
+                ? (await selectQuery.ExecuteAsync("testProfile").ConfigureAwait(false)).ToBlockingEnumerable().ToList()
                 : selectQuery.Execute("testProfile").ToList();
 
             var newQueries = _simulacronCluster.GetQueries(cql, QueryType.Execute);

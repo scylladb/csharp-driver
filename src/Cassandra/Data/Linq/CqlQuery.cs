@@ -19,6 +19,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
+using System.Threading;
 using System.Threading.Tasks;
 using Cassandra.Mapping;
 using Cassandra.Mapping.Statements;
@@ -106,9 +107,15 @@ namespace Cassandra.Data.Linq
         /// <summary>
         /// Asynchronously executes the query and returns a task of a page of results
         /// </summary>
-        public Task<IPage<TEntity>> ExecutePagedAsync()
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops waiting for the preparation of the
+        /// query, which continues, and stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied.
+        /// </param>
+        public Task<IPage<TEntity>> ExecutePagedAsync(CancellationToken cancellationToken = default)
         {
-            return ExecutePagedAsync(Configuration.DefaultExecutionProfileName);
+            return ExecutePagedAsync(Configuration.DefaultExecutionProfileName, cancellationToken);
         }
 
         /// <summary>
@@ -122,16 +129,26 @@ namespace Cassandra.Data.Linq
         /// <summary>
         /// Asynchronously executes the query with the provided execution profile and returns a task of a page of results
         /// </summary>
-        public async Task<IPage<TEntity>> ExecutePagedAsync(string executionProfile)
+        /// <param name="executionProfile">The execution profile to use when executing the request.</param>
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops waiting for the preparation of the
+        /// query, which continues, and stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied.
+        /// </param>
+        public async Task<IPage<TEntity>> ExecutePagedAsync(
+            string executionProfile, CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(executionProfile);
 
             SetAutoPage(false);
             var visitor = new CqlExpressionVisitor(PocoData, Table.Name, Table.KeyspaceName);
             var cql = visitor.GetSelect(Expression, out object[] values);
-            var rs = await InternalExecuteWithProfileAsync(executionProfile, cql, values).ConfigureAwait(false);
-            var mapper = MapperFactory.GetMapper<TEntity>(cql, rs);
-            return new Page<TEntity>(rs.Select(mapper), PagingState, rs.PagingState);
+            var rs = await InternalExecuteWithProfileAsync(executionProfile, cql, values, cancellationToken)
+                .ConfigureAwait(false);
+            var mapper = MapperFactory.GetMapper<TEntity>(cql, rs.Columns);
+            // Without automatic paging, the rows are those of a single page, already read
+            return new Page<TEntity>(rs.ToRowSet().Select(mapper), PagingState, rs.PagingState);
         }
 
         /// <summary>
