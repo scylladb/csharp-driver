@@ -544,6 +544,43 @@ namespace Cassandra.Tests
             Assert.IsNull(hosts[2].Shard);
         }
 
+        [Test]
+        public void TokenAwarePolicyFallback_Should_Return_The_Local_Replicas_With_The_Largest_Random_Start_Index()
+        {
+            var hostList = new List<Host>
+            {
+                TestHelper.CreateHost("0.0.0.1", "dc1"),
+                TestHelper.CreateHost("0.0.0.2", "dc1"),
+                TestHelper.CreateHost("0.0.0.3", "dc1"),
+                TestHelper.CreateHost("0.0.0.4", "dc1")
+            };
+            var clusterMock = new Mock<IInternalCluster>(MockBehavior.Strict);
+            clusterMock.Setup(c => c.AllHosts()).Returns(hostList);
+            Func<RoutingInfo, IReadOnlyList<RoutingTarget>> replicas =
+                _ => hostList.Take(3).Select(h => new RoutingTarget(h, null)).ToList();
+            var policy = new TokenAwarePolicy(new DCAwareRoundRobinPolicy("dc1"), () => new LargestRandom());
+            var routing = new RoutingInfo { RoutingKey = new RoutingKey { RawRoutingKey = new byte[] { 1 } } };
+
+            var targets = policy.Fallback(routing, TestHelper.Snapshot(clusterMock.Object, replicas)).ToList();
+
+            // The replicas first, from the last one, then the other local host
+            CollectionAssert.AreEqual(
+                new[] { hostList[2], hostList[0], hostList[1], hostList[3] }, targets.Select(t => t.Host));
+        }
+
+        /// <summary>
+        /// Returns the largest value each method can return, a start index for which the offsets of the following
+        /// replicas overflow unless the index is bounded.
+        /// </summary>
+        private sealed class LargestRandom : Random
+        {
+            public override int Next() => int.MaxValue - 1;
+
+            public override int Next(int maxValue) => maxValue - 1;
+
+            public override int Next(int minValue, int maxValue) => maxValue - 1;
+        }
+
         private static IEnumerable<TestCaseData> BuiltInPolicies()
         {
             yield return new TestCaseData((Func<ILoadBalancingPolicy>)(() => new RoundRobinPolicy())).SetName("RoundRobinPolicy");
