@@ -959,6 +959,68 @@ keyspace, without a custom payload, share one preparation, whose prepared statem
 still cached. A call with a
 custom payload sends its own prepare request, which isn't cached.
 
+### Cancellation tokens on mapper methods
+
+The asynchronous methods of `IMapper`, and of the `ICqlQueryAsyncClient` and
+`ICqlWriteAsyncClient` interfaces it extends, take an optional `CancellationToken` as
+their last parameter, except the overloads that take the parameter values of the query
+as `params object[] args`, which can't. To cancel such a query, create it with
+`Cql.New(cql, args)` and pass the token to the overload that takes a `Cql`:
+
+```csharp
+// Without a token
+var users = await mapper.FetchAsync<User>("SELECT * FROM users WHERE id = ?", id);
+
+// With a token
+var cancellableUsers = await mapper.FetchAsync<User>(
+    Cql.New("SELECT * FROM users WHERE id = ?", id), cancellationToken);
+```
+
+A call such as `mapper.FetchAsync<User>(query, id, cancellationToken)` compiles, since
+the token is taken as one of the parameter values, so `Cql` throws an
+`ArgumentException` when one of its parameter values is a `CancellationToken`. That
+applies to every method that builds a `Cql` from parameter values, including these
+overloads and the methods of `ICqlBatch`.
+
+Cancelling the token stops waiting for the preparation of the query, or of the queries
+of a batch, which continues, as with `ISession.PrepareAsync()`. The mapper waits on the
+preparation itself rather than passing the token to `ISession.PrepareAsync()`, so a
+custom `ISession`, or a mock, receives the default token there. Cancelling the token
+also cancels the request as described for `ISession.ExecuteAsync()` above: a request
+already written can't be recalled, so the node still runs it, and a write may still be
+applied. `FetchAsync()` returns the rows of the first page, and reads the following
+pages while the result is enumerated: the token doesn't apply to them. Nor does it apply
+to the following pages that `SingleAsync()`, `SingleOrDefaultAsync()`, `FirstAsync()`
+and `FirstOrDefaultAsync()` read when the first page doesn't settle the result, for
+instance when it's empty but has a paging state: cancelling then doesn't cancel the
+task.
+
+As for `ISession`, calls that don't pass a token compile unchanged, except some calls
+that pass `null`, described below. Code compiled against 3.x must be recompiled,
+classes that implement these interfaces must add the parameter, and method groups no
+longer convert to delegates without the token. A Moq setup that omits the token only
+matches calls that pass no token or the default one, so code under test that passes
+another token needs `It.IsAny<CancellationToken>()`, and a callback that receives the
+arguments takes one more.
+Since the token follows the optional `CqlQueryOptions` parameter in many overloads,
+pass it by name when you omit the options, as in
+`mapper.InsertAsync(user, cancellationToken: cancellationToken)`.
+
+A call that passes `null` or `default` as the last argument of an overload ending with
+`CqlQueryOptions` can now be ambiguous, since both candidates leave the token at its
+default. With `default` in place of `null`, the following calls fail the same way:
+
+- `InsertAsync(user, true, null)` and `InsertIfNotExistsAsync(user, true, null)` are
+  ambiguous with the overloads that also take a TTL, and so are the calls that also
+  pass an execution profile, such as `InsertAsync(user, profile, true, null)`.
+- `InsertIfNotExistsAsync(user, null)` is ambiguous with the overload that takes an
+  execution profile, which `IMapper` also declares. On a `Mapper`, which also declares
+  the overloads of the interfaces it implements, so are `InsertAsync(user, null)`,
+  `UpdateAsync(user, null)` and `DeleteAsync(user, null)`.
+
+In 3.x these calls passed null query options, so remove the `null` or `default`
+argument, or name it: `queryOptions: null`.
+
 ## 3.13.0 - Unified driver
 
 A new load balancing policy has been added: `DefaultLoadBalancingPolicy`. This is the new default load balancing policy in the driver. The behavior is the same as the previous default policy except for some DSE specific workloads so there is no impact for existing applications.
