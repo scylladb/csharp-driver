@@ -151,7 +151,8 @@ namespace Cassandra
 
         /// <summary>
         /// Sets the Host as Down.
-        /// Returns false if it was already considered as Down by the driver.
+        /// Returns false if it was already considered as Down or has been removed from the cluster.
+        /// A removed host cannot change status.
         /// </summary>
         public bool SetDown()
         {
@@ -165,6 +166,9 @@ namespace Cassandra
 
         /// <summary>
         /// Returns true if the host was DOWN and it was set as UP.
+        /// Returns false if it was already UP or has been removed from the cluster.
+        /// A removed host cannot change status. After topology removes it from metadata,
+        /// use the new Host from metadata if the node returns.
         /// </summary>
         public bool BringUpIfDown()
         {
@@ -176,10 +180,20 @@ namespace Cassandra
             return true;
         }
 
+        /// <summary>
+        /// Permanently marks this Host as removed and notifies internal removal subscribers once.
+        /// This method alone does not remove the Host from metadata or raise <see cref="ICluster.HostRemoved"/>.
+        /// Subsequent calls have no effect. Neither <see cref="BringUpIfDown"/> nor <see cref="SetDown"/>
+        /// can change its status. After topology removes this Host from metadata, discovery creates
+        /// a new Host if the node returns.
+        /// </summary>
         public void SetAsRemoved()
         {
+            if (Interlocked.Exchange(ref _isUpNow, -1) == -1)
+            {
+                return;
+            }
             Logger.Info("Decommissioning node {0}", Address);
-            Interlocked.Exchange(ref _isUpNow, 0);
             Remove?.Invoke();
         }
 

@@ -620,6 +620,492 @@ namespace Cassandra.Tests.Connections.Control
             }
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_TransferDownSubscriptionWhenRefreshReplacesCurrentHost(bool lateSubscription)
+        {
+            var replacement = new Host(_endpoint1, contactPoint: null);
+            var connections = new List<IConnection>();
+            var reconnectStarted = NewSignal();
+            var factory = new FakeConnectionFactory(endpoint =>
+            {
+                var connection = new Mock<IConnection>();
+                connection.SetupGet(value => value.EndPoint).Returns(endpoint);
+                connections.Add(connection.Object);
+                if (connections.Count == 2)
+                {
+                    reconnectStarted.TrySetResult(true);
+                }
+                return connection.Object;
+            });
+            var topologyFactory = new Mock<ITopologyRefresherFactory>();
+            topologyFactory.Setup(value => value.Create(It.IsAny<Metadata>(), It.IsAny<Configuration>()))
+                .Returns((Metadata metadata, Configuration config) =>
+                {
+                    var topology = new Mock<ITopologyRefresher>();
+                    var initial = true;
+                    topology.Setup(value => value.RefreshNodeListAsync(
+                            It.IsAny<IConnectionEndPoint>(), It.IsAny<IConnection>(), It.IsAny<ISerializer>()))
+                        .Returns(() =>
+                        {
+                            metadata.Partitioner = "Murmur3Partitioner";
+                            var host = initial ? metadata.AddHost(_endpoint1) : replacement;
+                            initial = false;
+                            host.SetInfo(TestHelper.CreateRow(new Dictionary<string, object>
+                            {
+                                { "data_center", "ut-dc" }, { "rack", "ut-rack" }, { "tokens", null }
+                            }));
+                            return Task.FromResult(host);
+                        });
+                    return topology.Object;
+                });
+            var debouncer = new Mock<IProtocolEventDebouncer>();
+            debouncer.Setup(value => value.ScheduleEventAsync(It.IsAny<ProtocolEvent>(), false))
+                .Returns(TaskHelper.Completed);
+            var result = NewInstance(eventDebouncer: debouncer.Object, configBuilderAct: builder =>
+            {
+                builder.ConnectionFactory = factory;
+                builder.TopologyRefresherFactory = topologyFactory.Object;
+            });
+            using var control = result.ControlConnection;
+            await control.InitAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+            var original = control.Host;
+            var downEvent = typeof(Host).GetField("Down", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            var subscription = ((Action<Host>)downEvent.GetValue(original))?.GetInvocationList()
+                .Single(handler => ReferenceEquals(handler.Target, control));
+            Assert.IsNotNull(subscription);
+            var refresh = (Task)typeof(ControlConnection).GetMethod(
+                "Refresh", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                .Invoke(control, null);
+            await refresh.WaitToCompleteAsync(5000).ConfigureAwait(false);
+            Assert.AreSame(replacement, control.Host);
+            if (lateSubscription)
+            {
+                // Resume the subscription captured before refresh transferred the owner.
+                typeof(ControlConnection).GetMethod(
+                    "Subscribe", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                    .Invoke(control, new object[] { original, connections[0], false });
+            }
+
+            Assert.IsFalse(((Action<Host>)downEvent.GetValue(original))?.GetInvocationList().Contains(subscription) ?? false);
+            Assert.IsTrue(((Action<Host>)downEvent.GetValue(replacement))?.GetInvocationList().Contains(subscription) ?? false);
+
+            original.SetDown();
+            replacement.SetDown();
+            await reconnectStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+            var reconnect = GetSharedReconnect(control);
+            if (reconnect != null)
+            {
+                await reconnect.WaitToCompleteAsync(5000).ConfigureAwait(false);
+            }
+            Assert.AreEqual(2, connections.Count);
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Should_NotPublishRefreshHostAfterShutdown(bool replacementAlreadyDown)
+        {
+            var replacement = new Host(_endpoint1, contactPoint: null);
+            if (replacementAlreadyDown)
+            {
+                replacement.SetDown();
+            }
+            var refreshStarted = NewSignal();
+            var releaseRefresh = new TaskCompletionSource<Host>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var connections = new List<IConnection>();
+            var timers = new ConcurrentQueue<CapturedReconnectTimer>();
+            var factory = new FakeConnectionFactory(endpoint =>
+            {
+                var connection = new Mock<IConnection>();
+                connection.SetupGet(value => value.EndPoint).Returns(endpoint);
+                connections.Add(connection.Object);
+                return connection.Object;
+            });
+            var topologyFactory = new Mock<ITopologyRefresherFactory>();
+            topologyFactory.Setup(value => value.Create(It.IsAny<Metadata>(), It.IsAny<Configuration>()))
+                .Returns((Metadata metadata, Configuration _) =>
+                {
+                    var topology = new Mock<ITopologyRefresher>();
+                    var initial = true;
+                    topology.Setup(value => value.RefreshNodeListAsync(
+                            It.IsAny<IConnectionEndPoint>(), It.IsAny<IConnection>(), It.IsAny<ISerializer>()))
+                        .Returns(() =>
+                        {
+                            if (!initial)
+                            {
+                                refreshStarted.TrySetResult(true);
+                                return releaseRefresh.Task;
+                            }
+                            initial = false;
+                            metadata.Partitioner = "Murmur3Partitioner";
+                            var host = metadata.AddHost(_endpoint1);
+                            host.SetInfo(TestHelper.CreateRow(new Dictionary<string, object>
+                            {
+                                { "data_center", "ut-dc" }, { "rack", "ut-rack" }, { "tokens", null }
+                            }));
+                            return Task.FromResult(host);
+                        });
+                    return topology.Object;
+                });
+            var debouncer = new Mock<IProtocolEventDebouncer>();
+            debouncer.Setup(value => value.ScheduleEventAsync(It.IsAny<ProtocolEvent>(), false)).Returns(Task.CompletedTask);
+            var result = NewInstance(eventDebouncer: debouncer.Object, configBuilderAct: builder =>
+            {
+                builder.ConnectionFactory = factory;
+                builder.TopologyRefresherFactory = topologyFactory.Object;
+                builder.TimerFactory = new TaskBasedTimerFactory(CaptureReconnectTimers(timers));
+            });
+            using var timer = result.Config.Timer;
+            using var control = result.ControlConnection;
+            await control.InitAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+            var original = control.Host;
+            Task refresh = null;
+            try
+            {
+                refresh = (Task)typeof(ControlConnection).GetMethod(
+                    "Refresh", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                    .Invoke(control, null);
+                await refreshStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                control.Shutdown();
+                releaseRefresh.TrySetResult(replacement);
+                await refresh.WaitToCompleteAsync(5000).ConfigureAwait(false);
+
+                Assert.AreSame(original, control.Host);
+                Assert.AreEqual(1, connections.Count);
+                Assert.IsNull(GetSharedReconnect(control));
+                Assert.IsEmpty(timers);
+                var downEvent = typeof(Host).GetField("Down", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                foreach (var host in new[] { original, replacement })
+                {
+                    var handlers = ((Action<Host>)downEvent.GetValue(host))?.GetInvocationList();
+                    Assert.IsFalse(handlers?.Any(handler => ReferenceEquals(handler.Target, control)) ?? false,
+                        "A refresh completing after shutdown must not retain a control down handler.");
+                }
+            }
+            finally
+            {
+                control.Shutdown();
+                releaseRefresh.TrySetResult(replacement);
+                if (refresh != null)
+                {
+                    await refresh.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+            }
+        }
+
+        [TestCase(HostDistance.Local)]
+        [TestCase(HostDistance.Remote)]
+        [TestCase(HostDistance.Ignored)]
+        public async Task Should_PreserveReplacementWhenStatusPolicyChangesAddressOwner(HostDistance distance)
+        {
+            CassandraEventHandler events = null;
+            var subscriber = new Mock<IServerEventsSubscriber>();
+            subscriber.Setup(value => value.SubscribeToServerEvents(It.IsAny<IConnection>(), It.IsAny<CassandraEventHandler>()))
+                .Callback((IConnection _, CassandraEventHandler handler) => events = handler)
+                .Returns(Task.CompletedTask);
+            var scheduled = NewSignal();
+            var debouncer = new Mock<IProtocolEventDebouncer>();
+            debouncer.Setup(value => value.ScheduleEventAsync(It.IsAny<ProtocolEvent>(), false))
+                .Callback(() => scheduled.TrySetResult(true))
+                .Returns(Task.CompletedTask);
+            var result = NewInstance(eventDebouncer: debouncer.Object,
+                configBuilderAct: builder => builder.ServerEventsSubscriber = subscriber.Object);
+            using var control = result.ControlConnection;
+            await control.InitAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+            var oldId = Guid.NewGuid();
+            var replacementId = Guid.NewGuid();
+            IRow HostInfo(Guid id) => TestHelper.CreateRow(new Dictionary<string, object>
+            {
+                { "host_id", id }, { "data_center", "ut-dc" }, { "rack", "ut-rack" }, { "tokens", null }
+            });
+            var old = result.Metadata.AddOrUpdateHost(oldId, _endpoint2, null, HostInfo(oldId));
+            Host replacement = null;
+            Mock.Get(result.Cluster).Setup(value => value.RetrieveAndSetDistance(old)).Returns(() =>
+            {
+                result.Metadata.RemoveHost(old);
+                replacement = result.Metadata.AddOrUpdateHost(replacementId, _endpoint2, null, HostInfo(replacementId));
+                return distance;
+            });
+            scheduled = NewSignal();
+            debouncer.Invocations.Clear();
+
+            events(control, new StatusChangeEventArgs { Address = _endpoint2, What = StatusChangeEventArgs.Reason.Down });
+            Assert.IsTrue(replacement.IsUp, "A policy callback must not redirect a DOWN event to a replacement node.");
+            if (distance == HostDistance.Ignored)
+            {
+                await scheduled.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+            }
+
+            Assert.IsFalse(old.IsUp);
+            Assert.IsFalse(old.BringUpIfDown(), "A removed host must not be revived.");
+            Assert.AreSame(replacement, result.Metadata.GetHost(_endpoint2));
+            debouncer.Verify(value => value.ScheduleEventAsync(It.IsAny<ProtocolEvent>(), false),
+                Times.Exactly(distance == HostDistance.Ignored ? 1 : 0));
+        }
+
+        [Test]
+        public async Task Should_ApplyStatusEventsToUnchangedIgnoredHost()
+        {
+            CassandraEventHandler events = null;
+            var subscriber = new Mock<IServerEventsSubscriber>();
+            subscriber.Setup(value => value.SubscribeToServerEvents(It.IsAny<IConnection>(), It.IsAny<CassandraEventHandler>()))
+                .Callback((IConnection _, CassandraEventHandler handler) => events = handler)
+                .Returns(Task.CompletedTask);
+            var debouncer = new Mock<IProtocolEventDebouncer>();
+            debouncer.Setup(value => value.ScheduleEventAsync(It.IsAny<ProtocolEvent>(), false)).Returns(Task.CompletedTask);
+            var result = NewInstance(eventDebouncer: debouncer.Object,
+                configBuilderAct: builder => builder.ServerEventsSubscriber = subscriber.Object);
+            using var timer = result.Config.Timer;
+            using var control = result.ControlConnection;
+            await control.InitAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+            var hostId = Guid.NewGuid();
+            var host = result.Metadata.AddOrUpdateHost(hostId, _endpoint2, null,
+                TestHelper.CreateRow(new Dictionary<string, object>
+                {
+                    { "host_id", hostId }, { "data_center", "ut-dc" }, { "rack", "ut-rack" }, { "tokens", null }
+                }));
+            Mock.Get(result.Cluster).Setup(value => value.RetrieveAndSetDistance(host)).Returns(HostDistance.Ignored);
+            var down = NewSignal();
+            var downEvents = 0;
+            var metadataDownEvents = 0;
+            host.Down += _ =>
+            {
+                downEvents++;
+                down.TrySetResult(true);
+            };
+            result.Metadata.HostsEvent += (_, args) =>
+            {
+                if (args.Address.Equals(_endpoint2) && args.What == HostsEventArgs.Kind.Down)
+                {
+                    metadataDownEvents++;
+                }
+            };
+            debouncer.Invocations.Clear();
+
+            events(control, new StatusChangeEventArgs { Address = _endpoint2, What = StatusChangeEventArgs.Reason.Down });
+            await down.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+            events(control, new StatusChangeEventArgs { Address = _endpoint2, What = StatusChangeEventArgs.Reason.Down });
+            Assert.IsFalse(host.IsUp);
+            Assert.AreEqual(1, downEvents);
+            Assert.AreEqual(1, metadataDownEvents);
+
+            events(control, new StatusChangeEventArgs { Address = _endpoint2, What = StatusChangeEventArgs.Reason.Up });
+            Assert.IsTrue(host.IsUp);
+            debouncer.Verify(value => value.ScheduleEventAsync(It.IsAny<ProtocolEvent>(), false), Times.Never);
+        }
+
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public async Task Should_ReconcileReplacementSubscriptionDuringReconnect(bool replacementAlreadyDown, bool reuseReplacement)
+        {
+            var replacement = new Host(_endpoint1, contactPoint: null);
+            var nextHost = reuseReplacement ? replacement : new Host(_endpoint1, contactPoint: null);
+            var secondOpenStarted = NewSignal();
+            var releaseSecondOpen = NewSignal();
+            var connections = new List<IConnection>();
+            var factory = new FakeConnectionFactory(endpoint =>
+            {
+                var connection = new Mock<IConnection>();
+                connection.SetupGet(value => value.EndPoint).Returns(endpoint);
+                connections.Add(connection.Object);
+                if (connections.Count == 2 && !replacementAlreadyDown)
+                {
+                    connection.Setup(value => value.Open()).Returns(async () =>
+                    {
+                        secondOpenStarted.TrySetResult(true);
+                        await releaseSecondOpen.Task.ConfigureAwait(false);
+                        return (Response)null;
+                    });
+                }
+                return connection.Object;
+            });
+            var topologyFactory = new Mock<ITopologyRefresherFactory>();
+            topologyFactory.Setup(value => value.Create(It.IsAny<Metadata>(), It.IsAny<Configuration>()))
+                .Returns((Metadata metadata, Configuration config) =>
+                {
+                    var topology = new Mock<ITopologyRefresher>();
+                    var initial = true;
+                    topology.Setup(value => value.RefreshNodeListAsync(
+                            It.IsAny<IConnectionEndPoint>(), It.IsAny<IConnection>(), It.IsAny<ISerializer>()))
+                        .Returns((IConnectionEndPoint _, IConnection connection, ISerializer __) =>
+                        {
+                            metadata.Partitioner = "Murmur3Partitioner";
+                            var host = initial ? metadata.AddHost(_endpoint1)
+                                : ReferenceEquals(connection, connections[0]) ? replacement : nextHost;
+                            initial = false;
+                            host.SetInfo(TestHelper.CreateRow(new Dictionary<string, object>
+                            {
+                                { "data_center", "ut-dc" }, { "rack", "ut-rack" }, { "tokens", null }
+                            }));
+                            return Task.FromResult(host);
+                        });
+                    return topology.Object;
+                });
+            var debouncer = new Mock<IProtocolEventDebouncer>();
+            debouncer.Setup(value => value.ScheduleEventAsync(It.IsAny<ProtocolEvent>(), false))
+                .Returns(TaskHelper.Completed);
+            var result = NewInstance(eventDebouncer: debouncer.Object, configBuilderAct: builder =>
+            {
+                builder.ConnectionFactory = factory;
+                builder.TopologyRefresherFactory = topologyFactory.Object;
+                builder.Policies = new Cassandra.Policies(
+                    new TestHelper.CustomLoadBalancingPolicy(queryPlanHandler: (_, __) => Enumerable.Empty<Host>()),
+                    new ConstantReconnectionPolicy(1000), new DefaultRetryPolicy());
+            });
+            using var control = result.ControlConnection;
+            await control.InitAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+            Task reconnect = null;
+            try
+            {
+                if (replacementAlreadyDown)
+                {
+                    replacement.SetDown();
+                }
+                else
+                {
+                    reconnect = control.Reconnect(null);
+                    await secondOpenStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+                var refresh = (Task)typeof(ControlConnection).GetMethod(
+                    "Refresh", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                    .Invoke(control, null);
+                await refresh.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                releaseSecondOpen.TrySetResult(true);
+                reconnect ??= GetSharedReconnect(control);
+                if (reconnect != null)
+                {
+                    await reconnect.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+                Assert.AreEqual(2, connections.Count, "The requested reconnect must establish a second connection.");
+                Assert.AreSame(nextHost, control.Host);
+                var subsequentRefresh = (Task)typeof(ControlConnection).GetMethod(
+                    "Refresh", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                    .Invoke(control, null);
+                await subsequentRefresh.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreEqual(2, connections.Count,
+                    "A successful recovery must not reconnect again solely because the unchanged host remains down.");
+                var downEvent = typeof(Host).GetField("Down", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                var currentHandlers = ((Action<Host>)downEvent.GetValue(nextHost))?.GetInvocationList();
+                Assert.AreEqual(1, currentHandlers?.Count(handler => ReferenceEquals(handler.Target, control)),
+                    "The published host must have exactly one control down handler.");
+                control.Shutdown();
+                foreach (var host in new[] { replacement, nextHost })
+                {
+                    var handlers = ((Action<Host>)downEvent.GetValue(host))?.GetInvocationList();
+                    Assert.IsFalse(handlers?.Any(handler => ReferenceEquals(handler.Target, control)) ?? false,
+                        "Shutdown must not retain a handler on an obsolete or current host.");
+                }
+            }
+            finally
+            {
+                releaseSecondOpen.TrySetResult(true);
+                if (reconnect != null)
+                {
+                    await reconnect.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+            }
+        }
+
+        [Test]
+        public async Task Should_DetachRefreshSelectedHostWhenRegistrationRollsBack()
+        {
+            var candidateHost = new Host(_endpoint2, contactPoint: null);
+            var refreshHost = new Host(_endpoint2, contactPoint: null);
+            var registrationStarted = NewSignal();
+            var registration = NewSignal();
+            var connections = new List<IConnection>();
+            var factory = new FakeConnectionFactory(endpoint =>
+            {
+                var connection = new Mock<IConnection>();
+                connection.SetupGet(value => value.EndPoint).Returns(endpoint);
+                connections.Add(connection.Object);
+                return connection.Object;
+            });
+            var subscriber = new Mock<IServerEventsSubscriber>();
+            subscriber.Setup(value => value.SubscribeToServerEvents(It.IsAny<IConnection>(), It.IsAny<CassandraEventHandler>()))
+                .Returns((IConnection connection, CassandraEventHandler _) =>
+                {
+                    if (ReferenceEquals(connection, connections[0]))
+                    {
+                        return Task.CompletedTask;
+                    }
+                    registrationStarted.TrySetResult(true);
+                    return registration.Task;
+                });
+            var topologyFactory = new Mock<ITopologyRefresherFactory>();
+            topologyFactory.Setup(value => value.Create(It.IsAny<Metadata>(), It.IsAny<Configuration>()))
+                .Returns((Metadata metadata, Configuration _) =>
+                {
+                    var topology = new Mock<ITopologyRefresher>();
+                    var refreshCount = 0;
+                    topology.Setup(value => value.RefreshNodeListAsync(
+                            It.IsAny<IConnectionEndPoint>(), It.IsAny<IConnection>(), It.IsAny<ISerializer>()))
+                        .Returns(() =>
+                        {
+                            metadata.Partitioner = "Murmur3Partitioner";
+                            var host = refreshCount++ == 0 ? metadata.AddHost(_endpoint1)
+                                : refreshCount == 2 ? candidateHost : refreshHost;
+                            host.SetInfo(TestHelper.CreateRow(new Dictionary<string, object>
+                            {
+                                { "data_center", "ut-dc" }, { "rack", "ut-rack" }, { "tokens", null }
+                            }));
+                            return Task.FromResult(host);
+                        });
+                    return topology.Object;
+                });
+            var result = NewInstance(configBuilderAct: builder =>
+            {
+                builder.ConnectionFactory = factory;
+                builder.TopologyRefresherFactory = topologyFactory.Object;
+                builder.ServerEventsSubscriber = subscriber.Object;
+                builder.Policies = new Cassandra.Policies(
+                    new TestHelper.CustomLoadBalancingPolicy(queryPlanHandler: (_, __) => Enumerable.Empty<Host>()),
+                    new ConstantReconnectionPolicy(1000), new DefaultRetryPolicy());
+            });
+            using var timer = result.Config.Timer;
+            using var control = result.ControlConnection;
+            await control.InitAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+            var originalHost = control.Host;
+            var failure = new BadImageFormatException("server registration failed");
+            var reconnect = control.Reconnect(null);
+            try
+            {
+                await registrationStarted.Task.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                var refresh = (Task)typeof(ControlConnection).GetMethod(
+                    "Refresh", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                    .Invoke(control, null);
+                await refresh.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                Assert.AreSame(refreshHost, control.Host);
+                registration.TrySetException(failure);
+                var actual = await Assert.ThrowsAsync<BadImageFormatException>(async () =>
+                    await reconnect.WaitToCompleteAsync(5000).ConfigureAwait(false));
+                Assert.AreSame(failure, actual);
+                Assert.AreSame(originalHost, control.Host);
+                control.Shutdown();
+                var downEvent = typeof(Host).GetField("Down", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                foreach (var host in new[] { originalHost, candidateHost, refreshHost })
+                {
+                    var handlers = ((Action<Host>)downEvent.GetValue(host))?.GetInvocationList();
+                    Assert.IsFalse(handlers?.Any(handler => ReferenceEquals(handler.Target, control)) ?? false,
+                        "Rollback and shutdown must detach the refresh-selected owner.");
+                }
+            }
+            finally
+            {
+                registration.TrySetException(failure);
+                try
+                {
+                    await reconnect.WaitToCompleteAsync(5000).ConfigureAwait(false);
+                }
+                catch (BadImageFormatException)
+                {
+                    // The test deliberately fails registration after transferring its subscription.
+                }
+            }
+        }
+
         [Test]
         public async Task Should_DisablePagingForUnpagedQueries()
         {
@@ -2539,6 +3025,79 @@ namespace Cassandra.Tests.Connections.Control
                 Trace.Listeners.Remove(listener);
                 Diagnostics.CassandraTraceSwitch.Level = previousLevel;
                 await debouncer.ShutdownAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+            }
+        }
+
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        [NonParallelizable]
+        public void Should_LogReconnectCancellationUnlessShutdown(bool shutdown, bool disposed)
+        {
+            var result = NewInstance();
+            using var timer = result.Config.Timer;
+            using var control = result.ControlConnection;
+            if (shutdown)
+            {
+                control.Shutdown();
+            }
+
+            Exception failure = disposed
+                ? new ObjectDisposedException("control connection")
+                : new OperationCanceledException();
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new LoggingTests.TestTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Error;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                // A shutdown can race with recovery after the trigger passed its admission check.
+                typeof(ControlConnection).GetMethod(
+                        "ObserveReconnect", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                    .Invoke(control, new object[] { Task.FromException(failure) });
+
+                Assert.AreEqual(shutdown ? 0 : 1, listener.Messages.Values.Count(message =>
+                    message.Contains("An exception was thrown when reconnecting the control connection.")));
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
+            }
+        }
+
+        [Test]
+        [NonParallelizable]
+        public async Task Should_IgnoreCapturedHostDownAfterShutdown()
+        {
+            var result = NewInstance();
+            using var timer = result.Config.Timer;
+            using var control = result.ControlConnection;
+            await control.InitAsync().WaitToCompleteAsync(5000).ConfigureAwait(false);
+            var host = control.Host;
+            var downEvent = typeof(Host).GetField("Down", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            var handler = ((Action<Host>)downEvent.GetValue(host)).GetInvocationList()
+                .Cast<Action<Host>>().Single(value => ReferenceEquals(value.Target, control));
+            control.Shutdown();
+            // Real connection disposal closes the transport; the default fake only raises Closing.
+            Mock.Get(result.ConnectionFactory.CreatedConnections[_endpoint1].Single())
+                .SetupGet(value => value.IsClosed).Returns(true);
+            var previousLevel = Diagnostics.CassandraTraceSwitch.Level;
+            using var listener = new LoggingTests.TestTraceListener();
+            Diagnostics.CassandraTraceSwitch.Level = TraceLevel.Warning;
+            Trace.Listeners.Add(listener);
+            try
+            {
+                handler(host);
+
+                Assert.IsEmpty(listener.Messages);
+                Assert.IsNull(GetSharedReconnect(control));
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+                Diagnostics.CassandraTraceSwitch.Level = previousLevel;
             }
         }
 
