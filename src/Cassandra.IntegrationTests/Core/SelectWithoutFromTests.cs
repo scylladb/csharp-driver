@@ -73,7 +73,8 @@ namespace Cassandra.IntegrationTests.Core
         {
             var row = result.Single();
             Assert.AreEqual(1, result.Columns.Length);
-            Assert.AreEqual("now()", result.Columns[0].Name);
+            // ScyllaDB names the column of a native function after its qualified name
+            Assert.AreEqual("system.now()", result.Columns[0].Name);
             Assert.AreEqual(ColumnTypeCode.Timeuuid, result.Columns[0].TypeCode);
             Assert.AreNotEqual(Guid.Empty, row.GetValue<Guid>(0));
         }
