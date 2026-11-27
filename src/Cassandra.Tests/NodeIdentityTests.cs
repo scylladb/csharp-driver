@@ -19,6 +19,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Net;
+using System.Threading;
 using Cassandra.Connections;
 using Cassandra.Connections.Control;
 using Cassandra.Metrics;
@@ -105,6 +106,116 @@ namespace Cassandra.Tests
             host.BringUpIfDown();
 
             Assert.AreEqual(removeBeforePublication ? Array.Empty<string>() : new[] { "added-down", "up" }, events);
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void StatusForwardingIgnoresRetirementDuringAnEarlierSubscriber(bool up)
+        {
+            var hosts = new Hosts();
+            var id = Guid.NewGuid();
+            var notifications = new List<(Host Host, Action Callback)>();
+            var host = hosts.AddOrUpdate(id, Address, null, Row(id), notifications);
+            if (up)
+            {
+                host.SetDown();
+            }
+
+            Host replacement = null;
+            Action<Host> retire = sender =>
+            {
+                hosts.Remove(sender, new List<(Host, Action)>());
+                replacement = hosts.AddOrUpdate(id, Address, null, Row(id));
+            };
+            if (up)
+            {
+                host.Up += retire;
+            }
+            else
+            {
+                host.Down += retire;
+            }
+
+            notifications.Single().Callback();
+            var forwarded = 0;
+            hosts.Up += _ => forwarded++;
+            hosts.Down += _ => forwarded++;
+            Assert.IsTrue(up ? host.BringUpIfDown() : host.SetDown());
+            Assert.AreEqual(0, forwarded);
+            Assert.IsTrue(replacement.IsUp);
+            Assert.IsFalse(host.SetDownIfActive());
+            Assert.IsFalse(host.BringUpIfActive());
+        }
+
+        [Test]
+        public void RemovedHostRetainsLegacyPublicStatusMutators()
+        {
+            var hosts = new Hosts();
+            var id = Guid.NewGuid();
+            var host = hosts.AddOrUpdate(id, Address, null, Row(id));
+            hosts.Remove(host);
+            var replacement = hosts.AddOrUpdate(id, Address, null, Row(id));
+            var forwarded = 0;
+            var up = 0;
+            var down = 0;
+            hosts.Up += _ => forwarded++;
+            hosts.Down += _ => forwarded++;
+            host.Up += _ => up++;
+            host.Down += _ => down++;
+            Assert.IsFalse(host.IsUp);
+            Assert.IsTrue(host.BringUpIfDown());
+            Assert.IsTrue(host.IsUp);
+            Assert.IsFalse(host.SetDownIfActive());
+            Assert.IsTrue(host.IsUp);
+            Assert.IsTrue(host.SetDown());
+            Assert.IsFalse(host.IsUp);
+            Assert.IsFalse(host.BringUpIfActive());
+            Assert.IsFalse(host.IsUp);
+            Assert.AreEqual(1, up);
+            Assert.AreEqual(1, down);
+            Assert.AreEqual(0, forwarded);
+            Assert.IsTrue(replacement.IsUp);
+        }
+
+        [Test]
+        public void ProvisionalHostStaysRegisteredUntilRetirementCanCommit()
+        {
+            var hosts = new Hosts();
+            var provisional = hosts.Add(Address);
+            var id = Guid.NewGuid();
+            Exception failure = null;
+            var discovery = new Thread(() =>
+            {
+                try
+                {
+                    hosts.AddOrUpdate(id, Address, null, Row(id));
+                }
+                catch (Exception ex)
+                {
+                    failure = ex;
+                }
+            })
+            { IsBackground = true };
+            try
+            {
+                lock (provisional.Registration.SyncRoot)
+                {
+                    discovery.Start();
+                    Assert.IsTrue(SpinWait.SpinUntil(
+                        () => hosts.TryGet(id, out _) &&
+                        (discovery.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0,
+                        TimeSpan.FromSeconds(5)));
+                    Assert.IsTrue(hosts.TryGet(Address, out var current));
+                    Assert.AreSame(provisional, current);
+                }
+            }
+            finally
+            {
+                Assert.IsTrue(discovery.Join(TimeSpan.FromSeconds(5)));
+            }
+
+            Assert.IsNull(failure);
+            Assert.IsFalse(provisional.Registration.IsActive);
         }
 
         [Test]

@@ -114,6 +114,8 @@ namespace Cassandra
         /// </summary>
         public Version CassandraVersion { get; private set; }
 
+        internal NodeRegistration Registration { get; }
+
         internal string MetricKey { get; }
 
         // The server's native port, before address translation; local rows omit it.
@@ -140,6 +142,7 @@ namespace Cassandra
         internal Host(Guid hostId, IPEndPoint address, IContactPoint contactPoint)
         {
             HostId = hostId;
+            Registration = new NodeRegistration(this);
             MetricKey = hostId == Guid.Empty ? "custom-" + Guid.NewGuid().ToString("D") : hostId.ToString("D");
             _address = address ?? throw new ArgumentNullException(nameof(address));
             ContactPoint = contactPoint;
@@ -194,24 +197,28 @@ namespace Cassandra
                 throw new InvalidOperationException("A Host's server identity cannot be changed.");
             }
 
-            AdvertisedPort ??= advertisedPort;
-            Datacenter = row.GetValue<string>("data_center");
-            Rack = row.GetValue<string>("rack");
-            Tokens = row.GetValue<IEnumerable<string>>("tokens") ?? new string[0];
-
-            if (row.ContainsColumn("native_port"))
-            {
-                AdvertisedPort = row.GetValue<int?>("native_port");
-            }
+            var datacenter = row.GetValue<string>("data_center");
+            var rack = row.GetValue<string>("rack");
+            var tokens = row.GetValue<IEnumerable<string>>("tokens") ?? new string[0];
+            var port = row.ContainsColumn("native_port")
+                ? row.GetValue<int?>("native_port")
+                : AdvertisedPort ?? advertisedPort;
+            var version = CassandraVersion;
 
             if (row.ContainsColumn("release_version"))
             {
                 var releaseVersion = row.GetValue<string>("release_version");
                 if (releaseVersion != null)
                 {
-                    CassandraVersion = Version.Parse(releaseVersion.Split('-')[0]);
+                    version = Version.Parse(releaseVersion.Split('-')[0]);
                 }
             }
+
+            AdvertisedPort = port;
+            Datacenter = datacenter;
+            Rack = rack;
+            Tokens = tokens;
+            CassandraVersion = version;
         }
 
         /// <summary>
@@ -238,6 +245,35 @@ namespace Cassandra
             if (ReferenceEquals(this, obj)) return true;
             if (obj.GetType() != this.GetType()) return false;
             return Equals((Host)obj);
+        }
+
+        // Runtime status commits are fenced by retirement; notifications run after the gate.
+        internal bool SetDownIfActive()
+        {
+            lock (Registration.SyncRoot)
+            {
+                if (!Registration.IsActive || !ChangeStatus(false))
+                {
+                    return false;
+                }
+            }
+
+            NotifyDown();
+            return true;
+        }
+
+        internal bool BringUpIfActive()
+        {
+            lock (Registration.SyncRoot)
+            {
+                if (!Registration.IsActive || !ChangeStatus(true))
+                {
+                    return false;
+                }
+            }
+
+            NotifyUp();
+            return true;
         }
 
         // Registered hosts must be updated through Hosts.AddOrUpdate so the address index is rebuilt.
