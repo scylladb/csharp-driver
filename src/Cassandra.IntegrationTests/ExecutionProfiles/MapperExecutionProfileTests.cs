@@ -223,7 +223,7 @@ namespace Cassandra.IntegrationTests.ExecutionProfiles
 
             if (async)
             {
-                await _mapper.InsertAsync(song, "testProfile", true, null).ConfigureAwait(false);
+                await _mapper.InsertAsync(song, "testProfile", true).ConfigureAwait(false);
                 await _mapper.InsertAsync(song, "testProfile").ConfigureAwait(false);
                 await _mapper.InsertAsync(song, "testProfile", true).ConfigureAwait(false);
             }
@@ -255,7 +255,7 @@ namespace Cassandra.IntegrationTests.ExecutionProfiles
 
             if (async)
             {
-                await _mapper.InsertIfNotExistsAsync(song, "testProfile", true, null).ConfigureAwait(false);
+                await _mapper.InsertIfNotExistsAsync(song, "testProfile", true).ConfigureAwait(false);
                 await _mapper.InsertIfNotExistsAsync(song, "testProfile").ConfigureAwait(false);
                 await _mapper.InsertIfNotExistsAsync(song, "testProfile", true).ConfigureAwait(false);
             }

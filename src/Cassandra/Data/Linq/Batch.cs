@@ -85,21 +85,38 @@ namespace Cassandra.Data.Linq
 
         public void Execute(string executionProfile)
         {
-            WaitToCompleteWithMetrics(InternalExecuteAsync(executionProfile), QueryAbortTimeout);
+            WaitToCompleteWithMetrics(InternalExecuteAsync(executionProfile, CancellationToken.None),
+                QueryAbortTimeout);
         }
 
-        protected abstract Task<RowSet> InternalExecuteAsync();
+        protected abstract Task<RowSet> InternalExecuteAsync(
+            string executionProfile, CancellationToken cancellationToken);
 
-        protected abstract Task<RowSet> InternalExecuteAsync(string executionProfile);
-
-        public Task ExecuteAsync()
+        /// <summary>
+        /// Executes the batch asynchronously.
+        /// </summary>
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied.
+        /// </param>
+        public Task ExecuteAsync(CancellationToken cancellationToken = default)
         {
-            return InternalExecuteAsync();
+            return InternalExecuteAsync(Configuration.DefaultExecutionProfileName, cancellationToken);
         }
 
-        public Task ExecuteAsync(string executionProfile)
+        /// <summary>
+        /// Executes the batch asynchronously with the provided execution profile.
+        /// </summary>
+        /// <param name="executionProfile">The execution profile to use when executing the request.</param>
+        /// <param name="cancellationToken">
+        /// A token to stop the operation; the task is then cancelled. It stops the request as
+        /// <see cref="ISession.ExecuteAsync(IStatement, CancellationToken)"/> does: a request already written can't be
+        /// recalled, so the node still runs it, and a write may still be applied.
+        /// </param>
+        public Task ExecuteAsync(string executionProfile, CancellationToken cancellationToken = default)
         {
-            return InternalExecuteAsync(executionProfile);
+            return InternalExecuteAsync(executionProfile, cancellationToken);
         }
 
         protected string BatchTypeString()
